@@ -1,0 +1,133 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- HELPER FUNCTIONS ---
+    
+    // Check if the user is the Admin (Owner) of the data
+    function isOwner(dataUserId) {
+      return request.auth.uid == dataUserId;
+    }
+
+    // Check if the user is a Sub-User (Employee) linked to the Owner
+    function isEmployee(dataUserId) {
+      // Check custom claim 'ownerId'
+      return request.auth.token.ownerId == dataUserId;
+    }
+
+    // Combined Check: Access allowed if you are Owner OR Employee
+    function canAccess(dataUserId) {
+      return isOwner(dataUserId) || isEmployee(dataUserId);
+    }
+
+    // --- 0. COMPANY PROFILES (New Integration) ---
+    match /companies/{companyId} {
+        // Allow read for authenticated users (to check if company exists/profile)
+        allow read: if request.auth != null;
+        // Allow write if authenticated
+        allow write: if request.auth != null;
+    }
+
+    // --- 0.05 LICENSE COLLECTION ---
+    // Reads are public (no auth) — needed for the activation screen before login.
+    // Writes are allowed for:
+    //   1. The developer (nadeemalsaham@gmail.com) — to create/manage license keys.
+    //   2. Any authenticated user — ONLY to update their OWN pending activation request
+    //      (i.e. submitting an activation request on an existing key they already know).
+    function isDeveloper() {
+      return request.auth != null && (
+        request.auth.token.email == 'nadeemalsaham@gmail.com' ||
+        request.auth.token.role == 'developer' ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'developer'
+        )
+      );
+    }
+
+    function isActivationRequestUpdate() {
+      return resource.data.status in ['inactive', 'not_requested'] &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.email is string &&
+        request.resource.data.passwordHash is string &&
+        request.resource.data.requestedAt is timestamp &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'email',
+          'passwordHash',
+          'userName',
+          'mobile',
+          'requestedAt',
+          'deviceId'
+        ]);
+    }
+    match /nadtally_licenses/{licenseId} {
+        allow read: if true;
+        // Developer can create new keys and update/approve any license
+        allow create: if isDeveloper();
+        allow update: if isDeveloper() ||
+          // Public activation request (pre-login flow) can only set pending-request fields
+          isActivationRequestUpdate() ||
+          // If user is authenticated, email must match token email
+          (request.auth != null &&
+           isActivationRequestUpdate() &&
+           request.resource.data.email == request.auth.token.email);
+        allow delete: if isDeveloper();
+    }
+
+    // --- 0.1 LIVE REGISTRY (Discovery) ---
+    match /nadtally_live_registry/{companyId} {
+        // Essential for the "LIVE DATAS" section to work
+        allow read: if request.auth != null;
+        allow write: if request.auth != null;
+    }
+
+    // --- 0.2 LIVE SYNC DATA ---
+    match /companies_live/{companyId}/{document=**} {
+        // Allows multiple users to sync data for the same live company
+        allow read, write: if request.auth != null;
+    }
+
+    // --- 1. USERS COLLECTION (Team List) ---
+    match /users/{userId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId || 
+        resource.data.ownerId == request.auth.uid ||
+        (request.auth.token.ownerId != null && resource.data.ownerId == request.auth.token.ownerId)
+      );
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+      allow create, update: if false; 
+    }
+
+    // --- 2. AUDIT LOGS ---
+    // --- 2. AUDIT LOGS & JUMBO BAGS ---
+    match /audit_logs/{logId} {
+      allow read, write: if request.auth != null;
+    }
+    match /jumbo_bags/{bagId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // --- 3. WORKING SHEETS ---
+    match /sheets/{sheetId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // --- 4. ALL OTHER DATA (Invoices, Products, etc.) ---
+    // Matches any collection NOT matched above
+    match /{collectionName}/{document=**} {
+      // READ/UPDATE/DELETE: Allowed if you own the data OR work for the owner
+      // This relies on the document having a 'userId' field matching the Owner's ID
+      // Legacy data without a userId field is accessible but should be migrated
+      allow read, update, delete: if request.auth != null && (
+        resource == null ||
+        !("userId" in resource.data) || 
+        canAccess(resource.data.userId)
+      );
+      
+      // CREATE: Allowed if you are creating data for yourself OR your boss
+      allow create: if request.auth != null && canAccess(request.resource.data.userId);
+    }
+  }
+}

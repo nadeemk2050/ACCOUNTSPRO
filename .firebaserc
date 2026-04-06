@@ -1,0 +1,16 @@
+{
+  "projects": {
+    "default": "cashshams"
+  },
+  "targets": {
+    "accnad-8a7d3": {
+      "hosting": {
+        "accnad-v2-site": [
+          "accnad-v2",
+          "accountsnad2"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

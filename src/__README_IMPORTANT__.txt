@@ -1,0 +1,1 @@
+I am unable to access the 'functions/index.js' file because my current working directory is restricted to 'c:\app\accnad-app\src'. To apply the fix you provided, I need access to that file. Please restart our session and set the working directory to the project root: 'c:\app\accnad-app'.

@@ -1,0 +1,83 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.cursor/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Build and Electron Artifacts
+dist_electron/
+dist_electron_v2/
+build/
+release/
+out/
+dev-dist/
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firebase-export-*
+
+# Python & Virtual Environments
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+.Trashes
+
+# Project Specific Temporary & Backup Files
+*.bak
+temp_*.txt
+new_hook_*.txt
+replace_script*.py
+search_script*.py
+find_userid_usage.py
+append_funcs.py
+parse_app.cjs
+parse_app.js
+App.jsx-menu-temp.txt
+find_party.txt
+temp_matches.txt
+temp_simple_list.txt
+temp_table.txt
+*backup*.jsx
+*backup*.js
+*backup*.txt
+
+# Ignore messy backup folders in src
+src/11JAN26/
+src/21FEB/
+src/26 MAR/
+src/27MAR/
+src/looking panga/
+src/offline nad 19 mar/
