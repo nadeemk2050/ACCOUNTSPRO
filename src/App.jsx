@@ -738,7 +738,7 @@ const checkDuplicateContainer = async (db, containerNo, userId, excludeId = null
 // --- UPDATED SEARCHABLE SELECT (With Ref, Shortcuts & Portal for Front Layer) ---
 const SearchableSelect = React.forwardRef(({ 
     options, groups, value, onChange, placeholder, label, required, 
-    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName 
+    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName 
 }, ref) => {
     const [isOpen, setIsOpen] = useState(false);
     const [search, setSearch] = useState("");
@@ -779,11 +779,19 @@ const SearchableSelect = React.forwardRef(({
         }
     }, [isOpen, selectedOption, groups]);
 
+    // Sync highlightedIndex with value when it changes, but ONLY reset if necessary
     useEffect(() => {
         if (!isOpen) return;
         const selectedIndex = filteredOptions.findIndex((opt) => opt.value === value);
-        setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : 0);
-    }, [isOpen, search, activeGroup, value, filteredOptions]);
+        if (selectedIndex >= 0) {
+            setHighlightedIndex(selectedIndex);
+        } else {
+            // Only reset if it's out of bounds or search changed
+            if (highlightedIndex >= filteredOptions.length) {
+                setHighlightedIndex(0);
+            }
+        }
+    }, [isOpen, search, activeGroup, value]); // Removed filteredOptions from dependency to prevent jumping on background data updates
 
     useEffect(() => {
         if (!isOpen) return;
@@ -808,7 +816,11 @@ const SearchableSelect = React.forwardRef(({
         }
     }, [isOpen]);
 
-    const selectOption = (opt) => {
+    const selectOption = (opt, e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
         if (!opt) return;
         onChange(opt.value, opt);
         setIsOpen(false);
@@ -854,7 +866,8 @@ const SearchableSelect = React.forwardRef(({
         }
         if (e.key === 'Enter' && isOpen) {
             e.preventDefault();
-            selectOption(filteredOptions[highlightedIndex]);
+            e.stopPropagation();
+            selectOption(filteredOptions[highlightedIndex], e);
             return;
         }
         // Escape to close
@@ -927,8 +940,10 @@ const SearchableSelect = React.forwardRef(({
                                 key={opt.value + idx}
                                 ref={(node) => { optionRefs.current[idx] = node; }}
                                 className={`px-4 py-3 text-sm cursor-pointer border-b border-transparent rounded-lg transition-all ${(idx === highlightedIndex || value === opt.value) ? 'bg-blue-50 text-blue-800 font-bold border-blue-100' : 'text-slate-700 hover:bg-blue-50 hover:border-blue-100'}`}
-                                onMouseEnter={() => setHighlightedIndex(idx)}
-                                onClick={() => selectOption(opt)}
+                                onMouseEnter={() => {
+                                    if (idx !== highlightedIndex) setHighlightedIndex(idx);
+                                }}
+                                onClick={(e) => selectOption(opt, e)}
                             >
                                 <div className="flex items-center justify-between w-full gap-2">
                                     <span className="truncate">{opt.text}</span>
@@ -975,7 +990,7 @@ const SearchableSelect = React.forwardRef(({
                 </div>
             ) : (
                 <div
-                    className={`w-full ${compact ? 'p-1.5' : 'p-2'} border rounded-lg text-sm bg-white cursor-pointer flex justify-between items-center ${isOpen ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200'}`}
+                    className={`w-full ${compact ? 'p-1.5' : 'p-2'} border rounded-lg text-sm bg-white cursor-pointer flex justify-between items-center ${isOpen ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200'} ${triggerClassName || ''}`}
                     onClick={() => setIsOpen(!isOpen)}
                 >
                     <span className={`truncate overflow-hidden ${selectedOption ? "text-slate-800" : "text-gray-400"} ${activeTextClass}`}>
@@ -4183,6 +4198,9 @@ export default function App() {
     // -------------------------------------------------------------
 
     const [user, setUser] = useState(null);
+    const accountsRef = useRef([]); // ✅ Added for stale-state-safe calculations
+    const partiesRef = useRef([]);  // ✅ Added for stale-state-safe calculations
+
     const [userData, setUserData] = useState(null);
     const [idleWarningOpen, setIdleWarningOpen] = useState(false);
     const [idleCountdown, setIdleCountdown] = useState(IDLE_WARNING_SECONDS);
@@ -4437,6 +4455,7 @@ export default function App() {
     const [taxRates, setTaxRates] = useState([]); // &lt;--- ADD THIS NEW LINE
     const [locations, setLocations] = useState([]);
     const [expenses, setExpenses] = useState([]);
+    const [directExpenseAccounts, setDirectExpenseAccounts] = useState([]); // NEW: Direct Expense Ledgers for COGS
     const [incomeAccounts, setIncomeAccounts] = useState([]); // <--- NEW INCOME
     const [accounts, setAccounts] = useState([]);
     const [capitalAccounts, setCapitalAccounts] = useState([]); // <--- ADD THIS
@@ -4453,6 +4472,11 @@ export default function App() {
     const [dashboardLogCount, setDashboardLogCount] = useState(0);
     const [liveRegistryCompanies, setLiveRegistryCompanies] = useState([]);
     const [systemInfo, setSystemInfo] = useState(null);
+
+    // ✅ Sync Refs to always have fresh state in Snapshot callbacks
+    useEffect(() => { accountsRef.current = accounts; }, [accounts]);
+    useEffect(() => { partiesRef.current = parties; }, [parties]);
+
 
     useEffect(() => {
         if (ipcRenderer) {
@@ -4696,6 +4720,7 @@ export default function App() {
         }, (err) => console.error("Snapshot error (parties):", err));
         const unsubLocations = onSnapshot(getMasterQuery("locations"), (snap) => setLocations(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (locations):", err));
         const unsubExpenses = onSnapshot(getMasterQuery("expenses"), (snap) => setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (expenses):", err));
+        const unsubDirectExpenses = onSnapshot(getMasterQuery("direct_expenses"), (snap) => setDirectExpenseAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (direct_expenses):", err));
         const unsubIncome = onSnapshot(getMasterQuery("income_accounts"), (snap) => setIncomeAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (income_accounts):", err));
         const unsubAccounts = onSnapshot(getMasterQuery("accounts"), (snap) => setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (accounts):", err));
         const unsubCapital = onSnapshot(getMasterQuery("capital_accounts"), (snap) => setCapitalAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (capital_accounts):", err));
@@ -4811,7 +4836,7 @@ export default function App() {
 
         return () => {
             unsubStockGroups(); unsubPartyGroups(); unsubExpenseGroups();
-            unsubProducts(); unsubParties(); unsubLocations(); unsubExpenses(); unsubIncome(); unsubAccounts(); unsubInvoices(); unsubCapital(); unsubAssets(); unsubLots(); unsubProfile(); unsubTaxes(); unsubUnits();
+            unsubProducts(); unsubParties(); unsubLocations(); unsubExpenses(); unsubDirectExpenses(); unsubIncome(); unsubAccounts(); unsubInvoices(); unsubCapital(); unsubAssets(); unsubLots(); unsubProfile(); unsubTaxes(); unsubUnits();
             unsubStaff();
             unsubAttendance();
             unsubCurrency();
@@ -5501,121 +5526,99 @@ export default function App() {
         return { itemMap, lastRateMap, openValMap };
     }, [products, invoices, stockJournals]);
 
-    // ✅ NEW: HISTORICAL STOCK SUMMARY TOTAL (Calculated for Dashboard Date)
+    // ✅ DASHBOARD STOCK TOTAL — real-time via onSnapshot, WAC valuation
     const [stockSummaryGrandTotal, setStockSummaryGrandTotal] = useState({ qty: 0, val: 0 });
-    // Refs to hold latest products/accounts/parties without causing effect re-runs
-    const productsRef = useRef(products);
-    useEffect(() => { productsRef.current = products; }, [products]);
-    const accountsRef = useRef(accounts);
-    useEffect(() => { accountsRef.current = accounts; }, [accounts]);
-    const partiesRef = useRef(parties);
-    useEffect(() => { partiesRef.current = parties; }, [parties]);
 
     useEffect(() => {
-        let active = true;
-        const calculateStockVal = async () => {
-            if (!user || !dataOwnerId) return;
-            const targetDate = dashboardDate;
-            const targetUid = dataOwnerId;
-            const products = productsRef.current;
+        if (!user || !dataOwnerId || !products.length) return;
+        const targetUid = dataOwnerId;
+        const targetDate = dashboardDate;
 
-            try {
-                const constraints = [where('userId', '==', targetUid), where('date', '<=', targetDate), orderBy('date', 'asc')];
-                const qInvoices = query(collection(db, 'invoices'), ...constraints);
-                const qStockJournals = query(collection(db, 'stock_journals'), ...constraints);
+        const qInv = query(collection(db, 'invoices'), where('userId', '==', targetUid));
+        const qSj  = query(collection(db, 'stock_journals'), where('userId', '==', targetUid));
 
-                const [invSnap, sjSnap] = await Promise.all([
-                    getDocs(qInvoices), getDocs(qStockJournals)
-                ]);
+        let invDocs = null;
+        let sjDocs  = null;
 
-                if (!active) return;
+        const recalc = () => {
+            if (!invDocs || !sjDocs) return;
 
-                const itemMap = {};
-                products.forEach(p => {
-                    const opQty = Number(p.openingStock || 0);
-                    const opVal = Number(p.openingBalance || 0);
-                    itemMap[p.id] = {
-                        qty: opQty,
-                        val: opVal
-                    };
+            // Build itemMap with opening balances
+            const itemMap = {};
+            products.forEach(p => {
+                const opQty = Number(p.openingStock || 0);
+                const opVal = Number(p.openingBalance || 0);
+                itemMap[p.id] = { qty: opQty, val: opVal, fifoLayers: opQty > 0 ? [{ qty: opQty, rate: opQty !== 0 ? Math.abs(opVal / opQty) : 0 }] : [] };
+            });
+
+            // Collect all movements sorted by date (WAC needs chronological order)
+            const movements = [];
+            invDocs.forEach(doc => {
+                const d = doc.data();
+                if (!d.date || d.date > targetDate) return;
+                const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
+                const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
+                if (!isInward && !isOutward) return;
+                (d.items || []).forEach(it => {
+                    const qty = Number(it.quantity || 0);
+                    const rate = Number(it.rate || 0);
+                    if (!it.productId || qty <= 0) return;
+                    movements.push({ date: d.date, productId: it.productId, qty, rate, type: isInward ? 'in' : 'out' });
                 });
+            });
+            sjDocs.forEach(doc => {
+                const d = doc.data();
+                if (!d.date || d.date > targetDate) return;
+                (d.produced || []).forEach(it => {
+                    if (!it.productId || Number(it.quantity || 0) <= 0) return;
+                    movements.push({ date: d.date, productId: it.productId, qty: Number(it.quantity), rate: Number(it.rate || 0), type: 'in' });
+                });
+                (d.consumed || []).forEach(it => {
+                    if (!it.productId || Number(it.quantity || 0) <= 0) return;
+                    movements.push({ date: d.date, productId: it.productId, qty: Number(it.quantity), rate: Number(it.rate || 0), type: 'out' });
+                });
+            });
 
-                invSnap.forEach(doc => {
-                    const d = doc.data();
-                    if (d.items) {
-                        d.items.forEach(it => {
-                            if (!itemMap[it.productId]) {
-                                const p = products.find(prod => prod.id === it.productId);
-                                itemMap[it.productId] = {
-                                    qty: Number(p?.openingStock || 0),
-                                    val: Number(p?.openingBalance || 0)
-                                };
-                            }
+            movements.sort((a, b) => a.date.localeCompare(b.date));
 
-                            const row = itemMap[it.productId];
-                            const q = Number(it.quantity || 0);
-                            const r = Number(it.rate || 0);
-                            const amt = q * r;
-
-                            // Mirror Item Ledger item movement rule exactly
-                            const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
-                            if (isInward) {
-                                row.qty += q;
-                                row.val += amt;
-                            } else {
-                                row.qty -= q;
-                                row.val -= amt;
-                            }
-                        });
+            movements.forEach(({ productId, qty, rate, type }) => {
+                if (!itemMap[productId]) {
+                    const p = products.find(pr => pr.id === productId);
+                    const opQty = Number(p?.openingStock || 0);
+                    const opVal = Number(p?.openingBalance || 0);
+                    itemMap[productId] = { qty: opQty, val: opVal, fifoLayers: opQty > 0 ? [{ qty: opQty, rate: opQty !== 0 ? Math.abs(opVal / opQty) : 0 }] : [] };
+                }
+                const row = itemMap[productId];
+                if (type === 'in') {
+                    // Inward: add at purchase rate
+                    row.qty += qty;
+                    row.val += qty * rate;
+                    row.fifoLayers.push({ qty, rate });
+                } else {
+                    // Outward: deduct at WAC (current average cost), not at selling rate
+                    const wac = row.qty > 0 ? row.val / row.qty : rate;
+                    row.qty -= qty;
+                    row.val -= qty * wac;
+                    // Update FIFO layers (consume from front)
+                    let rem = qty;
+                    while (rem > 0 && row.fifoLayers.length > 0) {
+                        const head = row.fifoLayers[0];
+                        if (head.qty <= rem) { rem -= head.qty; row.fifoLayers.shift(); }
+                        else { head.qty -= rem; rem = 0; }
                     }
-                });
+                }
+            });
 
-                sjSnap.forEach(doc => {
-                    const d = doc.data();
-                    if (d.consumed) d.consumed.forEach(it => {
-                        const row = itemMap[it.productId];
-                        if (row) {
-                            const q = Number(it.quantity || 0);
-                            const r = Number(it.rate || 0);
-                            row.qty -= q;
-                            row.val -= (q * r);
-                        }
-                    });
-
-                    if (d.produced) d.produced.forEach(it => {
-                        if (!itemMap[it.productId]) {
-                            const p = products.find(prod => prod.id === it.productId);
-                            itemMap[it.productId] = {
-                                qty: Number(p?.openingStock || 0),
-                                val: Number(p?.openingBalance || 0)
-                            };
-                        }
-                        const row = itemMap[it.productId];
-                        const q = Number(it.quantity || 0);
-                        const r = Number(it.rate || 0);
-                        row.qty += q;
-                        row.val += (q * r);
-                    });
-                });
-
-                // Let's summarize
-                let totalQty = 0;
-                let totalVal = 0;
-                Object.values(itemMap).forEach(row => {
-                    totalQty += row.qty;
-                    totalVal += row.val;
-                });
-
-                console.log("[DEBUG] Stock Summary Calc:", "Qty:", totalQty, "Val:", totalVal, "invSnap Size:", invSnap.size, "sjSnap Size:", sjSnap.size);
-                if (active) setStockSummaryGrandTotal({ qty: totalQty, val: totalVal });
-            } catch (err) {
-                console.error("Dashboard stock calculation failed:", err);
-            }
+            let totalQty = 0, totalVal = 0;
+            Object.values(itemMap).forEach(row => { totalQty += row.qty; totalVal += row.val; });
+            setStockSummaryGrandTotal({ qty: totalQty, val: totalVal });
         };
 
-        calculateStockVal();
-        return () => { active = false; };
-    }, [dashboardDate, user, dataOwnerId]);
+        const unsubInv = onSnapshot(qInv, snap => { invDocs = snap.docs; recalc(); }, err => console.error('Dashboard stock inv:', err));
+        const unsubSj  = onSnapshot(qSj,  snap => { sjDocs  = snap.docs; recalc(); }, err => console.error('Dashboard stock sj:', err));
+
+        return () => { unsubInv(); unsubSj(); };
+    }, [dashboardDate, user, dataOwnerId, products]);
 
     // ✅ NEW: HISTORICAL CASH, RECEIVABLES, PAYABLES SUMMARY (Calculated for Dashboard Date)
     const [cashSummaryGrandTotal, setCashSummaryGrandTotal] = useState(0);
@@ -5623,137 +5626,128 @@ export default function App() {
     const [payablesGrandTotal, setPayablesGrandTotal] = useState(0);
 
     useEffect(() => {
-        let active = true;
+        if (!user || !dataOwnerId || (!accounts.length && !parties.length)) return;
+        const targetUid = dataOwnerId;
+        const targetDate = dashboardDate;
+
+        const qInv = query(collection(db, 'invoices'), where('userId', '==', targetUid));
+        const qPay = query(collection(db, 'payments'), where('userId', '==', targetUid));
+        const qJv  = query(collection(db, 'journal_vouchers'), where('userId', '==', targetUid));
+
+        let invDocs = null, payDocs = null, jvDocs = null;
+
+        // ✅ Renamed from 'recalc' to 'calculateFinanceSummary' and using REFS for fresh state
         const calculateFinanceSummary = async () => {
-            if (!user || !dataOwnerId) return;
-            const targetDate = dashboardDate;
-            const targetUid = dataOwnerId;
-            const accounts = accountsRef.current;
-            const parties = partiesRef.current;
+            if (!invDocs || !payDocs || !jvDocs) return;
 
-            try {
-                // Fetch ALL transactions up to targetDate (Invoices, Payments, JVs)
-                const baseConstraints = [where('userId', '==', targetUid), where('date', '<=', targetDate)];
-                const [invSnap, paySnap, jvSnap] = await Promise.all([
-                    getDocs(query(collection(db, 'invoices'), ...baseConstraints)),
-                    getDocs(query(collection(db, 'payments'), ...baseConstraints)),
-                    getDocs(query(collection(db, 'journal_vouchers'), ...baseConstraints))
-                ]);
+            const currentAccounts = accountsRef.current;
+            const currentParties = partiesRef.current;
 
-                if (!active) return;
+            const accBalMap = {};
+            currentAccounts.forEach(a => { accBalMap[a.id] = Number(a.openingBalance || 0); });
 
-                const accBalMap = {};
-                accounts.forEach(a => { accBalMap[a.id] = Number(a.openingBalance || 0); });
+            const partyBalMap = {};
+            currentParties.forEach(p => { partyBalMap[p.id] = Number(p.openingBalance || 0); });
 
-                const partyBalMap = {};
-                parties.forEach(p => { partyBalMap[p.id] = Number(p.openingBalance || 0); });
+            // 1. Invoices
+            invDocs.forEach(doc => {
+                const d = doc.data();
+                if (!d.date || d.date > targetDate) return;
+                const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
+                const rate = Number(d.exchangeRate || 1);
+                const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                // 1. Invoices
-                invSnap.forEach(doc => {
-                    const d = doc.data();
-                    const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
-                    const rate = Number(d.exchangeRate || 1);
-                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
-
-                    // Accounts: Credit the account that paid expenses
-                    if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && accBalMap[d.addlExpCreditId] !== undefined) {
-                        accBalMap[d.addlExpCreditId] -= addlExpBase;
-                    }
-
-                    // Parties:
-                    if (d.partyId && partyBalMap[d.partyId] !== undefined) {
-                        const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                            ? Math.max(0, baseVal - addlExpBase)
-                            : baseVal;
-                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
-
-                        if (['sales', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
-                        else if (['purchase', 'credit_note', 'sales_return'].includes(d.type)) partyBalMap[d.partyId] -= amt;
-                    }
-                });
-
-                // 2. Payments (Receipts, Payments, Contras)
-                paySnap.forEach(doc => {
-                    const v = doc.data();
-                    const rate = Number(v.exchangeRate || 1);
-                    const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
-
-                    // Source Account
-                    if (v.accountId && accBalMap[v.accountId] !== undefined) {
-                        if (v.type === 'in') accBalMap[v.accountId] += amtBase;
-                        else accBalMap[v.accountId] -= amtBase;
-                    }
-
-                    const applyPaymentTarget = (tid, tcat, tval) => {
-                        if (tcat === 'account' && accBalMap[tid] !== undefined) {
-                            if (v.type === 'in') accBalMap[tid] -= tval;
-                            else accBalMap[tid] += tval;
-                        } else if (tcat === 'party' && partyBalMap[tid] !== undefined) {
-                            if (v.type === 'in') partyBalMap[tid] -= tval; // Receipt from party reduces their balance
-                            else partyBalMap[tid] += tval; // Payment to party increases their balance
-                        }
-                    };
-
-                    if (v.isMulti && v.splits) {
-                        v.splits.forEach(s => applyPaymentTarget(s.targetId, s.category, Number(s.amount || 0) * rate));
-                    } else {
-                        let cat = v.transactionCategory;
-                        let tid = null;
-                        if (cat === 'party') tid = v.partyId;
-                        else if (cat === 'account' || v.type === 'contra') { cat = 'account'; tid = v.toAccountId; }
-                        if (tid) applyPaymentTarget(tid, cat, amtBase);
-                    }
-                });
-
-                // 3. Journals
-                jvSnap.forEach(doc => {
-                    const v = doc.data();
-                    const amt = Number(v.amount || 0);
-                    if (v.isMulti && v.rows) {
-                        v.rows.forEach(r => {
-                            if (r.category === 'account' && accBalMap[r.id] !== undefined) {
-                                if (r.type === 'dr') accBalMap[r.id] += Number(r.amount || 0);
-                                else accBalMap[r.id] -= Number(r.amount || 0);
-                            } else if (r.category === 'party' && partyBalMap[r.id] !== undefined) {
-                                if (r.type === 'dr') partyBalMap[r.id] += Number(r.amount || 0);
-                                else partyBalMap[r.id] -= Number(r.amount || 0);
-                            }
-                        });
-                    } else {
-                        if (v.drId) {
-                            if (v.drType === 'account' && accBalMap[v.drId] !== undefined) accBalMap[v.drId] += amt;
-                            else if (v.drType === 'party' && partyBalMap[v.drId] !== undefined) partyBalMap[v.drId] += amt;
-                        }
-                        if (v.crId) {
-                            if (v.crType === 'account' && accBalMap[v.crId] !== undefined) accBalMap[v.crId] -= amt;
-                            else if (v.crType === 'party' && partyBalMap[v.crId] !== undefined) partyBalMap[v.crId] -= amt;
-                        }
-                    }
-                });
-
-                // --- Final Aggregation ---
-                let totalCash = Object.values(accBalMap).reduce((sum, b) => sum + b, 0);
-
-                let recTotal = 0;
-                let payTotal = 0;
-                Object.values(partyBalMap).forEach(b => {
-                    if (b > 0) recTotal += b;
-                    else if (b < 0) payTotal += Math.abs(b);
-                });
-
-                if (active) {
-                    setCashSummaryGrandTotal(totalCash);
-                    setReceivablesGrandTotal(recTotal);
-                    setPayablesGrandTotal(payTotal);
+                if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && accBalMap[d.addlExpCreditId] !== undefined) {
+                    accBalMap[d.addlExpCreditId] -= addlExpBase;
                 }
-            } catch (err) {
-                console.error("Dashboard finance calculation failed:", err);
-            }
+
+                if (d.partyId && partyBalMap[d.partyId] !== undefined) {
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
+                        : baseVal;
+                    const amt = (d.type === 'purchase') ? supplierBase : baseVal;
+                    if (['sales', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
+                    else if (['purchase', 'credit_note', 'sales_return'].includes(d.type)) partyBalMap[d.partyId] -= amt;
+                }
+            });
+
+            // 2. Payments
+            payDocs.forEach(doc => {
+                const v = doc.data();
+                if (!v.date || v.date > targetDate) return;
+                const rate = Number(v.exchangeRate || 1);
+                const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
+
+                if (v.accountId && accBalMap[v.accountId] !== undefined) {
+                    if (v.type === 'in') accBalMap[v.accountId] += amtBase;
+                    else accBalMap[v.accountId] -= amtBase;
+                }
+
+                const applyTarget = (tid, tcat, tval) => {
+                    if (tcat === 'account' && accBalMap[tid] !== undefined) {
+                        if (v.type === 'in') accBalMap[tid] -= tval;
+                        else accBalMap[tid] += tval;
+                    } else if (tcat === 'party' && partyBalMap[tid] !== undefined) {
+                        if (v.type === 'in') partyBalMap[tid] -= tval;
+                        else partyBalMap[tid] += tval;
+                    }
+                };
+
+                if (v.isMulti && v.splits) {
+                    v.splits.forEach(s => applyTarget(s.targetId, s.category, Number(s.amount || 0) * rate));
+                } else {
+                    let cat = v.transactionCategory;
+                    let tid = null;
+                    if (cat === 'party') tid = v.partyId;
+                    else if (cat === 'account' || v.type === 'contra') { cat = 'account'; tid = v.toAccountId; }
+                    if (tid) applyTarget(tid, cat, amtBase);
+                }
+            });
+
+            // 3. Journals
+            jvDocs.forEach(doc => {
+                const v = doc.data();
+                if (!v.date || v.date > targetDate) return;
+                const amt = Number(v.amount || 0);
+                if (v.isMulti && v.rows) {
+                    v.rows.forEach(r => {
+                        if (r.category === 'account' && accBalMap[r.id] !== undefined) {
+                            if (r.type === 'dr') accBalMap[r.id] += Number(r.amount || 0);
+                            else accBalMap[r.id] -= Number(r.amount || 0);
+                        } else if (r.category === 'party' && partyBalMap[r.id] !== undefined) {
+                            if (r.type === 'dr') partyBalMap[r.id] += Number(r.amount || 0);
+                            else partyBalMap[r.id] -= Number(r.amount || 0);
+                        }
+                    });
+                } else {
+                    if (v.drId) {
+                        if (v.drType === 'account' && accBalMap[v.drId] !== undefined) accBalMap[v.drId] += amt;
+                        else if (v.drType === 'party' && partyBalMap[v.drId] !== undefined) partyBalMap[v.drId] += amt;
+                    }
+                    if (v.crId) {
+                        if (v.crType === 'account' && accBalMap[v.crId] !== undefined) accBalMap[v.crId] -= amt;
+                        else if (v.crType === 'party' && partyBalMap[v.crId] !== undefined) partyBalMap[v.crId] -= amt;
+                    }
+                }
+            });
+
+            const totalCash = Object.values(accBalMap).reduce((sum, b) => sum + b, 0);
+            let recTotal = 0, payTotal = 0;
+            Object.values(partyBalMap).forEach(b => {
+                if (b > 0) recTotal += b;
+                else if (b < 0) payTotal += Math.abs(b);
+            });
+            setCashSummaryGrandTotal(totalCash);
+            setReceivablesGrandTotal(recTotal);
+            setPayablesGrandTotal(payTotal);
         };
 
-        calculateFinanceSummary();
-        return () => { active = false; };
-    }, [dashboardDate, user, dataOwnerId]);
+        const unsubInv = onSnapshot(qInv, snap => { invDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin inv:', err));
+        const unsubPay = onSnapshot(qPay, snap => { payDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin pay:', err));
+        const unsubJv  = onSnapshot(qJv,  snap => { jvDocs  = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin jv:', err));
+
+        return () => { unsubInv(); unsubPay(); unsubJv(); };
+    }, [dashboardDate, user, dataOwnerId, accounts, parties]);
 
 
     const dashboardStats = useMemo(() => {
@@ -5855,6 +5849,35 @@ export default function App() {
                     if (docData.expenseJournalId) {
                         await deleteDoc(doc(db, 'journal_vouchers', docData.expenseJournalId)).catch(e => console.warn("Failed delete linked JV", e));
                     }
+
+                    // ✅ RESTORE JUMBO BAGS (same logic as single-delete)
+                    try {
+                        const bagBatch = writeBatch(db);
+                        let bagCount = 0;
+                        const docRef = docData.refNo;
+                        const bagQueries = [
+                            getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))),
+                            getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))),
+                            getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))),
+                        ];
+                        if (docRef) {
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', docRef))));
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', docRef))));
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', docRef))));
+                        }
+                        const bagResults = await Promise.all(bagQueries);
+                        bagResults.forEach((sn, idx) => {
+                            if (sn.empty) return;
+                            const isSales = idx === 2 || idx === 5;
+                            sn.docs.forEach(d => {
+                                if (isSales) bagBatch.update(d.ref, { status: 'in_stock', salesId: deleteField(), soldDate: deleteField() });
+                                else bagBatch.delete(d.ref);
+                                bagCount++;
+                            });
+                        });
+                        if (bagCount > 0) await bagBatch.commit();
+                    } catch (bagErr) { console.warn('Bulk-delete bag sync failed for', id, bagErr); }
+
                     await deleteDoc(doc(db, collectionName, id));
 
                     await addDoc(collection(db, 'audit_logs'), {
@@ -5942,17 +5965,20 @@ export default function App() {
                 // 2. Find bags linked by Reference Number (Support for older records)
                 const qSjRef = ref ? query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', ref)) : null;
                 const qPurRef = ref ? query(collection(db, 'jumbo_bags'), where('purchaseId', '==', ref)) : null;
+                const qSalRef = ref ? query(collection(db, 'jumbo_bags'), where('salesId', '==', ref)) : null;
 
                 const queries = [getDocs(qSjId), getDocs(qPurId), getDocs(qSalId)];
                 if (qSjRef) queries.push(getDocs(qSjRef));
                 if (qPurRef) queries.push(getDocs(qPurRef));
+                if (qSalRef) queries.push(getDocs(qSalRef));
 
                 const results = await Promise.all(queries);
                 
                 results.forEach((sn, idx) => {
                     if (sn.empty) return;
+                    const isSales = idx === 2 || idx === 5; // qSalId (idx 2) or qSalRef (idx 5)
                     sn.docs.forEach(d => {
-                        if (idx === 2) { // Sales Reversal
+                        if (isSales) { // Sales Reversal
                             batch.update(d.ref, { status: 'in_stock', salesId: deleteField(), soldDate: deleteField() });
                         } else { // Mfg/Pur Deletion
                             batch.delete(d.ref);
@@ -7926,7 +7952,7 @@ export default function App() {
                                     </MenuDropdown>
 
                                     <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-2 mt-4">Transactions</div>
-                                    <MenuDropdown label="Quick Action Vouchers" shortcut="Q" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu}>
+                                    <MenuDropdown label="Action Vouchers" shortcut="Q" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu}>
                                         <MenuButton label="Payment (F5)" onClick={() => { setEditData(null); setActiveModal('payment'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Receipt (F6)" onClick={() => { setEditData(null); setActiveModal('receipt'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Contra (F4)" onClick={() => { setEditData(null); setActiveModal('contra'); onMenuClick(); setActiveSubMenu(null); }} />
@@ -7979,7 +8005,8 @@ export default function App() {
                                         <MenuButton label="Items (Products)" onClick={() => { setActiveModal('inventory_choice'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Lot Numbers" onClick={() => { setActiveModal('lots'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Customers / Parties" onClick={() => { setActiveModal('manage_party_choice'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Expense Heads" onClick={() => { setActiveModal('manage_expense_choice'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Indirect Expenses (Accounts)" onClick={() => { setActiveModal('manage_expense_choice'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Direct Expenses (COGS)" onClick={() => { setActiveModal('manage_direct_expense_choice'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Income Accounts" onClick={() => { setActiveModal('income_accounts'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Capital Accounts" onClick={() => { setActiveModal('capital_accounts'); onMenuClick(); setActiveSubMenu(null); }} />
                                         <MenuButton label="Cash / Bank" onClick={() => { setActiveModal('accounts'); onMenuClick(); setActiveSubMenu(null); }} />
@@ -8038,28 +8065,10 @@ export default function App() {
                                         />
                                     </MenuDropdown>
 
-                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-4">Utilities</div>
-                                    <MenuDropdown label="Banking & Registers" shortcut="B" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu}>
-                                        <MenuButton label="Cashier Register" onClick={() => { setActiveModal('cashier_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Customers Register" onClick={() => { setActiveModal('customer_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Capital Register" onClick={() => { setActiveModal('capital_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Assets Register" onClick={() => { setActiveModal('asset_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Expenses Register" onClick={() => { setActiveModal('expense_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Indirect Incomes" onClick={() => { setActiveModal('indirect_income_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Manufacturing Register" onClick={() => { setActiveModal('manufacturing_register'); onMenuClick(); setActiveSubMenu(null); }} />
-                                    </MenuDropdown>
-                                    
-                                    <MenuDropdown label="Inventory Books" shortcut="I" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu}>
-                                        <MenuButton label="Stock Summary" onClick={() => { setActiveModal('stock_inventory'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Piece Wise Details" onClick={() => { setActiveModal('piece_inventory'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Bag Wise Register" onClick={() => { setActiveModal('bag_inventory'); onMenuClick(); setActiveSubMenu(null); }} />
-                                        <MenuButton label="Lot Wise Detail" onClick={() => { setActiveModal('lot_list'); onMenuClick(); setActiveSubMenu(null); }} />
-                                    </MenuDropdown>
-
-                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-4">Reports</div>
+                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-4">Reports & Registers</div>
                                     <MenuButton
                                         label="Registers Dashboard"
-                                        shortcut="G"
+                                        shortcut="R"
                                         onClick={() => { setActiveModal('registers_dashboard'); onMenuClick(); setActiveSubMenu(null); }}
                                     />
                                     <MenuButton
@@ -8499,7 +8508,7 @@ export default function App() {
                 <Modal
                     isOpen={activeModal === 'manage_expense_choice'}
                     onClose={() => setActiveModal(null)}
-                    title="Manage Expenses"
+                    title="Manage Indirect Expenses"
                     maxWidth="max-w-xs"
                 >
                     <div className="p-4 space-y-3">
@@ -8512,6 +8521,31 @@ export default function App() {
                             label="Manage Ledger"
                             color="btn-3d-green"
                             onClick={() => setActiveModal('expenses')}
+                        />
+                    </div>
+                </Modal>
+
+                {/* DIRECT EXPENSE CHOICE MODAL */}
+                <Modal
+                    isOpen={activeModal === 'manage_direct_expense_choice'}
+                    onClose={() => setActiveModal(null)}
+                    title="Manage Direct Expenses (COGS)"
+                    maxWidth="max-w-xs"
+                >
+                    <div className="p-4 space-y-3 font-black uppercase text-[12px]">
+                        <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 tracking-tighter normal-case">
+                            ⚡ <strong>Direct Expenses</strong> are those involved in manufacturing or purchase.
+                            They are added to COGS. e.g. Freight, Customs, Labor.
+                        </p>
+                        <ActionButton
+                            label="Manage Direct Expense Ledgers"
+                            color="btn-3d-blue"
+                            onClick={() => setActiveModal('direct_expenses')}
+                        />
+                        <ActionButton
+                            label="Direct Expenses Register"
+                            color="btn-3d-green"
+                            onClick={() => { setLedgerInitialState({ type: 'direct_expense' }); setActiveModal('ledgers'); }}
                         />
                     </div>
                 </Modal>
@@ -8545,7 +8579,7 @@ export default function App() {
                 {...getModalState('expense_groups')}
                 onClose={handleCloseModal}
                 onBack={() => setActiveModal('manage_expense_choice')}
-                title="Manage Expense Groups"
+                title="Manage Indirect Expense Groups"
                 collectionName="expense_groups"
                 data={expenseGroups}
                 userId={dataOwnerId || user.uid}
@@ -8821,7 +8855,7 @@ export default function App() {
                 {...getModalState('expenses')} // &lt;--- CHANGED THIS
                 onClose={handleCloseModal}
                 onBack={() => setActiveModal('manage_expense_choice')}
-                title="Manage Expense Heads"
+                title="Manage Indirect Expenses"
                 collectionName="expenses"
                 data={expenses}
                 listColumns={[{ key: 'group', label: 'Under Group' }]}
@@ -8830,7 +8864,7 @@ export default function App() {
                 showViewToggle={true}
                 userId={dataOwnerId || user.uid}
                 fields={[
-                    { name: 'name', label: 'Expense Head Name', type: 'text', required: true },
+                    { name: 'name', label: 'Indirect Expense Name', type: 'text', required: true },
                     {
                         name: 'group',
                         label: 'Under Group',
@@ -8845,6 +8879,36 @@ export default function App() {
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+            />
+
+            <MasterModal
+                {...getModalState('direct_expenses')}
+                onClose={handleCloseModal}
+                onBack={() => setActiveModal('manage_direct_expense_choice')}
+                title="Manage Direct Expenses (COGS)"
+                collectionName="direct_expenses"
+                data={directExpenseAccounts}
+                listColumns={[{ key: 'group', label: 'Under Group' }]}
+                groupConfig={{ key: 'group' }}
+                hideTotals={true}
+                showViewToggle={true}
+                userId={dataOwnerId || user.uid}
+                fields={[
+                    { name: 'name', label: 'Direct Expense Name', type: 'text', required: true },
+                    {
+                        name: 'group',
+                        label: 'Under Group',
+                        type: 'select',
+                        options: [
+                            { value: 'Primary', text: 'Primary' },
+                            ...expenseGroups.map(g => ({ value: g.name, text: g.name }))
+                        ]
+                    }
+                ]}
+                onDelete={(id) => handleDelete("direct_expenses", id)}
+                onUpdate={handleMasterUpdate}
+                logAuditActivity={logAuditActivity}
+                onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
             <MasterModal
@@ -9024,6 +9088,7 @@ export default function App() {
                 effectiveName={effectiveName}
                 lots={lots}
                 initialData={editData}
+                directExpenseAccounts={directExpenseAccounts}
 
                 // --- ADD THESE TWO LINES ---
                 lastDate={lastDate}
@@ -9063,6 +9128,7 @@ export default function App() {
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
+                directExpenseAccounts={directExpenseAccounts}
                 lots={lots}
                 taxRates={taxRates}
                 initialData={editData}
@@ -9096,6 +9162,7 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 products={products}
                 expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
                 accounts={accounts} // ✅ PASS ACCOUNTS
                 parties={parties}   // ✅ PASS PARTIES
                 lots={lots}
@@ -9415,6 +9482,7 @@ export default function App() {
                 zIndex={200}
                 parties={parties}
                 expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
                 incomeAccounts={incomeAccounts}
                 assetAccounts={assetAccounts}
                 accounts={accounts}
@@ -9688,12 +9756,12 @@ export default function App() {
                 currencySymbol={currencySymbol}
             />
 
-            {/* --- EXPENSES REGISTER (Fixed) --- */}
+            {/* --- INDIRECT EXPENSES REGISTER (Fixed) --- */}
             <SimpleListModal
                 isOpen={activeModal === 'expense_register'}
                 onClose={() => setActiveModal(null)}
                 onBack={handleModalBack}
-                title="Expenses Register"
+                title="Indirect Expenses Register"
                 dateRange={registerDateRange}
                 onDateChange={setRegisterDateRange}
                 {...getRegisterData('expense')}
@@ -9751,6 +9819,7 @@ export default function App() {
                 parties={parties}
                 products={products}
                 expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
                 incomeAccounts={incomeAccounts}
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
@@ -10039,6 +10108,7 @@ export default function App() {
                 parties={parties}
                 products={products}
                 expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts} // <--- PASS PROP
                 incomeAccounts={incomeAccounts} // <--- PASS PROP (for LedgerModal)
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
@@ -12360,6 +12430,7 @@ const InvoiceModal = (props) => {
     const [paymentTerms, setPaymentTerms] = useState('today');
     const [paymentTermsDate, setPaymentTermsDate] = useState('');
     const [showPaymentTermsPicker, setShowPaymentTermsPicker] = useState(false);
+    const [showPayTermsMenu, setShowPayTermsMenu] = useState(false);
     const [showInvoiceOptions, setShowInvoiceOptions] = useState(false);
     // Adjust Advances
     const [adjustAdvRef, setAdjustAdvRef] = useState(null);      // { refNo, type, balance, partyId }
@@ -12409,7 +12480,7 @@ const InvoiceModal = (props) => {
     const [companyImages, setCompanyImages] = useState([]);
 
     const [currencies, setCurrencies] = useState([]);
-    const [items, setItems] = useState([{ productId: '', quantity: '', rate: '', pieces: '', total: 0, lotId: '' }]);
+    const [items, setItems] = useState([{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: 0, lotId: '' }]);
     const [invExpenses, setInvExpenses] = useState([]);
     const [selectedTaxId, setSelectedTaxId] = useState('');
     const [enableTax, setEnableTax] = useState(false);
@@ -12544,6 +12615,7 @@ const InvoiceModal = (props) => {
                     partyId: initialData.partyId, date: initialData.date,
                     refNo: initialData.refNo || '', supplierInvoiceNo: initialData.supplierInvoiceNo || '', locationId: initialData.locationId || '',
                     narration: initialData.narration || '',
+                    lotId: initialData.lotId || '',
                     currencyId: initialData.currencyId || 'BASE',
                     exchangeRate: initialData.exchangeRate || 1,
                     // ✅ LOAD SAVED DATA
@@ -12578,6 +12650,7 @@ const InvoiceModal = (props) => {
                     const total = rawTotal ? Number(rawTotal.toFixed(3)) : '';
                     return {
                         ...i,
+                        _rowKey: i._rowKey || (Date.now() + Math.random()),
                         pieces: i.pieces !== '' && i.pieces != null ? Number(Number(i.pieces).toFixed(3)) : '',
                         quantity: qty,
                         rate: rate, // Prefer original user input, max 3dp
@@ -12585,7 +12658,7 @@ const InvoiceModal = (props) => {
                         lotId: i.lotId || ''
                     };
                 });
-                setItems(loadedItems.length > 0 ? loadedItems : [{ productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '' }]);
+                setItems(loadedItems.length > 0 ? loadedItems : [{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '' }]);
                 setInvExpenses(initialData.expenses || []);
                 if (initialData.taxId) {
                     setSelectedTaxId(initialData.taxId);
@@ -12607,7 +12680,7 @@ const InvoiceModal = (props) => {
                 } else {
                     setAdjustAdvRef(null); setAdjustAdvAmount('');
                 }
-                if (initialData.lotId) { setLotId(initialData.lotId); setEnableLot(true); }
+                if (initialData.lotId) { setLotId(initialData.lotId); }
                 if (initialData.jumboBags && Array.isArray(initialData.jumboBags)) {
                     setJumboBags(initialData.jumboBags);
                     setJumboEnabled(true);
@@ -12632,7 +12705,7 @@ const InvoiceModal = (props) => {
                     date: lastDate || new Date().toISOString().split('T')[0],
                     refNo: '',
                     supplierInvoiceNo: '',
-                    locationId: '',
+                    locationId: locations.length === 1 ? locations[0].id : (localStorage.getItem('accnad_last_loc') || ''),
                     narration: '',
                     currencyId: 'BASE',
                     exchangeRate: 1,
@@ -12653,7 +12726,7 @@ const InvoiceModal = (props) => {
                     boeTenor: '90 DAYS D/A', boeBank: '',
                     hsCode: '', overrideItemDescription: ''
                 });
-                setItems([{ productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '' }]);
+                setItems([{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '' }]);
                 setInvExpenses([]);
                 setEnableTax(false); setSelectedTaxId(''); setTaxPercent('');
                 setEnableLot(false); setLotId('');
@@ -12702,11 +12775,11 @@ const InvoiceModal = (props) => {
     }, [isOpen, initialData, type]);
 
     // 3. Logic (Add/Remove/Update/Calculate)
-    const addItem = () => setItems([...items, { productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: enableLot ? lotId : '', selectedBags: [] }]);
+    const addItem = () => setItems(prev => [...prev, { _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: formData.lotId || '', selectedBags: [] }]);
 
     const removeItem = (index) => {
         const newItems = items.filter((_, i) => i !== index);
-        setItems(newItems.length ? newItems : [{ productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '', selectedBags: [] }]);
+        setItems(newItems.length ? newItems : [{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '', selectedBags: [] }]);
     };
 
     const updateItem = (index, field, value) => {
@@ -13077,7 +13150,7 @@ const InvoiceModal = (props) => {
                     taxPercent: enableTax ? taxPercent : 0,
                     taxAmount: totals.taxAmount,
                     partyName: parties.find(p => p.id === formData.partyId)?.name, userId: targetUid,
-                    lotId: enableLot ? lotId : null, lastModifiedBy: user.uid, lastModifiedByName: effectiveName, lastModifiedAt: serverTimestamp(),
+                    lotId: formData.lotId || null, lastModifiedBy: user.uid, lastModifiedByName: effectiveName, lastModifiedAt: serverTimestamp(),
                     ...(!initialData ? { createdBy: (subUser?.username || subUser?.id || user.uid), createdByName: effectiveName, createdAt: serverTimestamp() } : {}),
                     // Jumbo Flags
                     packingType: formData.packingType,
@@ -13193,7 +13266,7 @@ const InvoiceModal = (props) => {
             } else {
                 setFormData(prev => ({ ...prev, refNo: '', narration: '', containerNo: '', sealNo: '', otherRef: '' }));
                 setPaymentTerms('today'); setPaymentTermsDate('');
-                setItems([{ productId: '', quantity: '', rate: '', pieces: '', total: 0, lotId: enableLot ? lotId : '' }]);
+                setItems([{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: 0, lotId: formData.lotId || '' }]);
                 setInvExpenses([]);
                 setAddlExpenses([]); setAddlExpCreditId(''); setShowAddlExp(false);
             }
@@ -13256,6 +13329,13 @@ const InvoiceModal = (props) => {
         if (row.displayQty !== undefined && row.displayQty !== null) return toQtyNum(row.displayQty);
         return 0;
     };
+
+    // Memoize product options — prevents new array creation on every Firestore snapshot update (stops trembling)
+    const productOptions = useMemo(() => products.map(p => {
+        const bagCount = productsBagMap[p.id] || 0;
+        const bagLabel = bagCount > 0 ? ` [${bagCount} BAGS]` : (voucherType === 'sales' && formData.packingType === 'bags' ? ' [0 BAGS]' : '');
+        return { value: p.id, text: `${p.name}${bagLabel}` };
+    }), [products, productsBagMap, voucherType, formData.packingType]);
 
     if (!isOpen) return null;
     const currentSym = formData.currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === formData.currencyId)?.symbol || '?');
@@ -13333,61 +13413,14 @@ const InvoiceModal = (props) => {
                     {/* C. QUICK PICKERS & TOOLS (HIGH DENSITY) */}
                     <div className="flex-1 flex items-center h-full px-2 gap-1.5 overflow-visible">
                         
-                        {/* 0. LOCATION PICKER / LABEL */}
-                        {locations.length > 1 ? (
-                            <div className="relative h-7">
-                                <button 
-                                    type="button" 
-                                    onClick={() => setShowLocPicker(!showLocPicker)} 
-                                    className={`h-full px-2 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm ${formData.locationId ? 'bg-amber-600 text-white border-amber-400' : 'bg-white/5 text-white border-white/20 hover:bg-white/10'}`}
-                                >
-                                    <MapPin size={10} /> {locations.find(l => l.id === formData.locationId)?.name || 'LOCATION'}
-                                    <ChevronDown size={8} className="opacity-30" />
-                                </button>
-                                {showLocPicker && (
-                                    <div className="absolute top-full left-0 mt-1 w-52 bg-white rounded-xl shadow-2xl border border-slate-200 p-2 z-[4000] animate-in zoom-in-95">
-                                        <div className="text-[9px] font-black text-slate-400 mb-2 px-2 uppercase tracking-widest border-b pb-1">Select Active Location</div>
-                                        <div className="grid grid-cols-1 gap-1 max-h-60 overflow-y-auto custom-scrollbar">
-                                            {locations.map(loc => (
-                                                <button key={loc.id} type="button" onClick={() => { setFormData({ ...formData, locationId: loc.id }); setShowLocPicker(false); }} className="w-full p-2 text-left hover:bg-amber-600 hover:text-white rounded-lg transition-all font-black text-slate-700 text-[10px] uppercase">
-                                                    {loc.name}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        ) : locations.length === 1 ? (
-                            <div className="h-7 px-2 border border-white/10 rounded flex items-center gap-1.5 bg-white/5 shrink-0">
-                                <MapPin size={10} className="text-white" />
-                                <span className="text-[8px] font-black text-white uppercase">{locations[0].name}</span>
-                            </div>
-                        ) : null}
-
-                        {/* 1. BANK PICKER */}
-                        <div className="relative h-7">
-                            <button 
-                                type="button" 
-                                onClick={() => setShowBankPicker(!showBankPicker)} 
-                                className={`h-full px-2 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm ${formData.bankDetails ? 'bg-emerald-600 text-white border-emerald-400' : 'bg-white/5 text-white border-white/20 hover:bg-white/10'}`}
-                            >
-                                <Building2 size={10} /> {formData.bankDetails?.bankName?.substring(0, 10) || 'BANK'}
-                                <ChevronDown size={8} className="text-white/60" />
-                            </button>
-                            {showBankPicker && (
-                                <div className="absolute top-full left-0 mt-1 w-64 bg-white rounded-xl shadow-2xl border border-slate-200 p-2 z-[4000] animate-in zoom-in-95">
-                                    <div className="text-[9px] font-black text-slate-400 mb-2 px-2 uppercase tracking-widest border-b pb-1">Company Bank Profile</div>
-                                    <div className="grid grid-cols-1 gap-1 max-h-60 overflow-y-auto custom-scrollbar">
-                                        <button type="button" onClick={() => { setFormData({...formData, bankDetails: null}); setShowBankPicker(false); }} className="w-full p-2 text-left hover:bg-slate-50 rounded-lg text-slate-400 font-bold text-[9px] uppercase border border-dashed border-slate-200">None / Default</button>
-                                        {companyBanks.map(bank => (
-                                            <button key={bank.id || bank.accNumber} type="button" onClick={() => { setFormData({ ...formData, bankDetails: bank }); setShowBankPicker(false); }} className="w-full p-2 text-left hover:bg-blue-600 hover:text-white rounded-lg transition-all font-black text-slate-700 text-[10px] uppercase flex flex-col">
-                                                <span>{bank.bankName}</span>
-                                                <span className="text-[8px] opacity-60 font-bold">{bank.accNumber}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
+                        {/* REF NO — in top bar */}
+                        <div className="h-7 flex items-center bg-white/10 border border-white/20 rounded-md px-2 shrink-0">
+                            <input
+                                className="text-[9px] font-black text-white bg-transparent outline-none w-24 uppercase placeholder:text-white/30"
+                                value={formData.refNo}
+                                onChange={e => setFormData({ ...formData, refNo: e.target.value })}
+                                placeholder="REF NO"
+                            />
                         </div>
 
                         {/* 2. LOT PICKER */}
@@ -13405,69 +13438,59 @@ const InvoiceModal = (props) => {
                                     <div className="text-[9px] font-black text-slate-400 mb-2 px-2 uppercase tracking-widest border-b pb-1">Select Lot Identifier</div>
                                     <SearchableSelect
                                         options={lots.filter(l => l.status !== 'Closed').map(l => ({ value: l.id, text: l.name }))}
-                                        onChange={(val) => { setFormData({ ...formData, lotId: val }); setEnableLot(false); }}
+                                        onChange={(val) => { setFormData({ ...formData, lotId: val }); setLotId(val || ''); setEnableLot(false); }}
                                         placeholder="Search Lot..."
                                         className="h-8 text-[10px]"
                                     />
                                     {formData.lotId && (
-                                        <button onClick={() => { setFormData({...formData, lotId: null}); setEnableLot(false); }} className="w-full mt-2 py-1.5 text-[9px] font-black text-red-500 hover:bg-red-50 rounded">Clear Selection</button>
+                                        <button onClick={() => { setFormData({...formData, lotId: null}); setLotId(''); setEnableLot(false); }} className="w-full mt-2 py-1.5 text-[9px] font-black text-red-500 hover:bg-red-50 rounded">Clear Selection</button>
                                     )}
                                 </div>
                             )}
                         </div>
 
-                        <div className="w-[1px] h-4 bg-white/10 mx-1 shrink-0" />
-
-                        {/* 3. UTILITY BUTTONS */}
-                        <div className="flex items-center gap-2">
-                            <button type="button" onClick={() => setShowAddlExp(true)} className="h-7 px-3 bg-white/5 border border-white/20 rounded font-black text-[8px] text-white hover:bg-white/15 transition-all uppercase flex items-center gap-1.5 shadow-sm">
-                                <Plus size={10} className="text-white" /> EXP
-                            </button>
-                            {voucherType === 'purchase' && (
-                                <button type="button" onClick={() => setJumboEnabled(!jumboEnabled)} className={`h-7 px-3 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm ${jumboEnabled ? 'bg-purple-600 text-white border-purple-400' : 'bg-white/5 text-white border-white/20 hover:bg-white/10'}`}>
-                                    <Box size={10} /> JUMBO
-                                </button>
-                            )}
-
-                            {/* LOOSE / BAG TOGGLE */}
-                            <div className="flex h-7 rounded border border-white/10 overflow-hidden shadow-sm bg-white/5">
-                                <button 
-                                    type="button"
-                                    onClick={() => setFormData({ ...formData, packingType: 'loose' })}
-                                    className={`px-3 flex items-center gap-1.5 transition-all ${formData.packingType === 'loose' ? 'bg-blue-600 text-white' : 'text-white hover:bg-white/10'}`}
-                                    title="Loose Packing"
-                                >
-                                    <Package size={10} />
-                                    <span className="text-[8px] font-black uppercase">Loose</span>
-                                </button>
-                                <button 
-                                    type="button"
-                                    onClick={() => setFormData({ ...formData, packingType: 'bags' })}
-                                    className={`px-3 flex items-center gap-1.5 border-l border-white/10 transition-all ${formData.packingType === 'bags' ? 'bg-blue-600 text-white' : 'text-white hover:bg-white/10'}`}
-                                    title="Bag Packing"
-                                >
-                                    <ShoppingBag size={10} />
-                                    <span className="text-[8px] font-black uppercase">Bags</span>
-                                </button>
-                            </div>
-
-                            {/* ADDITIONAL INFO (INFO ICON) */}
-                            <button 
-                                type="button" 
-                                onClick={() => setShowExtraInfo(true)} 
-                                className={`w-8 h-7 flex items-center justify-center rounded border transition-all shadow-sm ${showExtraInfo ? 'bg-amber-500 text-white border-amber-400' : 'bg-white/5 text-white border-white/20 hover:bg-white/15'}`}
-                                title="Shipping & Additional Details"
-                            >
-                                <Info size={14} />
-                            </button>
-                        </div>
                     </div>
 
                     {/* D. PRINT & EXPORT */}
                     <div className="flex items-center h-full px-2 gap-1.5 border-l border-white/5">
-                        <button type="button" onClick={() => setShowInvoiceOptions(true)} className="h-7 px-2 rounded bg-emerald-600/30 border border-emerald-400/40 text-[9px] font-black text-white hover:bg-emerald-600 transition-all uppercase">EXCEL</button>
-                        <button type="button" onClick={() => setShowInvoiceOptions(true)} className="h-7 px-2 rounded bg-red-600/30 border border-red-400/40 text-[9px] font-black text-white hover:bg-red-600 transition-all uppercase">PDF</button>
-                        <button type="button" onClick={() => setShowInvoiceOptions(true)} className="w-8 h-8 flex items-center justify-center text-white hover:text-white transition-colors"><Printer size={16} /></button>
+                        {/* LOCATION (moved from C) */}
+                        {locations.length > 1 ? (
+                            <div className="relative h-7">
+                                <button 
+                                    type="button" 
+                                    onClick={() => setShowLocPicker(!showLocPicker)} 
+                                    className={`h-full px-2 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm ${formData.locationId ? 'bg-amber-600 text-white border-amber-400' : 'bg-white/5 text-white border-white/20 hover:bg-white/10'}`}
+                                >
+                                    <MapPin size={10} /> {locations.find(l => l.id === formData.locationId)?.name || 'LOC'}
+                                    <ChevronDown size={8} className="opacity-30" />
+                                </button>
+                                {showLocPicker && (
+                                    <div className="absolute top-full right-0 mt-1 w-52 bg-white rounded-xl shadow-2xl border border-slate-200 p-2 z-[4000] animate-in zoom-in-95">
+                                        <div className="text-[9px] font-black text-slate-400 mb-2 px-2 uppercase tracking-widest border-b pb-1">Select Location</div>
+                                        <div className="grid grid-cols-1 gap-1 max-h-60 overflow-y-auto custom-scrollbar">
+                                            {locations.map(loc => (
+                                                <button key={loc.id} type="button" onClick={() => { setFormData({ ...formData, locationId: loc.id }); setShowLocPicker(false); }} className="w-full p-2 text-left hover:bg-amber-600 hover:text-white rounded-lg transition-all font-black text-slate-700 text-[10px] uppercase">
+                                                    {loc.name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ) : locations.length === 1 ? (
+                            <div className="h-7 px-2 border border-white/10 rounded flex items-center gap-1.5 bg-white/5 shrink-0">
+                                <MapPin size={10} className="text-white" />
+                                <span className="text-[8px] font-black text-white uppercase">{locations[0].name}</span>
+                            </div>
+                        ) : null}
+                        {/* FILL JUMBO BAGS (purchase only, opens directly) */}
+                        {voucherType === 'purchase' && (
+                            <button type="button" onClick={() => setShowJumboEntry(true)} className="h-7 px-2 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm bg-orange-600/30 text-white border-orange-400/50 hover:bg-orange-600">
+                                <Box size={10} /> FILL JUMBO BAGS
+                            </button>
+                        )}
+                        {/* + DETAILS BUTTON (moved from Section C) */}
+                        <button type="button" onClick={() => setShowExtraInfo(true)} className={`h-7 px-2 rounded border transition-all shadow-sm text-[8px] font-black uppercase ${showExtraInfo ? 'bg-amber-500 text-white border-amber-400' : 'bg-white/5 text-white border-white/20 hover:bg-white/15'}`} title="Shipping & Additional Details">+ Details</button>
                     </div>
 
                     {/* E. DATE SELECTOR */}
@@ -13492,7 +13515,7 @@ const InvoiceModal = (props) => {
 
                     {/* PARTY ROW: Full-width, clean, prominent */}
                     <div className="flex-shrink-0 flex items-center gap-3 border-b-2 border-[#1e3264]/10 bg-[#f8fafc] px-4 py-2">
-                        <div className="w-64 shrink-0 relative">
+                        <div className="w-[460px] shrink-0 relative">
                             {enableTax && parties.find(p => p.id === formData.partyId)?.trn && (
                                 <div className="absolute -top-1 right-0 text-[8px] font-black text-blue-800 bg-blue-100 px-1.5 py-0.5 rounded-full z-10 whitespace-nowrap border border-blue-200">
                                     TRN: {parties.find(p => p.id === formData.partyId)?.trn}
@@ -13509,182 +13532,159 @@ const InvoiceModal = (props) => {
                             />
                         </div>
 
-                        {/* REF NO */}
-                        <div className="h-9 flex items-center bg-white border border-slate-200 rounded-lg px-2 shrink-0 shadow-sm">
-                            <span className="text-[8px] font-black text-slate-400 mr-1.5 uppercase">Ref No</span>
-                            <input
-                                className="text-[9px] font-black text-[#1e3264] bg-transparent outline-none w-20 uppercase"
-                                value={formData.refNo}
-                                onChange={e => setFormData({ ...formData, refNo: e.target.value })}
-                                placeholder="VOUCHER#"
-                            />
-                        </div>
-
-                        {/* PAYMENT TERMS */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                            <span className="text-[8px] font-black text-slate-500 uppercase">Pay Terms:</span>
-                            <button
-                                type="button"
-                                onClick={() => { setPaymentTerms('today'); setShowPaymentTermsPicker(false); setAdjustAdvRef(null); setAdjustAdvAmount(''); }}
-                                className={`h-9 px-3 text-[9px] font-black rounded-lg border transition-all ${paymentTerms === 'today' ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
-                            >
-                                TODAY
-                            </button>
-                            <div className="relative">
+                        {/* Adj advances detail (only when advance + ref selected) */}
+                        {paymentTerms === 'advance' && adjustAdvRef && (
+                            <>
+                                <input
+                                    type="number"
+                                    step="0.001"
+                                    placeholder="Adj. Amount"
+                                    className="h-9 w-28 px-2 text-[10px] font-black text-violet-700 border border-violet-300 rounded-lg outline-none focus:border-violet-500 bg-white"
+                                    value={adjustAdvAmount}
+                                    onChange={e => setAdjustAdvAmount(e.target.value)}
+                                />
                                 <button
                                     type="button"
-                                    onClick={() => { setPaymentTerms('date'); setShowPaymentTermsPicker(p => !p); setAdjustAdvRef(null); setAdjustAdvAmount(''); }}
-                                    className={`h-9 px-3 text-[9px] font-black rounded-lg border transition-all ${paymentTerms === 'date' ? 'bg-orange-500 text-white border-orange-400 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                                    title="View Advance Ledger"
+                                    onClick={async () => {
+                                        setShowAdvLedger(true);
+                                        try {
+                                            const targetUid = dataOwnerId || user.uid;
+                                            const snap = await getDocs(query(collection(db, 'payments'), where('userId', '==', targetUid)));
+                                            const entries = [];
+                                            snap.docs.forEach(d => {
+                                                const v = d.data();
+                                                if (!v.isMulti || !v.splits) return;
+                                                v.splits.forEach(s => {
+                                                    if (s.advRefNo === adjustAdvRef.refNo) {
+                                                        entries.push({ date: v.date, refNo: v.refNo, type: v.type === 'out' ? 'Payment' : 'Receipt', amount: Number(s.amount || 0) });
+                                                    }
+                                                });
+                                            });
+                                            const invSnap = await getDocs(query(collection(db, 'invoices'), where('userId', '==', targetUid)));
+                                            invSnap.docs.forEach(d => {
+                                                const inv = d.data();
+                                                entries.push({ date: inv.date, refNo: inv.refNo, type: inv.type === 'purchase' ? 'Purchase' : 'Sales', amount: Number(inv.adjustedAdvanceAmount || 0) });
+                                            });
+                                            entries.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+                                            setAdvLedgerData(entries);
+                                        } catch (e) { console.error(e); setAdvLedgerData([]); }
+                                    }}
+                                    className="h-9 w-9 flex items-center justify-center rounded-lg border border-violet-300 text-violet-600 hover:bg-violet-50 transition-all"
                                 >
-                                    {paymentTerms === 'date' && paymentTermsDate ? paymentTermsDate : 'PICK DATE'}
+                                    &#128196;
                                 </button>
-                                {showPaymentTermsPicker && (
-                                    <input
-                                        type="date"
-                                        className="absolute top-full left-0 mt-1 z-[4000] border border-slate-300 rounded-lg shadow-xl bg-white p-1 text-xs"
-                                        value={paymentTermsDate}
-                                        onChange={e => { setPaymentTermsDate(e.target.value); setShowPaymentTermsPicker(false); }}
-                                        autoFocus
-                                    />
-                                )}
-                            </div>
-                            {/* ADJUST ADVANCES button */}
+                            </>
+                        )}
+                        {/* Date picker inline */}
+                        {showPaymentTermsPicker && (
+                            <input
+                                type="date"
+                                className="h-9 border border-slate-300 rounded-lg px-2 text-[10px] font-black text-slate-700 z-[4000] bg-white"
+                                value={paymentTermsDate}
+                                onChange={e => { setPaymentTermsDate(e.target.value); setShowPaymentTermsPicker(false); setShowPayTermsMenu(false); }}
+                                autoFocus
+                            />
+                        )}
+                        {/* PAY TERMS dropdown button — far right */}
+                        <div className="relative shrink-0 ml-auto">
                             <button
                                 type="button"
-                                onClick={async () => {
-                                    if (!formData.partyId) return alert('\u26a0\ufe0f Please select a party first.');
-                                    setPaymentTerms('advance');
-                                    setShowPaymentTermsPicker(false);
-                                    setShowAdvPicker(true);
-                                    setAdvPickerLoading(true);
-                                    try {
-                                        // Query all payments (no userId filter — DB is already company-scoped
-                                        // and userId field may vary between records due to legacy data)
-                                        const snap = await getDocs(query(collection(db, 'payments')));
-                                        const refMap = {};
-
-                                        // Collect advance/loan refs for the selected party only.
-                                        // Support both multi-split and legacy single-row payments.
-                                        // Note: DB is already company-scoped (nadtally_company_${companyId}),
-                                        // so no userId filter needed — records may have userId: 'offline-admin'
-                                        // or userId: companyUUID depending on when they were saved.
-                                        snap.docs.forEach(d => {
-                                            const v = d.data();
-                                            const rate = Number(v.exchangeRate || 1);
-                                            const processSplit = (s) => {
-                                                const pa = s?.paymentAgainst;
-                                                if (!['our-advance', 'their-advance', 'our-loan', 'their-loan'].includes(pa)) return;
-                                                if (!s?.advRefNo) return;
-                                                // Only include advances for the selected party
-                                                const splitPartyId = s.targetId || v.partyId || null;
-                                                if (splitPartyId && splitPartyId !== formData.partyId) return;
-                                                const amt = Number(s?.amount || 0) * rate;
-                                                const key = s.advRefNo;
-                                                if (!refMap[key]) {
-                                                    refMap[key] = {
-                                                        refNo: key,
-                                                        type: pa,
-                                                        totalOut: 0,
-                                                        totalIn: 0,
-                                                        remark: s.advRemark || '',
-                                                        partyId: splitPartyId,
-                                                        partyName: parties?.find(p => p.id === splitPartyId)?.name || null,
-                                                        date: v.date || ''
-                                                    };
-                                                }
-                                                if (v.type === 'out') refMap[key].totalOut += amt;
-                                                else if (v.type === 'in') refMap[key].totalIn += amt;
-                                            };
-                                            if (v.isMulti && Array.isArray(v.splits)) {
-                                                v.splits.forEach(s => processSplit(s));
-                                            } else {
-                                                processSplit(v);
-                                            }
-                                        });
-                                        // Read invoices already tagged to these refs (reduce balance)
-                                        // Query without userId constraint to handle legacy records
-                                        const invSnap = await getDocs(query(collection(db, 'invoices')));
-                                        const adjMap = {};
-                                        invSnap.docs.forEach(d => {
-                                            const inv = d.data();
-                                            if (d.id === initialData?.id) return; // exclude self
-                                            // Only count adjustments for invoices of the same party
-                                            if (inv.partyId !== formData.partyId) return;
-                                            if (inv.adjustedAdvanceRef && inv.adjustedAdvanceAmount) {
-                                                adjMap[inv.adjustedAdvanceRef] = (adjMap[inv.adjustedAdvanceRef] || 0) + Number(inv.adjustedAdvanceAmount);
-                                            }
-                                        });
-                                        const list = Object.values(refMap).map(r => {
-                                            const raw = ['our-advance','our-loan'].includes(r.type) ? r.totalOut - r.totalIn : r.totalIn - r.totalOut;
-                                            const adj = adjMap[r.refNo] || 0;
-                                            const balance = Math.max(0, raw - adj);
-                                            return { ...r, balance };
-                                        });
-                                        // Sort: outstanding first, then by refNo
-                                        list.sort((a, b) => (b.balance - a.balance) || a.refNo.localeCompare(b.refNo));
-                                        setAdvPickerData(list);
-                                    } catch (e) { console.error(e); setAdvPickerData([]); }
-                                    setAdvPickerLoading(false);
-                                }}
-                                className={`h-9 px-3 text-[9px] font-black rounded-lg border transition-all ${paymentTerms === 'advance' ? 'bg-violet-600 text-white border-violet-500 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-violet-50 hover:text-violet-600 hover:border-violet-200'}`}
+                                onClick={() => setShowPayTermsMenu(p => !p)}
+                                className="h-9 px-3 text-[9px] font-black rounded-lg border transition-all flex items-center gap-1.5 bg-white text-slate-600 border-slate-200 hover:border-blue-300 uppercase whitespace-nowrap"
                             >
-                                {paymentTerms === 'advance' && adjustAdvRef
-                                    ? `ADV: ${adjustAdvRef.refNo}`
-                                    : 'ADJUST ADVANCES'}
+                                <span className="text-slate-400">PAY TERMS:</span>
+                                <span className={paymentTerms === 'today' ? 'text-emerald-600' : paymentTerms === 'advance' ? 'text-violet-600' : 'text-blue-600'}>
+                                    {paymentTerms === 'today' ? 'TODAY'
+                                        : paymentTerms === 'date' && paymentTermsDate ? paymentTermsDate
+                                        : paymentTerms === 'advance' && adjustAdvRef ? `ADV: ${adjustAdvRef.refNo}`
+                                        : paymentTerms === 'advance' ? 'ADVANCE'
+                                        : 'PICK DATE'}
+                                </span>
+                                <ChevronDown size={9} className="text-slate-400" />
                             </button>
-                            {/* If advance selected show ledger icon + amount */}
-                            {paymentTerms === 'advance' && adjustAdvRef && (
-                                <>
-                                    <input
-                                        type="number"
-                                        step="0.001"
-                                        placeholder="Adj. Amount"
-                                        className="h-9 w-28 px-2 text-[10px] font-black text-violet-700 border border-violet-300 rounded-lg outline-none focus:border-violet-500 bg-violet-50"
-                                        value={adjustAdvAmount}
-                                        onChange={e => setAdjustAdvAmount(e.target.value)}
-                                    />
+                            {showPayTermsMenu && (
+                                <div className="absolute top-full right-0 mt-1 w-52 bg-white rounded-xl shadow-2xl border border-slate-200 z-[4000] p-2 flex flex-col gap-1">
                                     <button
                                         type="button"
-                                        title="View Advance Ledger"
+                                        onClick={() => { setPaymentTerms('today'); setShowPaymentTermsPicker(false); setAdjustAdvRef(null); setAdjustAdvAmount(''); setShowPayTermsMenu(false); }}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${paymentTerms === 'today' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'hover:bg-slate-50 text-slate-600'}`}
+                                    >TODAY</button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setPaymentTerms('date'); setShowPaymentTermsPicker(p => !p); setShowPayTermsMenu(false); }}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${paymentTerms === 'date' ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-slate-50 text-slate-600'}`}
+                                    >SELECT DATE {paymentTerms === 'date' && paymentTermsDate ? `(${paymentTermsDate})` : ''}</button>
+                                    <button
+                                        type="button"
                                         onClick={async () => {
-                                            setShowAdvLedger(true);
+                                            if (!formData.partyId) return alert('⚠️ Please select a party first');
+                                            setPaymentTerms('advance');
+                                            setShowPaymentTermsPicker(false);
+                                            setShowPayTermsMenu(false);
+                                            setShowAdvPicker(true);
+                                            setAdvPickerLoading(true);
                                             try {
-                                                const targetUid = dataOwnerId || user.uid;
-                                                const snap = await getDocs(query(collection(db, 'payments'), where('userId', '==', targetUid)));
-                                                const entries = [];
+                                                const snap = await getDocs(query(collection(db, 'payments')));
+                                                const refMap = {};
                                                 snap.docs.forEach(d => {
                                                     const v = d.data();
-                                                    if (!v.isMulti || !v.splits) return;
-                                                    v.splits.forEach(s => {
-                                                        if (s.advRefNo === adjustAdvRef.refNo) {
-                                                            entries.push({ date: v.date, refNo: v.refNo, type: v.type === 'out' ? 'Payment' : 'Receipt', amount: Number(s.amount || 0) * Number(v.exchangeRate || 1), remark: s.advRemark || '' });
+                                                    const rate = Number(v.exchangeRate || 1);
+                                                    const processSplit = (s) => {
+                                                        const pa = s?.paymentAgainst;
+                                                        if (!['our-advance', 'their-advance', 'our-loan', 'their-loan'].includes(pa)) return;
+                                                        if (!s?.advRefNo) return;
+                                                        const splitPartyId = s.targetId || v.partyId || null;
+                                                        if (splitPartyId && splitPartyId !== formData.partyId) return;
+                                                        const amt = Number(s?.amount || 0) * rate;
+                                                        const key = s.advRefNo;
+                                                        if (!refMap[key]) {
+                                                            refMap[key] = {
+                                                                refNo: key,
+                                                                type: pa,
+                                                                totalOut: 0,
+                                                                totalIn: 0,
+                                                                remark: s.advRemark || '',
+                                                                partyId: splitPartyId,
+                                                                partyName: parties?.find(p => p.id === splitPartyId)?.name || null,
+                                                                date: v.date || ''
+                                                            };
                                                         }
-                                                    });
+                                                        if (v.type === 'out') refMap[key].totalOut += amt;
+                                                        else if (v.type === 'in') refMap[key].totalIn += amt;
+                                                    };
+                                                    if (v.isMulti && Array.isArray(v.splits)) {
+                                                        v.splits.forEach(s => processSplit(s));
+                                                    } else {
+                                                        processSplit(v);
+                                                    }
                                                 });
-                                                // Also add invoice adjustment entries
-                                                const invSnap = await getDocs(query(collection(db, 'invoices'), where('userId', '==', targetUid), where('adjustedAdvanceRef', '==', adjustAdvRef.refNo)));
+                                                const invSnap = await getDocs(query(collection(db, 'invoices')));
+                                                const adjMap = {};
                                                 invSnap.docs.forEach(d => {
                                                     const inv = d.data();
-                                                    entries.push({ date: inv.date, refNo: inv.refNo, type: inv.type === 'purchase' ? 'Purchase Adj.' : 'Sales Adj.', amount: -(Number(inv.adjustedAdvanceAmount || 0)), remark: 'Advance adjustment' });
+                                                    if (d.id === initialData?.id) return;
+                                                    if (inv.partyId !== formData.partyId) return;
+                                                    if (inv.adjustedAdvanceRef && inv.adjustedAdvanceAmount) {
+                                                        adjMap[inv.adjustedAdvanceRef] = (adjMap[inv.adjustedAdvanceRef] || 0) + Number(inv.adjustedAdvanceAmount);
+                                                    }
                                                 });
-                                                entries.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-                                                setAdvLedgerData(entries);
-                                            } catch (e) { console.error(e); setAdvLedgerData([]); }
+                                                const list = Object.values(refMap).map(r => {
+                                                    const raw = ['our-advance','our-loan'].includes(r.type) ? r.totalOut - r.totalIn : r.totalIn - r.totalOut;
+                                                    const adj = adjMap[r.refNo] || 0;
+                                                    const balance = Math.max(0, raw - adj);
+                                                    return { ...r, balance };
+                                                });
+                                                list.sort((a, b) => (b.balance - a.balance) || a.refNo.localeCompare(b.refNo));
+                                                setAdvPickerData(list);
+                                            } catch (e) { console.error(e); setAdvPickerData([]); }
+                                            setAdvPickerLoading(false);
                                         }}
-                                        className="h-9 w-9 flex items-center justify-center rounded-lg border border-violet-300 bg-violet-50 text-violet-600 hover:bg-violet-100 hover:text-violet-800 transition-all text-xs font-black"
-                                    >
-                                        &#128196;
-                                    </button>
-                                </>
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${paymentTerms === 'advance' ? 'bg-violet-50 text-violet-700 border border-violet-200' : 'hover:bg-slate-50 text-slate-600'}`}
+                                    >ADJUST ADVANCES</button>
+                                </div>
                             )}
                         </div>
-
-                        {voucherType === 'purchase' && jumboEnabled && (
-                            <button type="button" onClick={() => setShowJumboEntry(true)}
-                                className="flex items-center gap-2 px-4 py-1.5 bg-orange-600 text-white rounded border border-orange-700 font-black text-[10px] uppercase shadow-lg hover:bg-orange-700 active:scale-95 transition-all shrink-0">
-                                <Box size={12} /> FILL JUMBO BAGS
-                            </button>
-                        )}
                     </div>
 
 
@@ -13971,11 +13971,11 @@ const InvoiceModal = (props) => {
                         <table className="w-full text-left text-[10px] border-collapse">
                             <thead className="bg-slate-50 text-slate-500 sticky top-0 z-10 uppercase font-bold tracking-tight">
                                 <tr>
-                                    <th className="p-0.5 pl-1.5 w-48">Item</th>
-                                    <th className="p-0.5 w-12 md:w-20 text-center bg-blue-50/50 text-blue-700">Pcs</th>
-                                    <th className="p-0.5 w-14 md:w-24 text-center">Qty</th>
-                                    <th className="p-0.5 w-16 md:w-32 text-right">Rate ({currentSym})</th>
-                                    <th className="p-0.5 w-16 md:w-32 text-right">Amt ({currentSym})</th>
+                                    <th className="p-0.5 pl-1.5 w-[460px]">Item</th>
+                                    <th className="p-0.5 w-[80px] text-center bg-blue-50/50 text-blue-700">Pcs</th>
+                                    <th className="p-0.5 w-[108px] text-center">Qty</th>
+                                    <th className="p-0.5 w-[80px] text-right">Rate ({currentSym})</th>
+                                    <th className="p-0.5 w-[148px] text-right">Amt ({currentSym})</th>
                                     <th className="p-0.5 w-12 text-center">
                                         <button
                                             type="button"
@@ -14020,24 +14020,15 @@ const InvoiceModal = (props) => {
                                     }
 
                                     return (
-                                        <tr key={index} className="hover:bg-blue-50/40 align-middle">
-                                            <td className="p-0.5 pl-1.5 w-48">
+                                        <tr key={item._rowKey || index} className="hover:bg-blue-50/40 align-middle">
+                                            <td className="p-0.5 pl-1.5 w-[460px]">
                                                 <SearchableSelect
-                                                    options={products.map(p => {
-                                                        const bagCount = productsBagMap[p.id] || 0;
-                                                        const liveQty = liveStockBalances.itemMap[p.id] || 0;
-                                                        // "SHOW ONLY THE STOCK IN BAGS" - If user is in BAGS mode, we prioritize bag info?
-                                                        // We show both: Weight (Balance) and Bags Available.
-                                                        const bagLabel = bagCount > 0 ? ` [${bagCount} BAGS]` : (voucherType === 'sales' && formData.packingType === 'bags' ? ' [0 BAGS]' : '');
-                                                        return {
-                                                            value: p.id,
-                                                            text: `${p.name}${bagLabel}`
-                                                        };
-                                                    })}
+                                                    options={productOptions}
                                                     value={item.productId}
                                                     onChange={v => updateItem(index, 'productId', v)}
                                                     placeholder="Item"
                                                     onCreateNew={() => onQuickCreate('items')}
+                                                    triggerClassName="h-[33px]"
                                                 />
 
                                                 {/* Live stock display removed as per user request */}
@@ -14060,11 +14051,11 @@ const InvoiceModal = (props) => {
                                                     </button>
                                                 )}
                                             </td>
-                                            <td className="p-0.5 bg-blue-50/20"><input type="number" step="0.001" className="w-full p-0.5 border border-blue-100 rounded text-center text-blue-700 font-bold bg-transparent text-[11px] placeholder:text-[9px]" placeholder="Units" value={item.pieces} onChange={e => updateItem(index, 'pieces', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'pieces')} /></td>
-                                            <td className="p-0.5"><input type="number" step="0.001" className="w-full p-0.5 border rounded text-center font-bold text-[11px] placeholder:text-[9px]" placeholder="Qty" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'quantity')} onBlur={() => checkItemStock(index)} /></td>
+                                            <td className="p-0.5 bg-blue-50/20"><input type="number" step="0.001" className="w-full h-8 px-1 border border-blue-100 rounded text-center text-blue-700 font-bold bg-transparent text-[11px] placeholder:text-[9px]" placeholder="Units" value={item.pieces} onChange={e => updateItem(index, 'pieces', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'pieces')} /></td>
+                                            <td className="p-0.5"><input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-center font-bold text-[11px] placeholder:text-[9px]" placeholder="Qty" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'quantity')} onBlur={() => checkItemStock(index)} /></td>
                                             <td className="p-0.5">
                                                 <div className="flex flex-col gap-0.5">
-                                                    <input type="number" step="0.001" className="w-full p-0.5 border rounded text-right text-[11px] placeholder:text-[9px]" placeholder="Rate" value={item.rate} onChange={e => updateItem(index, 'rate', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'rate')} />
+                                                    <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[11px] placeholder:text-[9px]" placeholder="Rate" value={item.rate} onChange={e => updateItem(index, 'rate', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'rate')} />
                                                     {rieDisplay && (
                                                         <>
                                                             <div className="relative group">
@@ -14080,7 +14071,7 @@ const InvoiceModal = (props) => {
                                             </td>
                                             <td className="p-0.5">
                                                 <div className="flex flex-col gap-0.5">
-                                                    <input type="number" step="0.001" className="w-full p-0.5 border rounded text-right font-bold text-slate-700 text-[11px] bg-slate-50 placeholder:text-[9px]" placeholder="Amt" value={item.total} onChange={e => updateItem(index, 'total', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'total')} />
+                                                    <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right font-bold text-slate-700 text-[11px] bg-slate-50 placeholder:text-[9px]" placeholder="Amt" value={item.total} onChange={e => updateItem(index, 'total', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'total')} />
                                                     {aieDisplay && (
                                                         <>
                                                             <div className="relative group">
@@ -14099,6 +14090,55 @@ const InvoiceModal = (props) => {
                                     );
                                 })}
                             </tbody>
+                            {enableTax && (
+                                <tfoot>
+                                    <tr className="bg-purple-50/40 border-t-2 border-purple-200">
+                                        {/* Tax name select — 200px in Item column */}
+                                        <td className="p-1 pl-2">
+                                            <select
+                                                className="w-[200px] h-[36px] px-2 border border-purple-200 rounded-lg text-[10px] font-bold text-slate-700 bg-white outline-none"
+                                                value={selectedTaxId}
+                                                onChange={e => {
+                                                    const tId = e.target.value;
+                                                    setSelectedTaxId(tId);
+                                                    const tMaster = taxRates.find(t => t.id === tId);
+                                                    setTaxPercent(tMaster ? (Number(tMaster.percentage || tMaster.rate) || '') : '');
+                                                }}
+                                            >
+                                                <option value="">Select Tax Rate...</option>
+                                                {taxRates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                            </select>
+                                        </td>
+                                        {/* PCS col — empty */}
+                                        <td className="p-1" />
+                                        {/* QTY col — empty */}
+                                        <td className="p-1" />
+                                        {/* Rate col — % input, 150px, h-36px */}
+                                        <td className="p-1">
+                                            <div className="relative w-[150px]">
+                                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-bold text-purple-400 pointer-events-none">%</span>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    className="w-full h-[36px] px-2 pr-5 border border-purple-200 rounded-lg text-[11px] text-right font-bold text-purple-700 bg-white outline-none"
+                                                    placeholder="%"
+                                                    value={taxPercent}
+                                                    onChange={e => setTaxPercent(e.target.value)}
+                                                />
+                                            </div>
+                                        </td>
+                                        {/* Amt col — computed tax amount, 200px, h-36px */}
+                                        <td className="p-1">
+                                            <div className="w-[200px] h-[36px] flex items-center justify-end px-3 border border-purple-100 rounded-lg bg-white">
+                                                <span className="text-[12px] font-black text-purple-800 font-mono">{format3(totals.taxAmount)}</span>
+                                                <span className="text-[9px] text-purple-400 ml-1.5">{currentSym}</span>
+                                            </div>
+                                        </td>
+                                        {/* Del col — empty */}
+                                        <td className="p-1" />
+                                    </tr>
+                                </tfoot>
+                            )}
                         </table>
 
                     </div>
@@ -14107,44 +14147,21 @@ const InvoiceModal = (props) => {
                     <div className="shrink-0 pt-2 mt-auto">
                         <div className="mb-2 px-1 flex justify-between items-center">
                             <div className="flex-1">
-                                {editNarration || formData.narration ? (
-                                    <div className="flex items-start gap-2 max-w-[800px]">
-                                        <textarea
-                                            autoFocus={editNarration}
-                                            maxLength={500}
-                                            className={`flex-1 p-1.5 border border-blue-200 rounded focus:ring-1 focus:ring-blue-300 outline-none resize-none bg-blue-50/10 leading-snug h-8 ${formData.narration && formData.narration.length > 170 ? 'text-[7.5px] font-light tracking-tight leading-tight' : 'text-[10px]'}`}
-                                            placeholder="Write narration / remarks here..."
-                                            value={formData.narration}
-                                            onChange={e => setFormData({ ...formData, narration: e.target.value })}
-                                            onBlur={() => { if (!formData.narration) setEditNarration(false); }}
-                                        />
-                                        {/* VAT TOGGLE ICON NEAR REMARKS */}
-                                        <button 
-                                            type="button" 
-                                            onClick={() => setEnableTax(!enableTax)} 
-                                            className={`p-1.5 rounded-lg border transition-all flex items-center gap-1 shadow-sm ${enableTax ? 'bg-emerald-600 text-white border-emerald-500' : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'}`}
-                                            title="Calculate & Add VAT/Tax"
-                                        >
-                                            <Percent size={14} strokeWidth={3} />
-                                            <span className="text-[8px] font-black">{enableTax ? 'Tax ON' : 'Add VAT'}</span>
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <div className="flex items-center gap-4">
-                                        <button type="button" onClick={() => setEditNarration(true)} className="flex items-center gap-1 text-[9px] text-blue-500 hover:underline px-2 py-1 rounded hover:bg-blue-50 transition-colors"><Edit size={10} /> Add Note / Remarks</button>
-                                        
-                                        {/* VAT TOGGLE ICON NEAR REMARKS (When narration is hidden) */}
-                                        <button 
-                                            type="button" 
-                                            onClick={() => setEnableTax(!enableTax)} 
-                                            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border transition-all shadow-sm ${enableTax ? 'bg-emerald-600 text-white border-emerald-500 scale-105' : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'}`}
-                                            title="Calculate & Add VAT/Tax"
-                                        >
-                                            <Percent size={12} strokeWidth={3} />
-                                            <span className="text-[9px] font-black">{enableTax ? 'VAT ACTIVE' : 'CALC VAT'}</span>
-                                        </button>
-                                    </div>
-                                )}
+                                <div className="flex items-center gap-3">
+                                    <button 
+                                        type="button" 
+                                        onClick={() => setEnableTax(!enableTax)} 
+                                        className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border transition-all shadow-sm ${enableTax ? 'bg-emerald-600 text-white border-emerald-500 scale-105' : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'}`}
+                                        title="Calculate & Add VAT/Tax"
+                                    >
+                                        <Percent size={12} strokeWidth={3} />
+                                        <span className="text-[9px] font-black">{enableTax ? 'VAT ACTIVE' : 'CALC VAT'}</span>
+                                    </button>
+                                    <button type="button" onClick={() => setShowAddlExp(true)} className="flex items-center gap-1.5 px-3 py-1 rounded-lg border transition-all shadow-sm bg-white hover:bg-orange-50 text-slate-400 hover:text-orange-600 border-slate-200 hover:border-orange-300">
+                                        {addlExpenses.length > 0 ? <Edit size={12} strokeWidth={3} /> : <Plus size={12} strokeWidth={3} />}
+                                        <span className="text-[9px] font-black">{addlExpenses.length > 0 ? 'EDIT / VIEW EXP' : 'EXP'}</span>
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -14161,14 +14178,9 @@ const InvoiceModal = (props) => {
                                         </span>
                                     );
                                 })}
-                                <span className="text-[9px] font-black text-orange-500 ml-1">= {format3(totals.addlExpTotal)}</span>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowAddlExp(true)}
-                                    className="ml-auto flex items-center gap-1 text-[9px] font-black text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-2 py-0.5 rounded border border-blue-100 transition-all"
-                                >
-                                    <Edit size={10} /> Edit Expenses
-                                </button>
+                                <div className="ml-auto flex items-center gap-3">
+                                    <span className="text-[11px] font-black text-orange-700 font-mono">{format3(totals.addlExpTotal)} <span className="text-slate-400 text-[9px]">{currentSym}</span></span>
+                                </div>
                             </div>
                         ) : showAddlExp ? (
                             /* Full editor view */
@@ -14250,30 +14262,6 @@ const InvoiceModal = (props) => {
 
 
                         <div className="flex flex-col gap-2 mt-2">
-                             {enableTax && (
-                                <div className="bg-purple-50 p-2 rounded-xl border border-purple-100 flex gap-2 animate-in fade-in duration-200">
-                                    <select className="flex-1 p-1 border rounded text-[10px] font-bold text-slate-700 bg-white" value={selectedTaxId} onChange={e => {
-                                        const tId = e.target.value;
-                                        setSelectedTaxId(tId);
-                                        const tMaster = taxRates.find(t => t.id === tId);
-                                        setTaxPercent(tMaster ? (Number(tMaster.percentage || tMaster.rate) || '') : '');
-                                    }}>
-                                        <option value="">Select Tax Rate...</option>
-                                        {taxRates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                    </select>
-                                    <div className="relative w-16">
-                                        <span className="absolute right-3 top-1 text-[8px] font-bold text-slate-400">%</span>
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            className="w-full p-1 border rounded text-[10px] text-center font-bold text-slate-700"
-                                            placeholder="%"
-                                            value={taxPercent}
-                                            onChange={e => setTaxPercent(e.target.value)}
-                                        />
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
                         {/* BAG DETAILS SUMMARY (shown when bags are allocated/selected) */}
@@ -14300,76 +14288,75 @@ const InvoiceModal = (props) => {
                             </div>
                         )}
 
-                        {/* LIVE TOTALS DISPLAY (MODERN LARGE FONTS) */}
-                        <div className="flex items-center justify-between pt-6 px-1 relative border-t border-slate-100">
-                            <div className="flex-1 flex items-center justify-between gap-8">
-                                <div className="flex items-center gap-8">
-                                    <div className="flex flex-col">
-                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Items / Quantity</span>
-                                        <div className="flex gap-6 text-[24px] font-black text-black leading-none font-mono">
-                                            <div className="flex items-baseline">
-                                                <span className="mr-2 text-[10px] text-slate-400 uppercase tracking-tighter">Pcs:</span>
-                                                {format3(totals.totalPieces)}
-                                            </div>
-                                            <div className="flex items-baseline">
-                                                <span className="mr-2 text-[10px] text-slate-400 uppercase tracking-tighter">Qty:</span>
-                                                {format3(totals.totalQty)}
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div className="flex flex-col">
-                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Sub Total</span>
-                                        <div className="text-[24px] font-black text-black leading-none font-mono">
-                                            {format3(totals.itemsTotal)}
-                                            <span className="text-[12px] ml-1 text-slate-400 font-bold">{currentSym}</span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-col items-end">
-                                    {/* Detailed Breakdown for Purchase with Additional Expenses */}
-                                    {(voucherType === 'purchase' && totals.addlExpTotal > 0) ? (
-                                        <div className="flex flex-col items-end">
-                                            <div className="text-[10px] font-bold text-slate-700 uppercase tracking-tighter">Supplier Pay: <span className="text-blue-600 font-mono">{currentSym} {format3((totals.grandTotalForeign || 0) - (totals.addlExpTotal || 0))}</span></div>
-                                            <div className="text-[10px] font-bold text-orange-700 uppercase tracking-tighter">Expenses: <span className="text-orange-600 font-mono">{currentSym} {format3(totals.addlExpTotal)}</span></div>
-                                            <div className="text-[24px] font-black text-black mt-0.5 border-t border-slate-100 pt-0.5 font-mono leading-none">{format3(totals.grandTotalForeign)} <span className="text-[12px] text-slate-400 font-bold">{currentSym}</span></div>
-                                        </div>
-                                    ) : (voucherType === 'sales' && salesExpenseMode === 'add' && totals.addlExpTotal > 0) ? (
-                                        <div className="flex flex-col items-end">
-                                            <div className="text-[9px] font-bold text-slate-500 uppercase">Items: {format3(totals.itemsTotal)}</div>
-                                            {totals.taxAmount > 0 && <div className="text-[9px] font-bold text-purple-500 uppercase">VAT: {format3(totals.taxAmount)}</div>}
-                                            <div className="text-[9px] font-bold text-green-600 uppercase">+ Expenses: {format3(totals.addlExpTotal)}</div>
-                                            <div className="text-[24px] font-black text-black mt-1 font-mono leading-none">{format3(totals.grandTotalForeign)} <span className="text-[12px] text-slate-400 font-bold">{currentSym}</span></div>
-                                        </div>
-                                    ) : (voucherType === 'sales' && salesExpenseMode === 'include' && totals.addlExpTotal > 0) ? (
-                                        <div className="flex flex-col items-end">
-                                            <div className="text-[10px] font-black text-orange-600 uppercase tracking-widest leading-none mb-1">Expenses Reduced: {format3(totals.addlExpTotal)}</div>
-                                            <div className="text-[24px] font-black text-black leading-none font-mono uppercase">{format3(totals.grandTotalForeign)} <span className="text-[12px] ml-1 text-slate-400 font-bold">{currentSym}</span></div>
-                                        </div>
-                                    ) : (
-                                        <div className="flex flex-col items-end">
-                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Net Balance</span>
-                                            <div className="text-[24px] font-black text-black leading-none font-mono">
-                                                {format3(totals.grandTotalForeign)}
-                                                <span className="text-[12px] ml-1 text-slate-400 font-bold">{currentSym}</span>
-                                            </div>
-                                            {formData.currencyId !== 'BASE' && (<div className="text-[9px] text-slate-400 font-mono mt-1 opacity-60 font-bold">{currencySymbol} {format3(totals.grandTotalBase)}</div>)}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-
-                            <div className="flex items-center gap-2 pl-6 ml-6 border-l border-slate-100 shrink-0">
-                                {initialData?.id && (
-                                    <button type="button" onClick={() => { if (onDeleteTransaction) onDeleteTransaction(initialData.id, voucherType); onClose(); }} className="text-slate-300 hover:text-red-500 p-2 transition-all active:scale-90" title="Delete Transaction">
-                                        <Trash2 size={16} />
-                                    </button>
-                                )}
-                        </div>
                     </div>
+                </form>
+
+                {/* 2ND LAST BAR — COMPACT TOTALS + NET BALANCE */}
+                <div className="bg-[#f0f4f8] border-t border-slate-200 flex items-center h-[30px] shrink-0 px-4 gap-4 z-10">
+                    {/* Left: compact summary */}
+                    <div className="flex items-center gap-4 flex-1">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wide shrink-0">ITEMS / QTY</span>
+                        <span className="text-[11px] font-black text-slate-700 font-mono shrink-0">
+                            PCS: <span className="text-blue-700">{format3(totals.totalPieces)}</span>
+                            <span className="mx-2 text-slate-300">|</span>
+                            QTY: <span className="text-slate-800">{format3(totals.totalQty)}</span>
+                        </span>
+                        <span className="w-px h-4 bg-slate-300 shrink-0" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wide shrink-0">SUB TOTAL</span>
+                        <span className="text-[11px] font-black text-slate-700 font-mono shrink-0">{format3(totals.itemsTotal)} <span className="text-slate-400">{currentSym}</span></span>
+                        {totals.addlExpTotal > 0 && (<>
+                            <span className="w-px h-4 bg-slate-300 shrink-0" />
+                            <span className="text-[10px] font-black text-orange-600 uppercase tracking-wide shrink-0">EXP</span>
+                            <span className="text-[11px] font-black text-orange-700 font-mono shrink-0">{format3(totals.addlExpTotal)} <span className="text-slate-400">{currentSym}</span></span>
+                        </>)}
+                        {totals.taxAmount > 0 && (<>
+                            <span className="w-px h-4 bg-slate-300 shrink-0" />
+                            <span className="text-[10px] font-black text-purple-600 uppercase tracking-wide shrink-0">VAT</span>
+                            <span className="text-[11px] font-black text-purple-700 font-mono shrink-0">{format3(totals.taxAmount)} <span className="text-slate-400">{currentSym}</span></span>
+                        </>)}
+                    </div>
+                    {/* Right: balance value only */}
+                    <div className="flex items-center shrink-0 border-l-2 border-slate-300 pl-5">
+                        <span className="text-[22px] font-black text-[#1a2b53] font-mono leading-none">{format3(totals.grandTotalForeign)}</span>
+                        {formData.currencyId !== 'BASE' && <span className="text-[9px] font-bold text-slate-400 font-mono ml-2">{currencySymbol} {format3(totals.grandTotalBase)}</span>}
+                    </div>
+                    {initialData?.id && (
+                        <button type="button" onClick={() => { if (onDeleteTransaction) onDeleteTransaction(initialData.id, voucherType); onClose(); }} className="text-slate-400 hover:text-red-500 p-1 transition-all active:scale-90 shrink-0 ml-2" title="Delete Transaction">
+                            <Trash2 size={14} />
+                        </button>
+                    )}
                 </div>
-            </form>
+
+                {/* NARRATION BOTTOM BAR */}
+                <div className="bg-gradient-to-r from-[#1a2b53] to-[#0f1b35] border-t border-white/10 text-white flex items-center h-10 shrink-0 px-4 gap-3 z-20">
+                    <span className="text-[8px] font-black uppercase text-white tracking-widest shrink-0" style={{textShadow:'0 0 10px rgba(255,255,255,0.7)'}}>Narration</span>
+                    <input
+                        placeholder="Enter voucher narration / remarks..."
+                        maxLength={120}
+                        className="w-0 flex-1 max-w-[480px] bg-transparent border border-white/20 rounded-md px-2 py-1 text-[11px] font-bold text-white outline-none focus:border-white/40 placeholder:text-white/25 uppercase tracking-tight"
+                        value={formData.narration || ''}
+                        onChange={e => setFormData({ ...formData, narration: e.target.value })}
+                    />
+                    <div className="flex-1" />
+                    <button
+                        type="button"
+                        onClick={() => setShowInvoiceOptions(true)}
+                        className="h-8 px-3 flex items-center gap-1.5 bg-white/10 border border-white/20 rounded text-[10px] font-black text-white hover:bg-white/20 transition-all shrink-0 uppercase"
+                        title="Generate Invoice / Export"
+                    >
+                        <FileText size={13} />
+                        Generate
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleSave}
+                        className="h-8 px-5 flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 border border-emerald-400 rounded text-[11px] font-black text-white transition-all active:scale-95 shrink-0 uppercase tracking-wide"
+                        title="Save Transaction (Ctrl+S)"
+                    >
+                        <Save size={14} />
+                        SAVE
+                    </button>
+                </div>
 
                 <JumboBagAllocationModal
                     isOpen={showJumboEntry}
@@ -14478,20 +14465,6 @@ const InvoiceModal = (props) => {
                         </div>
                     )
                 }
-                {/* G. MINIMALIST FLOATING SAVE ICON (BOTTOM RIGHT) */}
-                <div className="fixed bottom-10 right-10 z-[5000]">
-                    <button 
-                        type="button"
-                        onClick={handleSave}
-                        className="w-14 h-14 bg-[#1a2b53] rounded-full flex items-center justify-center text-white shadow-2xl hover:shadow-[#1a2b53]/40 border-4 border-white active:scale-90 transition-all cursor-pointer group"
-                        title="Save Transaction"
-                    >
-                        <Save size={24} strokeWidth={2.5} className="group-hover:scale-110 transition-transform" />
-                        <div className="absolute -top-1 -right-1 bg-emerald-500 w-5 h-5 rounded-full flex items-center justify-center border-2 border-white shadow-sm">
-                            <Check size={10} strokeWidth={4} />
-                        </div>
-                    </button>
-                </div>
                 {/* ✅ INVOICE GENERATION OPTIONS MODAL (NEW) - ADDED SCROLLBAR */}
                 {
                     showInvoiceOptions && (
@@ -15524,7 +15497,7 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
 };
 
 const StockJournalModal = (props) => {
-    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
+    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const [date, setDate] = useState(lastDate || new Date().toISOString().split('T')[0]);
     const targetUid = dataOwnerId || user.uid; // ✅ Define targetUid for queries
@@ -15545,6 +15518,7 @@ const StockJournalModal = (props) => {
     const [creditAccountId, setCreditAccountId] = useState('');
     const [showExpList, setShowExpList] = useState(false);
     const [saving, setSaving] = useState(false); // ✅ NEW to prevent write stream exhaustion
+    const [showDateModal, setShowDateModal] = useState(false);
 
     const attendanceMap = useMemo(() => {
         const map = {};
@@ -15594,6 +15568,12 @@ const StockJournalModal = (props) => {
         produced.forEach(p => { if (p.productId) m[p.productId] = (m[p.productId] || 0) + Number(p.quantity); });
         return m;
     }, [produced]);
+
+    // Memoize product options to prevent re-renders from causing item list to flash/jump
+    const productOptions = useMemo(() => products.map(p => ({
+        value: p.id,
+        text: p.name
+    })), [products]);
 
     // Helper for 3-digit display
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -15980,135 +15960,208 @@ const StockJournalModal = (props) => {
     if (!isOpen) return null;
 
     const renderTable = (rows, setRows, title, color) => (
-        <div className={`border rounded-lg overflow-hidden border-${color}-200 flex flex-col h-full`}>
-            {/* Same Table Code... */}
-            <div className={`bg-${color}-50 p-2 font-bold text-${color}-700 text-xs uppercase flex justify-between`}><span>{title}</span><button type="button" onClick={() => addRow(rows, setRows)} className={`text-${color}-600 hover:bg-${color}-100 px-2 rounded`}>+ Add</button></div>
-            <div className="flex-1 overflow-auto">
-                <table className="w-full text-left text-[10px] border-collapse">
-                    <thead className={`bg-${color}-50/50 text-${color}-500 sticky top-0`}><tr><th className="p-1 pl-2">Item</th><th className="p-1 w-12 text-center">Pcs</th>{color === 'green' && <th className="p-1 w-12 text-center">%</th>}<th className="p-1 w-16 text-center">Qty</th><th className="p-1 w-16 text-right">Rate</th><th className="p-1 w-20 text-right">Amt</th><th className="p-1 w-6"></th></tr></thead>
-                    <tbody className="divide-y divide-slate-50">
+        <div className={`flex flex-col bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden h-full min-h-[350px]`}>
+            <div className={`p-2 bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest flex justify-between items-center shrink-0`}>
+                <div className="flex items-center gap-3">
+                    <span className="bg-white/10 px-2 py-0.5 rounded">{title}</span>
+                    <span className="text-white/40">Total Items: {rows.filter(r => r.productId).length}</span>
+                </div>
+                <button 
+                    type="button" 
+                    onClick={() => setRows([...rows, { productId: '', quantity: '', rate: '', total: '', lotId: '', pcs: '' }])} 
+                    className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg transition-all text-white font-bold text-[9px] active:scale-95"
+                >
+                    <Plus size={12} /> ADD ROW
+                </button>
+            </div>
+            <div className="flex-1 overflow-auto border-b border-slate-100">
+                <table className="w-full text-left border-collapse table-fixed min-w-[700px]">
+                    <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                        <tr className="text-[9px] font-black uppercase text-slate-500 tracking-wider">
+                            <th className="p-2 w-auto min-w-[200px]">Item Name / Product</th>
+                            <th className="p-2 w-16 text-center">Pcs</th>
+                            {color === 'green' && <th className="p-2 w-16 text-center">%</th>}
+                            <th className="p-2 w-24 text-right">Quantity</th>
+                            <th className="p-2 w-24 text-right">Rate</th>
+                            <th className="p-2 w-28 text-right">Total ({currencySymbol})</th>
+                            <th className="p-2 w-12 text-center"></th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
                         {rows.map((item, index) => (
-                            <tr key={index}>
-                                <td className="p-1 pl-2">
+                            <tr key={index} className="hover:bg-slate-50/50 transition-colors group">
+                                <td className="p-1">
                                     <SearchableSelect
-                                        options={products.map(p => {
-                                            const liveQty = liveStockBalances?.itemMap?.[p.id] || 0;
-                                            return {
-                                                value: p.id,
-                                                text: `${p.name}`
-                                            };
-                                        })}
+                                        options={productOptions}
                                         value={item.productId}
                                         onChange={v => updateRow(rows, setRows, index, 'productId', v)}
-                                        placeholder="Item"
+                                        placeholder="Type to search item..."
                                         onCreateNew={() => onQuickCreate('products')}
+                                        compact={true}
                                     />
-                                    {/* Live stock display removed as per user request */}
                                 </td>
-                                <td className="p-1"><input type="number" className="w-full p-1 border rounded text-center text-slate-500" placeholder="Pcs" value={item.pcs} onChange={e => updateRow(rows, setRows, index, 'pcs', e.target.value)} /></td>
+                                <td className="p-1">
+                                    <input 
+                                        type="number" 
+                                        className="w-full p-1.5 border border-slate-200 rounded-lg text-center text-[11px] font-bold text-slate-600 focus:border-blue-400 outline-none" 
+                                        placeholder="0" 
+                                        value={item.pcs} 
+                                        onChange={e => updateRow(rows, setRows, index, 'pcs', e.target.value)} 
+                                    />
+                                </td>
                                 {color === 'green' && (
-                                    <td className="p-1 text-center font-mono text-slate-500">
-                                        {consumedQty > 0 ? ((Number(item.quantity || 0) / consumedQty) * 100).toFixed(2) : '0.00'}
+                                    <td className="p-1 text-center font-mono text-[10px] font-bold text-slate-400 bg-slate-50/30">
+                                        {consumedQty > 0 ? ((Number(item.quantity || 0) / consumedQty) * 100).toFixed(2) : '0.00'}%
                                     </td>
                                 )}
-                                <td className="p-1"><input type="number" step="0.001" className="w-full p-1 border rounded text-center font-bold" placeholder="" value={item.quantity} onChange={e => updateRow(rows, setRows, index, 'quantity', e.target.value)} /></td>
-                                <td className="p-1"><input type="number" step="0.001" className="w-full p-1 border rounded text-right" placeholder="" value={item.rate} onChange={e => updateRow(rows, setRows, index, 'rate', e.target.value)} /></td>
-                                <td className="p-1"><input type="number" step="0.001" className="w-full p-1 border rounded text-right font-bold bg-slate-50" placeholder="" value={item.total} onChange={e => updateRow(rows, setRows, index, 'total', e.target.value)} /></td>
-                                <td className="p-1 text-center"><button type="button" onClick={() => removeRow(rows, setRows, index)} className="text-red-300 hover:text-red-500"><Trash2 size={12} /></button></td>
+                                <td className="p-1">
+                                    <input 
+                                        type="number" 
+                                        step="0.001" 
+                                        className="w-full p-1.5 border border-slate-200 rounded-lg text-center font-black text-[11px] text-blue-800 focus:border-blue-400 outline-none" 
+                                        placeholder="0.000" 
+                                        value={item.quantity} 
+                                        onChange={e => updateRow(rows, setRows, index, 'quantity', e.target.value)} 
+                                    />
+                                </td>
+                                <td className="p-1">
+                                    <input 
+                                        type="number" 
+                                        step="0.001" 
+                                        className="w-full p-1.5 border border-slate-200 rounded-lg text-right text-[11px] text-slate-600 focus:border-blue-400 outline-none" 
+                                        placeholder="0.000" 
+                                        value={item.rate} 
+                                        onChange={e => updateRow(rows, setRows, index, 'rate', e.target.value)} 
+                                    />
+                                </td>
+                                <td className="p-1">
+                                    <input 
+                                        type="number" 
+                                        step="0.001" 
+                                        className="w-full p-1.5 border border-slate-200 rounded-lg text-right text-[11px] font-black text-slate-800 bg-slate-50 focus:border-blue-400 outline-none" 
+                                        placeholder="0.00" 
+                                        value={item.total} 
+                                        onChange={e => updateRow(rows, setRows, index, 'total', e.target.value)} 
+                                    />
+                                </td>
+                                <td className="p-1 text-center">
+                                    <button 
+                                        type="button" 
+                                        onClick={() => removeRow(rows, setRows, index)} 
+                                        className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                        title="Remove Row"
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
             </div>
-            {/* Same Footer Code... */}
-            <div className={`bg-${color}-50 p-2 text-right font-bold text-${color}-900 text-xs border-t border-${color}-200`}>
-                {/* Existing expenses footer logic... */}
-                {color === 'red' && (
-                    <div className="mb-2 text-left">
-                        {/* ✅ NEW CLICKABLE TEXT TO SHOW EXPENSES */}
-                        {!showExpList ? (
-                            <div className="flex items-center gap-3">
-                                {journalExpenses.length === 0 ? (
-                                    <button type="button" onClick={() => { setShowExpList(true); setJournalExpenses([{ expenseId: '', amount: '' }]); }} className="text-blue-600 font-black hover:underline text-[9px] flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-lg border border-blue-200 shadow-sm uppercase tracking-tighter transition-all active:scale-95">
-                                        <Plus size={12} /> Add Additional Expenses
+
+            <div className={`bg-slate-900/95 backdrop-blur-md p-2 text-right font-black text-white text-[10px] shrink-0 flex items-center justify-between uppercase tracking-tighter border-t border-slate-800`}>
+                <div className="flex-1">
+                    {color === 'red' && (
+                        <div className="flex gap-2">
+                             {!showExpList ? (
+                                journalExpenses.length === 0 ? (
+                                    <button type="button" onClick={() => { setShowExpList(true); setJournalExpenses([{ expenseId: '', amount: '' }]); }} className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors">
+                                        <PlusCircle size={12} /> ADD EXPENSES
                                     </button>
                                 ) : (
-                                    <button type="button" onClick={() => setShowExpList(true)} className="text-orange-600 font-black hover:bg-orange-50 text-[9px] flex items-center gap-1.5 bg-white px-3 py-1.5 rounded-lg border border-orange-200 shadow-sm uppercase tracking-tighter transition-all active:scale-95 group">
-                                        <Eye size={12} className="group-hover:scale-110 transition-transform" /> VIEW ADDED EXPENSES ({journalExpenses.length})
+                                    <button type="button" onClick={() => setShowExpList(true)} className="flex items-center gap-1.5 text-orange-400 hover:text-orange-300 transition-colors">
+                                        <PlusCircle size={12} /> VIEW EXPENSES ({journalExpenses.length})
                                     </button>
-                                )}
-                            </div>
-                        ) : (
-                            <div className="bg-white p-3 rounded-xl border border-orange-200 mt-1 shadow-[0_4px_12px_rgba(251,146,60,0.1)] relative animated-in fade-in slide-in-from-bottom-2 duration-300">
-                                <div className="text-[10px] font-black text-orange-600 mb-2 flex justify-between items-center border-b border-orange-100 pb-1.5">
-                                    <div className="flex items-center gap-2">
-                                        <div className="p-1 bg-orange-100 rounded text-orange-600">
-                                            <DollarSign size={10} />
-                                        </div>
-                                        <span className="tracking-widest">ADDITIONAL EXPENSES</span>
-                                    </div>
-                                    <div className="flex items-center gap-1">
-                                        <button onClick={() => setJournalExpenses([...journalExpenses, { expenseId: '', amount: '' }])} title="Add New Item" className="p-1.5 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors shadow-sm"><Plus size={12} /></button>
-                                        <button onClick={() => setShowExpList(false)} title="Hide Section" className="p-1.5 bg-slate-100 text-slate-500 rounded-lg hover:bg-slate-200 transition-colors"><X size={12} /></button>
-                                    </div>
-                                </div>
-                                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 custom-scrollbar">
-                                    {journalExpenses.map((exp, i) => (
-                                        <div key={i} className="flex gap-2 items-center bg-slate-50/50 p-1.5 rounded-lg border border-slate-100">
-                                            <div className="flex-1">
-                                                <SearchableSelect
-                                                    options={expenses.map(e => ({ value: e.id, text: e.name }))}
-                                                    value={exp.expenseId}
-                                                    onChange={v => {
-                                                        const n = [...journalExpenses];
-                                                        n[i].expenseId = v;
-                                                        setJournalExpenses(n);
-                                                    }}
-                                                    placeholder="Select Expense Ledger..."
-                                                />
-                                            </div>
-                                            <div className="relative">
-                                                <div className="absolute left-1.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">Amt</div>
-                                                <input type="number" step="0.001" className="w-24 pl-7 pr-2 py-1.5 border border-slate-200 rounded-lg text-right text-[11px] font-black focus:border-orange-400 outline-none transition-all" placeholder="0.000" value={exp.amount} onChange={e => { const n = [...journalExpenses]; let v = e.target.value; if (v && v.includes('.')) { const p = v.split('.'); if (p[1].length > 3) v = `${p[0]}.${p[1].slice(0, 3)}`; } n[i].amount = v; setJournalExpenses(n); }} />
-                                            </div>
-                                            <button type="button" onClick={() => {
-                                                const filtered = journalExpenses.filter((_, idx) => idx !== i);
-                                                setJournalExpenses(filtered);
-                                                if (filtered.length === 0) setShowExpList(false);
-                                            }} className="p-1.5 text-red-400 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={13} /></button>
-                                        </div>
-                                    ))}
-                                </div>
-                                {journalExpenses.length > 0 && (
-                                    <div className="mt-3 pt-3 border-t border-dashed border-slate-200 bg-slate-50/80 -mx-3 -mb-3 rounded-b-xl px-3 pb-3">
-                                        <div className="flex items-center gap-2 mb-1.5">
-                                            <div className="p-1 bg-slate-200 rounded text-slate-500">
-                                                <CreditCard size={10} />
-                                            </div>
-                                            <label className="text-[9px] font-black text-slate-500 uppercase tracking-tighter">Credit This Amount To (Payment Source):</label>
-                                        </div>
-                                        <SearchableSelect
-                                            groups={[
-                                                { name: 'Cash/Bank Accounts', options: accounts.map(a => ({ value: a.id, text: a.name })) },
-                                                { name: 'Suppliers / Parties', options: parties.map(p => ({ value: p.id, text: p.name })) },
-                                                { name: 'Direct Expense Ledgers', options: expenses.map(e => ({ value: e.id, text: e.name })) }
-                                            ]}
-                                            value={creditAccountId}
-                                            onChange={setCreditAccountId}
-                                            placeholder="Select Customer / Cash/Bank / Expense..."
-                                        />
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
+                                )
+                             ) : null}
+                        </div>
+                    )}
+                </div>
+                <div className="flex items-center gap-4">
+                    {color === 'red' && (
+                        <div className="flex items-center gap-3 pr-4 border-r border-white/10">
+                            <span className="text-white/40">ITEM BASE:</span>
+                            <span className="text-white">{format3(rows.reduce((sum, item) => sum + (Number(item.total) || 0), 0))}</span>
+                            {expensesTotal > 0 && (
+                                <>
+                                    <span className="text-white/40">+ EXPENSES:</span>
+                                    <span className="text-orange-400">{format3(expensesTotal)}</span>
+                                </>
+                            )}
+                        </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                        <span className="text-white/40">{color === 'red' ? 'NET CONSUMED' : 'NET PRODUCED'}:</span>
+                        <span className={`text-lg ${color === 'red' ? 'text-rose-400' : 'text-emerald-400'} font-black`}>
+                            {currencySymbol} {format3(color === 'red' ? consumedTotal : rows.reduce((sum, item) => sum + (Number(item.total) || 0), 0))}
+                        </span>
                     </div>
-                )}
-                <div className="flex justify-end items-center gap-2">
-                    {color === 'red' && expensesTotal > 0 && <span className="text-[10px] text-slate-500 font-normal mr-2">(Items: {format3(rows.reduce((sum, item) => sum + (Number(item.total) || 0), 0))} + Exp: {format3(expensesTotal)})</span>}
-                    Total: {currencySymbol} {format3(color === 'red' ? consumedTotal : rows.reduce((sum, item) => sum + (Number(item.total) || 0), 0))}
                 </div>
             </div>
+
+            {/* EXPENSES POPUP (Portal-like logic inside Red Table only) */}
+            {color === 'red' && showExpList && (
+                <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px] z-20 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
+                        <div className="bg-slate-900 text-white p-3 px-4 flex justify-between items-center shrink-0">
+                            <h3 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+                                <DollarSign size={14} className="text-orange-400" /> Additional Manufacturing Expenses
+                            </h3>
+                            <button onClick={() => setShowExpList(false)} className="hover:bg-white/10 p-1.5 rounded-lg transition-colors"><X size={16} /></button>
+                        </div>
+                        <div className="p-4 max-h-[350px] overflow-y-auto space-y-2 bg-slate-50">
+                            {journalExpenses.map((exp, i) => (
+                                <div key={i} className="flex gap-2 items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+                                    <div className="flex-1">
+                                        <SearchableSelect
+                                            options={directExpenseAccounts.map(e => ({ value: e.id, text: e.name }))}
+                                            value={exp.expenseId}
+                                            onChange={v => {
+                                                const n = [...journalExpenses];
+                                                n[i].expenseId = v;
+                                                setJournalExpenses(n);
+                                            }}
+                                            placeholder="Expense Ledger..."
+                                            compact={true}
+                                        />
+                                    </div>
+                                    <div className="w-32">
+                                        <input 
+                                            type="number" 
+                                            step="0.001" 
+                                            className="w-full p-2 border border-slate-200 rounded-lg text-right text-[12px] font-black focus:border-blue-400 outline-none" 
+                                            placeholder="Amount" 
+                                            value={exp.amount} 
+                                            onChange={e => { 
+                                                const n = [...journalExpenses]; 
+                                                let v = e.target.value; 
+                                                if (v && v.includes('.')) { 
+                                                    const p = v.split('.'); 
+                                                    if (p[1].length > 3) v = `${p[0]}.${p[1].slice(0, 3)}`; 
+                                                } 
+                                                n[i].amount = v; 
+                                                setJournalExpenses(n); 
+                                            }} 
+                                        />
+                                    </div>
+                                    <button type="button" onClick={() => {
+                                        const filtered = journalExpenses.filter((_, idx) => idx !== i);
+                                        setJournalExpenses(filtered);
+                                        if (filtered.length === 0) setShowExpList(false);
+                                    }} className="p-2 text-red-400 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                </div>
+                            ))}
+                            <button onClick={() => setJournalExpenses([...journalExpenses, { expenseId: '', amount: '' }])} className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:text-blue-500 hover:border-blue-300 transition-all text-[10px] font-black uppercase flex items-center justify-center gap-2 mt-2">
+                                <Plus size={14} /> Add Another Expense Entry
+                            </button>
+                        </div>
+                        <div className="bg-slate-900 p-3 text-right">
+                            <button onClick={() => setShowExpList(false)} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 shadow-lg active:scale-95 transition-all">Done / Apply Expenses</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 
@@ -16120,122 +16173,126 @@ const StockJournalModal = (props) => {
                 zIndex={zIndex} 
                 maxWidth="max-w-6xl" 
                 defaultMaximized={true}
+                headerClassName="bg-gradient-to-r from-[#1a2b53] to-[#0f1b35] h-[40px] flex items-center border-b border-black/20 shadow-md"
                 title={(
-                    <div className="flex items-center justify-between w-full pr-8">
-                        <div className="flex items-center gap-4">
-                            <div className="flex flex-col shrink-0 min-w-[140px]">
-                                <span className="text-[9px] font-black text-blue-100 uppercase tracking-widest leading-none mb-1 opacity-80">Production Journal</span>
-                                <div className="bg-white/10 px-2 py-1 rounded border border-white/20 w-fit">
-                                    <span className="text-white font-extrabold text-sm uppercase leading-none">Stock Journal</span>
-                                </div>
-                            </div>
+                    <div className="flex items-center w-full h-full px-2 gap-2">
+                        {/* VOUCHER NAME TAB — prussian blue background */}
+                        <div className="bg-[#1a2b53] border border-white/20 h-full flex items-center px-4 rounded shadow-sm shrink-0">
+                            <span className="text-white font-black text-[16px] uppercase leading-none">Stock Journal</span>
+                        </div>
 
-                            <div className="flex items-center gap-2 bg-black/20 p-1 px-2 rounded border border-white/10 shadow-inner">
-                                <div className="flex flex-col border-r border-white/10 pr-2">
-                                    <span className="text-[9px] font-black text-blue-100 uppercase tracking-tighter mb-0.5 opacity-60">Voucher Date</span>
-                                    <input 
-                                        type="date"
-                                        className="text-[11px] font-bold text-white bg-transparent border-none focus:ring-0 p-0 w-28 cursor-pointer [color-scheme:dark]"
-                                        value={date}
-                                        onChange={e => setDate(e.target.value)}
-                                    />
-                                </div>
-                                <div className="flex flex-col">
-                                    <span className="text-[9px] font-black text-blue-100 uppercase tracking-tighter mb-0.5 opacity-60">Vch No.</span>
-                                    <input 
-                                        className="text-[11px] font-bold text-white bg-transparent border-none focus:ring-0 p-0 w-24 outline-none placeholder-white/30"
-                                        value={refNo}
-                                        onChange={e => setRefNo(e.target.value)}
-                                        placeholder="Reference"
-                                    />
-                                </div>
-                            </div>
+                        {/* REF NUMBER TAB */}
+                        <div className="bg-black/20 h-full flex items-center px-3 rounded border border-white/10 shrink-0">
+                            <input 
+                                className="text-[16px] font-black text-white bg-transparent border-none focus:ring-0 p-0 w-32 outline-none placeholder-white/30"
+                                value={refNo}
+                                onChange={e => setRefNo(e.target.value)}
+                                placeholder="Reference"
+                            />
+                        </div>
+
+                        {/* DATE — pushed to far right, adjacent to close button */}
+                        <div className="ml-auto" />
+                        <div 
+                            onClick={() => setShowDateModal(true)} 
+                            className="bg-[#003459] h-[32px] flex items-center gap-2 px-4 rounded border border-white/10 shadow-lg cursor-pointer hover:bg-black/30 transition-all active:scale-95 group shrink-0"
+                        >
+                            <Calendar size={14} className="text-sky-300 group-hover:text-white transition-colors" />
+                            <span className="text-[16px] font-black text-white uppercase leading-none">{formatDate(date)}</span>
                         </div>
                     </div>
                 )}
-                headerClassName="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-[#003a68] shadow-lg"
-                footerClassName="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-[#003a68] shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]"
+                footerClassName="bg-[#00457c] border-t border-[#003a68] shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] p-0 overflow-hidden"
                 footer={(
-                    <div className="flex flex-col md:flex-row items-center justify-between gap-4 w-full">
-                        {/* LIVE BALANCE INDICATORS */}
-                        <div className="flex gap-6 items-center">
-                            <div className={`text-sm font-bold flex flex-col items-start ${Math.abs(consumedQty - producedQty) < 0.001 ? 'text-green-300' : 'text-red-300'}`}>
-                                <span className="text-[10px] uppercase text-blue-100 opacity-60">Weight Balance</span>
-                                {Math.abs(consumedQty - producedQty) < 0.001 ?
-                                    <span className="flex items-center gap-1"><CheckCircle2 size={12} /> Balanced</span> :
-                                    <span className="flex items-center gap-1"><AlertCircle size={12} /> Diff: {format3(consumedQty - producedQty)}</span>
-                                }
-                            </div>
-                            <div className={`text-sm font-bold flex flex-col items-start ${Math.abs(consumedTotal - producedTotal) < 0.01 ? 'text-green-300' : 'text-red-300'}`}>
-                                <span className="text-[10px] uppercase text-blue-100 opacity-60">Amount Balance</span>
-                                {Math.abs(consumedTotal - producedTotal) < 0.01 ?
-                                    <span className="flex items-center gap-1"><CheckCircle2 size={12} /> Balanced</span> :
-                                    <span className="flex items-center gap-1"><AlertCircle size={12} /> Diff: {currencySymbol} {format3(consumedTotal - producedTotal)}</span>
-                                }
-                            </div>
+                    <div className="flex flex-col w-full">
+                        <div className="flex flex-col md:flex-row items-center justify-between gap-4 w-full p-3 border-b border-black/10">
+                            {/* LIVE BALANCE INDICATORS */}
+                            <div className="flex gap-6 items-center">
+                                <div className={`text-sm font-bold flex flex-col items-start ${Math.abs(consumedQty - producedQty) < 0.001 ? 'text-green-300' : 'text-red-300'}`}>
+                                    <span className="text-[10px] uppercase text-blue-100 opacity-60">Weight Balance</span>
+                                    {Math.abs(consumedQty - producedQty) < 0.001 ?
+                                        <span className="flex items-center gap-1 text-[11px]"><CheckCircle2 size={12} /> Balanced</span> :
+                                        <span className="flex items-center gap-1 text-[11px]"><AlertCircle size={12} /> Diff: {format3(consumedQty - producedQty)}</span>
+                                    }
+                                </div>
+                                <div className={`text-sm font-bold flex flex-col items-start ${Math.abs(consumedTotal - producedTotal) < 0.01 ? 'text-green-300' : 'text-red-300'}`}>
+                                    <span className="text-[10px] uppercase text-blue-100 opacity-60">Amount Balance</span>
+                                    {Math.abs(consumedTotal - producedTotal) < 0.01 ?
+                                        <span className="flex items-center gap-1 text-[11px]"><CheckCircle2 size={12} /> Balanced</span> :
+                                        <span className="flex items-center gap-1 text-[11px]"><AlertCircle size={12} /> Diff: {currencySymbol} {format3(consumedTotal - producedTotal)}</span>
+                                    }
+                                </div>
 
-                            {/* JUMBO ENABLE TOGGLE */}
-                            <label className="flex items-center gap-2 cursor-pointer bg-white/10 px-3 py-1.5 rounded-lg border border-white/20 shadow-sm hover:bg-white/20 transition-all">
-                                <input
-                                    type="checkbox"
-                                    className="w-4 h-4 rounded text-blue-400 focus:ring-blue-500 bg-black/20 border-white/20"
-                                    checked={jumboEnabled}
-                                    onChange={e => {
-                                        if (!e.target.checked && jumboBags.length > 0) {
-                                            if (!window.confirm("⚠️ WARNING: Unchecking this will DELETE all allocated bags for this voucher.\n\nAre you sure you want to remove bag details?")) {
-                                                return;
+                                {/* JUMBO ENABLE TOGGLE */}
+                                <label className="flex items-center gap-2 cursor-pointer bg-white/10 px-3 py-1.5 rounded-lg border border-white/20 shadow-sm hover:bg-white/20 transition-all">
+                                    <input
+                                        type="checkbox"
+                                        className="w-4 h-4 rounded text-blue-400 focus:ring-blue-500 bg-black/20 border-white/20"
+                                        checked={jumboEnabled}
+                                        onChange={e => {
+                                            if (!e.target.checked && jumboBags.length > 0) {
+                                                if (!window.confirm("⚠️ WARNING: Unchecking this will DELETE all allocated bags for this voucher.\n\nAre you sure you want to remove bag details?")) {
+                                                    return;
+                                                }
                                             }
-                                        }
-                                        setJumboEnabled(e.target.checked);
-                                        if (e.target.checked) setShowJumboEntry(true);
-                                    }}
-                                />
-                                <span className="text-[11px] font-black text-white uppercase tracking-tighter">Effect Jumbo Wise Stocks?</span>
-                                <button
-                                    type="button"
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        if (!jumboEnabled) return;
-                                        setShowJumboEntry(true);
-                                    }}
-                                    disabled={!jumboEnabled}
-                                    className={`ml-1 p-1 rounded border transition-all ${jumboEnabled ? 'text-white border-white/30 hover:bg-white/10' : 'text-white/20 border-white/10 cursor-not-allowed'}`}
-                                    title={jumboEnabled ? 'Add or edit jumbo bag details' : 'Enable Effect Jumbo Wise Stocks first'}
-                                >
-                                    <Plus size={12} />
-                                </button>
-                            </label>
+                                            setJumboEnabled(e.target.checked);
+                                            if (e.target.checked) setShowJumboEntry(true);
+                                        }}
+                                    />
+                                    <span className="text-[11px] font-black text-white uppercase tracking-tighter">Effect Jumbo Wise Stocks?</span>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            if (!jumboEnabled) return;
+                                            setShowJumboEntry(true);
+                                        }}
+                                        disabled={!jumboEnabled}
+                                        className={`ml-1 p-1 rounded border transition-all ${jumboEnabled ? 'text-white border-white/30 hover:bg-white/10' : 'text-white/20 border-white/10 cursor-not-allowed'}`}
+                                        title={jumboEnabled ? 'Add or edit jumbo bag details' : 'Enable Effect Jumbo Wise Stocks first'}
+                                    >
+                                        <Plus size={12} />
+                                    </button>
+                                </label>
+                            </div>
                         </div>
 
-                        <div className="flex gap-2">
-                            <button type="button" onClick={handleSave} className="bg-white text-[#00457c] hover:bg-blue-50 px-6 py-2 rounded-lg font-black shadow-md active:scale-95 transition-transform flex items-center gap-2">
-                                <Save size={18} /> {initialData ? 'Update & Save' : 'Save Record'}
-                            </button>
-                            {initialData?.id && (
-                                <button type="button" onClick={() => { if (onDeleteTransaction) onDeleteTransaction(initialData.id, 'manufacturing'); onClose(); }} className="bg-red-500/20 hover:bg-red-500/40 text-red-100 border border-red-500/30 p-2 rounded-lg shadow-md active:scale-95 transition-transform flex items-center justify-center" title="Delete Journal">
-                                    <Trash2 size={18} />
+                        {/* LAST BAR: NARRATION + ACTION ICONS */}
+                        <div className="bg-sky-100/90 flex items-center justify-between px-3 h-[48px] border-t border-sky-300">
+                            <textarea 
+                                rows={1}
+                                className="w-[700px] h-[38px] px-4 py-2 text-[12px] font-black italic text-slate-900 bg-white/50 border border-sky-200 rounded-md focus:ring-1 focus:ring-sky-400 outline-none placeholder-sky-800/40 resize-none leading-normal shadow-inner"
+                                placeholder="Narration"
+                                value={narration} 
+                                onChange={e => setNarration(e.target.value)} 
+                            />
+
+                            <div className="flex gap-2 items-center">
+                                {/* EXPORT CONTROLS */}
+                                <button type="button" onClick={() => {}} className="bg-white/40 hover:bg-white/60 text-[#00457c] p-2 rounded border border-black/10 transition-colors shadow-sm" title="Download PDF">
+                                    <FileText size={18} />
                                 </button>
-                            )}
+                                <button type="button" onClick={() => {}} className="bg-white/40 hover:bg-white/60 text-[#00457c] p-2 rounded border border-black/10 transition-colors mr-2 shadow-sm" title="Export to Excel">
+                                    <FileSpreadsheet size={18} />
+                                </button>
+
+                                <button type="button" onClick={handleSave} className="bg-[#00457c] text-white hover:bg-[#003459] p-2 rounded shadow-md active:scale-95 transition-transform flex items-center justify-center min-w-[40px] border border-black/20">
+                                    <Save size={20} />
+                                </button>
+                                {initialData?.id && (
+                                    <button type="button" onClick={() => { if (onDeleteTransaction) onDeleteTransaction(initialData.id, 'manufacturing'); onClose(); }} className="bg-red-600 text-white hover:bg-red-700 p-2 rounded shadow-md active:scale-95 transition-transform flex items-center justify-center min-w-[40px] border border-black/10" title="Delete Journal">
+                                        <Trash2 size={20} />
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     </div>
                 )}
 
             >
                 <div className="flex flex-col h-[85vh]">
-                    <div className="flex gap-2 mb-2 shrink-0 bg-slate-50 p-2 rounded border border-slate-200">
-                        <div className="flex-1">
-                            <label className="text-[9px] font-black text-slate-400 block uppercase tracking-tighter mb-0.5">Narration / Remark</label>
-                            <input 
-                                type="text" 
-                                className="w-full p-1.5 border border-slate-200 rounded text-[11px] font-bold bg-white outline-none focus:border-blue-400 transition-colors shadow-inner" 
-                                value={narration} 
-                                onChange={e => setNarration(e.target.value)} 
-                                placeholder="Details about this production batch..."
-                            />
-                        </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-4 mb-2 shrink-0 text-[10px]">
+                    <div className="flex flex-wrap items-center gap-4 mb-2 shrink-0 text-[10px] bg-slate-50 p-2 rounded border border-slate-200">
                         <label className="flex items-center gap-2 cursor-pointer text-slate-700">
                             <input
                                 type="checkbox"
@@ -16302,25 +16359,28 @@ const StockJournalModal = (props) => {
                                 </button>
                             </div>
                             <div className="flex flex-wrap gap-x-8 gap-y-2.5 px-0.5 relative z-10 max-h-24 overflow-y-auto custom-scrollbar">
-                                {jumboBags.map((bag, idx) => {
-                                    const pName = products.find(p => p.id === bag.productId)?.name || 'Unknown Item';
-                                    return (
-                                        <div key={idx} className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-slate-50 shadow-sm hover:border-blue-200 transition-all group">
-                                            <span className="text-[11px] font-black text-slate-400 group-hover:text-blue-500 transition-colors uppercase tracking-[0.1em] font-mono">#{bag.bagNo}</span>
-                                            <div className="flex flex-col">
-                                                <span className="text-[10px] font-black text-slate-800 uppercase leading-none mb-0.5">{pName}</span>
-                                                <div className="flex items-center gap-1">
-                                                    <span className="text-[11px] font-black text-orange-700 tracking-tight">{format3(bag.qty)}</span>
-                                                    <span className="text-[8px] font-bold text-slate-400 uppercase">kg</span>
-                                                </div>
+                                {jumboBags.map((bag, idx) => (
+                                    <div key={idx} className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-slate-50 shadow-sm hover:border-blue-200 transition-all group">
+                                        <span className="text-[11px] font-black text-slate-400 group-hover:text-blue-500 transition-colors uppercase tracking-[0.1em] font-mono">#{bag.bagNo}</span>
+                                        <div className="flex flex-col">
+                                            <span className="text-[10px] font-black text-slate-800 uppercase leading-none mb-0.5">{products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}</span>
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-[11px] font-black text-orange-700 tracking-tight">{format3(bag.qty)}</span>
+                                                <span className="text-[8px] font-bold text-slate-400 uppercase">kg</span>
                                             </div>
                                         </div>
-                                    );
-                                })}
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     )}
 
+                    <ChangeDateModal 
+                        isOpen={showDateModal} 
+                        onClose={() => setShowDateModal(false)} 
+                        onSubmit={(d) => setDate(d)} 
+                        baseDate={date} 
+                    />
                 </div>
             </Modal>
 
@@ -16437,7 +16497,7 @@ const HideCol = ({ name, id, onHide, color = 'inherit' }) => (
 );
 
 // --- UPDATED LEDGER MODAL (With Collapsible Tools & Persistent Header) ---
-const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, products, expenses, incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
+const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, products, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
 
     // Filters
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
@@ -16692,7 +16752,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         return `${day}/${month}/${year}`;
     };
 
-    const findName = (id) => [...parties, ...accounts, ...expenses, ...incomeAccounts, ...capitalAccounts, ...assetAccounts, ...products, ...taxRates].find(x => x.id === id)?.name || id || 'Unknown';
+    const findName = (id) => [...parties, ...accounts, ...expenses, ...directExpenseAccounts, ...incomeAccounts, ...capitalAccounts, ...assetAccounts, ...products, ...taxRates].find(x => x.id === id)?.name || id || 'Unknown';
     const getProductName = (id) => products.find(p => p.id === id)?.name || id || 'Unknown Item';
     const findUserName = (uid) => {
         if (!uid) return 'System';
@@ -16742,7 +16802,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     // ✅ CALCULATE OPENING BALANCE for Period Ledgers
     useEffect(() => {
         // Only calculate for specific entity ledgers
-        if (!filter.id || !['party', 'account', 'expense', 'capital', 'asset', 'item', 'income'].includes(filter.type)) {
+        if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income'].includes(filter.type)) {
             setOpeningBalance(0);
             setOpeningQty(0);
             return;
@@ -19168,7 +19228,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
 
 const PaymentModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onDeleteTransaction, invoices, payments, journalVouchers, currentRole } = props;
+    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onDeleteTransaction, invoices, payments, journalVouchers, currentRole } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     // 1. Initialize State
     const [formData, setFormData] = useState({
@@ -19358,7 +19418,7 @@ const PaymentModal = (props) => {
 
     // ✅ LIVE BALANCE DERIVATION (Synchronous & Correct)
     // We use the authoritative 'balance' from props (Db Store) and adjust ONLY if editing.
-    const { liveAccounts, liveParties, liveExpenses, liveCapital, liveAssets, liveIncome } = useMemo(() => {
+    const { liveAccounts, liveParties, liveExpenses, liveDirectExpenses, liveCapital, liveAssets, liveIncome } = useMemo(() => {
 
         const enrich = (list, type) => list.map(item => {
             let bal = Number(item.balance || 0);
@@ -19381,7 +19441,7 @@ const PaymentModal = (props) => {
                     if (initialData.type === 'in') bal += txAmt; // Receipt was Cr (Dec), so Reverse = Plus
                     else bal -= txAmt; // Payment was Dr (Inc), so Reverse = Minus
                 }
-                else if (type === 'expense' && initialData.expenseId === id) {
+                else if ((type === 'expense' || type === 'direct_expense') && initialData.expenseId === id) {
                     bal -= txAmt; // Expenses are Dr (Inc), so Reverse = Minus
                 }
                 else if (type === 'income' && initialData.incomeId === id) {
@@ -19455,11 +19515,12 @@ const PaymentModal = (props) => {
             liveAccounts: enrich(accounts, 'account'),
             liveParties: enrich(parties, 'party'),
             liveExpenses: enrich(expenses, 'expense'),
+            liveDirectExpenses: enrich(directExpenseAccounts, 'direct_expense'),
             liveCapital: enrich(capitalAccounts, 'capital'),
             liveAssets: enrich(assetAccounts, 'asset'),
             liveIncome: enrich(incomeAccounts, 'income')
         };
-    }, [accounts, parties, expenses, capitalAccounts, assetAccounts, incomeAccounts, initialData]);
+    }, [accounts, parties, expenses, directExpenseAccounts, capitalAccounts, assetAccounts, incomeAccounts, initialData]);
 
     // ✅ ASYNC LEDGER BALANCE FETCH (Authoritative) - DISABLED to save Firebase reads
     const [ledgerBalance, setLedgerBalance] = useState(null);
@@ -19679,7 +19740,8 @@ const PaymentModal = (props) => {
 
                 const getTargetCol = (cat) => (cat === 'contra' || cat === 'account') ? 'accounts' :
                     (cat === 'party' ? 'parties' : (cat === 'expense' ? 'expenses' :
-                        (cat === 'income' ? 'income_accounts' : (cat === 'capital' ? 'capital_accounts' : 'asset_accounts'))));
+                        (cat === 'direct_expense' ? 'direct_expenses' : // <--- NEW DIRECT EXPENSE
+                            (cat === 'income' ? 'income_accounts' : (cat === 'capital' ? 'capital_accounts' : 'asset_accounts')))));
 
                 const trackChange = (ref, amount, deltaType, category) => {
                     const path = ref.path;
@@ -19825,9 +19887,10 @@ const PaymentModal = (props) => {
     const getOptions = (cat) => {
         if (cat === 'party') return liveParties;
         if (cat === 'expense') return liveExpenses;
+        if (cat === 'direct_expense') return liveDirectExpenses; // <--- NEW DIRECT EXPENSE
         if (cat === 'capital') return liveCapital;
         if (cat === 'asset') return liveAssets;
-        if (cat === 'income') return liveIncome; // <--- NEW INCOME
+        if (cat === 'income') return liveIncome;
         if (cat === 'account') return liveAccounts;
         return [];
     };
@@ -19858,13 +19921,23 @@ const PaymentModal = (props) => {
                 }))
             },
             {
-                name: 'Expenses',
+                name: 'Ind. Expenses',
                 options: liveExpenses.map((expense) => ({
                     value: expense.id,
                     text: expense.name,
                     category: 'expense',
-                    badge: 'Expenses',
+                    badge: 'Ind. Exp',
                     badgeClass: 'bg-rose-50 text-rose-700'
+                }))
+            },
+            {
+                name: 'Direct Expenses (COGS)',
+                options: liveDirectExpenses.map((expense) => ({
+                    value: expense.id,
+                    text: expense.name,
+                    category: 'direct_expense',
+                    badge: 'Dir. Exp',
+                    badgeClass: 'bg-amber-100 text-amber-800 font-bold'
                 }))
             },
             {
@@ -19898,7 +19971,7 @@ const PaymentModal = (props) => {
                 }))
             }
         ];
-    }, [type, liveAccounts, liveParties, liveExpenses, liveIncome, liveCapital, liveAssets]);
+    }, [type, liveAccounts, liveParties, liveExpenses, liveDirectExpenses, liveIncome, liveCapital, liveAssets]);
 
     const handleReceiverChange = (rowId, selectedValue, selectedOption) => {
         const nextCategory = selectedOption?.category || (type === 'contra' ? 'account' : 'party');
@@ -20005,7 +20078,7 @@ const PaymentModal = (props) => {
         >
             <div className="flex flex-col h-screen max-h-screen bg-slate-50 font-sans select-none overflow-hidden">
                 {/* --- PROFESSIONAL TOP OPTIONS TOOLBAR --- */}
-                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-11 shrink-0">
+                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-10 shrink-0">
                     <div className="flex items-center gap-2">
                         <button onClick={onBack} className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-white hover:text-white" title="Go Back"><ArrowLeft size={16} /></button>
                         <div className="w-px h-5 bg-white/10 mx-1"></div>
@@ -20034,42 +20107,16 @@ const PaymentModal = (props) => {
 
                     {/* 2. REFERENCE NUMBER */}
                     <div className="flex flex-col justify-center min-w-[90px]">
-                        <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest">Ref No.</span>
                         <input
                             type="text"
-                            placeholder="NO REF"
-                            className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none placeholder:text-white/20 w-24 uppercase"
+                            placeholder="REF NO"
+                            className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-white/60 placeholder:text-white/30 w-24 uppercase"
                             value={refNo}
                             onChange={e => setRefNo(e.target.value)}
                         />
                     </div>
 
-
-                    <div className="w-px h-5 bg-white/10 mx-1"></div>
-
-                    {/* 3. SOURCE ACCOUNT (CASH/BANK) */}
-                    <div className="flex flex-col justify-center min-w-[200px]">
-                        <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest">
-                            {type === 'in' ? 'Received Into (Dr)' : 'Paid From (Cr)'} Account
-                        </span>
-                        <SearchableSelect
-                            ref={sourceAccRef}
-                            placeholder="Select Account..."
-                            options={liveAccounts.filter(a => type !== 'contra' || a.id !== singleId).map(a => ({
-                                value: a.id,
-                                text: a.name
-                            }))}
-                            value={accountId}
-                            onChange={setAccountId}
-                            onCreateNew={() => onQuickCreate('accounts')}
-                            compact={true}
-                            containerClassName="mb-0 h-4"
-                            textClassName="text-[10px] font-black text-slate-900"
-                        />
-                    </div>
-
-
-                    <div className="w-px h-5 bg-white/10 mx-1"></div>
+                    <div className="flex-1"></div>
 
                     {/* 4. CURRENCY & EXCHANGE */}
                     <div className="flex flex-col justify-center">
@@ -20102,7 +20149,6 @@ const PaymentModal = (props) => {
                         </div>
                     </div>
 
-
                     <div className="w-px h-5 bg-white/10 mx-1"></div>
 
                     {/* 5. LOT IDENTIFIER */}
@@ -20128,8 +20174,7 @@ const PaymentModal = (props) => {
                         </div>
                     </div>
 
-
-                    <div className="flex-1"></div>
+                    <div className="w-px h-5 bg-white/10 mx-1"></div>
 
                     {/* 6. UTILITY TOOLS */}
                     <div className="flex items-center gap-1.5 bg-black/10 p-1 rounded-lg">
@@ -20153,88 +20198,68 @@ const PaymentModal = (props) => {
                         </div>
                     </button>
 
-                    {/* DATE POPUP */}
+                    {/* DATE POPUP — Tally-style */}
                     {showDatePopup && (
-                        <div className="fixed inset-0 z-[99999] flex items-start justify-end pt-14 pr-4" onClick={() => setShowDatePopup(false)}>
+                        <div className="fixed inset-0 z-[99999] flex items-start justify-end pt-11 pr-4" onClick={() => setShowDatePopup(false)}>
                             <div
-                                className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-72 overflow-hidden"
+                                className="bg-white border border-slate-300 shadow-2xl rounded-lg overflow-hidden w-56"
                                 onClick={e => e.stopPropagation()}
                             >
-                                {/* Header */}
-                                <div className={`${barBgColor} text-white px-4 py-3 flex items-center justify-between`}>
-                                    <div>
-                                        <div className="text-[8px] font-black uppercase tracking-widest opacity-50">Payment Voucher</div>
-                                        <div className="text-xs font-black mt-0.5">Change Date</div>
-                                    </div>
-                                    <button type="button" onClick={() => setShowDatePopup(false)} className="p-1.5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white"><X size={14} /></button>
+                                <div className="bg-[#1a2a4a] px-4 py-2 text-center">
+                                    <span className="text-[11px] font-black text-white uppercase tracking-widest">Change Date (F2)</span>
                                 </div>
-
-                                {/* Calendar input */}
-                                <div className="p-4 space-y-3">
+                                <div className="px-4 pt-4 pb-3">
                                     <input
-                                        type="date"
+                                        ref={dateRef}
                                         autoFocus
-                                        value={date}
-                                        onChange={e => {
-                                            if (e.target.value) {
-                                                setDate(e.target.value);
-                                                setDateInputValue(formatVoucherDateText(e.target.value));
-                                                if (onUpdateDate) onUpdateDate(e.target.value);
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="DD or DD-MM"
+                                        className="w-full bg-transparent text-slate-800 text-[15px] font-semibold px-0 py-1 outline-none border-none border-b-2 border-slate-400 focus:border-slate-700 text-center placeholder:text-slate-400 transition-colors"
+                                        value={dateInputValue}
+                                        onChange={e => setDateInputValue(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                const parsed = parseVoucherDateText(dateInputValue);
+                                                if (parsed) {
+                                                    setDate(parsed);
+                                                    setDateInputValue(formatVoucherDateText(parsed));
+                                                    if (onUpdateDate) onUpdateDate(parsed);
+                                                } else {
+                                                    setDateInputValue(formatVoucherDateText(date));
+                                                }
+                                                setShowDatePopup(false);
+                                            } else if (e.key === 'Escape') {
                                                 setShowDatePopup(false);
                                             }
                                         }}
-                                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
                                     />
-
-                                    <div className="relative">
-                                        <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Or type date (D-M-YYYY)</div>
-                                        <input
-                                            ref={dateRef}
-                                            type="text"
-                                            inputMode="numeric"
-                                            placeholder="e.g. 4-4-2026"
-                                            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
-                                            value={dateInputValue}
-                                            onChange={e => setDateInputValue(e.target.value)}
-                                            onKeyDown={e => {
-                                                if (e.key === 'Enter') {
-                                                    e.preventDefault();
-                                                    const parsed = parseVoucherDateText(dateInputValue);
-                                                    if (parsed) {
-                                                        setDate(parsed);
-                                                        setDateInputValue(formatVoucherDateText(parsed));
-                                                        if (onUpdateDate) onUpdateDate(parsed);
-                                                        setShowDatePopup(false);
-                                                    } else {
-                                                        setDateInputValue(formatVoucherDateText(date));
-                                                    }
-                                                } else if (e.key === 'Escape') {
-                                                    setShowDatePopup(false);
-                                                }
-                                            }}
-                                        />
-                                    </div>
-
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            const parsed = parseVoucherDateText(dateInputValue);
-                                            if (parsed) {
-                                                setDate(parsed);
-                                                setDateInputValue(formatVoucherDateText(parsed));
-                                                if (onUpdateDate) onUpdateDate(parsed);
-                                            }
-                                            setShowDatePopup(false);
-                                        }}
-                                        className="w-full bg-[#00457c] text-white text-xs font-black py-2.5 rounded-xl hover:opacity-90 transition-opacity"
-                                    >
-                                        Confirm Date
-                                    </button>
-
+                                    <p className="text-center text-[10px] text-slate-400 mt-2">Type date &amp; press Enter</p>
                                 </div>
                             </div>
                         </div>
                     )}
+                </div>
+
+                {/* --- SECONDARY BAR: PAID FROM / RECEIVED INTO ACCOUNT --- */}
+                <div className="bg-gradient-to-r from-[#00457c] to-[#003a6a] border-b border-[#002a52] text-white px-0 flex items-center shrink-0 z-50 h-10">
+                    <div className="max-w-[495px] w-full min-w-0 pl-4 self-center mt-[3px]">
+                        <SearchableSelect
+                            ref={sourceAccRef}
+                            placeholder="Select Account..."
+                            options={liveAccounts.filter(a => type !== 'contra' || a.id !== singleId).map(a => ({
+                                value: a.id,
+                                text: a.name
+                            }))}
+                            value={accountId}
+                            onChange={setAccountId}
+                            onCreateNew={() => onQuickCreate('accounts')}
+                            compact={true}
+                            containerClassName="mb-0 h-full"
+                            textClassName="text-[12px] font-black text-slate-900"
+                        />
+                    </div>
                 </div>
 
                 {/* --- MAIN PAGE CONTENT --- */}
@@ -20242,26 +20267,25 @@ const PaymentModal = (props) => {
                     
                     {/* REDESIGNED SPLITS TABLE (HIGH DENSITY) */}
                     {/* STREAMLINED SPLITS TABLE (NO HEADER / NO INDEX) */}
-                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-4 md:px-10">
-                        <div className="flex-1 overflow-y-auto no-scrollbar border-x border-slate-100 bg-white">
-                            <table className="w-full text-left border-collapse">
-                                <thead className="sticky top-0 bg-slate-50/80 backdrop-blur-sm z-10 border-b border-slate-100">
+                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-0">
+                        <div className="flex-1 overflow-y-auto no-scrollbar bg-white">
+                            <table className="w-full text-left border-collapse table-fixed">
+                                <thead className="sticky top-0 bg-slate-50/80 backdrop-blur-sm z-10 border-b border-slate-200">
                                     <tr>
-                                        <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">Account / Particulars</th>
-                                        <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-48">Amount ({currencySymbol})</th>
-                                        <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-32 flex items-center justify-center gap-2">
-                                            Actions
+                                        <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest">Account / Particulars</th>
+                                        <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-44">Amount ({currencySymbol})</th>
+                                        <th className="py-2 text-center w-12">
                                             <button onClick={addLine} className="p-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-all shadow-sm" title="Add New Entry Row">
                                                 <Plus size={14} strokeWidth={3} />
                                             </button>
                                         </th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-50">
+                                <tbody className="divide-y divide-slate-200">
                                     {splits.map((row, index) => (
-                                        <tr key={row.id} className="group hover:bg-slate-50/50 transition-colors">
-                                            <td className="px-6 py-4">
-                                                <div className="w-full max-w-lg">
+                                        <tr key={row.id} className="group hover:bg-slate-50/70 transition-colors">
+                                            <td className="px-4 py-1.5">
+                                                <div className="max-w-[480px] w-full">
                                                     <SearchableSelect
                                                         groups={receiverGroups}
                                                         value={row.targetId}
@@ -20302,18 +20326,18 @@ const PaymentModal = (props) => {
                                                     </button>
                                                 )}
                                             </td>
-                                            <td className="px-6 py-4">
+                                            <td className="px-4 py-1.5 w-44">
                                                 <input
                                                     type="number"
                                                     step="0.001"
-                                                    className="w-full p-2 bg-transparent border-b-2 border-transparent focus:border-blue-500 text-[16px] font-black text-right text-slate-800 transition-all outline-none"
+                                                    className="w-full p-1 bg-transparent border-b-2 border-transparent focus:border-blue-500 text-[15px] font-black text-right text-slate-800 transition-all outline-none"
                                                     value={row.amount}
                                                     onChange={(e) => updateLine(row.id, 'amount', e.target.value)}
                                                     placeholder="0.000"
                                                 />
                                             </td>
-                                            <td className="px-6 py-4 text-center">
-                                                <button onClick={() => removeLine(row.id)} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl opacity-0 group-hover:opacity-100 transition-all" title="Delete Row"><Trash2 size={16} /></button>
+                                            <td className="py-1.5 w-12 text-center">
+                                                <button onClick={() => removeLine(row.id)} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all" title="Delete Row"><Trash2 size={14} /></button>
                                             </td>
                                         </tr>
                                     ))}
@@ -20334,10 +20358,21 @@ const PaymentModal = (props) => {
                             </div>
                         )}
 
+                        {/* DELETE — far left */}
+                        {initialData?.id && (
+                            <button
+                                onClick={() => { if (confirm("Delete this transaction?")) { onDeleteTransaction(initialData.id, initialData.type || defaultType); onClose(); } }}
+                                className="p-2.5 hover:bg-red-500/20 text-red-300 rounded-xl transition-all shrink-0"
+                                title="Delete Voucher"
+                            >
+                                <Trash2 size={18} />
+                            </button>
+                        )}
+
                         {/* 1. NARRATION (COMPACT) */}
                         <div className="flex-1 flex items-center gap-3">
-                            <span className="text-[8px] font-black uppercase text-blue-100 tracking-widest hidden sm:inline leading-none opacity-40">Narration</span>
-                            <div className="flex-1 border-b border-white/10 focus-within:border-white/30 transition-colors pb-1">
+                            <span className="text-[8px] font-black uppercase text-white tracking-widest hidden sm:inline leading-none" style={{textShadow:'0 0 10px rgba(255,255,255,0.7)'}}>Narration</span>
+                            <div className="flex-1 border border-white/25 focus-within:border-white/50 transition-colors rounded-lg px-2 py-1">
                                 <input
                                     ref={narrationRef}
                                     placeholder="Enter voucher narration..."
@@ -20367,17 +20402,8 @@ const PaymentModal = (props) => {
                             </div>
                         </div>
 
-                        {/* 3. ACTION BUTTONS (COMPACT) */}
-                        <div className="flex items-center gap-2 border-l border-white/10 pl-6 h-full">
-                            {initialData?.id && (
-                                <button 
-                                    onClick={() => { if (confirm("Delete this transaction?")) { onDeleteTransaction(initialData.id, initialData.type || defaultType); onClose(); } }} 
-                                    className="p-2.5 hover:bg-red-500/20 text-red-300 rounded-xl transition-all"
-                                    title="Delete Voucher"
-                                >
-                                    <Trash2 size={18} />
-                                </button>
-                            )}
+                        {/* 3. SAVE BUTTON */}
+                        <div className="flex items-center border-l border-white/10 pl-6 h-full">
                             <button
                                 onClick={handleSave}
                                 disabled={saving}
@@ -20760,7 +20786,7 @@ const PaymentModal = (props) => {
 
 // --- UPDATED JOURNAL VOUCHER MODAL (Saves 'createdBy') ---
 const JournalVoucherModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher } = props;
+    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
     // FIX 1: Safety check to ensure date is never undefined
@@ -20856,6 +20882,7 @@ const JournalVoucherModal = (props) => {
     const getColName = (t) => {
         if (t === 'party') return 'parties';
         if (t === 'expense') return 'expenses';
+        if (t === 'direct_expense') return 'direct_expenses'; // <--- NEW
         if (t === 'capital') return 'capital_accounts';
         if (t === 'asset') return 'asset_accounts';
         if (t === 'income') return 'income_accounts'; // <--- NEW INCOME
@@ -20866,6 +20893,7 @@ const JournalVoucherModal = (props) => {
     const getOptions = (t) => {
         if (t === 'party') return parties;
         if (t === 'expense') return expenses;
+        if (t === 'direct_expense') return directExpenseAccounts; // <--- NEW
         if (t === 'capital') return capitalAccounts;
         if (t === 'asset') return assetAccounts; // ✅ Added Asset
         if (t === 'income') return incomeAccounts; // <--- NEW INCOME
@@ -20877,6 +20905,7 @@ const JournalVoucherModal = (props) => {
         const getDispName = (type, aid) => {
             if (type === 'party') return parties.find(p => p.id === aid)?.name || '---';
             if (type === 'expense') return expenses.find(e => e.id === aid)?.name || '---';
+            if (type === 'direct_expense') return directExpenseAccounts.find(d => d.id === aid)?.name || '---'; // <--- NEW
             if (type === 'income') return incomeAccounts.find(i => i.id === aid)?.name || '---';
             if (type === 'account') return accounts.find(a => a.id === aid)?.name || '---';
             if (type === 'capital') return capitalAccounts.find(c => c.id === aid)?.name || '---';
@@ -21006,6 +21035,7 @@ const JournalVoucherModal = (props) => {
                 const logAction = initialData ? 'UPDATED' : 'CREATED';
                 const payload = {
                     date, refNo, description,
+                    lotId: enableLot ? lotId : null,
                     type: 'journal', userId: targetUid,
                     lastModifiedAt: serverTimestamp(),
                     isMulti: mode === 'multi',
@@ -21266,7 +21296,8 @@ const JournalVoucherModal = (props) => {
                                         <td className="p-1">
                                             <select className="w-full p-1 border rounded" value={row.category} onChange={e => updateRow(row.id, 'category', e.target.value)}>
                                                 <option value="party">Party</option>
-                                                <option value="expense">Expense</option>
+                                                <option value="expense">Ind. Expense</option>
+                                                <option value="direct_expense">Direct Exp (COGS)</option>
                                                 <option value="income">Income</option>
                                                 <option value="capital">Capital</option>
                                                 <option value="asset">Asset</option>
@@ -21966,6 +21997,40 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
     }, [calculatedStockData, searchTerm, expandedGroups, currentGroupFilter, stockGroups, showZeroBalance]);
 
+    // --- KEYBOARD NAVIGATION (Tally-style Up/Down/Enter) ---
+    const [focusedRowIdx, setFocusedRowIdx] = useState(-1);
+    const focusedRowRef = useRef(null);
+
+    useEffect(() => {
+        if (!isOpen) { setFocusedRowIdx(-1); return; }
+        const handler = (e) => {
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setFocusedRowIdx(prev => Math.min(prev + 1, finalFilteredData.length - 1));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setFocusedRowIdx(prev => Math.max(prev - 1, 0));
+            } else if (e.key === 'Enter' || e.key === 'ArrowRight') {
+                e.preventDefault();
+                const row = finalFilteredData[focusedRowIdx];
+                if (!row) return;
+                if (row.type === 'group') toggleGroup(row.name);
+                else if (onItemClick) onItemClick(row.id);
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const row = finalFilteredData[focusedRowIdx];
+                if (row?.type === 'group' && expandedGroups.has(row.name)) toggleGroup(row.name);
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [isOpen, focusedRowIdx, finalFilteredData, expandedGroups, onItemClick, toggleGroup]);
+
+    useEffect(() => {
+        if (focusedRowRef.current) focusedRowRef.current.scrollIntoView({ block: 'nearest' });
+    }, [focusedRowIdx]);
+
     // ✅ NEW: CALCULATE ITEM COUNTS FOR DISPLAY
     const itemCountsBadge = useMemo(() => {
         const total = reportData.length;
@@ -22255,7 +22320,8 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {finalFilteredData.map((row) => {
+                                    {finalFilteredData.map((row, rowIdx) => {
+                                        const isFocused = focusedRowIdx === rowIdx;
                                         const showQty = row.type === 'item' || row.shouldQuantities !== false;
                                         const showVal = row.type === 'item' || row.shouldValues !== false;
                                         const unit = row.unit || '';
@@ -22294,7 +22360,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                             const level = row.level || 0;
                                             const bgShade = level === 0 ? 'bg-[#f4ece1]' : level === 1 ? 'bg-[#f7f0e6]' : 'bg-[#faf6ef]';
                                             return (
-                                                <tr key={`${row.id}-${level}`} className={`hover:bg-[#e0d2bc]/30 text-slate-900 font-black text-sm cursor-pointer transition-colors ${bgShade}`} onClick={() => toggleGroup(row.name)}>
+                                                <tr ref={isFocused ? focusedRowRef : null} key={`${row.id}-${level}`} className={`text-slate-900 font-black text-sm cursor-pointer transition-colors ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : `hover:bg-[#e0d2bc]/30 ${bgShade}`}`} onClick={() => { setFocusedRowIdx(rowIdx); toggleGroup(row.name); }}>
                                                     <td className={`p-2 border border-slate-500 text-left sticky left-0 z-10 ${bgShade} w-44 sm:w-64`}>
                                                         <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: `${level * 16}px` }}>
                                                             <span className="shrink-0">{isExpanded ? <ChevronDown size={14} className="text-blue-800" /> : <ChevronRight size={14} className="text-slate-600" />}</span>
@@ -22312,8 +22378,8 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                             const level = row.level || 0;
                                             const bgShade = level === 0 ? 'bg-[#fdf6ea]' : level === 1 ? 'bg-[#fefaf2]' : 'bg-[#fffdf9]';
                                             return (
-                                                <tr key={row.id} className={`transition-colors text-right text-xs cursor-pointer hover:bg-blue-50/50 ${bgShade}`} onClick={() => { if (onItemClick) onItemClick(row.id); }}>
-                                                    <td className={`p-1 px-2 border border-slate-300 text-left sticky left-0 ${bgShade} z-10 w-44 sm:w-64`}>
+                                                <tr ref={isFocused ? focusedRowRef : null} key={row.id} className={`transition-colors text-right text-xs cursor-pointer ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : `hover:bg-blue-50/50 ${bgShade}`}`} onClick={() => { setFocusedRowIdx(rowIdx); if (onItemClick) onItemClick(row.id); }}>
+                                                    <td className={`p-1 px-2 border border-slate-300 text-left sticky left-0 ${isFocused ? 'bg-blue-200/60' : bgShade} z-10 w-44 sm:w-64`}>
                                                         <div className="flex items-center justify-between gap-2 min-w-0" style={{ paddingLeft: `${(level * 16) + 8}px` }}>
                                                             <span className="font-semibold text-slate-800 flex-1 min-w-0" style={getTallyShrinkStyle(row.name, false)}>{row.name}</span>
                                                             {row.bagCount > 0 && <span className="text-orange-600 text-[9px] font-black shrink-0">{row.bagCount} BAGS</span>}
@@ -22362,6 +22428,8 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     const [expandedGroups, setExpandedGroups] = useState(new Set());
     const [currentPage, setCurrentPage] = useState(1);
     const [isSearchVisible, setIsSearchVisible] = useState(false);
+    const [focusedRowIdx, setFocusedRowIdx] = useState(-1);
+    const focusedRowRef = useRef(null);
     const itemsPerPage = 20;
 
     const [showDateMenu, setShowDateMenu] = useState(false);
@@ -22795,6 +22863,63 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         const sortedGroups = Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
         return { groups: sortedGroups, primary: primaryItems };
     }, [paginatedData, registerType]);
+
+    const navigableRows = useMemo(() => {
+        if (groupedData) {
+            const rows = [];
+            groupedData.groups.forEach(group => {
+                rows.push({ ...group, _navType: 'group' });
+                if (expandedGroups.has(group.name)) {
+                    group.items.forEach(item => rows.push({ ...item, _navType: 'item' }));
+                }
+            });
+            groupedData.primary.forEach(item => rows.push({ ...item, _navType: 'item' }));
+            return rows;
+        }
+        return paginatedData.map(item => ({ ...item, _navType: 'item' }));
+    }, [groupedData, paginatedData, expandedGroups]);
+
+    useEffect(() => { setFocusedRowIdx(-1); }, [currentPage, searchTerm, filter, summaryMode]);
+
+    useEffect(() => {
+        if (!isOpen) { setFocusedRowIdx(-1); return; }
+        const handler = (e) => {
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setFocusedRowIdx(prev => Math.min(prev + 1, navigableRows.length - 1));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setFocusedRowIdx(prev => Math.max(prev - 1, 0));
+            } else if (e.key === 'Enter' || e.key === 'ArrowRight') {
+                e.preventDefault();
+                const row = navigableRows[focusedRowIdx];
+                if (!row) return;
+                if (row._navType === 'group') toggleGroup(row.name);
+                else if (row.isSummary) handleSummaryClick(row);
+                else if (onItemClick) onItemClick(row);
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const row = navigableRows[focusedRowIdx];
+                if (row?._navType === 'group' && expandedGroups.has(row.name)) toggleGroup(row.name);
+                else setCurrentPage(prev => Math.max(prev - 1, 1));
+            } else if (e.key === 'PageDown') {
+                e.preventDefault();
+                setCurrentPage(prev => Math.min(prev + 1, totalPages));
+                setFocusedRowIdx(0);
+            } else if (e.key === 'PageUp') {
+                e.preventDefault();
+                setCurrentPage(prev => Math.max(prev - 1, 1));
+                setFocusedRowIdx(0);
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [isOpen, focusedRowIdx, navigableRows, expandedGroups, onItemClick, totalPages, toggleGroup]);
+
+    useEffect(() => {
+        if (focusedRowRef.current) focusedRowRef.current.scrollIntoView({ block: 'nearest' });
+    }, [focusedRowIdx]);
 
     if (!isOpen) return null;
 
@@ -23260,11 +23385,13 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     </thead>
                     <tbody className="divide-y divide-slate-200 text-xs">
                         {registerType === 'manufacturing' ? (
-                            paginatedData.map(item => (
-                                <React.Fragment key={item.id}>
+                            paginatedData.map((item, rowIdx) => {
+                                const isFocused = focusedRowIdx === rowIdx;
+                                return (<React.Fragment key={item.id}>
                                     <tr
-                                        className={`transition-all border-b border-slate-100 ${item.isSummary ? 'bg-indigo-50/50 hover:bg-indigo-100 font-bold' : detailView ? 'bg-amber-50/20 hover:bg-amber-50' : 'hover:bg-slate-50'} ${onItemClick || item.isSummary ? 'cursor-pointer' : ''} group`}
-                                        onClick={() => item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item))}
+                                        ref={isFocused ? focusedRowRef : null}
+                                        className={`transition-all border-b border-slate-100 ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : item.isSummary ? 'bg-indigo-50/50 hover:bg-indigo-100 font-bold' : detailView ? 'bg-amber-50/20 hover:bg-amber-50' : 'hover:bg-slate-50'} ${onItemClick || item.isSummary ? 'cursor-pointer' : ''} group`}
+                                        onClick={() => { setFocusedRowIdx(rowIdx); item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item)); }}
                                         title={item.isSummary ? "Click to Drill Down" : onItemClick ? "Click to View/Edit Transaction" : ""}
                                     >
                                         <td className="p-3 font-medium text-slate-600 whitespace-nowrap border-r border-slate-100">{item.date}</td>
@@ -23275,7 +23402,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         <td className="p-3 text-right font-mono font-black text-rose-700 bg-rose-50/20 group-hover:bg-rose-50 transition-colors">{Number(item.amt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                     </tr>
                                     {detailView && (
-                                        <tr className="bg-slate-50/50">
+                                        <tr className="bg-slate-50/50" key={`${item.id}-detail`}>
                                             <td colSpan="6" className="px-4 py-2 border-b border-slate-200 shadow-inner">
                                                 <div className="flex gap-6 text-xs">
                                                     {/* CONSUMED (LEFT) */}
@@ -23315,14 +23442,18 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         </tr>
                                     )}
                                 </React.Fragment>
-                            ))
+                                ); })
                         ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
-                            paginatedData.map(item => (
-                                <React.Fragment key={item.id}>
+                            paginatedData.map((item, rowIdx) => {
+                                const isFocused = focusedRowIdx === rowIdx;
+                                return (<React.Fragment key={item.id}>
                                     <tr
-                                        onClick={() => item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item))}
+                                        ref={isFocused ? focusedRowRef : null}
+                                        onClick={() => { setFocusedRowIdx(rowIdx); item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item)); }}
                                         className={`transition-all border-b ${
-                                            item.isSummary 
+                                            isFocused
+                                            ? 'bg-blue-200/60 outline outline-2 outline-blue-400'
+                                            : item.isSummary 
                                             ? 'bg-blue-50/50 hover:bg-blue-100 font-bold' 
                                             : detailView 
                                                 ? 'bg-amber-50/20 hover:bg-amber-50' 
@@ -23366,14 +23497,18 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         </tr>
                                     )}
                                 </React.Fragment>
-                            ))
+                                ); })
                         ) : ['sales', 'purchase', 'debit_note', 'credit_note', 'journal'].includes(registerType) ? (
-                            paginatedData.map(item => (
-                                <React.Fragment key={item.id}>
+                            paginatedData.map((item, rowIdx) => {
+                                const isFocused = focusedRowIdx === rowIdx;
+                                return (<React.Fragment key={item.id}>
                                     <tr
-                                        onClick={() => item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item))}
+                                        ref={isFocused ? focusedRowRef : null}
+                                        onClick={() => { setFocusedRowIdx(rowIdx); item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item)); }}
                                         className={`transition-all border-b ${
-                                            item.isSummary 
+                                            isFocused
+                                            ? 'bg-blue-200/60 outline outline-2 outline-blue-400'
+                                            : item.isSummary 
                                             ? 'bg-blue-50/50 hover:bg-blue-100 font-bold' 
                                             : detailView 
                                                 ? 'bg-indigo-50/20 hover:bg-indigo-50' 
@@ -23453,17 +23588,20 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         </tr>
                                     )}
                                 </React.Fragment>
-                            ))
+                                ); })
                         ) : (
                             groupedData ? (
                                 <>
-                                    {groupedData.groups.map(group => {
+                                    {groupedData.groups.map((group, grpNavIdx) => {
                                         const isExpanded = expandedGroups.has(group.name);
+                                        const focusedNav = navigableRows[focusedRowIdx];
+                                        const isGrpFocused = focusedNav?._navType === 'group' && focusedNav?.name === group.name;
                                         return (
                                             <React.Fragment key={group.name}>
                                                 <tr
-                                                    className="bg-slate-100/80 border-b border-t border-slate-200 cursor-pointer hover:bg-blue-50 transition-all group shadow-sm"
-                                                    onClick={() => toggleGroup(group.name)}
+                                                    ref={isGrpFocused ? focusedRowRef : null}
+                                                    className={`border-b border-t border-slate-200 cursor-pointer transition-all group shadow-sm ${isGrpFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'bg-slate-100/80 hover:bg-blue-50'}`}
+                                                    onClick={() => { const idx = navigableRows.findIndex(r => r._navType === 'group' && r.name === group.name); if (idx >= 0) setFocusedRowIdx(idx); toggleGroup(group.name); }}
                                                     title={isExpanded ? "Click to Collapse Group" : "Click to Expand Group"}
                                                 >
                                                     <td className="p-3 font-black text-slate-700 uppercase text-[10px] tracking-widest flex items-center gap-3">
@@ -23477,34 +23615,45 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                                         {currencySymbol} {Number(group.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                                     </td>
                                                 </tr>
-                                                {isExpanded && group.items.map(item => (
-                                                    <tr key={item.id} onClick={() => onItemClick(item)} className="hover:bg-blue-50 cursor-pointer transition-colors bg-white">
-                                                        <td className="p-3 pl-8 font-medium text-slate-600 text-xs border-l-4 border-transparent hover:border-blue-200">
-                                                            {item.label}
-                                                        </td>
-                                                        <td className={`p-3 text-right font-bold font-mono text-xs ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>
-                                                            {item.value}
-                                                        </td>
-                                                    </tr>
-                                                ))}
+                                                {isExpanded && group.items.map(item => {
+                                                    const fIdx = navigableRows.findIndex(r => r._navType === 'item' && r.id === item.id);
+                                                    const isItemFocused = focusedRowIdx === fIdx && fIdx >= 0;
+                                                    return (
+                                                        <tr ref={isItemFocused ? focusedRowRef : null} key={item.id} onClick={() => { if (fIdx >= 0) setFocusedRowIdx(fIdx); onItemClick(item); }} className={`cursor-pointer transition-colors ${isItemFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'hover:bg-blue-50 bg-white'}`}>
+                                                            <td className="p-3 pl-8 font-medium text-slate-600 text-xs border-l-4 border-transparent hover:border-blue-200">
+                                                                {item.label}
+                                                            </td>
+                                                            <td className={`p-3 text-right font-bold font-mono text-xs ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>
+                                                                {item.value}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
                                             </React.Fragment>
                                         );
                                     })}
                                     {groupedData.primary.length > 0 && groupedData.groups.length > 0 && <tr className="bg-slate-50"><td colSpan="2" className="p-2 text-xs font-bold text-slate-400 uppercase text-center tracking-widest">Other Accounts</td></tr>}
-                                    {groupedData.primary.map(item => (
-                                        <tr key={item.id} onClick={() => onItemClick(item)} className="hover:bg-blue-50 cursor-pointer transition-colors">
+                                    {groupedData.primary.map(item => {
+                                        const fIdx = navigableRows.findIndex(r => r._navType === 'item' && r.id === item.id);
+                                        const isItemFocused = focusedRowIdx === fIdx && fIdx >= 0;
+                                        return (
+                                            <tr ref={isItemFocused ? focusedRowRef : null} key={item.id} onClick={() => { if (fIdx >= 0) setFocusedRowIdx(fIdx); onItemClick(item); }} className={`cursor-pointer transition-colors ${isItemFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'hover:bg-blue-50'}`}>
+                                                <td className="p-3 font-medium text-slate-700">{item.label}</td>
+                                                <td className={`p-3 text-right font-bold font-mono ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>{item.value}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </>
+                            ) : (
+                                paginatedData.map((item, rowIdx) => {
+                                    const isFocused = focusedRowIdx === rowIdx;
+                                    return (
+                                        <tr ref={isFocused ? focusedRowRef : null} key={item.id} onClick={() => { setFocusedRowIdx(rowIdx); item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item)); }} className={`transition-colors border-b last:border-0 ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : item.isSummary ? 'bg-indigo-50/30 hover:bg-indigo-50 font-bold' : 'hover:bg-blue-50'} cursor-pointer`}>
                                             <td className="p-3 font-medium text-slate-700">{item.label}</td>
                                             <td className={`p-3 text-right font-bold font-mono ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>{item.value}</td>
                                         </tr>
-                                    ))}
-                                </>
-                            ) : (
-                                paginatedData.map(item => (
-                                    <tr key={item.id} onClick={() => item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item))} className={`transition-colors border-b last:border-0 ${item.isSummary ? 'bg-indigo-50/30 hover:bg-indigo-50 font-bold' : 'hover:bg-blue-50'} cursor-pointer`}>
-                                        <td className="p-3 font-medium text-slate-700">{item.label}</td>
-                                        <td className={`p-3 text-right font-bold font-mono ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>{item.value}</td>
-                                    </tr>
-                                ))
+                                    );
+                                })
                             )
                         )}
                     </tbody>
@@ -23755,7 +23904,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
 };
 
 // --- UPDATED FINANCIAL REPORTS MODAL (With Consistent Stock Valuation) ---
-const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, parties, products, expenses, incomeAccounts, accounts, capitalAccounts, assetAccounts, calculatedCosts, locations, onDrillDown, currencySymbol }) => {
+const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, parties, products, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, calculatedCosts, locations, onDrillDown, currencySymbol }) => {
     const [reportType, setReportType] = useState('pnl');
 
     // ✅ NEW: Valuation Method State
@@ -23794,7 +23943,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     useEffect(() => {
         if (isOpen) generateReport();
-    }, [isOpen]);
+    }, [isOpen, valuationMethod]);
 
     const safeNum = (val) => isNaN(Number(val)) ? 0 : Number(val);
     const formatCurrency = (val) => Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -23804,7 +23953,8 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         else setSelectedLocs([...selectedLocs, locId]);
     };
 
-    const getExpenseName = (id) => expenses.find(e => e.id === id)?.name || 'Uncategorized Expense';
+    const getExpenseName = (id) => (expenses.find(e => e.id === id) || (directExpenseAccounts || []).find(d => d.id === id))?.name || 'Uncategorized Expense';
+    const getDirectExpenseName = (id) => (directExpenseAccounts || []).find(d => d.id === id)?.name || 'Direct Expense';
     const getIncomeName = (id) => (incomeAccounts || []).find(e => e.id === id)?.name || 'Uncategorized Income';
 
     const generateReport = async (range = dateRange) => {
@@ -23813,17 +23963,21 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
         try {
             // 1. FETCH DOCUMENTS
-            // A. Invoices & Mfg: Fetch ALL to calculate historical stock correctly (Reverse/Forward calculation needed)
-            const qInv = query(collection(db, 'invoices'));
-            const qMfg = query(collection(db, 'stock_journals'));
+            // A. Invoices & Mfg: Fetch ALL history to correctly calculate opening/closing stock
+            //    Must include userId filter so Firestore security rules allow the query
+            const qInv = query(collection(db, 'invoices'), where('userId', '==', targetUid));
+            const qMfg = query(collection(db, 'stock_journals'), where('userId', '==', targetUid));
 
             // B. Payments & JVs: Only needed for the selected period for P&L (Expenses)
             const qPay = query(collection(db, 'payments'), where('date', '>=', range.from), where('date', '<=', range.to));
             const qJv = query(collection(db, 'journal_vouchers'), where('date', '>=', range.from), where('date', '<=', range.to));
 
-            const [paySnap, jvSnap, invSnap, mfgSnap] = await Promise.all([getDocs(qPay), getDocs(qJv), getDocs(qInv), getDocs(qMfg)]);
+            const [invSnap, mfgSnap, paySnap, jvSnap] = await Promise.all([
+                getDocs(qInv), getDocs(qMfg), getDocs(qPay), getDocs(qJv)
+            ]);
 
-            // --- 2. PREPARE STOCK ITEMS MAP ---
+            // --- 2. PREPARE DATA HELPERS ---
+            const directExpIds = new Set((directExpenseAccounts || []).map(d => d.id));
             const itemMap = {};
             products.forEach(p => {
                 itemMap[p.id] = {
@@ -23841,10 +23995,12 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 };
             });
 
-            // Helper: Track Latest Rates (Absolute Latest in System)
+            // Helper: Track Latest Rates (Only up to the TO date — for point-in-time accuracy)
             const trackRate = (pid, rate, date, type) => {
                 if (!itemMap[pid]) return;
+                if (date > range.to) return; // Ignore future invoices beyond the report end date
                 const r = Number(rate);
+                if (!r) return; // Ignore zero rates
                 if (type === 'purchase') {
                     if (date >= itemMap[pid].lastPurchaseDate) { itemMap[pid].lastPurchaseDate = date; itemMap[pid].lastPurchaseRate = r; }
                 } else {
@@ -23884,6 +24040,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             // A. INVOICES
             let totalSales = 0;
             let totalPurchases = 0;
+            let totalMfgDirectExpenses = 0;
             const directExpensesMap = {};
             const indirectExpensesMap = {};
             const indirectIncomeMap = {};
@@ -23960,6 +24117,18 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         processStock(d.date, i.productId, safeNum(i.quantity), safeNum(i.rate), 'out');
                     });
                 }
+
+                // Direct Expenses from manufacturing (add to COGS directExpensesMap, period-filtered)
+                if (d.journalExpenses && d.date >= range.from && d.date <= range.to) {
+                    d.journalExpenses.forEach(je => {
+                        const amt = safeNum(je.amount);
+                        if (!amt || !je.expenseId) return;
+                        const expAcc = (directExpenseAccounts || []).find(x => x.id === je.expenseId);
+                        const name = expAcc?.name || je.expenseId || 'Manufacturing Expense';
+                        directExpensesMap[name] = (directExpensesMap[name] || 0) + amt;
+                        totalMfgDirectExpenses += amt;
+                    });
+                }
             });
 
             // C. PAYMENTS (Filtered by Date in Query)
@@ -23969,8 +24138,10 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
                 if (d.transactionCategory === 'expense' && d.expenseId) {
                     const name = getExpenseName(d.expenseId);
-                    if (d.type === 'out') indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) + amt;
-                    else if (d.type === 'in') indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) - amt;
+                    const isDirect = directExpIds.has(d.expenseId);
+                    const targetMap = isDirect ? directExpensesMap : indirectExpensesMap;
+                    if (d.type === 'out') targetMap[name] = (targetMap[name] || 0) + amt;
+                    else if (d.type === 'in') targetMap[name] = (targetMap[name] || 0) - amt;
                 }
                 if (d.transactionCategory === 'income' && d.incomeId) {
                     const name = getIncomeName(d.incomeId);
@@ -23982,8 +24153,10 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         if (s.category === 'expense' && s.targetId) {
                             const splitAmt = safeNum(s.amount);
                             const name = getExpenseName(s.targetId);
-                            if (d.type === 'out') indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) + splitAmt;
-                            else indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) - splitAmt;
+                            const isDirect = directExpIds.has(s.targetId);
+                            const targetMap = isDirect ? directExpensesMap : indirectExpensesMap;
+                            if (d.type === 'out') targetMap[name] = (targetMap[name] || 0) + splitAmt;
+                            else targetMap[name] = (targetMap[name] || 0) - splitAmt;
                         }
                         if (s.category === 'income' && s.targetId) {
                             const splitAmt = safeNum(s.amount);
@@ -24005,8 +24178,10 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     const safeA = safeNum(rowAmt);
                     if (type === 'expense' && id) {
                         const name = getExpenseName(id);
-                        if (isDr) indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) + safeA;
-                        else indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) - safeA;
+                        const isDirect = directExpIds.has(id);
+                        const targetMap = isDirect ? directExpensesMap : indirectExpensesMap;
+                        if (isDr) targetMap[name] = (targetMap[name] || 0) + safeA;
+                        else targetMap[name] = (targetMap[name] || 0) - safeA;
                     }
                     if (type === 'income' && id) {
                         const name = getIncomeName(id);
@@ -24031,24 +24206,27 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             let totalOpeningStockValue = 0;
 
             Object.values(itemMap).forEach(i => {
-                // Valuation Rate Logic
-                // Purchase Avg: (inVal / inQty) for the period. Fallback to Last Purchase.
+                // Valuation Rate selection based on chosen method
                 const periodAvgCost = i.inQty > 0 ? (i.inVal / i.inQty) : 0;
+                // All-time weighted avg from pre-calculated app-level costs (more accurate than period-only)
+                const globalAvgCost = calculatedCosts[i.id]?.avg || 0;
 
                 let valRate = 0;
-                if (valuationMethod === 'last_purchase') valRate = i.lastPurchaseRate;
-                else if (valuationMethod === 'last_sale') valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
-                else {
-                    // Avg Cost
-                    // Try Period Avg first, then Master Avg? 
-                    // Stock Summary uses: periodAvgCost > 0 ? periodAvgCost : (lastPurchaseRate > 0 ? lastPurchaseRate : 0)
-                    // But standard "Weighted Avg" is usually tracked historically. 
-                    // Since we don't have historical running balance here easily, we use simple logic consistent with Stock Summary.
-                    valRate = periodAvgCost > 0 ? periodAvgCost : i.lastPurchaseRate;
+                if (valuationMethod === 'last_purchase') {
+                    valRate = i.lastPurchaseRate;
+                } else if (valuationMethod === 'last_sale') {
+                    valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
+                } else {
+                    // Avg: prefer period avg → global pre-calculated avg → last purchase rate
+                    valRate = periodAvgCost > 0 ? periodAvgCost : (globalAvgCost > 0 ? globalAvgCost : i.lastPurchaseRate);
                 }
 
-                // Fallback to Master Cost if still 0
-                if (valRate === 0 && calculatedCosts[i.id]?.avg) valRate = calculatedCosts[i.id].avg;
+                // Final fallback: product master price
+                if (!valRate || valRate === 0) {
+                    const prod = products.find(p => p.id === i.id);
+                    valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
+                }
+
 
                 totalOpeningStockValue += (i.openingQty * valRate); // Valuation at constant rate for P&L simplicity or should we use Opening Rate? 
                 // Tally P&L typically values Opening and Closing stock. 
@@ -24092,12 +24270,11 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 { name: "Cash/Bank Balances", amount: cashBank, type: 'accounts' }
             ];
             const liabilities = [
-                { name: "Payables (Creditors)", amount: creditors, type: 'payables' },
-                { name: "Owners Capital", amount: totalCapital, type: 'capital_list' }
+                { name: "Payables (Creditors)", amount: creditors, type: 'payables' }
             ];
 
-            // Equity = Assets - Liabilities
-            const equityValue = assets.reduce((s, i) => s + i.amount, 0) - liabilities.reduce((s, i) => s + i.amount, 0);
+            // Equity = Assets − Creditors  (= Owner's Capital + Net Profit + Mfg Exp Absorbed)
+            const equityValue = assets.reduce((s, i) => s + i.amount, 0) - creditors;
 
             setData({
                 sales: totalSales,
@@ -24114,7 +24291,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 netProfit,
                 assets,
                 liabilities,
-                equityValue
+                equityValue,
+                totalCapital,
+                mfgDirectExpAbsorbed: totalMfgDirectExpenses
             });
 
         } catch (e) { console.error(e); alert("Error: " + e.message); } finally { setLoading(false); }
@@ -24123,219 +24302,305 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={() => { onClose(); setData(null); }} onBack={onBack} title="Financial Statements" maxWidth="max-w-5xl" zIndex={zIndex}>
-            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 mb-6 space-y-4">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                    <div className="flex gap-2 flex-wrap">
-                        <div className="flex bg-white p-1 rounded-lg shadow-sm border">
-                            <button onClick={() => setReportType('balance_sheet')} className={`px-3 py-1.5 text-xs font-bold rounded ${reportType === 'balance_sheet' ? 'bg-blue-100 text-blue-700' : 'text-gray-500'}`}>Balance Sheet</button>
-                            <button onClick={() => setReportType('pnl')} className={`px-3 py-1.5 text-xs font-bold rounded ${reportType === 'pnl' ? 'bg-blue-100 text-blue-700' : 'text-gray-500'}`}>Profit & Loss</button>
+        <Modal 
+            isOpen={isOpen} 
+            onClose={() => { onClose(); setData(null); }} 
+            onBack={onBack} 
+            title="Financial Statements" 
+            maxWidth="max-w-7xl" 
+            zIndex={zIndex}
+            defaultMaximized={true}
+            headerClassName="bg-[#0a2e38] text-white border-b border-white/10 shadow-md"
+            removePadding
+        >
+            <div className="flex-1 flex flex-col h-full bg-[#e2f1f8] overflow-hidden">
+                {/* MODERNIZED FILTER BAR */}
+                <div className="bg-[#114b5f] p-2 border-b border-white/10 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar shadow-lg">
+                    <div className="flex gap-1 flex-nowrap items-center">
+                        {onBack && <button onClick={onBack} className="flex items-center justify-center p-1.5 rounded hover:bg-white/10 text-white/70 hover:text-white transition-colors shrink-0 mr-1" title="Back"><ArrowLeft size={16} /></button>}
+                        <div className="flex bg-black/20 p-1 rounded-md border border-white/10 mr-2">
+                            <button onClick={() => setReportType('balance_sheet')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${reportType === 'balance_sheet' ? 'bg-[#3b82f6] text-white shadow-lg' : 'text-white/60 hover:text-white'}`}>BALANCE SHEET</button>
+                            <button onClick={() => setReportType('pnl')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${reportType === 'pnl' ? 'bg-[#3b82f6] text-white shadow-lg' : 'text-white/60 hover:text-white'}`}>PROFIT & LOSS</button>
                         </div>
 
-                        {/* ✅ VALUATION BUTTONS */}
-                        <div className="flex bg-white p-1 rounded-lg shadow-sm border">
-                            <button onClick={() => setValuationMethod('avg')} className={`px-3 py-1.5 text-xs font-bold rounded ${valuationMethod === 'avg' ? 'bg-yellow-100 text-yellow-700' : 'text-gray-400'}`}>Avg Cost</button>
-                            <button onClick={() => setValuationMethod('last_purchase')} className={`px-3 py-1.5 text-xs font-bold rounded ${valuationMethod === 'last_purchase' ? 'bg-green-100 text-green-700' : 'text-gray-400'}`}>Last Purch. Rate</button>
-                            <button onClick={() => setValuationMethod('last_sale')} className={`px-3 py-1.5 text-xs font-bold rounded ${valuationMethod === 'last_sale' ? 'bg-blue-100 text-blue-700' : 'text-gray-400'}`}>Last Sold Rate</button>
+                        <div className="flex bg-black/20 p-1 rounded-md border border-white/10">
+                            <button onClick={() => setValuationMethod('avg')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'avg' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>AVG COST</button>
+                            <button onClick={() => setValuationMethod('last_purchase')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_purchase' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST PURCH. RATE</button>
+                            <button onClick={() => setValuationMethod('last_sale')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_sale' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST SOLD RATE</button>
                         </div>
                     </div>
 
-                    <div className="relative">
-                        <button onClick={() => setIsLocDropdownOpen(!isLocDropdownOpen)} className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border shadow-sm ${selectedLocs.length > 0 ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-white text-slate-600 border-slate-300'}`}>
-                            <MapPin size={14} /> {selectedLocs.length === 0 ? "All Locations" : `${selectedLocs.length} Selected`} <ChevronDown size={14} />
-                        </button>
-                        {isLocDropdownOpen && (
-                            <div className="absolute top-full right-0 mt-2 w-56 bg-white border rounded-xl shadow-xl z-50 p-2">
-                                <div className="text-[10px] font-bold text-slate-400 uppercase mb-2 px-2">Include Stock From:</div>
-                                <div className="max-h-40 overflow-y-auto space-y-1">
-                                    <label className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer">
-                                        <input type="checkbox" checked={selectedLocs.length === 0} onChange={() => setSelectedLocs([])} className="rounded text-blue-600" />
-                                        <span className="text-sm font-medium">All Locations (Total)</span>
-                                    </label>
-                                    {locations && locations.map(loc => (
-                                        <label key={loc.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer">
-                                            <input type="checkbox" checked={selectedLocs.includes(loc.id)} onChange={() => toggleLocation(loc.id)} className="rounded text-blue-600" />
-                                            <span className="text-sm text-slate-700">{loc.name}</span>
+                    <div className="flex items-center gap-3">
+                        <div className="relative">
+                            <button onClick={() => setIsLocDropdownOpen(!isLocDropdownOpen)} className={`flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase rounded border transition-all ${selectedLocs.length > 0 ? 'bg-purple-600 text-white border-purple-500' : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10'}`}>
+                                <MapPin size={12} /> {selectedLocs.length === 0 ? "All Locations" : `${selectedLocs.length} Selected`} <ChevronDown size={12} />
+                            </button>
+                            {isLocDropdownOpen && (
+                                <div className="absolute top-full right-0 mt-2 w-56 bg-slate-800 border border-white/10 rounded-xl shadow-2xl z-50 p-2 text-white">
+                                    <div className="text-[10px] font-bold text-white/40 uppercase mb-2 px-2">Include Stock From:</div>
+                                    <div className="max-h-40 overflow-y-auto space-y-1 custom-scrollbar">
+                                        <label className="flex items-center gap-2 p-2 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                                            <input type="checkbox" checked={selectedLocs.length === 0} onChange={() => setSelectedLocs([])} className="rounded text-blue-600 bg-slate-700 border-slate-600" />
+                                            <span className="text-[11px] font-bold">All Locations (Total)</span>
                                         </label>
-                                    ))}
-                                </div>
-                                <button onClick={() => setIsLocDropdownOpen(false)} className="w-full mt-2 py-1 bg-blue-50 text-blue-600 text-xs font-bold rounded">Done</button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="flex gap-2 items-end justify-center border-t pt-3">
-                    <div><label className="text-xs font-bold text-slate-500 uppercase">From</label><input type="date" className="p-2 border rounded text-sm" value={dateRange.from} onChange={e => setDateRange({ ...dateRange, from: e.target.value })} /></div>
-                    <div><label className="text-xs font-bold text-slate-500 uppercase">To</label><input type="date" className="p-2 border rounded text-sm" value={dateRange.to} onChange={e => setDateRange({ ...dateRange, to: e.target.value })} /></div>
-                    <button onClick={generateReport} className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 h-[38px] flex items-center gap-2">
-                        {loading ? '...' : <><TrendingUp size={16} /> Generate</>}
-                    </button>
-                </div>
-            </div>
-
-            {data && !loading && (
-                <div className="bg-white border rounded-xl shadow-sm overflow-hidden p-6 animate-in fade-in slide-in-from-bottom-2">
-
-                    {reportType === 'pnl' && (
-                        <div className="max-w-xl mx-auto space-y-2 text-sm">
-                            <h3 className="text-center text-xl font-serif font-bold text-slate-800 border-b pb-4 mb-4">Profit & Loss Statement</h3>
-
-                            <div
-                                className="flex justify-between items-center p-2 bg-blue-50 hover:bg-blue-100 cursor-pointer transition-colors rounded font-bold text-blue-900"
-                                onClick={() => onDrillDown('sales')}
-                                title="Click to view Sales Register"
-                            >
-                                <span>Sales Account (Net)</span>
-                                <span>{formatCurrency(data.sales)}</span>
-                            </div>
-
-                            <div className="bg-red-50 p-3 rounded-lg border border-red-100 space-y-1">
-                                <div className="text-xs font-bold text-red-400 uppercase mb-2">Cost of Goods Sold (COGS)</div>
-                                <div className="flex justify-between text-slate-600"><span>Opening Stock</span><span>{formatCurrency(data.openingStock)}</span></div>
-
-                                <div
-                                    className="flex justify-between text-slate-600 cursor-pointer hover:bg-white p-1 rounded transition-colors"
-                                    onClick={() => onDrillDown('purchase')}
-                                    title="Click to view Purchase Register"
-                                >
-                                    <span>(+) Purchases (Net)</span>
-                                    <span>{formatCurrency(data.purchases)}</span>
-                                </div>
-
-                                {data.directExpensesList.map((exp, i) => (
-                                    <div
-                                        key={i}
-                                        className="flex justify-between text-slate-500 text-xs pl-2 cursor-pointer hover:bg-white p-1 rounded transition-colors"
-                                        onClick={() => onDrillDown('expense', exp.id)}
-                                        title={`Click to view ${exp.name} ledger`}
-                                    >
-                                        <span>(+) {exp.name}</span>
-                                        <span>{formatCurrency(exp.amount)}</span>
+                                        {locations && locations.map(loc => (
+                                            <label key={loc.id} className="flex items-center gap-2 p-2 hover:bg-white/5 rounded cursor-pointer transition-colors">
+                                                <input type="checkbox" checked={selectedLocs.includes(loc.id)} onChange={() => toggleLocation(loc.id)} className="rounded text-blue-600 bg-slate-700 border-slate-600" />
+                                                <span className="text-[11px] text-white/80">{loc.name}</span>
+                                            </label>
+                                        ))}
                                     </div>
-                                ))}
-                                {data.totalDirectExpenses > 0 && (
-                                    <div className="flex justify-between font-bold text-slate-700 pl-2">
-                                        <span>Total Direct Expenses</span>
-                                        <span>{formatCurrency(data.totalDirectExpenses)}</span>
-                                    </div>
-                                )}
-
-                                <div
-                                    className="flex justify-between text-green-700 font-medium border-t border-red-200 pt-1 mt-1 cursor-pointer hover:bg-white p-1 rounded transition-colors"
-                                    onClick={() => onDrillDown('stock')}
-                                    title="Click to view Stock Summary"
-                                >
-                                    <span>(-) Closing Stock</span>
-                                    <span>({formatCurrency(data.closingStock)})</span>
-                                </div>
-
-                                <div className="border-t-2 border-red-200 mt-2 pt-1 flex justify-between font-bold text-red-800">
-                                    <span>Total COGS</span>
-                                    <span>- {formatCurrency(data.openingStock + data.purchases + data.totalDirectExpenses - data.closingStock)}</span>
-                                </div>
-                            </div>
-
-                            <div className="flex justify-between p-3 bg-blue-100 rounded-lg border border-blue-200 font-bold text-lg mt-2">
-                                <span className="text-blue-900">GROSS PROFIT</span>
-                                <span className={data.grossProfit >= 0 ? 'text-green-700' : 'text-red-700'}>{formatCurrency(data.grossProfit)}</span>
-                            </div>
-
-                            {/* Indirect Expenses Breakdown */}
-                            <div className="py-2 space-y-1">
-                                <div className="text-xs font-bold text-slate-400 uppercase border-b border-dashed pb-1 mb-1">Operating Expenses (Indirect)</div>
-                                {data.indirectExpensesList.map((exp, i) => (
-                                    <div
-                                        key={i}
-                                        className="flex justify-between text-slate-600 pl-2 cursor-pointer hover:bg-slate-50 p-1 rounded transition-colors"
-                                        onClick={() => onDrillDown('expense', exp.id)}
-                                        title={`Click to view ${exp.name} ledger`}
-                                    >
-                                        <span>{exp.name}</span>
-                                        <span>{formatCurrency(exp.amount)}</span>
-                                    </div>
-                                ))}
-                                <div className="flex justify-between font-bold text-red-600 border-t pt-1 mt-1 pl-2">
-                                    <span>Total Indirect Expenses</span>
-                                    <span>- {formatCurrency(data.totalIndirectExpenses)}</span>
-                                </div>
-                            </div>
-
-                            {/* Indirect Incomes Breakdown - Moved to separate section */}
-                            {safeNum(data.totalIndirectIncome) !== 0 && (
-                                <div className="py-2 space-y-1 mt-2">
-                                    <div className="text-xs font-bold text-slate-400 uppercase border-b border-dashed pb-1 mb-1">Indirect Incomes</div>
-                                    {data.indirectIncomeList && data.indirectIncomeList.map((inc, i) => (
-                                        <div
-                                            key={i}
-                                            className="flex justify-between text-slate-600 pl-2 cursor-pointer hover:bg-slate-50 p-1 rounded transition-colors"
-                                            onClick={() => onDrillDown('income', inc.id)}
-                                            title={`Click to view ${inc.name} ledger`}
-                                        >
-                                            <span>{inc.name}</span>
-                                            <span>{formatCurrency(inc.amount)}</span>
-                                        </div>
-                                    ))}
-                                    <div className="flex justify-between font-bold text-green-600 border-t pt-1 mt-1 pl-2">
-                                        <span>Total Indirect Incomes</span>
-                                        <span>+ {formatCurrency(data.totalIndirectIncome)}</span>
-                                    </div>
+                                    <button onClick={() => setIsLocDropdownOpen(false)} className="w-full mt-2 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black uppercase rounded transition-colors">Done</button>
                                 </div>
                             )}
+                        </div>
 
-                            <div className="flex justify-between p-4 bg-slate-800 text-white rounded-xl shadow-lg mt-4 text-xl font-bold">
-                                <span>NET PROFIT</span>
-                                <span className={data.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}>{formatCurrency(data.netProfit)}</span>
+                        <div className="h-4 w-[1px] bg-white/10 hidden md:block"></div>
+
+                        <div className="flex items-center gap-1">
+                            <span className="text-[9px] font-black text-white/40 uppercase mr-1 hidden sm:block">From</span>
+                            <input type="date" className="bg-white px-2 py-1 border-0 rounded text-[10px] font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none w-28" value={dateRange.from} onChange={e => setDateRange({ ...dateRange, from: e.target.value })} />
+                            <span className="text-[9px] font-black text-white/40 uppercase mx-1 hidden sm:block">To</span>
+                            <input type="date" className="bg-white px-2 py-1 border-0 rounded text-[10px] font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none w-28" value={dateRange.to} onChange={e => setDateRange({ ...dateRange, to: e.target.value })} />
+                        </div>
+
+                        <button onClick={generateReport} className="bg-[#3b82f6] text-white px-4 py-1.5 rounded text-[10px] font-black uppercase tracking-wider hover:bg-blue-500 shadow-lg flex items-center gap-2 transition-all active:scale-95">
+                            {loading ? <RefreshCw className="animate-spin" size={12} /> : <><TrendingUp size={12} /> GENERATE</>}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-2 md:p-4 custom-scrollbar">
+
+                    {(!data || loading) ? (
+                        <div className="flex flex-col items-center justify-center h-64 gap-4 text-white/60">
+                            {loading ? <><RefreshCw className="animate-spin text-blue-300" size={32} /><span className="text-sm font-bold tracking-widest uppercase">Generating Report...</span></> : <><TrendingUp size={32} className="opacity-30" /><span className="text-sm font-bold tracking-widest uppercase">Click Generate to load report</span></>}
+                        </div>
+                    ) : (
+                        <>
+                        {reportType === 'pnl' && (
+                            <div className="max-w-3xl mx-auto animate-in zoom-in duration-300">
+                                <div className="bg-white border border-blue-200 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans">
+                                    {/* REPORT TITLE BAR */}
+                                    <div className="bg-[#0a2e38] text-white px-4 py-2 flex justify-between items-center border-b border-white/10 shadow-md">
+                                        <span className="text-[9px] font-black uppercase tracking-[0.2em] opacity-60">Financial Statement</span>
+                                        <span className="text-[11px] font-black uppercase tracking-widest text-[#facc15]">Profit & Loss</span>
+                                        <span className="text-[9px] font-mono font-bold opacity-60">{dateRange.from} — {dateRange.to}</span>
+                                    </div>
+
+                                    <div className="p-3 space-y-2">
+                                        <div
+                                            className="flex justify-between items-center px-3 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-100 cursor-pointer transition-all rounded-lg group shadow-sm"
+                                            onClick={() => onDrillDown('sales')}
+                                            title="Click to view Sales Register"
+                                        >
+                                            <span className="font-black text-[11px] text-blue-900 group-hover:translate-x-1 transition-transform uppercase tracking-tighter">Sales Account (Net)</span>
+                                            <span className="font-mono text-sm font-black text-blue-800">{formatCurrency(data.sales)}</span>
+                                        </div>
+
+                                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                                            <div className="bg-red-50 px-3 py-1.5 border-b border-red-100 flex justify-between items-center">
+                                                <span className="text-[9px] font-black text-red-500 uppercase tracking-widest">Cost of Goods Sold (COGS)</span>
+                                            </div>
+                                            <div className="p-2 space-y-1">
+                                                <div className="flex justify-between text-sm py-1 border-b border-slate-50">
+                                                    <span className="font-bold text-slate-500 uppercase text-[10px]">Opening Stock</span>
+                                                    <span className="font-mono font-bold text-slate-600">{formatCurrency(data.openingStock)}</span>
+                                                </div>
+
+                                                <div
+                                                    className="flex justify-between text-sm py-1 border-b border-slate-50 cursor-pointer hover:bg-slate-50 px-1 rounded"
+                                                    onClick={() => onDrillDown('purchase')}
+                                                    title="Click to view Purchase Register"
+                                                >
+                                                    <span className="font-bold text-slate-700 uppercase text-[10px]">(+) Purchases (Net)</span>
+                                                    <span className="font-mono font-bold text-slate-800">{formatCurrency(data.purchases)}</span>
+                                                </div>
+
+                                                {data.directExpensesList.map((exp, i) => (
+                                                    <div
+                                                        key={i}
+                                                        className="flex justify-between text-[11px] py-1 border-b border-slate-50 pl-4 cursor-pointer hover:bg-slate-50 px-1 rounded italic"
+                                                        onClick={() => onDrillDown('expense', exp.id)}
+                                                        title={`Click to view ${exp.name} ledger`}
+                                                    >
+                                                        <span className="text-slate-500">(+) {exp.name}</span>
+                                                        <span className="font-mono">{formatCurrency(exp.amount)}</span>
+                                                    </div>
+                                                ))}
+
+                                                <div
+                                                    className="flex justify-between text-sm py-1 border-b border-slate-50 font-bold cursor-pointer hover:bg-green-50 px-1 rounded text-green-700"
+                                                    onClick={() => onDrillDown('stock')}
+                                                    title="Click to view Stock Summary"
+                                                >
+                                                    <span className="uppercase text-[10px]">(-) Closing Stock</span>
+                                                    <span className="font-mono">({formatCurrency(data.closingStock)})</span>
+                                                </div>
+
+                                                <div className="pt-1 flex justify-between items-end">
+                                                    <span className="text-[10px] font-black text-red-800 uppercase">Total COGS</span>
+                                                    <span className="text-sm font-black text-red-700 font-mono">- {formatCurrency(data.openingStock + data.purchases + data.totalDirectExpenses - data.closingStock)}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex justify-between px-3 py-2 bg-blue-100 rounded-xl border-2 border-blue-200 shadow-inner group">
+                                            <span className="text-blue-900 font-black text-sm tracking-tighter uppercase">GROSS PROFIT</span>
+                                            <span className={`font-mono text-base font-black ${data.grossProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{formatCurrency(data.grossProfit)}</span>
+                                        </div>
+
+                                        <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+                                            <div className="bg-slate-200 px-3 py-1 flex justify-between items-center text-[9px] font-black text-slate-500 uppercase tracking-widest">
+                                                <span>Operating Expenses (Indirect)</span>
+                                            </div>
+                                            <div className="p-2 space-y-1">
+                                                {data.indirectExpensesList.map((exp, i) => (
+                                                    <div
+                                                        key={i}
+                                                        className="flex justify-between text-[11px] font-bold text-slate-600 hover:bg-white p-1 rounded-lg border border-transparent hover:border-slate-200 cursor-pointer transition-all"
+                                                        onClick={() => onDrillDown('expense', exp.id)}
+                                                    >
+                                                        <span>{exp.name}</span>
+                                                        <span className="font-mono">{formatCurrency(exp.amount)}</span>
+                                                    </div>
+                                                ))}
+                                                <div className="flex justify-between font-black text-red-600 border-t border-slate-200 pt-2 mt-1 text-[10px] uppercase">
+                                                    <span>Total Indirect Expenses</span>
+                                                    <span className="font-mono">- {formatCurrency(data.totalIndirectExpenses)}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {safeNum(data.totalIndirectIncome) !== 0 && (
+                                            <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+                                                 <div className="bg-green-100 px-3 py-1 flex justify-between items-center text-[9px] font-black text-green-600 uppercase tracking-widest">
+                                                    <span>Indirect Incomes</span>
+                                                </div>
+                                                <div className="p-2 space-y-1">
+                                                    {data.indirectIncomeList && data.indirectIncomeList.map((inc, i) => (
+                                                        <div key={i} className="flex justify-between text-[11px] font-bold text-slate-600 hover:bg-white p-1 rounded-lg border border-transparent hover:border-slate-200 cursor-pointer transition-all" onClick={() => onDrillDown('income', inc.id)}>
+                                                            <span>{inc.name}</span>
+                                                            <span className="font-mono">{formatCurrency(inc.amount)}</span>
+                                                        </div>
+                                                    ))}
+                                                    <div className="flex justify-between font-black text-green-600 border-t border-slate-200 pt-2 mt-1 text-[10px] uppercase">
+                                                        <span>Total Indirect Incomes</span>
+                                                        <span className="font-mono">+ {formatCurrency(data.totalIndirectIncome)}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="flex justify-between px-4 py-2.5 bg-[#0a2e38] text-white rounded-xl shadow-2xl mt-2 border-b-4 border-blue-500 overflow-hidden relative">
+                                            <div className="absolute top-0 right-0 p-1 opacity-5"><TrendingUp size={60} /></div>
+                                            <span className="font-black text-sm tracking-tighter uppercase relative z-10">NET PROFIT</span>
+                                            <span className={`font-mono text-lg font-black relative z-10 ${data.netProfit >= 0 ? 'text-[#4ade80]' : 'text-red-400'}`}>{formatCurrency(data.netProfit)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {reportType === 'balance_sheet' && (
+                        <div className="animate-in slide-in-from-right duration-500">
+                             <div className="bg-white border border-blue-200 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans max-w-5xl mx-auto">
+                                    {/* REPORT TITLE BAR */}
+                                    <div className="bg-[#0a2e38] text-white p-3 flex justify-between items-center border-b border-white/10 shadow-md">
+                                        <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60">Financial Statement</span>
+                                        <span className="text-sm font-black uppercase tracking-widest text-[#facc15]">Balance Sheet</span>
+                                        <span className="text-[10px] font-mono font-bold opacity-60">As of {dateRange.to}</span>
+                                    </div>
+
+                                    <div className="p-6">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+                                            {/* LIABILITIES SIDE */}
+                                            <div className="bg-white p-6 space-y-6">
+                                                <div className="bg-red-50 p-3 rounded-lg text-red-800 font-black text-center border border-red-100 uppercase text-[10px] tracking-widest">Liabilities & Equity</div>
+                                                
+                                                <div className="space-y-4">
+                                                    <div>
+                                                        <h5 className="font-black text-slate-400 text-[10px] uppercase tracking-wider mb-2 border-b pb-1">Current Liabilities</h5>
+                                                        <div className="space-y-1">
+                                                            {data.liabilities.map((l, i) => (
+                                                                <div key={i} className="flex justify-between text-sm font-bold text-slate-700 hover:bg-slate-50 cursor-pointer p-2 rounded-lg transition-all group" onClick={() => onDrillDown(l.type)}>
+                                                                    <span className="group-hover:text-blue-600 underline decoration-dotted">{l.name}</span>
+                                                                    <span className="font-mono text-slate-900">{formatCurrency(l.amount)}</span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                    <div className="pt-4">
+                                                        <h5 className="font-black text-slate-400 text-[10px] uppercase tracking-wider mb-2 border-b pb-1">Owner's Equity</h5>
+                                                        <div className="space-y-0.5">
+                                                            <div className="flex justify-between text-sm font-bold text-slate-700 hover:bg-slate-50 cursor-pointer p-2 rounded-lg group" onClick={() => onDrillDown('capital_list')}>
+                                                                <span className="group-hover:text-blue-600 underline decoration-dotted">Owner's Capital</span>
+                                                                <span className="font-mono text-slate-900">{formatCurrency(data.totalCapital)}</span>
+                                                            </div>
+                                                            <div className="flex justify-between text-sm font-bold text-slate-700 p-2">
+                                                                <span className="italic">Net Profit / (Loss)</span>
+                                                                <span className={`font-mono ${(data.netProfit || 0) >= 0 ? 'text-green-700' : 'text-red-600'}`}>{formatCurrency(data.netProfit)}</span>
+                                                            </div>
+                                                            {(data.mfgDirectExpAbsorbed || 0) > 0 && (
+                                                                <div className="flex justify-between text-sm font-bold p-2 bg-amber-50 rounded-lg border border-amber-100" title="Manufacturing direct expenses absorbed into produced goods stock value">
+                                                                    <span className="text-amber-700 italic">(+) Direct Exp Absorbed in Stock</span>
+                                                                    <span className="font-mono text-amber-700">{formatCurrency(data.mfgDirectExpAbsorbed)}</span>
+                                                                </div>
+                                                            )}
+                                                            <div className="flex justify-between text-[10px] font-black text-slate-500 uppercase px-2 pt-2 border-t border-slate-200 mt-1">
+                                                                <span>Total Equity</span>
+                                                                <span className={`font-mono font-black ${(data.equityValue || 0) >= 0 ? 'text-green-700' : 'text-red-600'}`}>{formatCurrency(data.equityValue)}</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="mt-8 pt-4 border-t-4 border-[#0a2e38] flex justify-between items-end">
+                                                    <span className="font-black text-xl uppercase tracking-tighter text-[#0a2e38]">Total</span>
+                                                    <div className="text-right">
+                                                        <div className="text-[10px] font-black text-slate-400 uppercase">Liabilities Total</div>
+                                                        <span className="text-2xl font-black font-mono text-[#0a2e38]">{formatCurrency(data.liabilities.reduce((s, i) => s + i.amount, 0) + data.equityValue)}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* ASSETS SIDE */}
+                                            <div className="bg-white p-6 space-y-6 border-l border-slate-100">
+                                                <div className="bg-green-50 p-3 rounded-lg text-green-800 font-black text-center border border-green-100 uppercase text-[10px] tracking-widest">Assets</div>
+                                                
+                                                <div className="space-y-4">
+                                                    <div>
+                                                        <h5 className="font-black text-slate-400 text-[10px] uppercase tracking-wider mb-2 border-b pb-1">Current Assets</h5>
+                                                        <div className="space-y-1">
+                                                            {data.assets.map((a, i) => (
+                                                                <div key={i} className="flex justify-between text-sm font-bold text-slate-700 hover:bg-slate-50 cursor-pointer p-2 rounded-lg transition-all group" onClick={() => onDrillDown(a.type)}>
+                                                                    <span className="group-hover:text-blue-600 underline decoration-dotted">{a.name}</span>
+                                                                    <span className="font-mono text-slate-900">{formatCurrency(a.amount)}</span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="mt-auto h-full flex flex-col justify-end">
+                                                    <div className="pt-8 border-t-4 border-[#0a2e38] flex justify-between items-end">
+                                                        <span className="font-black text-xl uppercase tracking-tighter text-[#0a2e38]">Total</span>
+                                                        <div className="text-right">
+                                                            <div className="text-[10px] font-black text-slate-400 uppercase">Assets Total</div>
+                                                            <span className="text-2xl font-black font-mono text-[#0a2e38]">{formatCurrency(data.assets.reduce((s, i) => s + i.amount, 0))}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                             </div>
                         </div>
                     )}
-
-                    {reportType === 'balance_sheet' && (
-                        <div>
-                            <h3 className="text-center text-xl font-serif font-bold text-slate-800 border-b pb-4 mb-6">Balance Sheet</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                <div className="space-y-4">
-                                    <div className="bg-red-50 p-3 rounded text-red-800 font-bold text-center border border-red-100 uppercase text-xs tracking-wider">Liabilities & Equity</div>
-                                    <div className="space-y-2 pl-2">
-                                        <h5 className="font-bold text-slate-700 text-sm border-b w-fit">Current Liabilities</h5>
-                                        {data.liabilities.map((l, i) => (
-                                            <div key={i} className="flex justify-between text-sm text-slate-600 hover:bg-slate-50 cursor-pointer p-1 rounded" onClick={() => onDrillDown(l.type)}>
-                                                <span className="underline decoration-dotted">{l.name}</span>
-                                                <span className="font-mono">{formatCurrency(l.amount)}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className="space-y-2 pl-2 mt-6">
-                                        <h5 className="font-bold text-slate-700 text-sm border-b w-fit">Owner's Equity</h5>
-                                        <div className="flex justify-between text-sm text-slate-600"><span>Capital & Net Profit</span><span className="font-mono">{formatCurrency(data.equityValue)}</span></div>
-                                    </div>
-                                    <div className="mt-auto pt-4 border-t-2 border-slate-800 flex justify-between font-bold text-lg">
-                                        <span>Total</span>
-                                        <span>{formatCurrency(data.liabilities.reduce((s, i) => s + i.amount, 0) + data.equityValue)}</span>
-                                    </div>
-                                </div>
-
-                                <div className="space-y-4">
-                                    <div className="bg-green-50 p-3 rounded text-green-800 font-bold text-center border border-green-100 uppercase text-xs tracking-wider">Assets</div>
-                                    <div className="space-y-2 pl-2">
-                                        <h5 className="font-bold text-slate-700 text-sm border-b w-fit">Current Assets</h5>
-                                        {data.assets.map((a, i) => (
-                                            <div key={i} className="flex justify-between text-sm text-slate-600 hover:bg-slate-50 cursor-pointer p-1 rounded" onClick={() => onDrillDown(a.type)}>
-                                                <span className="underline decoration-dotted">{a.name}</span>
-                                                <span className="font-mono">{formatCurrency(a.amount)}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className="mt-auto pt-4 border-t-2 border-slate-800 flex justify-between font-bold text-lg">
-                                        <span>Total</span>
-                                        <span>{formatCurrency(data.assets.reduce((s, i) => s + i.amount, 0))}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                        </>
                     )}
                 </div>
-            )}
+            </div>
 
             <ChangeDateModal
                 isOpen={isDateOpen}
@@ -25168,7 +25433,7 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
 };
 
 // --- GLOBAL SEARCH MODAL (F4) ---
-const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeAccounts, assetAccounts, accounts, capitalAccounts, onSelect, user, dataOwnerId, userRole }) => {
+const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directExpenseAccounts = [], incomeAccounts, assetAccounts, accounts, capitalAccounts, onSelect, user, dataOwnerId, userRole }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [activeTab, setActiveTab] = useState('all'); // all, party, expense, income, asset, capital, bank
     const [currentPage, setCurrentPage] = useState(1);
@@ -25188,7 +25453,8 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeA
     const allData = useMemo(() => {
         const list = [];
         if (parties) parties.forEach(p => list.push({ ...p, type: 'party', typeLabel: 'Customer' }));
-        if (expenses) expenses.forEach(e => list.push({ ...e, type: 'expense', typeLabel: 'Expense' }));
+        if (expenses) expenses.forEach(e => list.push({ ...e, type: 'expense', typeLabel: 'Indirect Exp' }));
+        if (directExpenseAccounts) directExpenseAccounts.forEach(e => list.push({ ...e, type: 'direct_expense', typeLabel: 'Direct Exp' }));
         if (incomeAccounts) incomeAccounts.forEach(i => list.push({ ...i, type: 'income', typeLabel: 'Income' }));
         if (assetAccounts) assetAccounts.forEach(a => list.push({ ...a, type: 'asset', typeLabel: 'Asset' }));
         if (accounts) accounts.forEach(a => list.push({ ...a, type: 'account', typeLabel: 'Cash/Bank' }));
@@ -25197,10 +25463,13 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeA
 
         if (capitalAccounts) capitalAccounts.forEach(c => list.push({ ...c, type: 'capital', typeLabel: 'Capital' }));
         return list;
-    }, [parties, expenses, incomeAccounts, assetAccounts, accounts, capitalAccounts]);
+    }, [parties, expenses, directExpenseAccounts, incomeAccounts, assetAccounts, accounts, capitalAccounts]);
 
     const filtered = allData.filter(item => {
-        if (activeTab !== 'all' && item.type !== (activeTab === 'bank' ? 'account' : activeTab)) return false;
+        if (activeTab === 'all') { /* show all */ }
+        else if (activeTab === 'bank' && item.type !== 'account') return false;
+        else if (activeTab === 'direct_expense' && item.type !== 'direct_expense') return false;
+        else if (activeTab !== 'bank' && activeTab !== 'direct_expense' && item.type !== activeTab) return false;
         if (!searchTerm) return true;
         return item.name.toLowerCase().includes(searchTerm.toLowerCase());
     });
@@ -25352,15 +25621,15 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeA
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} zIndex={zIndex} title="Go To / Search Report" maxWidth="max-w-4xl" centerTitle={true}>
-            <div className="flex flex-col h-[70vh]">
+        <Modal isOpen={isOpen} onClose={onClose} zIndex={zIndex} title="Go To / Search Report" maxWidth="max-w-5xl" centerTitle={true} defaultMaximized={true}>
+            <div className="flex flex-col h-full">
                 {/* Search Bar */}
-                <div className="relative mb-4">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={24} />
+                <div className="relative mb-2">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
                     <input
                         ref={inputRef}
                         type="text"
-                        className="w-full pl-12 p-4 text-xl font-bold border rounded-xl shadow-inner bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                        className="w-full pl-9 p-2 text-sm font-bold border rounded-lg shadow-inner bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                         placeholder="Type to search any ledger..."
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
@@ -25373,14 +25642,23 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeA
 
 
                 {/* Tabs */}
-                <div className="flex gap-2 overflow-x-auto pb-2 mb-2 no-scrollbar">
-                    {['all', 'party', 'expense', 'income', 'asset', 'capital', 'bank'].map(tab => (
+                <div className="flex gap-1.5 overflow-x-auto pb-1.5 mb-1.5 no-scrollbar">
+                    {[
+                        { key: 'all', label: 'ALL' },
+                        { key: 'party', label: 'PARTY' },
+                        { key: 'expense', label: 'INDIRECT EXP' },
+                        { key: 'direct_expense', label: 'DIRECT EXP' },
+                        { key: 'income', label: 'INCOME' },
+                        { key: 'asset', label: 'ASSET' },
+                        { key: 'capital', label: 'CAPITAL' },
+                        { key: 'bank', label: 'BANK / CASH' },
+                    ].map(({ key, label }) => (
                         <button
-                            key={tab}
-                            onClick={() => setActiveTab(tab)}
-                            className={`px-4 py-2 rounded-full text-sm font-bold uppercase whitespace-nowrap transition-colors ${activeTab === tab ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                            key={key}
+                            onClick={() => setActiveTab(key)}
+                            className={`px-3 py-1 rounded-full text-xs font-bold uppercase whitespace-nowrap transition-colors ${activeTab === key ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                         >
-                            {tab === 'bank' ? 'Bank / Cash' : tab} {activeTab === tab && `(${filtered.length})`}
+                            {label} {activeTab === key && `(${filtered.length})`}
                         </button>
                     ))}
                 </div>
@@ -25394,10 +25672,10 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeA
                         </div>
                     ) : (
                         <table className="w-full text-left">
-                            <thead className="bg-slate-50 text-slate-500 sticky top-0 uppercase text-xs font-bold">
+                            <thead className="bg-slate-50 text-slate-500 sticky top-0 uppercase text-[10px] font-bold">
                                 <tr>
-                                    <th className="p-3 pl-4">Ledger Name</th>
-                                    <th className="p-3 pr-4">Type</th>
+                                    <th className="p-2 pl-3">Ledger Name</th>
+                                    <th className="p-2 pr-3">Type</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
@@ -25407,16 +25685,17 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, incomeA
                                         onClick={() => { onSelect(item.type === 'report' ? item.reportType : item.type, item.id); onClose(); }}
                                         className={`cursor-pointer transition-colors group ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'} hover:bg-blue-50`}
                                     >
-                                        <td className="p-3 pl-4">
-                                            <div className="font-bold text-slate-700 group-hover:text-blue-700 text-base">{item.name}</div>
+                                        <td className="p-2 pl-3">
+                                            <div className="font-bold text-slate-700 group-hover:text-blue-700 text-sm">{item.name}</div>
                                         </td>
-                                        <td className="p-3 pr-4">
-                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider
+                                        <td className="p-2 pr-3">
+                                            <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider
                                                 ${item.type === 'party' ? 'bg-blue-100 text-blue-700' :
                                                     item.type === 'expense' ? 'bg-orange-100 text-orange-700' :
-                                                        item.type === 'income' ? 'bg-green-100 text-green-700' :
-                                                            item.type === 'account' ? 'bg-purple-100 text-purple-700' :
-                                                                'bg-gray-100 text-gray-700'}`}>
+                                                        item.type === 'direct_expense' ? 'bg-red-100 text-red-700' :
+                                                            item.type === 'income' ? 'bg-green-100 text-green-700' :
+                                                                item.type === 'account' ? 'bg-purple-100 text-purple-700' :
+                                                                    'bg-gray-100 text-gray-700'}`}>
                                                 {item.typeLabel}
                                             </span>
                                         </td>
@@ -25467,7 +25746,7 @@ const Toast = ({ toast, onClose }) => {
     useEffect(() => {
         const timer = setTimeout(() => {
             onClose();
-        }, 2000); // Auto-hide in 2 seconds max
+        }, 600); // Auto-hide in 600ms
         return () => clearTimeout(timer);
     }, [toast, onClose]);
 

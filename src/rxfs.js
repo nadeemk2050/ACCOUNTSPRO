@@ -335,9 +335,26 @@ export const deleteDoc = async (docRef) => {
     const id = parts[parts.length - 1];
 
     if (!db.offline_records) return;
-    const exist = await db.offline_records.findOne({ selector: { id } }).exec();
-    if (exist) {
-        await exist.remove();
+
+    // Re-fetch fresh on each attempt to avoid _rev conflict with background sync
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const fresh = await db.offline_records.findOne({ selector: { id } }).exec();
+        if (!fresh) return; // already deleted
+        try {
+            await fresh.remove();
+            return; // success
+        } catch (e) {
+            const isConflict = e?.rxdb === true || e?.code === 'CONFLICT' ||
+                (e?.message && e.message.includes('CONFLICT')) ||
+                (e?.parameters?.writeError?.status === 409);
+            if (isConflict && attempt < MAX_RETRIES - 1) {
+                // Small back-off then retry with freshly fetched revision
+                await new Promise(r => setTimeout(r, 30 * (attempt + 1)));
+                continue;
+            }
+            throw e;
+        }
     }
 };
 
