@@ -369,6 +369,19 @@ export const registerCompanyAsLiveInFirestore = async (companyId, companyName, s
 
         if (!resolvedName) resolvedName = 'Untitled Company';
 
+        try {
+            const master = await getMasterDB();
+            const localCo = await master.companies.findOne({ selector: { id: companyId } }).exec();
+            if (localCo && license?.email) {
+                const creator = (localCo.createdBy || '').toLowerCase();
+                // Prevent hijacking: don't sync to cloud if it explicitly belongs to someone else
+                if (creator && creator !== 'unknown' && creator !== license.email.toLowerCase()) {
+                    console.warn(`[LIVE] Aborting registry update for ${companyId}: Not owned by current user.`);
+                    return; 
+                }
+            }
+        } catch(e) {}
+
         const data = {
             id: companyId,
             name: resolvedName,
@@ -578,17 +591,26 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
         const existingEntry = await master.companies.findOne({ selector: { id: companyId } }).exec();
         if (!existingEntry) {
             // Create the company entry in local master with the SAME ID as Firebase
+            // Include createdBy so listCompanies() filter doesn't hide it
+            const currentUserEmail = (typeof window !== 'undefined' && window.nadtallyLicense?.email)
+                ? window.nadtallyLicense.email.toLowerCase()
+                : (auth.currentUser?.email || '');
             await master.companies.insert({
                 id: companyId,
                 name: companyName,
                 createdAt: Date.now(),
+                createdBy: currentUserEmail,
                 settings: { isLive: true }
             });
             console.log(`[DOWNLOAD] Created local master entry for '${companyName}'.`);
         } else {
-            // Update it to be marked as live
+            // Update it to be marked as live; preserve or restore createdBy so it appears in listCompanies()
+            const currentUserEmail = (typeof window !== 'undefined' && window.nadtallyLicense?.email)
+                ? window.nadtallyLicense.email.toLowerCase()
+                : (auth.currentUser?.email || existingEntry.createdBy || '');
             await existingEntry.patch({
                 name: companyName || existingEntry.name,
+                createdBy: existingEntry.createdBy || currentUserEmail,
                 settings: {
                     ...existingEntry.settings,
                     isLive: true

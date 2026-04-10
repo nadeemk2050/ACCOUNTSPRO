@@ -197,9 +197,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             }
 
             const baseConstraints = [where('userId', '==', targetUid), ...dateConstraints];
-            if (userRole === 'data_entry_1') {
-                baseConstraints.push(where('createdBy', '==', user.uid));
-            }
+
 
             // Helper to build row data
             const buildRow = (doc, d, extra) => {

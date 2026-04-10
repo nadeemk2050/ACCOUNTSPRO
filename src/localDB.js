@@ -254,7 +254,21 @@ export const getDeviceNames = async () => {
 export const listCompanies = async () => {
     const master = await getMasterDB();
     const results = await master.companies.find().exec();
-    return results.map(d => d.toJSON());
+    let comps = results.map(d => d.toJSON());
+    
+    // Attempt to isolate data for the current user
+    const currentUserEmail = typeof window !== 'undefined' && window.nadtallyLicense?.email 
+        ? window.nadtallyLicense.email.toLowerCase() 
+        : null;
+        
+    if (currentUserEmail) {
+        comps = comps.filter(co => {
+            const creator = (co.createdBy || '').toLowerCase();
+            return creator === currentUserEmail;
+        });
+    }
+
+    return comps;
 };
 
 export const importJSONBackup = async (jsonData, isEncrypted = false, password = '') => {

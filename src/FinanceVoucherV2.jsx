@@ -12,6 +12,7 @@ import {
     Printer, Download, Eye, AlertCircle, TrendingUp, TrendingDown
 } from 'lucide-react';
 import DocumentGeneratorV2 from './DocumentGeneratorV2';
+import DateInput from './DateInput';
 import {
     collection, serverTimestamp, query, where,
     doc, runTransaction, onSnapshot
@@ -131,8 +132,10 @@ const FinanceVoucherV2 = ({
     const [focusIndex, setFocusIndex] = useState(0); // For rows
     const [focusField, setFocusField] = useState('source'); 
 
+    const refNoRef = useRef(null);
     const dateRef = useRef(null);
     const narrationRef = useRef(null);
+    const saveButtonRef = useRef(null);
 
     // Listen for global Alt+S to save
     useEffect(() => {
@@ -156,7 +159,6 @@ const FinanceVoucherV2 = ({
 
     useEffect(() => {
         if (!isOpen) return;
-        if (initialData) {
             setFormData({
                 date: initialData.date || new Date().toISOString().split('T')[0],
                 refNo: initialData.refNo || '',
@@ -166,14 +168,16 @@ const FinanceVoucherV2 = ({
                 narration: initialData.narration || '',
             });
             setRows(initialData.rows || [{ accountId: '', amount: '', narration: '' }]);
-            setFocusField('source');
+            setFocusField('refNo');
+            setTimeout(() => refNoRef.current?.focus(), 100);
         } else {
             setFormData({
                 date: lastDate || new Date().toISOString().split('T')[0],
                 refNo: '', sourceId: '', currencyId: 'BASE', exchangeRate: 1, narration: '',
             });
             setRows([{ accountId: '', amount: '', narration: '' }]);
-            setFocusField('source');
+            setFocusField('refNo');
+            setTimeout(() => refNoRef.current?.focus(), 100);
         }
     }, [isOpen, initialData]);
 
@@ -251,7 +255,11 @@ const FinanceVoucherV2 = ({
 
     // Keyboard Flow Helpers
     const moveToNext = (v) => {
-        if (focusField === 'source') {
+        if (focusField === 'refNo') {
+            setFocusField('date');
+        } else if (focusField === 'date') {
+            setFocusField('source');
+        } else if (focusField === 'source') {
             setFocusField('ledger');
             setFocusIndex(0);
         } else if (focusField === 'ledger') {
@@ -298,24 +306,29 @@ const FinanceVoucherV2 = ({
                         </div>
 
                         {/* 2. Voucher Number */}
-                        <div className="flex items-center gap-2 bg-black/20 p-1 px-2.5 rounded-lg border border-white/10 shadow-inner backdrop-blur-sm">
+                        <div className="flex items-center gap-2 bg-black/20 p-1 px-2.5 rounded-lg border border-white/10 shadow-inner backdrop-blur-sm transition-all focus-within:ring-2 focus-within:ring-blue-400">
                             <span className="text-[10px] font-black text-blue-100 uppercase tracking-tight opacity-60">Vch No.</span>
                             <input 
+                                ref={refNoRef}
                                 className="bg-transparent border-none w-24 px-1.5 py-0.5 outline-none text-white font-black text-sm placeholder-white/30" 
-                                value={formData.refNo || (initialData?.id?.substring(0,8).toUpperCase() || '')} 
+                                value={formData.refNo || ''} 
                                 onChange={e => setFormData(p => ({ ...p, refNo: e.target.value }))}
+                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); moveToNext(); } }}
+                                onFocus={() => setFocusField('refNo')}
+                                placeholder="Ref..."
                             />
                         </div>
 
                         {/* 3. Tools Group */}
-                        <div className="flex items-center gap-3 bg-black/20 p-1 px-3 rounded-lg border border-white/10 shadow-inner backdrop-blur-sm">
+                        <div className={`flex items-center gap-3 bg-black/20 p-1 px-3 rounded-lg border shadow-inner backdrop-blur-sm transition-all ${focusField === 'date' ? 'border-yellow-400/50 ring-2 ring-yellow-400/20 bg-yellow-400/10' : 'border-white/10'}`}>
                             <div className="flex flex-col border-r border-white/10 pr-3">
                                 <span className="text-[9px] font-black text-blue-100 uppercase tracking-tighter mb-0.5 opacity-60">Voucher Date</span>
-                                <input 
-                                    type="date"
-                                    className="text-[11px] font-bold text-white bg-transparent border-none focus:ring-0 p-0 w-28 cursor-pointer [color-scheme:dark]"
+                                <DateInput
                                     value={formData.date || ''}
                                     onChange={e => setFormData(p => ({ ...p, date: e.target.value }))}
+                                    onEnter={moveToNext}
+                                    onFocus={() => setFocusField('date')}
+                                    className="text-[11px] font-bold text-white bg-transparent border-none focus:ring-0 p-0 w-24 cursor-pointer"
                                 />
                             </div>
                             <div className="flex flex-col">
@@ -344,14 +357,6 @@ const FinanceVoucherV2 = ({
                         </div>
 
                         <div className="w-px h-8 bg-white/10 mx-1"></div>
-
-                        <button 
-                            onClick={onClose} 
-                            className="flex items-center gap-1.5 px-4 py-2 bg-white/10 hover:bg-red-500 hover:text-white text-white border border-white/20 rounded-lg font-black text-xs transition-all active:scale-90"
-                        >
-                            <span className="text-[9px] uppercase tracking-widest leading-none">Quit Voucher</span>
-                            <X size={14} strokeWidth={3} />
-                        </button>
                     </div>
                 </div>
 
@@ -477,11 +482,25 @@ const FinanceVoucherV2 = ({
 
                     <div className="flex items-center justify-between pt-2">
                         <div className="flex items-center gap-3">
-                            <button onClick={onClose} className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 text-[12px] font-black uppercase tracking-widest border border-white/20 rounded shadow-sm transition-all active:scale-95">Q: Quit</button>
-                            <button onClick={() => setShowGenModal(true)} className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 text-[12px] font-black uppercase tracking-widest border border-white/20 rounded shadow-sm transition-all active:scale-95">P: Print</button>
+                            <button onClick={onClose} className="bg-white/10 hover:bg-red-500/80 text-white px-6 py-2 text-[12px] font-black uppercase tracking-widest border border-white/20 rounded shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                                <X size={14} /> ESC: Quit
+                            </button>
+                            <button onClick={() => setShowGenModal(true)} className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 text-[12px] font-black uppercase tracking-widest border border-white/20 rounded shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                                <Printer size={14} /> P: Print
+                            </button>
+                            <button onClick={() => {/* Download Logic */}} className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 text-[12px] font-black uppercase tracking-widest border border-white/20 rounded shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                                <Download size={14} /> D: Download
+                            </button>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button onClick={() => setShowAcceptPrompt(true)} className="bg-white text-[#00457c] hover:bg-blue-50 px-10 py-2 text-[12px] font-black uppercase tracking-[0.2em] rounded-lg shadow-[0_4px_14px_0_rgba(255,255,255,0.2)] transition-all active:scale-95">A: Accept Transaction</button>
+                            <button 
+                                ref={saveButtonRef}
+                                onClick={() => setShowAcceptPrompt(true)} 
+                                onKeyDown={e => { if (e.key === 'Enter') setShowAcceptPrompt(true); }}
+                                className="bg-white text-[#00457c] hover:bg-blue-50 px-10 py-2 text-[12px] font-black uppercase tracking-[0.2em] rounded-lg shadow-[0_4px_14px_0_rgba(255,255,255,0.2)] transition-all active:scale-95 flex items-center gap-2"
+                            >
+                                <Save size={16} /> A: Accept Transaction
+                            </button>
                         </div>
                     </div>
                 </div>

@@ -12,6 +12,7 @@ import {
     CreditCard
 } from 'lucide-react';
 import DocumentGeneratorV2 from './DocumentGeneratorV2';
+import DateInput from './DateInput';
 import {
     collection, serverTimestamp, query, where,
     doc, runTransaction, onSnapshot, getDocs, limit, deleteField
@@ -45,6 +46,7 @@ const V2Select = ({ options = [], value, onChange, placeholder = 'Search...', on
             <button
                 type="button"
                 onClick={() => setOpen(o => !o)}
+                onFocus={() => setOpen(true)}
                 className={`w-full flex items-center justify-between gap-1 border rounded px-3 text-left text-slate-800 bg-white hover:border-blue-400 focus:ring-2 focus:ring-blue-50/50 focus:outline-none transition-all h-[36px] text-xs border-slate-300 shadow-sm`}
             >
                 <span className={selected ? 'font-bold text-slate-800' : 'text-slate-400'}>
@@ -643,6 +645,12 @@ const InventoryVoucherV2 = ({
         }
     }, [isOpen, initialData]);
 
+    useEffect(() => {
+        if (isOpen && refNoRef.current) {
+            setTimeout(() => refNoRef.current?.focus(), 100);
+        }
+    }, [isOpen]);
+
     const handleJumboFinish = (bags) => {
         setJumboBags(bags);
         setShowJumboEntry(false);
@@ -721,12 +729,11 @@ const InventoryVoucherV2 = ({
                         <div className="flex items-center gap-3 bg-black/20 p-1 px-3 rounded-lg border border-white/10 shadow-inner backdrop-blur-sm h-[40px]">
                             <div className="flex flex-col">
                                 <span className="text-[8px] font-black text-blue-100 uppercase tracking-tighter opacity-60">Voucher Date</span>
-                                <input
-                                    ref={dateInputRef}
-                                    type="date"
-                                    className="text-[11px] font-bold text-white bg-transparent border-none focus:ring-0 p-0 w-28 cursor-pointer [color-scheme:dark]"
+                                <DateInput
                                     value={formData.date || ''}
                                     onChange={e => setFormData(p => ({ ...p, date: e.target.value }))}
+                                    onEnter={() => document.querySelector('input[placeholder="Buyer PO Ref"], input[placeholder="Supp. Inv No."]')?.focus()}
+                                    className="text-[11px] font-bold text-white bg-transparent border-none focus:ring-0 p-0 w-24 cursor-pointer"
                                 />
                             </div>
                             <div className="w-px h-6 bg-white/10"></div>
@@ -744,7 +751,7 @@ const InventoryVoucherV2 = ({
                         </div>
 
                         <div className="bg-white/10 p-1 rounded-lg border border-white/10 h-[40px] flex items-center">
-                            <button type="button" onClick={() => setShowGenModal(true)} className="w-9 h-full flex items-center justify-center hover:bg-white/10 text-white transition-all" title="Print Document"><Printer size={16} /></button>
+                            <span className="text-[10px] font-black text-blue-100 uppercase px-3 opacity-60">Control Panel</span>
                         </div>
 
                         <button
@@ -763,7 +770,15 @@ const InventoryVoucherV2 = ({
                 <div className="flex-shrink-0 bg-white border-b border-slate-200 px-8 py-6">
                     <div className="flex flex-nowrap items-end gap-10">
                         <div className="w-52 flex flex-col gap-1">
-                            <input ref={refNoRef} type="text" placeholder="Ref No." className="w-full border-2 border-blue-500/20 rounded-xl px-4 h-[46px] text-lg font-mono font-bold text-blue-900 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 bg-blue-50/20 shadow-sm transition-all text-center tracking-widest" value={formData.refNo || ''} onChange={e => setFormData(p => ({ ...p, refNo: e.target.value }))} />
+                            <input 
+                                ref={refNoRef} 
+                                type="text" 
+                                placeholder="Ref No." 
+                                className="w-full border-2 border-blue-500/20 rounded-xl px-4 h-[46px] text-lg font-mono font-bold text-blue-900 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 bg-blue-50/20 shadow-sm transition-all text-center tracking-widest" 
+                                value={formData.refNo || ''} 
+                                onChange={e => setFormData(p => ({ ...p, refNo: e.target.value }))} 
+                                onKeyDown={e => { if (e.key === 'Enter') dateInputRef.current?.focus(); }}
+                            />
                         </div>
 
                         {/* ── Payment Terms ── */}
@@ -1085,6 +1100,41 @@ const InventoryVoucherV2 = ({
                                     <span>≈ {currencySymbol} {fmt(totals.grandTotalBase)}</span>
                                 </div>
                             )}
+                        </div>
+                </div>
+
+                {/* === STANDARDIZED FOOTER ACTIONS === */}
+                <div className="flex-shrink-0 bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] p-5 shadow-[0_-8px_30px_rgba(0,0,0,0.3)] z-30">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <button onClick={onClose} className="bg-white/10 hover:bg-red-500/80 text-white px-4 h-[40px] text-[10px] font-black uppercase tracking-widest border border-white/20 rounded-lg transition-all active:scale-95 flex items-center gap-2" title="ESC: Close">
+                                <X size={16} />
+                            </button>
+                            <button onClick={() => setShowGenModal(true)} className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all active:scale-95 border border-white/20" title="P: Print / PDF">
+                                <Printer size={18} />
+                            </button>
+                            <button onClick={() => {/* Download Logic */}} className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all active:scale-95 border border-white/20" title="D: Download">
+                                <Download size={18} />
+                            </button>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                            <div className="bg-white/95 px-6 h-[50px] rounded-xl border border-white/20 flex items-center gap-4 shadow-2xl">
+                                <div className="flex flex-col items-end">
+                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest opacity-60">Payable Total</span>
+                                    <div className="text-xl font-black text-slate-800 font-mono leading-none tracking-tighter">{currentSym} {fmt(totals.grandTotalForeign)}</div>
+                                </div>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={handleSave}
+                                disabled={saving}
+                                className="bg-white text-[#00457c] hover:bg-blue-50 h-[50px] px-10 rounded-xl font-black text-sm transition-all shadow-xl shadow-blue-500/20 active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em]"
+                            >
+                                {saving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                                {saving ? 'Synchronizing...' : 'Accept Transaction'}
+                            </button>
                         </div>
                     </div>
                 </div>

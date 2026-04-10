@@ -265,7 +265,7 @@ const ReportsV2 = ({
         try {
             // Broader fetch for historical accuracy
             const baseConstraints = [where('userId', '==', targetUid)];
-            if (userRole === 'data_entry_1') baseConstraints.push(where('createdBy', '==', user.uid));
+            // No role-based createdBy filter. All roles see all data within company.
 
             const [invSnap, paySnap, jvSnap, mfgSnap] = await Promise.all([
                 getDocs(query(collection(db, 'invoices'), ...baseConstraints)),

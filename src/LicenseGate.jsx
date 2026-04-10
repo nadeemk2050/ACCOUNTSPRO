@@ -415,6 +415,14 @@ export default function LicenseGate({ children }) {
     const [success, setSuccess] = useState('');
     const [licenseInfo, setLicenseInfo] = useState(null);
     const [profileOpen, setProfileOpen] = useState(false);
+    const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+    const [showAuthorised, setShowAuthorised] = useState(false);
+
+    useEffect(() => {
+        const handleResize = () => setIsMobile(window.innerWidth < 768);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
 
     const [serialKey, setSerialKey] = useState('');
     const [email, setEmail] = useState('');
@@ -788,37 +796,81 @@ export default function LicenseGate({ children }) {
     return (
         <div style={S.overlay}>
             <div style={S.grid} /><div style={S.glow} />
-            <div style={{ display: 'flex', gap: 32, alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 10, width: '100%', maxWidth: 1000 }}>
+            <div style={{ 
+                display: 'flex', 
+                flexDirection: isMobile ? 'column' : 'row',
+                gap: isMobile ? 12 : 32, 
+                alignItems: isMobile ? 'stretch' : 'center', 
+                justifyContent: 'center', 
+                padding: isMobile ? 10 : 20, 
+                zIndex: 10, 
+                width: '100%', 
+                maxWidth: 1000,
+                height: '100%',
+                overflowY: 'auto'
+            }}>
                 
-                {/* ── Sidebar ── */}
+                {/* ── Sidebar (Authorised Users) ── */}
                 <div style={{ 
-                    width: 300, height: 'auto', maxHeight: 600, background: 'rgba(15, 23, 42, 0.4)', borderRadius: 20,
-                    border: '1px solid #4ade8022', padding: 24, animation: 'fadeInUp 0.6s ease', overflowY: 'auto'
+                    width: isMobile ? '100%' : 300, 
+                    height: 'auto', 
+                    maxHeight: isMobile ? (showAuthorised ? 400 : 50) : 600, 
+                    background: 'rgba(15, 23, 42, 0.4)', 
+                    borderRadius: 20,
+                    border: '1px solid #4ade8022', 
+                    padding: isMobile ? '12px 16px' : 24, 
+                    animation: 'fadeInUp 0.6s ease', 
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    transition: 'max-height 0.3s ease-in-out'
                 }}>
-                    <div style={{ fontSize: 10, fontWeight: 800, color: '#4ade80', letterSpacing: 2, marginBottom: 20 }}>AUTHORISED ON THIS DEVICE</div>
-                    {sidebarUsers.length === 0 ? (
-                        <div style={{ color: '#475569', fontSize: 12 }}>No accounts used on this device yet.</div>
-                    ) : (sidebarUsers.map(u => (
-                        <div key={u.email} onClick={() => { setView('login'); setEmail(u.email); setError(''); }} style={{ 
-                            padding: 12, borderRadius: 10, background: (email.toLowerCase() === u.email.toLowerCase()) ? '#4ade8015' : '#ffffff05',
-                            border: `1px solid ${(email.toLowerCase() === u.email.toLowerCase()) ? '#4ade8055' : 'transparent'}`, cursor: 'pointer', marginBottom: 8, transition: '0.2s', position: 'relative'
-                        }}>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>{u.userName}</div>
-                            <div style={{ fontSize: 10, color: '#64748b' }}>{u.email}</div>
-                            {!u.isHistoryOnly ? (
-                                <div style={{ marginTop: 6, fontSize: 8, color: '#4ade80', fontWeight: 800 }}>● OFFLINE READY</div>
-                            ) : u.hasBackup ? (
-                                <div style={{ marginTop: 6, fontSize: 8, color: '#60a5fa', fontWeight: 800 }}>◉ OFFLINE READY (Re-activate)</div>
-                            ) : (
-                                <div style={{ marginTop: 6, fontSize: 8, color: '#fbbf24', fontWeight: 800 }}>◌ ONLINE LOGIN REQUIRED</div>
-                            )}
-                        </div>
-                    )))}
-                    {sidebarUsers.length > 0 && sidebarUsers.some(u => u.isHistoryOnly && !u.hasBackup) && (
-                        <div style={{ marginTop: 20, fontSize: 9, color: '#64748b', fontStyle: 'italic', lineHeight: 1.4 }}>
-                            Accounts with <span style={{ color: '#fbbf24' }}>◌</span> must login while online once to enable offline access.
-                        </div>
-                    )}
+                    <div 
+                        onClick={() => isMobile && setShowAuthorised(!showAuthorised)}
+                        style={{ 
+                            fontSize: 10, fontWeight: 800, color: '#4ade80', letterSpacing: 2, 
+                            marginBottom: (isMobile && !showAuthorised) ? 0 : 20,
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            cursor: isMobile ? 'pointer' : 'default'
+                        }}
+                    >
+                        <span>AUTHORISED ON THIS DEVICE</span>
+                        {isMobile && (
+                            <span style={{ fontSize: 16, color: '#4ade80' }}>
+                                {showAuthorised ? '−' : '+'}
+                            </span>
+                        )}
+                    </div>
+                    
+                    <div style={{ 
+                        flex: 1, 
+                        overflowY: 'auto', 
+                        display: (isMobile && !showAuthorised) ? 'none' : 'block' 
+                    }}>
+                        {sidebarUsers.length === 0 ? (
+                            <div style={{ color: '#475569', fontSize: 12 }}>No accounts used on this device yet.</div>
+                        ) : (sidebarUsers.map(u => (
+                            <div key={u.email} onClick={() => { setView('login'); setEmail(u.email); setError(''); if(isMobile) setShowAuthorised(false); }} style={{ 
+                                padding: 10, borderRadius: 10, background: (email.toLowerCase() === u.email.toLowerCase()) ? '#4ade8015' : '#ffffff05',
+                                border: `1px solid ${(email.toLowerCase() === u.email.toLowerCase()) ? '#4ade8055' : 'transparent'}`, cursor: 'pointer', marginBottom: 8, transition: '0.2s', position: 'relative'
+                            }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: '#f1f5f9' }}>{u.userName}</div>
+                                <div style={{ fontSize: 9, color: '#64748b' }}>{u.email}</div>
+                                {!u.isHistoryOnly ? (
+                                    <div style={{ marginTop: 4, fontSize: 8, color: '#4ade80', fontWeight: 800 }}>● OFFLINE READY</div>
+                                ) : u.hasBackup ? (
+                                    <div style={{ marginTop: 4, fontSize: 8, color: '#60a5fa', fontWeight: 800 }}>◉ OFFLINE READY (Re-activate)</div>
+                                ) : (
+                                    <div style={{ marginTop: 4, fontSize: 8, color: '#fbbf24', fontWeight: 800 }}>◌ ONLINE LOGIN REQUIRED</div>
+                                )}
+                            </div>
+                        )))}
+                        {sidebarUsers.length > 0 && sidebarUsers.some(u => u.isHistoryOnly && !u.hasBackup) && (
+                            <div style={{ marginTop: 20, fontSize: 9, color: '#64748b', fontStyle: 'italic', lineHeight: 1.4 }}>
+                                Accounts with <span style={{ color: '#fbbf24' }}>◌</span> must login while online once to enable offline access.
+                            </div>
+                        )}
+                    </div>
                 </div>
 
                 <div style={{ ...S.card, margin: 0, animation: 'fadeInUp 0.4s ease' }}>
@@ -829,22 +881,22 @@ export default function LicenseGate({ children }) {
                     <div style={S.body}>
                         {!isFormView ? (
                             <>
-                                <button style={S.modeBtn('#6366f1')} onClick={() => setView('signup')}>
-                                    <div style={S.modeBtnIcon('#6366f1')}><IconUserPlus /></div>
-                                    <div><div style={S.modeBtnTitle}>Create New Account</div><div style={S.modeBtnSub}>Initial registration</div></div>
+                                <button style={{ ...S.modeBtn('#6366f1'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => setView('signup')}>
+                                    <div style={{ ...S.modeBtnIcon('#6366f1'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconUserPlus /></div>
+                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>Create New Account</div><div style={S.modeBtnSub}>Initial registration</div></div>
                                 </button>
-                                <button style={S.modeBtn('#10b981')} onClick={() => setView('login')}>
-                                    <div style={S.modeBtnIcon('#10b981')}><IconUser /></div>
-                                    <div><div style={S.modeBtnTitle}>Previously Activated / Sign In</div><div style={S.modeBtnSub}>Enter system offline/online</div></div>
+                                <button style={{ ...S.modeBtn('#10b981'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => setView('login')}>
+                                    <div style={{ ...S.modeBtnIcon('#10b981'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconUser /></div>
+                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>Previously Activated / Sign In</div><div style={S.modeBtnSub}>Enter system offline/online</div></div>
                                 </button>
-                                <div style={S.divider} />
-                                <button style={S.modeBtn('#4ade80')} onClick={() => setView('activate')}>
-                                    <div style={S.modeBtnIcon('#4ade80')}><IconKey /></div>
-                                    <div><div style={S.modeBtnTitle}>Activate New Service</div><div style={S.modeBtnSub}>Enter serial key to start</div></div>
+                                <div style={{ ...S.divider, margin: isMobile ? '12px 0' : '20px 0' }} />
+                                <button style={{ ...S.modeBtn('#4ade80'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => setView('activate')}>
+                                    <div style={{ ...S.modeBtnIcon('#4ade80'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconKey /></div>
+                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>Activate New Service</div><div style={S.modeBtnSub}>Enter serial key to start</div></div>
                                 </button>
-                                <div style={{ marginTop: 12 }}>
+                                <div style={{ marginTop: 8 }}>
                                     <button 
-                                        style={{ ...S.btnSecondary, borderColor: '#4ade8044', color: '#4ade80', fontSize: 12, fontWeight: 800, padding: 14 }} 
+                                        style={{ ...S.btnPrimary('#4ade8015'), border: '1px solid #4ade8044', color: '#4ade80', fontSize: isMobile ? 11 : 12, fontWeight: 800, padding: isMobile ? 10 : 14 }} 
                                         onClick={handleGuestMode}
                                     >
                                         🚀 Continue as Guest (Trial Mode)

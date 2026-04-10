@@ -17,8 +17,6 @@ import {
 import { getFunctions, httpsCallable as fHttpsCallable } from "firebase/functions";
 
 // --- VIEW ONLY & GUEST MODE BLOCKER ---
-import DateInput from './DateInput';
-
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
         alert("View Only Mode: Changes are blocked because your account is actively used on another device.");
@@ -561,7 +559,9 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
         // --- FALLBACK: FORWARD SCAN (For very old dates or products) ---
         const baseConstraints = [where('userId', '==', userId)];
         if (asOfDate) baseConstraints.push(where('date', '<=', asOfDate));
-        // No role-based createdBy restriction. Show full data.
+        if (userRole === 'data_entry_1' && currentUserId) {
+            baseConstraints.push(where('createdBy', '==', currentUserId));
+        }
 
         if (type === 'party') {
             const invQ = query(collection(db, 'invoices'), where('partyId', '==', id), ...baseConstraints);
@@ -2892,13 +2892,6 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
     const [view, setView] = useState('menu'); // 'menu', 'select', 'create', 'live'
-    const [isMobileDevice, setIsMobileDevice] = useState(window.innerWidth < 768);
-
-    useEffect(() => {
-        const handleResize = () => setIsMobileDevice(window.innerWidth < 768);
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }, []);
     const [dataPath, setDataPath] = useState('');
     const [downloadingId, setDownloadingId] = useState(null);
     const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
@@ -3435,28 +3428,29 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                     )}
 
 
+                    {/* SELECT COMPANY TABLE VIEW (MODERN) */}
                     {view === 'select' && (
-                        <div className="absolute inset-0 z-20 flex items-center justify-center p-2 md:p-16 animated-in fade-in zoom-in-95">
-                            <div className="w-full max-w-5xl bg-[#0f172a] border border-white/10 rounded-2xl md:rounded-[40px] shadow-[0_32px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col h-full max-h-[95vh] md:max-h-[700px]">
-                                <div className="bg-white/5 px-4 md:px-8 py-3 md:py-6 flex justify-between items-center border-b border-white/5">
-                                    <div className="flex items-center gap-3 md:gap-4">
-                                        <div className="p-2 md:p-3 bg-blue-500/10 rounded-xl md:rounded-2xl text-blue-400">
-                                            <Briefcase size={isMobileDevice ? 18 : 24} />
+                        <div className="absolute inset-0 z-20 flex items-center justify-center p-8 md:p-16 animated-in fade-in zoom-in-95">
+                            <div className="w-full max-w-5xl bg-[#0f172a] border border-white/10 rounded-[40px] shadow-[0_32px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col h-full max-h-[700px]">
+                                <div className="bg-white/5 px-8 py-6 flex justify-between items-center border-b border-white/5">
+                                    <div className="flex items-center gap-4">
+                                        <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-400">
+                                            <Briefcase size={24} />
                                         </div>
                                         <div>
-                                            <h2 className="text-white font-black text-lg md:text-2xl tracking-tight uppercase">Select Company</h2>
+                                            <h2 className="text-white font-black text-2xl tracking-tight uppercase">Select Company</h2>
                                             <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-[8px] md:text-[10px] text-slate-500 font-bold uppercase tracking-widest leading-none">Local Repository</span>
-                                                <span className="w-0.5 h-0.5 rounded-full bg-slate-700"></span>
-                                                <span className="text-[8px] md:text-[10px] text-blue-400 font-mono tracking-tighter">C:\NADTALLY\DATA</span>
+                                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Local Repository</span>
+                                                <span className="w-1 h-1 rounded-full bg-slate-700"></span>
+                                                <span className="text-[10px] text-blue-400 font-mono">C:\NADTALLY\DATA</span>
                                             </div>
                                         </div>
                                     </div>
                                     <button 
                                         onClick={() => setView('menu')}
-                                        className="p-2 md:p-3 hover:bg-white/5 rounded-xl md:rounded-2xl text-slate-400 hover:text-white transition-colors"
+                                        className="p-3 hover:bg-white/5 rounded-2xl text-slate-400 hover:text-white transition-colors"
                                     >
-                                        <X size={18} className="md:w-6 md:h-6" />
+                                        <X size={24} />
                                     </button>
                                 </div>
                                 {/* Cloud Sync progress indicator */}
@@ -3481,14 +3475,14 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                                 )}
 
 
-                                <div className="flex-1 overflow-y-auto p-2 md:p-4 custom-scrollbar">
-                                    <table className="w-full text-left border-separate border-spacing-y-1.5 font-sans table-auto md:table-fixed">
-                                        <thead className="sticky top-0 bg-[#0f172a] z-10">
-                                            <tr className="text-[8px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                                <th className="px-4 md:px-6 py-2 md:py-4 md:w-[60%]">Company Profile</th>
-                                                <th className="hidden md:table-cell px-6 py-4 text-center md:w-[15%]">System ID</th>
-                                                <th className="hidden md:table-cell px-6 py-4 text-right md:w-[15%]">Financial Period</th>
-                                                <th className="px-4 md:px-6 py-2 md:py-4 text-center w-24 md:w-32">Control</th>
+                                <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                                    <table className="w-full text-left border-separate border-spacing-y-2 font-sans">
+                                        <thead className="sticky top-0 bg-[#0f172a] z-10 px-4">
+                                            <tr className="text-[10px] font-black text-slate-500 uppercase tracking-widest ">
+                                                <th className="px-6 py-4">Company Profile</th>
+                                                <th className="px-6 py-4 text-center">System ID</th>
+                                                <th className="px-6 py-4 text-right">Financial Period</th>
+                                                <th className="px-6 py-4 text-center w-32">Control</th>
                                             </tr>
                                         </thead>
                                         <tbody className="px-4">
@@ -3514,52 +3508,46 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                                                         onClick={() => onSelect(co.id)}
                                                         className="group cursor-pointer"
                                                     >
-                                                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-4 md:px-6 py-3 md:py-5 rounded-l-2xl md:rounded-l-[24px] transition-all border-y border-l border-white/5 group-hover:border-blue-500/20">
-                                                            <div className="flex flex-col gap-0.5 md:gap-1">
-                                                                <div className="flex items-center gap-2 md:gap-3">
-                                                                    <span className="text-white font-black text-sm md:text-lg tracking-tight group-hover:text-blue-200 transition-colors uppercase truncate max-w-[150px] md:max-w-none">
+                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 rounded-l-[24px] transition-all border-y border-l border-white/5 group-hover:border-blue-500/20">
+                                                            <div className="flex flex-col gap-1">
+                                                                <div className="flex items-center gap-3">
+                                                                    <span className="text-white font-black text-lg tracking-tight group-hover:text-blue-200 transition-colors uppercase">
                                                                         {co.name}
                                                                     </span>
                                                                     {co.settings?.isLive && (
-                                                                        <span className="bg-emerald-500/10 text-emerald-400 text-[8px] md:text-[9px] px-1.5 py-0.5 rounded-full font-black flex items-center gap-1 border border-emerald-500/20 animate-pulse">
-                                                                            <UploadCloud size={8} className="md:w-3 md:h-3" /> LIVE
+                                                                        <span className="bg-emerald-500/10 text-emerald-400 text-[9px] px-2 py-0.5 rounded-full font-black flex items-center gap-1 border border-emerald-500/20 animate-pulse">
+                                                                            <UploadCloud size={10} /> LIVE
                                                                         </span>
                                                                     )}
                                                                 </div>
-                                                                <div className="md:hidden flex items-center gap-1.5">
-                                                                    <span className="font-mono text-[9px] text-slate-500 group-hover:text-blue-300">#{10000 + idx}</span>
-                                                                    <span className="text-[9px] font-bold text-slate-500 group-hover:text-blue-200 uppercase tracking-tighter">Apr 24 - Mar 25</span>
-                                                                </div>
-                                                                <div className="scale-90 md:scale-100 origin-left">
-                                                                    <CompanyStatsSummary stats={co.stats} />
-                                                                </div>
+                                                                <CompanyStatsSummary stats={co.stats} />
                                                             </div>
                                                         </td>
-                                                        <td className="hidden md:table-cell bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-blue-500/20 text-center">
+                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-blue-500/20 text-center">
                                                             <span className="font-mono text-[11px] text-slate-500 group-hover:text-blue-300">#{10000 + idx}</span>
                                                         </td>
-                                                        <td className="hidden md:table-cell bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-blue-500/20 text-right">
+                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-blue-500/20 text-right">
                                                             <span className="text-[11px] font-bold text-slate-400 group-hover:text-blue-200 uppercase tracking-tighter">Apr 24 - Mar 25</span>
                                                         </td>
-                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-4 md:px-6 py-3 md:py-5 rounded-r-2xl md:rounded-r-[24px] transition-all border-y border-r border-white/5 group-hover:border-blue-500/20 text-center">
-                                                            <div className="flex items-center justify-center gap-1.5 md:gap-2">
+                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 rounded-r-[24px] transition-all border-y border-r border-white/5 group-hover:border-blue-500/20 text-center">
+                                                            <div className="flex items-center justify-center gap-2">
                                                                 {!co.settings?.isLive && (
                                                                     <button
                                                                         onClick={(e) => handleMakeLive(co.id, co.name, e)}
                                                                         disabled={makingLiveId === co.id}
-                                                                        className="opacity-100 md:opacity-0 group-hover:opacity-100 p-1.5 md:p-2 bg-blue-500/10 hover:bg-blue-600 text-blue-400 hover:text-white rounded-lg md:rounded-xl transition-all flex items-center gap-1.5 md:gap-2 px-2 md:px-3 border border-blue-500/20"
+                                                                        className="opacity-0 group-hover:opacity-100 p-2 bg-blue-500/10 hover:bg-blue-600 text-blue-400 hover:text-white rounded-xl transition-all flex items-center gap-2 px-3 border border-blue-500/20"
                                                                         title="Upload to Cloud"
                                                                     >
-                                                                        {makingLiveId === co.id ? <Loader2 size={12} className="animate-spin md:w-4 md:h-4" /> : <UploadCloud size={12} className="md:w-4 md:h-4" />}
-                                                                        <span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">Make Live</span>
+                                                                        {makingLiveId === co.id ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+                                                                        <span className="text-[10px] font-black uppercase whitespace-nowrap">Make Live</span>
                                                                     </button>
                                                                 )}
                                                                 <button
                                                                     onClick={(e) => openRemoveDialog(co, e)}
-                                                                    className="opacity-100 md:opacity-0 group-hover:opacity-100 p-2 md:p-2.5 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white rounded-lg md:rounded-xl transition-all border border-red-500/20"
+                                                                    className="opacity-0 group-hover:opacity-100 p-2.5 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white rounded-xl transition-all border border-red-500/20"
                                                                     title="Remove Locally"
                                                                 >
-                                                                    <Trash2 size={14} className="md:w-4 md:h-4" />
+                                                                    <Trash2 size={16} />
                                                                 </button>
                                                             </div>
                                                         </td>
@@ -4328,9 +4316,7 @@ export default function App() {
             }
 
             // 1b. ALWAYS Ensure Data Owner and Sync are active for current company
-            // Don't override dataOwnerId when a sub-user is logged in (their ownerId IS the company ID)
-            // but always set it on initial load when it's null/empty
-            if (!dataOwnerId || (dataOwnerId !== activeCompanyId && !subUser)) {
+            if (dataOwnerId !== activeCompanyId) {
                 setDataOwnerId(activeCompanyId);
                 startLiveSync(activeCompanyId);
             }
@@ -4643,9 +4629,7 @@ export default function App() {
 
                 console.log("🔐 Auth Debug:", { uid: effectiveUser.uid, ownerId, claims: token.claims, isGuest: !!window.isGuestMode });
 
-                // Only set dataOwnerId from auth if we are NOT already in an offline company context.
-                // In company mode, dataOwnerId is managed by the company init effect and onLogin handler.
-                if (!activeCompanyId) setDataOwnerId(ownerId);
+                setDataOwnerId(ownerId);
                 setUser(effectiveUser);
 
                 // 3. FETCH PROFILE & ROLE FROM FIRESTORE
@@ -4657,13 +4641,6 @@ export default function App() {
                         if (userDoc.exists()) {
                             const d = userDoc.data();
                             setUserData(d);
-                            
-                            // ✅ Fix: If they don't have the claim but do have the field in Firestore, set it here
-                            if (d.ownerId) {
-                                console.log("🔍 Found ownerId in user document:", d.ownerId);
-                                setDataOwnerId(d.ownerId);
-                            }
-
                             const assignedRole = (d.role === 'developer' || isDevEmail) ? 'developer' : (d.role || (token.claims.ownerId ? 'employee' : 'owner'));
                             setCurrentRole(assignedRole);
                         } else {
@@ -4797,8 +4774,7 @@ export default function App() {
         const unsubInvoices = onSnapshot(getTxQuery("invoices"), (snap) => {
             setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
 
-            // Always calculate stats regardless of role to ensure consistent dashboard view
-            {
+            if (currentRole !== 'data_entry_1') {
                 const purchaseStats = {};
                 const lastSales = {};
                 const tempLotStats = {};
@@ -5368,10 +5344,18 @@ export default function App() {
             if (docSnap.exists()) {
                 const data = { id: docSnap.id, ...docSnap.data() };
 
-                // --- 🔓 SECURITY CHECK ---
-                // Removed restrictive role checks and password prompts. 
-                // All team members can view/edit as per base permissions.
-                // Ownership check removed to allow full collaboration.
+                // --- 🔒 SECURITY CHECK FOR DATA ENTRY 1 ---
+                if (currentRole === 'data_entry_1') {
+                    // 1. Ownership Check
+                    if (data.createdBy !== user.uid) {
+                        alert("⛔ ACCESS DENIED\n\nYou can only Edit transactions created by YOU.");
+                        return;
+                    }
+                    // 2. Password Check
+                    const pwd = prompt("🔒 Enter Password to Edit:");
+                    if (!pwd || pwd.toLowerCase() !== 'abcd') return alert("❌ Wrong Password");
+                }
+                // ------------------------------------------
 
                 setEditData(data);
 
@@ -6973,7 +6957,7 @@ export default function App() {
                 if (isDashboardActive) {
                     // Gateway Menu top-level shortcuts
                     if (k === 'm') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu('Create / Alter Masters'); return; }
-                    if (k === 'q') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu('Quick Action Vouchers'); return; }
+                    if (k === 'q') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu(currentRole === 'data_entry_1' ? 'Action Vouchers' : 'Quick Action Vouchers'); return; }
                     if (k === 'd') {
                         e.preventDefault();
                         const today = new Date().toLocaleDateString('en-CA');
@@ -8108,9 +8092,29 @@ export default function App() {
                         <div className="tally-menu-header">Gateway of Nadtally</div>
 
                         <div className="p-1 space-y-0.5 overflow-visible">
-                            {/* --- FULL TALLY MENU (Enabled for all roles as per user request) --- */}
-                            <>
-                                <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
+                            {isDataEntry1 ? (
+                                <>
+                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-2">Masters</div>
+                                    <MenuDropdown label="Inventory & Accounts" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
+
+                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-2 mt-4">Transactions</div>
+                                    <MenuDropdown label="Action Vouchers" shortcut="Q" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
+                                    <MenuButton
+                                        label="View All Vouchers"
+                                        onClick={() => { if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]); setLedgerInitialState(null); setActiveModal('ledgers'); onMenuClick(); setActiveSubMenu(null); }}
+                                    />
+                                    <MenuButton
+                                        label="Stock Inventory (View)"
+                                        onClick={() => { setActiveModal('stock_inventory'); onMenuClick(); setActiveSubMenu(null); }}
+                                    />
+
+                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-2 mt-4">Utilities</div>
+                                    <MenuDropdown label="System Tools" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
+                                </>
+                            ) : (
+                                <>
+                                    {/* --- FULL TALLY MENU --- */}
+                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
                                     <MenuDropdown label="Create / Alter Masters" shortcut="M" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
 
                                     <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-4">Transactions</div>
@@ -8148,6 +8152,7 @@ export default function App() {
                                         className="mt-4 border-t border-slate-200 pt-2 text-[#005994]"
                                     />
                                 </>
+                            )}
                         </div>
 
                         {/* FLYOUT SUBMENU PANEL (ATTACHED TO RIGHT) */}
@@ -8194,7 +8199,29 @@ export default function App() {
                                         <MenuButton label="Salary Sheet" shortcut="L" onClick={() => { alert('\uD83D\uDE80 Salary Processing Module: Coming Soon.'); setActiveSubMenu(null); }} />
                                         <MenuButton label="Employee Masters" shortcut="M" onClick={() => { alert('\uD83D\uDE80 Employee Profile Management: Coming Soon.'); setActiveSubMenu(null); }} />
                                     </>}
-
+                                    {/* === DATA ENTRY 1: INVENTORY & ACCOUNTS === */}
+                                    {activeSubMenu === 'Inventory & Accounts' && <>
+                                        <MenuButton label="Parties (Customers)" onClick={() => { setActiveModal('parties'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Cash/Bank" onClick={() => { setActiveModal('accounts'); onMenuClick(); setActiveSubMenu(null); }} />
+                                    </>}
+                                    {/* === DATA ENTRY 1: ACTION VOUCHERS === */}
+                                    {activeSubMenu === 'Action Vouchers' && <>
+                                        <MenuButton label="Payment (F5)" shortcut="Y" onClick={() => { setEditData(null); setActiveModal('payment'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Receipt (F6)" shortcut="R" onClick={() => { setEditData(null); setActiveModal('receipt'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Contra (F4)" shortcut="O" onClick={() => { setEditData(null); setActiveModal('contra'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Purchase (F9)" shortcut="P" onClick={() => { openInvoiceModal('purchase'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Sales (F8)" shortcut="S" onClick={() => { openInvoiceModal('sales'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Journal (F7)" shortcut="J" onClick={() => { setEditData(null); setActiveModal('journal'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Stock Journal (Alt+F7)" shortcut="K" onClick={() => { setEditData(null); setActiveModal('stock_journal'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Attendance" shortcut="A" onClick={() => { setActiveModal('attendance'); onMenuClick(); setActiveSubMenu(null); }} />
+                                    </>}
+                                    {/* === DATA ENTRY 1: SYSTEM TOOLS === */}
+                                    {activeSubMenu === 'System Tools' && <>
+                                        <MenuButton label="Install App" onClick={() => { if (deferredPrompt) handleInstallClick(); else alert('\u2705 App is already installed.'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Change Password" onClick={() => { handleChangePassword(); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Statistics" onClick={() => { setActiveModal('statistics'); onMenuClick(); setActiveSubMenu(null); }} />
+                                        <MenuButton label="Logout" onClick={handleLogout} className="text-red-600" />
+                                    </>}
                                 </div>
                                 {/* Mobile Close Button Footer */}
                                 <div className="md:hidden border-t border-slate-300/50 p-2 mt-2">
@@ -8531,8 +8558,6 @@ export default function App() {
                             const baseRole = isDev ? 'developer' : 'owner';
                             
                             setCurrentRole(baseRole);
-                            // Explicitly restore dataOwnerId to the company ID for admin
-                            setDataOwnerId(activeCompanyId);
                             setUserData({
                                 name: targetName,
                                 email: targetEmail,
@@ -8543,8 +8568,6 @@ export default function App() {
                             setSubUser(u);
                             setIsCompanyLocked(false);
                             setCurrentRole(u.role);
-                            // Explicitly set dataOwnerId so all data queries use the company's owner ID
-                            setDataOwnerId(u.ownerId || activeCompanyId);
                             setUserData(prev => ({ 
                                 ...prev, 
                                 name: u.name, 
@@ -15623,16 +15646,8 @@ const StockJournalModal = (props) => {
     const [journalExpenses, setJournalExpenses] = useState([]);
     const [creditAccountId, setCreditAccountId] = useState('');
     const [showExpList, setShowExpList] = useState(false);
-    const [saving, setSaving] = useState(false); 
-    const refNoRef = useRef(null);
-    const dateRef = useRef(null);
-
-    // ✅ AUTO-FOCUS REF NO ON OPEN
-    useEffect(() => {
-        if (isOpen && !initialData) {
-            setTimeout(() => refNoRef.current?.focus(), 100);
-        }
-    }, [isOpen, initialData]);
+    const [saving, setSaving] = useState(false); // ✅ NEW to prevent write stream exhaustion
+    const [showDateModal, setShowDateModal] = useState(false);
 
     const attendanceMap = useMemo(() => {
         const map = {};
@@ -16298,32 +16313,21 @@ const StockJournalModal = (props) => {
                         {/* REF NUMBER TAB */}
                         <div className="bg-black/20 h-full flex items-center px-3 rounded border border-white/10 shrink-0">
                             <input 
-                                ref={refNoRef}
                                 className="text-[16px] font-black text-white bg-transparent border-none focus:ring-0 p-0 w-32 outline-none placeholder-white/30"
                                 value={refNo}
                                 onChange={e => setRefNo(e.target.value)}
                                 placeholder="Reference"
-                                onKeyDown={e => { if (e.key === 'Enter') dateRef.current?.focus(); }}
                             />
                         </div>
 
                         {/* DATE — pushed to far right, adjacent to close button */}
                         <div className="ml-auto" />
-                        <div className="bg-[#003459] h-[34px] flex flex-col items-center justify-center px-4 rounded border border-white/10 shadow-lg group shrink-0">
-                            <span className="text-[7px] font-black text-sky-200/50 uppercase leading-none mb-0.5">Voucher Date</span>
-                            <div className="flex items-center gap-2">
-                                <Calendar size={12} className="text-sky-300 group-hover:text-white transition-colors" />
-                                <DateInput 
-                                    ref={dateRef}
-                                    value={date}
-                                    onChange={e => {
-                                        setDate(e.target.value);
-                                        if (onUpdateDate) onUpdateDate(e.target.value);
-                                    }}
-                                    onEnter={() => document.querySelector('textarea')?.focus()}
-                                    className="text-[14px] font-black text-white uppercase leading-none bg-transparent border-none p-0 outline-none w-24"
-                                />
-                            </div>
+                        <div 
+                            onClick={() => setShowDateModal(true)} 
+                            className="bg-[#003459] h-[32px] flex items-center gap-2 px-4 rounded border border-white/10 shadow-lg cursor-pointer hover:bg-black/30 transition-all active:scale-95 group shrink-0"
+                        >
+                            <Calendar size={14} className="text-sky-300 group-hover:text-white transition-colors" />
+                            <span className="text-[16px] font-black text-white uppercase leading-none">{formatDate(date)}</span>
                         </div>
                     </div>
                 )}
@@ -19499,17 +19503,20 @@ const PaymentModal = (props) => {
         }
     }, [isOpen, showInvoiceOptions, dataOwnerId, user]);
 
-    // Refs for focus management
-    const refNoRef = useRef(null);
+    // Refs for shortcuts
     const dateRef = useRef(null);
     const sourceAccRef = useRef(null);
-    const saveButtonRef = useRef(null);
+
+    // ✅ GLOBAL DATE LISTENER
+    useEffect(() => {
+        if (isOpen && globalDateCmd && globalDateCmd.type === 'single') {
+            setDate(globalDateCmd.date);
+        }
+    }, [globalDateCmd, isOpen]);
 
     useEffect(() => {
-        if (isOpen && refNoRef.current) {
-            setTimeout(() => refNoRef.current?.focus(), 100);
-        }
-    }, [isOpen]);
+        if (isOpen) setDateInputValue(formatVoucherDateText(date));
+    }, [isOpen, date]);
 
     // ✅ GLOBAL DATE LISTENER
     useEffect(() => {
@@ -20230,13 +20237,11 @@ const PaymentModal = (props) => {
                     {/* 2. REFERENCE NUMBER */}
                     <div className="flex flex-col justify-center min-w-[90px]">
                         <input
-                            ref={refNoRef}
                             type="text"
                             placeholder="REF NO"
-                            className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-white/60 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-white/20"
+                            className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-white/60 placeholder:text-white/30 w-24 uppercase"
                             value={refNo}
                             onChange={e => setRefNo(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); dateRef.current?.focus(); } }}
                         />
                     </div>
 
@@ -20300,27 +20305,70 @@ const PaymentModal = (props) => {
 
                     <div className="w-px h-5 bg-white/10 mx-1"></div>
 
-                    {/* UTILITY TOOLS REMOVED FROM TOP */}
-                    <div className="flex items-center gap-1.5 opacity-0 pointer-events-none">
-                        <Printer size={16} />
+                    {/* 6. UTILITY TOOLS */}
+                    <div className="flex items-center gap-1.5 bg-black/10 p-1 rounded-lg">
+                        <button type="button" onClick={() => setShowInvoiceOptions(true)} className="p-1.5 hover:bg-white/10 rounded-md transition-all text-white hover:text-white" title="Alt+P: Print / PDF"><Printer size={16} /></button>
+                        <button type="button" onClick={() => setShowInvoiceOptions(true)} className="p-1.5 hover:bg-white/10 rounded-md transition-all text-white hover:text-white" title="Export Excel / Data"><Download size={16} /></button>
                     </div>
 
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
-                    {/* 7. DATE (FAR RIGHT) — Tally DateInput */}
-                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10">
-                        <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
+                    {/* 7. DATE (FAR RIGHT) — Tally-style clickable popup */}
+                    <button
+                        type="button"
+                        onClick={() => { setShowDatePopup(true); setDateInputValue(formatVoucherDateText(date)); }}
+                        className="flex flex-col items-end group cursor-pointer hover:bg-white/10 px-2 py-1 rounded-lg transition-all"
+                        title="Click to change date (Alt+D)"
+                    >
+                        <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
-                            <Calendar size={12} className="text-white opacity-60" />
-                            <DateInput
-                                ref={dateRef}
-                                value={date || ''}
-                                onChange={e => { setDate(e.target.value); if (onUpdateDate) onUpdateDate(e.target.value); }}
-                                onEnter={() => sourceAccRef.current?.focus()}
-                                className="text-[11px] font-black text-white bg-transparent border-none focus:ring-0 p-0 w-20 cursor-pointer text-right shadow-sm"
-                            />
+                            <Calendar size={12} className="text-white" />
+                            <span className="text-[11px] font-black text-white tabular-nums">{formatVoucherDateText(date) || 'Set Date'}</span>
                         </div>
-                    </div>
+                    </button>
+
+                    {/* DATE POPUP — Tally-style */}
+                    {showDatePopup && (
+                        <div className="fixed inset-0 z-[99999] flex items-start justify-end pt-11 pr-4" onClick={() => setShowDatePopup(false)}>
+                            <div
+                                className="bg-white border border-slate-300 shadow-2xl rounded-lg overflow-hidden w-56"
+                                onClick={e => e.stopPropagation()}
+                            >
+                                <div className="bg-[#1a2a4a] px-4 py-2 text-center">
+                                    <span className="text-[11px] font-black text-white uppercase tracking-widest">Change Date (F2)</span>
+                                </div>
+                                <div className="px-4 pt-4 pb-3">
+                                    <input
+                                        ref={dateRef}
+                                        autoFocus
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="DD or DD-MM"
+                                        className="w-full bg-transparent text-slate-800 text-[15px] font-semibold px-0 py-1 outline-none border-none border-b-2 border-slate-400 focus:border-slate-700 text-center placeholder:text-slate-400 transition-colors"
+                                        value={dateInputValue}
+                                        onChange={e => setDateInputValue(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                const parsed = parseVoucherDateText(dateInputValue);
+                                                if (parsed) {
+                                                    setDate(parsed);
+                                                    setDateInputValue(formatVoucherDateText(parsed));
+                                                    if (onUpdateDate) onUpdateDate(parsed);
+                                                } else {
+                                                    setDateInputValue(formatVoucherDateText(date));
+                                                }
+                                                setShowDatePopup(false);
+                                            } else if (e.key === 'Escape') {
+                                                setShowDatePopup(false);
+                                            }
+                                        }}
+                                    />
+                                    <p className="text-center text-[10px] text-slate-400 mt-2">Type date &amp; press Enter</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* --- SECONDARY BAR: PAID FROM / RECEIVED INTO ACCOUNT --- */}
@@ -20474,40 +20522,28 @@ const PaymentModal = (props) => {
                                     </div>
                                 </div>
                             )}
-                        <div className="flex items-center gap-2 ml-4">
-                            <button onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-white/10 rounded-lg transition-all text-white/70 hover:text-white border border-white/10" title="Generate PDF/Print">
-                                <Printer size={18} />
-                            </button>
-                            <button onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-white/10 rounded-lg transition-all text-white/70 hover:text-white border border-white/10" title="Export Excel/Data">
-                                <Download size={18} />
-                            </button>
-                        </div>
-
-                        {/* 2. TOTALS */}
-                        <div className="flex flex-col items-end justify-center px-6 border-l border-white/10 h-full">
-                            <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-1 tracking-widest">Voucher Total</span>
-                            <div className="text-2xl font-black text-white leading-none tracking-tighter shadow-sm">
-                                <span className="text-[10px] mr-1 opacity-50 font-bold">{currencySymbol}</span>
-                                {format3(baseAmount)}
+                            <div className="flex flex-col items-end justify-center">
+                                <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-1 tracking-widest">Voucher Total</span>
+                                <div className="text-2xl font-black text-white leading-none tracking-tighter">
+                                    <span className="text-[10px] mr-1 opacity-50 font-bold">{currencySymbol}</span>
+                                    {format3(baseAmount)}
+                                </div>
                             </div>
                         </div>
 
                         {/* 3. SAVE BUTTON */}
                         <div className="flex items-center border-l border-white/10 pl-6 h-full">
                             <button
-                                ref={saveButtonRef}
                                 onClick={handleSave}
                                 disabled={saving}
-                                onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
                                 className={`flex items-center justify-center p-3 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] transition-all active:scale-95 disabled:opacity-50 
-                                    ${saving ? 'bg-white/10 text-white' : 'bg-white text-[#00457c] hover:bg-blue-50 hover:shadow-white/20'}`}
+                                    ${saving ? 'bg-white/10 text-white' : 'bg-white text-[#00457c] hover:bg-emerald-50 hover:text-emerald-700'}`}
                                 title="Finish & Save (Ctrl+S)"
                             >
                                 {saving ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />}
                             </button>
                         </div>
                     </div>
-                </div>
 
                 </div>
 
@@ -20898,16 +20934,9 @@ const JournalVoucherModal = (props) => {
 
     const [lotId, setLotId] = useState(''); const [enableLot, setEnableLot] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [showDatePopup, setShowDatePopup] = useState(false);
     const [dateInputValue, setDateInputValue] = useState('');
     const dateRef = useRef(null);
-    const refNoRef = useRef(null);
-
-    // ✅ AUTO-FOCUS REF NO ON OPEN
-    useEffect(() => {
-        if (isOpen && !initialData) {
-            setTimeout(() => refNoRef.current?.focus(), 100);
-        }
-    }, [isOpen, initialData]);
 
     // ✅ GLOBAL DATE LISTENER
     useEffect(() => {
@@ -21268,13 +21297,11 @@ const JournalVoucherModal = (props) => {
                     <div className="flex flex-col justify-center min-w-[90px]">
                         <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">JV Ref No.</span>
                         <input
-                            ref={refNoRef}
                             type="text"
                             placeholder="JV-001"
                             className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none placeholder:text-white/20 w-24 uppercase"
                             value={refNo}
                             onChange={e => setRefNo(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') dateRef.current?.focus(); }}
                         />
                     </div>
 
@@ -21289,22 +21316,78 @@ const JournalVoucherModal = (props) => {
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
                     {/* 6. DATE (FAR RIGHT) */}
-                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10">
-                        <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
+                    <button
+                        type="button"
+                        onClick={() => { setShowDatePopup(true); setDateInputValue(formatVoucherDateText(date)); }}
+                        className="flex flex-col items-end group cursor-pointer hover:bg-white/10 px-2 py-1 rounded-lg transition-all"
+                        title="Click to change date"
+                    >
+                        <span className="text-[7px] font-black uppercase opacity-40 leading-none mb-0.5 tracking-widest group-hover:opacity-100 transition-opacity">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
-                            <Calendar size={12} className="text-white opacity-60" />
-                            <DateInput
-                                ref={dateRef}
-                                value={date}
-                                onChange={e => {
-                                    setDate(e.target.value);
-                                    if (onUpdateDate) onUpdateDate(e.target.value);
-                                }}
-                                onEnter={() => narrationRef?.current?.focus() || document.querySelector('textarea')?.focus()}
-                                className="text-[11px] font-black text-white bg-transparent border-none p-0 outline-none w-20"
-                            />
+                            <Calendar size={12} className="text-white/50 group-hover:text-white transition-colors" />
+                            <span className="text-[11px] font-black text-white tabular-nums">{formatVoucherDateText(date) || 'Set Date'}</span>
                         </div>
-                    </div>
+                    </button>
+
+                    {/* DATE POPUP */}
+                    {showDatePopup && (
+                        <div className="fixed inset-0 z-[99999] flex items-start justify-end pt-14 pr-4" onClick={() => setShowDatePopup(false)}>
+                            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-72 overflow-hidden" onClick={e => e.stopPropagation()}>
+                                <div className="bg-[#00457c] text-white px-4 py-3 flex items-center justify-between">
+                                    <div>
+                                        <div className="text-[8px] font-black uppercase tracking-widest opacity-50">Journal Voucher</div>
+                                        <div className="text-xs font-black mt-0.5">Change Date</div>
+                                    </div>
+                                    <button type="button" onClick={() => setShowDatePopup(false)} className="p-1.5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white"><X size={14} /></button>
+                                </div>
+
+                                <div className="p-4 space-y-3">
+                                    <input
+                                        type="date"
+                                        autoFocus
+                                        value={date}
+                                        onChange={e => {
+                                            if (e.target.value) {
+                                                setDate(e.target.value);
+                                                setDateInputValue(formatVoucherDateText(e.target.value));
+                                                if (onUpdateDate) onUpdateDate(e.target.value);
+                                                setShowDatePopup(false);
+                                            }
+                                        }}
+                                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                                    />
+                                    <div className="relative">
+                                        <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Or type date (D-M-YYYY)</div>
+                                        <input
+                                            ref={dateRef}
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder="e.g. 4-4-2026"
+                                            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                                            value={dateInputValue}
+                                            onChange={e => setDateInputValue(e.target.value)}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    const parsed = parseVoucherDateText(dateInputValue);
+                                                    if (parsed) {
+                                                        setDate(parsed);
+                                                        setDateInputValue(formatVoucherDateText(parsed));
+                                                        if (onUpdateDate) onUpdateDate(parsed);
+                                                        setShowDatePopup(false);
+                                                    } else {
+                                                        setDateInputValue(formatVoucherDateText(date));
+                                                    }
+                                                } else if (e.key === 'Escape') {
+                                                    setShowDatePopup(false);
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* === SCROLLABLE CONTENT === */}
@@ -24742,8 +24825,8 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             let qtyIn = 0; let qtyOut = 0;
 
             // 1. Fetch Invoices (Purchase/Sales)
-            const baseConstraints = [where('userId', '==', targetUid)];
-            // No role-based createdBy filter. All roles see all data.
+            const baseConstraints = [];
+            if (userRole === 'data_entry_1') baseConstraints.push(where('createdBy', '==', user?.uid));
 
             const qInv = query(collection(db, 'invoices'), ...baseConstraints);
             const snapInv = await getDocs(qInv);
@@ -25570,8 +25653,10 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                 }
 
                 // 2. Fetch Transactions up to viewDate (ONLY IF NOT TODAY)
-                const baseConstraints = [where('userId', '==', targetUid), where('date', '<=', viewDate)];
-                // Removed role-based createdBy restriction. Show full data.
+                const baseConstraints = [where('date', '<=', viewDate)];
+                if (userRole === 'data_entry_1') {
+                    baseConstraints.push(where('createdBy', '==', user?.uid));
+                }
                 const [invS, payS, jvS] = await Promise.all([
                     getDocs(query(collection(db, "invoices"), ...baseConstraints)),
                     getDocs(query(collection(db, "payments"), ...baseConstraints)),
