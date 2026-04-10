@@ -1,0 +1,56 @@
+name: Build and Release Electron App
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-electron:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Vite app (web assets)
+        run: npm run build
+
+      - name: Build Electron portable exe
+        run: npx electron-builder --win portable --publish never
+
+      - name: Get version from package.json
+        id: pkg
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.pkg.outputs.version }}
+          name: ACCPRO Offline v${{ steps.pkg.outputs.version }}
+          body: |
+            ## ACCPRO Offline Desktop App — v${{ steps.pkg.outputs.version }}
+
+            ### How to install
+            1. Download the `.exe` file below
+            2. Double-click to run — **no installation required** (portable)
+            3. Your data is stored locally on your device
+
+            > Built automatically from the latest `main` branch.
+          files: dist_electron_v2/*.exe
+          make_latest: true
