@@ -69,14 +69,14 @@ export const signOut = async () => {
 
 export const updatePassword = async () => { };
 export const signInWithCustomToken = async () => {
-    currentMockUser = createMockUser('offline@nadtally.local');
-    localStorage.setItem('nadtally_mock_auth_email', 'offline@nadtally.local');
+    currentMockUser = createMockUser('offline@accpro.local');
+    localStorage.setItem('nadtally_mock_auth_email', 'offline@accpro.local');
     authStateListeners.forEach(cb => cb(currentMockUser));
     return { user: currentMockUser };
 };
 export const signInAnonymously = async () => {
-    currentMockUser = createMockUser('offline@nadtally.local');
-    localStorage.setItem('nadtally_mock_auth_email', 'offline@nadtally.local');
+    currentMockUser = createMockUser('offline@accpro.local');
+    localStorage.setItem('nadtally_mock_auth_email', 'offline@accpro.local');
     authStateListeners.forEach(cb => cb(currentMockUser));
     return { user: currentMockUser };
 };

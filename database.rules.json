@@ -1,0 +1,10 @@
+{
+  "rules": {
+    "tasks": {
+      "$ownerId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    }
+  }
+}

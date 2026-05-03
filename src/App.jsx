@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, memo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, memo, useCallback, cloneElement } from 'react';
 import { createPortal } from 'react-dom';
 // Heavy libs are now dynamically imported
 import {
@@ -65,6 +65,20 @@ const getElectronHelpers = () => {
     return { ipcRenderer: null, nodeFs: null, nodePath: null };
 };
 const { ipcRenderer, nodeFs, nodePath } = getElectronHelpers();
+
+// --- PLATFORM IDENTITY LOGIC ---
+const IS_ELECTRON = !!ipcRenderer;
+const PLATFORM_ID = IS_ELECTRON ? {
+    name: "ACCPRO",
+    suffix: "ELITE",
+    tag: "OFFLINE SYNC ENGINE",
+    isDesktop: true
+} : {
+    name: "ACCPRO",
+    suffix: "CLOUD",
+    tag: "LIVE CONNECT HUB",
+    isDesktop: false
+};
 // -----------------------------
 async function sha256(text) {
     const data = new TextEncoder().encode(text + 'ndtly_salt_@2025');
@@ -73,7 +87,9 @@ async function sha256(text) {
 }
 
 
-import { db, auth, functions, rtdb } from './firebase';
+import { db, auth, functions, rtdb, cloudRtdb } from './firebase';
+// Real Firebase RTDB functions — imported via @firebase/* to bypass the firebase/database → rxrtdb.js stub alias
+import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
 import ManagementDashboard from './ManagementDashboard';
 import OrderVouchersDashboard from './OrderVouchersDashboard';
@@ -88,7 +104,8 @@ import {
     Users, History, Archive, Layers,
     UploadCloud, DownloadCloud, Maximize, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
-    Mail, Phone, Shield, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX
+    Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
+    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings
 
 } from 'lucide-react';
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
@@ -98,8 +115,11 @@ import BagWiseInventoryModal from "./BagWiseInventoryModal.jsx"; // IMPORT
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
-import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB } from './localDB';
-import { startLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase } from './liveSync.js';
+import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
+import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta } from './liveSync.js';
+import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
+import ApiKeyModal from './ApiKeyModal';
+
 
 import { resolveStoredImages } from './storageAsset';
 
@@ -133,6 +153,18 @@ const round3 = (val) => {
     if (isNaN(n)) return 0;
     return Math.round(n * 1000) / 1000;
 };
+
+const createAutoCalcBomMaterial = () => ({ productId: '', percent: '' });
+const createAutoCalcBomExpense = () => ({ expenseId: '', ratePerTon: '' });
+const createAutoCalcBomForm = () => ({
+    recordId: '',
+    mainProductId: '',
+    mainPercent: '100',
+    consumed: [createAutoCalcBomMaterial()],
+    expenses: [],
+    byProducts: [],
+    lockedProduct: false
+});
 
 const toQtyNum = (val) => {
     if (typeof val === 'string') {
@@ -203,6 +235,316 @@ const PasswordPromptModal = ({ isOpen, title, onConfirm, onCancel }) => {
     );
 };
 
+
+const FeatureCatalogueModal = ({ isOpen, onClose }) => {
+    const catalogueRef = useRef();
+    const [isDownloading, setIsDownloading] = useState(false);
+
+    const handleDownloadPDF = async () => {
+        setIsDownloading(true);
+        try {
+            const jsPDFModule = await import('jspdf');
+            const html2canvasModule = await import('html2canvas');
+            const jsPDF = jsPDFModule.default;
+            const html2canvas = html2canvasModule.default;
+
+            const element = catalogueRef.current;
+            if (!element) return;
+
+            // Save original styles to restore later
+            const originalStyle = {
+                height: element.style.height,
+                overflow: element.style.overflow,
+                maxHeight: element.style.maxHeight
+            };
+
+            // Force element to expand to its full content height for capture
+            element.style.height = 'auto';
+            element.style.maxHeight = 'none';
+            element.style.overflow = 'visible';
+
+            // Wait a bit for layout to settle
+            await new Promise(r => setTimeout(r, 100));
+
+            const canvas = await html2canvas(element, {
+                scale: 2, 
+                useCORS: true,
+                allowTaint: true,
+                backgroundColor: '#fdfbf7', 
+                logging: false,
+                onclone: (clonedDoc) => {
+                    // Modern CSS fix: html2canvas doesn't support oklch() or oklab()
+                    const allElements = clonedDoc.getElementsByTagName('*');
+                    for (let el of allElements) {
+                        const style = window.getComputedStyle(el);
+                        ['color', 'backgroundColor', 'borderColor', 'outlineColor', 'fill', 'stroke', 'backgroundImage'].forEach(prop => {
+                            const value = style[prop];
+                            if (value && (value.includes('oklch') || value.includes('oklab'))) {
+                                // If it's a gradient, simplify it to a solid color for the PDF capture
+                                if (prop === 'backgroundImage' && value.includes('gradient')) {
+                                    el.style.backgroundImage = 'none';
+                                    el.style.backgroundColor = '#8b0000'; // Brand Red Fallback
+                                } else {
+                                    el.style[prop] = '#4c0519'; // Brand Dark Fallback
+                                }
+                            }
+                        });
+                    }
+                },
+                windowWidth: element.scrollWidth,
+                windowHeight: element.scrollHeight
+            });
+
+            // Restore original styles
+            element.style.height = originalStyle.height;
+            element.style.maxHeight = originalStyle.maxHeight;
+            element.style.overflow = originalStyle.overflow;
+
+            const imgData = canvas.toDataURL('image/jpeg', 0.9);
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const imgProps = pdf.getImageProperties(imgData);
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+            const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+            
+            let heightLeft = pdfHeight;
+            let position = 0;
+            const pageHeight = pdf.internal.pageSize.getHeight();
+
+            pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight, undefined, 'FAST');
+            heightLeft -= pageHeight;
+
+            while (heightLeft >= 0) {
+                position = heightLeft - pdfHeight;
+                pdf.addPage();
+                pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight, undefined, 'FAST');
+                heightLeft -= pageHeight;
+            }
+
+            pdf.save(`Accpro_Feature_Catalogue_v2_6_1.pdf`);
+        } catch (error) {
+            console.error("Master Catalogue Export Error:", error);
+            alert("Error generating PDF: " + error.message);
+        } finally {
+            setIsDownloading(false);
+        }
+    };
+
+    const sections = [
+        {
+            id: "1",
+            title: "Authentication & System Access",
+            icon: <ShieldCheck className="text-[#8b0000]" />,
+            items: [
+                { label: "1.1 Administrator Login", desc: "Full access for the business owner via Firebase Auth (Email/Password)." },
+                { label: "1.2 Team Member Access", desc: "Restricted access for staff/sub-users based on assigned permissions." },
+                { label: "1.3 Hybrid Auth Logic", desc: "Seamless login transition between Cloud (Online) and Local (Offline) databases." },
+                { label: "1.4 Read-Only Mode", desc: "Security blocker preventing changes if account is active on another device." },
+                { label: "1.5 Session Audit Trail", desc: "Logging login/logout timestamps and user activity for security monitoring." }
+            ]
+        },
+        {
+            id: "2",
+            title: "License & Activation Management",
+            icon: <Key className="text-[#8b0000]" />,
+            items: [
+                { label: "2.1 Serial Key Logic", desc: "Validation of a unique hardware-linked Serial Key to authorize software use." },
+                { label: "2.2 Guest Mode Survey", desc: "A 'Sandbox' environment for potential clients to test features with limited transactions." },
+                { label: "2.3 Identity Banner", desc: "Persistent top-bar display showing Company Name, User ID, and License Expiry." },
+                { label: "2.4 Device ID Registration", desc: "Locking the software license to a specific PC's unique hardware signature." }
+            ]
+        },
+        {
+            id: "3",
+            title: "Company Architecture (Master Data)",
+            icon: <Building2 className="text-[#8b0000]" />,
+            items: [
+                { label: "3.1 Company Creation", desc: "Setting up 100% offline local databases with details like Name, Address, and Fiscal Year." },
+                { label: "3.2 Company Selection Overlay", desc: "A Tally-style quick-switch interface to move between different business entities." },
+                { label: "3.3 Financial Period Management", desc: "Handling year-end closings and opening new financial years." },
+                { label: "3.4 Security Purge", desc: "A master-password-protected feature to completely wipe local company data." }
+            ]
+        },
+        {
+            id: "4",
+            title: "Chart of Accounts & Ledgers",
+            icon: <BookOpen className="text-[#8b0000]" />,
+            items: [
+                { label: "4.1 Party Directory", desc: "Detailed database for Customers and Suppliers (Parties) with opening balances." },
+                { label: "4.2 Cash & Bank Masters", desc: "Management of multiple cashier drawers and bank accounts to track liquidity." },
+                { label: "4.3 Expense & Income Heads", desc: "Categorization of overheads (Salaries, Rent, Bills) and miscellaneous income." },
+                { label: "4.4 Capital & Assets", desc: "Tracking business investments, partner equity, and long-term assets." }
+            ]
+        },
+        {
+            id: "5",
+            title: "Advanced Inventory & Stock Management",
+            icon: <Package className="text-[#8b0000]" />,
+            items: [
+                { label: "5.1 Product Master", desc: "Managing Item Names, Groups (e.g., HDPE 100), and base Units of Measure (UOM)." },
+                { label: "5.2 Multi-Level Packaging", desc: "Tracking inventory in Bags, Jumbo Bags, or Kilos with automatic conversion." },
+                { label: "5.3 Lot & Batch Tracking", desc: "Drill-down tracking of specific batches for quality and aging analysis." },
+                { label: "5.4 Stock Valuation Modal", desc: "Real-time pop-up window showing current stock levels and monetary value." }
+            ]
+        },
+        {
+            id: "6",
+            title: "Transactional Vouchers (The Engine)",
+            icon: <Receipt className="text-[#8b0000]" />,
+            items: [
+                { label: "6.1 Purchase Voucher", desc: "Recording raw material entry, updating supplier balances, and increasing stock." },
+                { label: "6.2 Sales Voucher/Invoice", desc: "Professional billing with automated tax calculations and stock deduction." },
+                { label: "6.3 Payment & Receipt Vouchers", desc: "Handling all Cash/Bank-In and Cash/Bank-Out financial movements." },
+                { label: "6.4 Journal Voucher (JV)", desc: "Non-cash adjustments and account-to-account transfers." },
+                { label: "6.5 Manufacturing Journal", desc: "Processing the conversion of Raw Materials into Finished Goods." }
+            ]
+        },
+        {
+            id: "7",
+            title: "Financial Reporting & Statements",
+            icon: <LineChart className="text-[#8b0000]" />,
+            items: [
+                { label: "7.1 Dashboard Analytics", desc: "High-level summary of Cash-on-hand, Receivables, and Payables." },
+                { label: "7.2 Ledger Statements", desc: "Generating detailed transaction history for any specific account between dates." },
+                { label: "7.3 Profit & Loss Account", desc: "Automatic calculation of Gross and Net Profit based on trading and expenses." },
+                { label: "7.4 Balance Sheet", desc: "A comprehensive summary of Assets, Liabilities, and Equity." }
+            ]
+        },
+        {
+            id: "8",
+            title: "Logistics & Documentation",
+            icon: <Truck className="text-[#8b0000]" />,
+            items: [
+                { label: "8.1 PDF Export Engine", desc: "Converting Invoices, Vouchers, and Reports into high-quality PDF files." },
+                { label: "8.2 Packing List Generator", desc: "Creating shipping documents for exports, including net/gross weights." },
+                { label: "8.3 Bank Application Templates", desc: "Auto-filling banking forms for international trade and transactions." }
+            ]
+        },
+        {
+            id: "9",
+            title: "Cloud Hub & Live Operations",
+            icon: <Cloud className="text-[#8b0000]" />,
+            items: [
+                { label: "9.1 Go Live (Cloud Sync)", desc: "One-click synchronisation of local data to the Firebase cloud database." },
+                { label: "9.2 Remote Data Retrieval", desc: "Downloading company data from the Cloud Hub to a new local device." },
+                { label: "9.3 Cloud Backup Registry", desc: "Secure off-site storage to prevent data loss from local hardware failure." }
+            ]
+        },
+        {
+            id: "10",
+            title: "System Utilities & Audit",
+            icon: <Settings className="text-[#8b0000]" />,
+            items: [
+                { label: "10.1 System Log Modal", desc: "A detailed audit log tracking every 'Add', 'Edit', and 'Delete' action." },
+                { label: "10.2 Integrated Working Sheet", desc: "An in-app spreadsheet tool for quick rough calculations." },
+                { label: "10.3 Currency & Decimal Precision", desc: "Global settings for symbols and rounding (e.g., 3 decimals for Tonnes)." },
+                { label: "10.4 Staff Attendance", desc: "A simplified tracker for employee presence and payroll records." }
+            ]
+        }
+    ];
+
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} title="ACCPRO Feature Catalogue" maxWidth="max-w-4xl">
+            <div ref={catalogueRef} className="bg-[#fdfbf7] flex flex-col h-[85vh] font-serif overflow-hidden">
+                <div className="p-8 pb-4 border-b bg-white relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 rounded-full -mr-32 -mt-32 blur-3xl opacity-30" style={{background: 'linear-gradient(to bottom right, #8b0000, #b8860b)'}}></div>
+                    <div className="flex items-center gap-6 mb-4 relative z-10">
+                        <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-xl" style={{background: 'linear-gradient(to bottom right, #8b0000, #d4a017)'}}>
+                            <Layers size={32} />
+                        </div>
+                        <div>
+                            <h2 className="text-3xl font-black text-transparent bg-clip-text uppercase tracking-tighter italic" style={{backgroundImage: 'linear-gradient(to right, #8b0000, #b8860b)', WebkitBackgroundClip: 'text'}}>Technical & Functional Indexing</h2>
+                            <p className="text-[11px] font-bold text-[#64748b] uppercase tracking-[0.4em] mt-1 opacity-70">The {PLATFORM_ID.suffix} Engine Architecture</p>
+                        </div>
+                    </div>
+                    <div className="flex gap-4 mt-6 relative z-10">
+                        <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
+                            <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.6.2 (April 2026)</span>
+                        </div>
+                        <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
+                            <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
+                            <span className="text-xs font-black text-[#b8860b]">{PLATFORM_ID.isDesktop ? 'Enterprise Offline' : 'Global Cloud Hub'}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-8 space-y-12 custom-scrollbar bg-white/50 backdrop-blur-sm">
+                    {sections.map((section) => (
+                        <div key={section.id} className="relative">
+                            <div className="flex items-center gap-4 mb-6 sticky top-0 bg-[#fdfbf7]/95 backdrop-blur-md z-10 py-2 rounded-xl">
+                                <div className="p-3 bg-white rounded-xl shadow-lg shadow-[#8b0000]/5 border border-[#8b0000]/10">
+                                    {cloneElement(section.icon, { size: 24 })}
+                                </div>
+                                <h3 className="text-lg font-black text-[#334155] uppercase tracking-[0.2em]">{section.id}. {section.title}</h3>
+                                <div className="flex-1 h-0.5 ml-4 opacity-30" style={{background: 'linear-gradient(to right, #8b0000, transparent)'}}></div>
+                            </div>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-8">
+                                {section.items.map((item, idx) => (
+                                    <div key={idx} className="bg-white p-4 rounded-2xl border border-[#f1f5f9] shadow-sm hover:shadow-xl hover:border-[#b8860b]/30 transition-all duration-300 group cursor-default">
+                                        <div className="text-[12px] font-black text-[#1e293b] mb-1.5 group-hover:text-[#8b0000] transition-colors uppercase tracking-tight leading-tight">{item.label}</div>
+                                        <div className="text-[11px] font-medium text-[#64748b] leading-relaxed italic opacity-80">{item.desc}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+
+                    <div className="mt-16 p-10 text-white relative overflow-hidden shadow-[0_20px_50px_-10px_rgba(139,0,0,0.4)] rounded-[2.5rem]" style={{background: 'linear-gradient(to bottom right, #8b0000, #5a0000, #b8860b)'}}>
+                        <div className="relative z-10">
+                            <div className="w-12 h-1 bg-white/30 mb-6 rounded-full"></div>
+                            <h4 className="text-3xl font-black uppercase tracking-tight mb-4 italic">Unrivaled Excellence</h4>
+                            <p className="text-sm text-red-50/70 leading-relaxed font-medium max-w-2xl">This technical index defines the high-precision architecture of Accpro. Every module is engineered for speed, security, and absolute financial integrity.</p>
+                            
+                            <div className="mt-12 flex items-center gap-4">
+                                <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center text-white border border-white/20 backdrop-blur-sm shadow-xl">
+                                    <Shield size={20} />
+                                </div>
+                                <div>
+                                    <div className="text-[10px] font-black text-red-200/50 uppercase tracking-[0.3em] mb-0.5">Architect & Founder</div>
+                                    <div className="text-lg font-bold tracking-tight">Nadeem | <span className="text-amber-300">Accpro Solutions</span></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="absolute -right-16 -bottom-16 opacity-5 rotate-12">
+                            <Settings size={320} />
+                        </div>
+                        <div className="absolute top-0 right-0 w-full h-full bg-[linear-gradient(45deg,rgba(255,255,255,0.05)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.05)_50%,rgba(255,255,255,0.05)_75%,transparent_75%,transparent)] bg-[length:20px_20px]"></div>
+                    </div>
+                </div>
+
+                <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.2</div>
+                    
+                    <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+                        <button 
+                            onClick={handleDownloadPDF}
+                            disabled={isDownloading}
+                            className={`
+                                flex-1 sm:flex-none px-8 py-3.5 border-2 border-[#8b0000] text-[#8b0000] text-[10px] font-black rounded-xl uppercase tracking-[0.2em] transition-all duration-300 flex items-center justify-center gap-2
+                                ${isDownloading ? 'opacity-50 cursor-wait' : 'hover:bg-[#8b0000] hover:text-white active:scale-95'}
+                            `}
+                        >
+                            {isDownloading ? <RefreshCw size={14} className="animate-spin" /> : <DownloadCloud size={14} />}
+                            {isDownloading ? "Generating..." : "Download Catalogue (PDF)"}
+                        </button>
+
+                        <button 
+                            onClick={onClose}
+                            className="flex-1 sm:flex-none px-12 py-3.5 text-white text-[10px] font-black rounded-xl uppercase tracking-[0.2em] shadow-xl hover:scale-105 active:scale-95 transition-all duration-300"
+                            style={{background: 'linear-gradient(to right, #8b0000, #b8860b)'}}
+                        >
+                            Return to Dashboard
+                        </button>
+                    </div>
+
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.2</div>
+                </div>
+            </div>
+        </Modal>
+    );
+};
+
 const mergeLiveCompanyLists = (localCompanies = [], remoteLiveCompanies = []) => {
 
     const merged = new Map();
@@ -247,14 +589,23 @@ const mergeLiveCompanyLists = (localCompanies = [], remoteLiveCompanies = []) =>
 // --- SMART DATE HELPER & MODALS ---
 const parseSmartDate = (input, baseDateStr) => {
     if (!input || !input.trim()) return null;
-    const cleanText = input.trim();
+    const cleanText = input.trim().toLowerCase();
 
     // If it's already ISO format (YYYY-MM-DD), return as is
     if (/^\d{4}-\d{2}-\d{2}$/.test(cleanText)) return cleanText;
 
     // Support slash, dot, or space separators
-    const clean = cleanText.replace(/[./\s]/g, '-');
-    const parts = clean.split('-');
+    let clean = cleanText.replace(/[./\s]/g, '-');
+    
+    // Month name support
+    const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    monthNames.forEach((mName, idx) => {
+        if (clean.includes(mName)) {
+            clean = clean.replace(mName, (idx + 1).toString());
+        }
+    });
+
+    const parts = clean.split('-').filter(p => p !== '');
     const base = new Date(baseDateStr || Date.now());
     const yyyy = base.getFullYear();
     const mm = base.getMonth(); // 0-indexed
@@ -265,7 +616,7 @@ const parseSmartDate = (input, baseDateStr) => {
         // "15" -> 15th of current month
         d = parseInt(parts[0]);
     } else if (parts.length === 2) {
-        // "15-2" -> 15th Feb current year
+        // "15-2" or "20-apr" -> 15th Feb / 20th Apr
         d = parseInt(parts[0]);
         m = parseInt(parts[1]) - 1;
     } else if (parts.length === 3) {
@@ -276,7 +627,7 @@ const parseSmartDate = (input, baseDateStr) => {
         if (yIn < 100) y = 2000 + yIn; else y = yIn;
     }
 
-    const newDate = new Date(y, m, d, 12, 0, 0); // Noon to avoid timezone shifts
+    const newDate = new Date(y, m, d, 12, 0, 0);
     if (isNaN(newDate.getTime())) return null;
     return newDate.toISOString().split('T')[0];
 };
@@ -305,9 +656,12 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
         if (e.key === 'Enter') {
             const res = parseSmartDate(val, baseDate);
             if (res) {
-                setVal(toDisplayDate(res)); // Update UI to normalized display
+                setVal(toDisplayDate(res)); 
                 onSubmit(res);
-            } else onClose();
+            } else {
+                // If invalid, maybe just select all to allow retry
+                inputRef.current?.select();
+            }
         }
     };
 
@@ -1465,7 +1819,7 @@ const GuestLedgerView = () => {
                 </div>
 
                 <div className="mt-6 text-center text-[10px] text-slate-400 pb-4">
-                    Generated by NADTALLY • Secure Link
+                    Generated by accpro • Secure Link
                 </div>
             </div>
 
@@ -2885,7 +3239,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
 };
 
 // --- COMPANY SELECTION OVERLAY (TALLY ERP 9 STYLE) ---
-const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
+const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentCompanyId, currentStats }) => {
     const [companies, setCompanies] = useState([]);
     const [liveCompanies, setLiveCompanies] = useState([]);
     const [newCompanyName, setNewCompanyName] = useState('');
@@ -2903,7 +3257,18 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
     const [downloadingId, setDownloadingId] = useState(null);
     const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
     const [makingLiveId, setMakingLiveId] = useState(null);
-    const [makeLiveProgress, setMakeLiveProgress] = useState({ current: 0, total: 0 });
+    const [makeLiveProgress, setMakeLiveProgress] = useState({ 
+        current: 0, 
+        total: 0,
+        ledgers: 0,
+        totalLedgers: 0,
+        vouchers: 0,
+        totalVouchers: 0
+    });
+    const [showSyncHistory, setShowSyncHistory] = useState(false);
+    const [syncHistory, setSyncHistory] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('accpro_sync_history') || '[]'); } catch { return []; }
+    });
     const [removeDialog, setRemoveDialog] = useState({
         open: false,
         company: null,
@@ -2917,7 +3282,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
     const [cloudDeleteDialog, setCloudDeleteDialog] = useState({ open: false, co: null, password: '', busy: false });
 
     
-    const license = window.nadtallyLicense;
+    const license = window.accproLicense;
     const myEmail = license?.email;
     const mySerial = license?.serialKey;
 
@@ -2940,34 +3305,49 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
         return () => window.removeEventListener('keydown', handleEsc);
     }, [onClose]);
 
-    useEffect(() => {
-        const fetch = async () => {
-            try {
-                const list = await listCompanies();
-                // Fetch stats for local companies
-                const withStats = await Promise.all(list.map(async (co) => {
-                    try {
-                        const stats = await getCompanyStats(co.id);
-                        return { ...co, stats };
-                    } catch (e) {
-                        return co;
-                    }
-                }));
-                setCompanies(withStats);
+    const [refreshingStats, setRefreshingStats] = useState(false);
 
-                if (ipcRenderer) {
-                    const p = await ipcRenderer.invoke('get-data-path');
-                    setDataPath(p);
-                } else {
-                    setDataPath('Browser Storage (IndexedDB)');
+    const fetchCompanies = async ({ forceRefresh = false } = {}) => {
+        try {
+            const list = await listCompanies();
+            const withStats = [];
+            for (const co of list) {
+                try {
+                    // For force refresh: clear cache so getCompanyStats does a live RxDB scan
+                    if (forceRefresh) localStorage.removeItem(`accpro_stats_${co.id}`);
+                    // For the active company use in-memory stats (always current)
+                    const stats = (currentCompanyId && co.id === currentCompanyId && currentStats)
+                        ? currentStats
+                        : await getCompanyStats(co.id);
+                    // Save fresh stats back to cache so all views stay in sync
+                    if (stats) saveCachedCompanyStats(co.id, stats);
+                    withStats.push({ ...co, stats });
+                } catch (e) {
+                    withStats.push(co);
                 }
-            } catch (e) {
-                console.error(e);
-            } finally {
-                setLoading(false);
             }
-        };
-        fetch();
+            setCompanies(withStats);
+            if (ipcRenderer) {
+                const p = await ipcRenderer.invoke('get-data-path');
+                setDataPath(p);
+            } else {
+                setDataPath('Browser Storage (IndexedDB)');
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setLoading(false);
+            setRefreshingStats(false);
+        }
+    };
+
+    const handleRefreshStats = async () => {
+        setRefreshingStats(true);
+        await fetchCompanies({ forceRefresh: true });
+    };
+
+    useEffect(() => {
+        fetchCompanies();
     }, []);
 
     // Subscribe to live companies registry from Firebase
@@ -3060,22 +3440,66 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
 
     const handleMakeLive = async (coId, coName, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Upload ALL data for "${coName}" to Firebase?\n\nThis will push all records to the cloud so they can be accessed from any device.`)) return;
+        // Get the best available stats for this company (use in-memory if active)
+        const liveStats = (currentCompanyId && coId === currentCompanyId && currentStats) ? currentStats : null;
+        const statsText = liveStats ? `\n\nData to upload: ${liveStats.vouchers} Vouchers, ${liveStats.ledgers} Ledgers` : '';
+        if (!window.confirm(`Upload ALL data for "${coName}" to Firebase?${statsText}\n\nThis will push all records to the cloud so they can be accessed from any device.`)) return;
         setMakingLiveId(coId);
-        setMakeLiveProgress({ current: 0, total: 0 });
+        const startTime = Date.now();
+        setMakeLiveProgress({ current: 0, total: 0, ledgers: 0, totalLedgers: liveStats?.ledgers || 0, vouchers: 0, totalVouchers: liveStats?.vouchers || 0 });
         try {
-            const result = await makeCompanyLive(coId, coName, (cur, tot) => {
-                setMakeLiveProgress({ current: cur, total: tot });
-            });
+            const result = await makeCompanyLive(coId, coName, (cur, tot, detail) => {
+                setMakeLiveProgress({ current: cur, total: tot, ...detail });
+            }, liveStats);
+
+            // Save sync history entry
+            const historyEntry = {
+                id: Date.now(),
+                time: new Date().toISOString(),
+                company: coName,
+                companyId: coId,
+                status: result.success ? 'success' : 'failed',
+                uploaded: result.uploaded || 0,
+                ledgers: liveStats?.ledgers || 0,
+                vouchers: liveStats?.vouchers || 0,
+                durationMs: Date.now() - startTime,
+                error: result.error || null
+            };
+            const updated = [historyEntry, ...syncHistory].slice(0, 50);
+            setSyncHistory(updated);
+            try { localStorage.setItem('accpro_sync_history', JSON.stringify(updated)); } catch {}
+
             if (result.success) {
+                // Reload company list with proper stats
                 const freshList = await listCompanies();
-                setCompanies(freshList);
-                alert(`\u2705 "${coName}" is now LIVE on Firebase!\n${result.uploaded} records uploaded to the cloud.`);
+                const withStats = await Promise.all(freshList.map(async (co) => {
+                    const stats = (currentCompanyId && co.id === currentCompanyId && currentStats)
+                        ? currentStats
+                        : await getCompanyStats(co.id).catch(() => null);
+                    return stats ? { ...co, stats } : co;
+                }));
+                setCompanies(withStats);
+                alert(`✅ "${coName}" is now LIVE on Firebase!\n${result.uploaded} records uploaded to the cloud.`);
             } else {
-                alert(`\u274C Failed to make live: ${result.error}`);
+                alert(`❌ Failed to make live: ${result.error}`);
             }
         } catch (err) {
-            alert('\u274C Error: ' + err.message);
+            const historyEntry = {
+                id: Date.now(),
+                time: new Date().toISOString(),
+                company: coName,
+                companyId: coId,
+                status: 'failed',
+                uploaded: 0,
+                ledgers: liveStats?.ledgers || 0,
+                vouchers: liveStats?.vouchers || 0,
+                durationMs: Date.now() - startTime,
+                error: err.message
+            };
+            const updated = [historyEntry, ...syncHistory].slice(0, 50);
+            setSyncHistory(updated);
+            try { localStorage.setItem('accpro_sync_history', JSON.stringify(updated)); } catch {}
+            alert('❌ Error: ' + err.message);
         } finally {
             setMakingLiveId(null);
         }
@@ -3172,13 +3596,60 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
         }
     };
 
+    const [isRefreshingHub, setIsRefreshingHub] = useState(false);
     const handleRefreshLiveCompanies = async () => {
+        setIsRefreshingHub(true);
         try {
+            // 1. Refresh Cloud Registry from Firestore
             const freshLiveCompanies = await fetchLiveCompaniesFromFirestore();
             setLiveCompanies(Array.isArray(freshLiveCompanies) ? freshLiveCompanies : []);
+            
+            // 2. Refresh Local Stats for comparison
+            const list = await listCompanies();
+            const withStats = [];
+            for (const co of list) {
+                try {
+                    // Use in-memory stats for the active company (always accurate)
+                    const stats = (currentCompanyId && co.id === currentCompanyId && currentStats)
+                        ? currentStats
+                        : await getCompanyStats(co.id);
+                    withStats.push({ ...co, stats });
+                    
+                    // 3. Comparison & Delta Sync Logic
+                    const cloudCo = freshLiveCompanies.find(l => l.id === co.id);
+                    if (cloudCo && co.settings?.isLive) {
+                        const cs = cloudCo.stats || {};
+                        
+                        // Check if records are missing from cloud (e.g. after a local restore)
+                        if (stats.vouchers > (cs.vouchers || 0) || stats.ledgers > (cs.ledgers || 0)) {
+                            console.log(`[REFRESH HUB] Detected missing cloud records for ${co.name}. Starting Delta Sync...`);
+                            
+                            // Perform a one-time background sync for this company
+                            const syncResult = await syncCompanyDataDelta(co.id);
+                            if (syncResult.success && syncResult.count > 0) {
+                                console.log(`[REFRESH HUB] Successfully pushed ${syncResult.count} missing records for ${co.name}.`);
+                                // Update the registry with final verified counts
+                                await registerCompanyAsLiveInFirestore(co.id, co.name, stats);
+                            }
+                        } else if (stats.vouchers !== cs.vouchers || stats.ledgers !== cs.ledgers) {
+                            // Just update registry counts if no data push was needed
+                            await registerCompanyAsLiveInFirestore(co.id, co.name, stats);
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[REFRESH HUB] Failed stats processing for ${co.name}:`, e);
+                    withStats.push(co);
+                }
+            }
+            // Update local companies state
+            setCompanies(withStats);
+            console.log('[REFRESH HUB] Registry synchronized.');
+            
         } catch (e) {
-            console.error('[LIVE DATAS] Failed to refresh live registry:', e);
-            setLiveCompanies([]);
+            console.error('[LIVE DATAS] Global Registry Sync failed:', e);
+            alert('Refresh failed: ' + e.message);
+        } finally {
+            setIsRefreshingHub(false);
         }
     };
 
@@ -3214,25 +3685,31 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
         if (password !== 'abcd') { alert('Incorrect password. Deletion cancelled.'); return; }
         setCloudDeleteDialog(prev => ({ ...prev, busy: true }));
         try {
+            // 1. Stop live sync first to prevent auto re-registration after delete
+            stopLiveSync(co.id);
+
+            // 2. Delete all Firebase records + registry entry
             const result = await removeCompanyFromFirebase(co.id);
             if (!result.success) throw new Error(result.error || 'Unknown error');
             
-            // Remove from local cloud state
+            // 3. Remove from local cloud state
             setLiveCompanies(prev => prev.filter(c => c.id !== co.id));
             
-            // ALSO: Update local company settings if it exists locally to mark as NOT live anymore
+            // 4. Mark local company as NOT live (use incrementalPatch to avoid DataCloneError)
             try {
-                const { getMasterDB } = await import('./localDB.js');
                 const master = await getMasterDB();
                 const existing = await master.companies.findOne({ selector: { id: co.id } }).exec();
                 if (existing) {
-                    await existing.patch({ settings: { ...existing.settings, isLive: false } });
+                    const existingSettings = existing.toJSON().settings || {};
+                    await existing.incrementalPatch({ settings: { ...existingSettings, isLive: false } });
                 }
             } catch (le) {
-                console.warn('[CLOUD DELETE] Local settings update failed (maybe it wasnt local):', le);
+                // BroadcastChannel error is non-fatal — just use setCompanyLiveStatus as fallback
+                try { await setCompanyLiveStatus(co.id, false); } catch {}
+                console.warn('[CLOUD DELETE] Local settings update used fallback:', le.message);
             }
 
-            // Refresh local list
+            // 5. Refresh local list
             const freshList = await listCompanies();
             setCompanies(freshList);
             
@@ -3242,7 +3719,6 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
             alert('Delete failed: ' + err.message);
             setCloudDeleteDialog(prev => ({ ...prev, busy: false }));
         }
-
     };
 
 
@@ -3282,7 +3758,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
             if (window.confirm(`⚠️ CHANGE DATA LOCATION?\n\nNew Path: ${newPath}\n\n1. The app will restart now.\n2. You must MANUALLY COPY your existing data folders from the old location to the new one.\n\nContinue?`)) {
                 try {
                     const config = { userDataPath: newPath };
-                    const configPath = nodePath.join(window.process.env.APPDATA, 'nadtally-config.json');
+                    const configPath = nodePath.join(window.process.env.APPDATA, 'accpro-config.json');
                     nodeFs.writeFileSync(configPath, JSON.stringify(config));
                     await ipcRenderer.invoke('restart-app');
                 } catch (err) { alert("Error saving config: " + err.message); }
@@ -3354,7 +3830,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
             <div className="relative z-10 bg-[#0f172a]/80 backdrop-blur-md border-b border-white/5 px-6 py-2.5 flex justify-between items-center">
                 <div className="flex items-center gap-6">
                     <div className="flex flex-col">
-                        <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">NAD TALLY</span>
+                        <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">ACCPRO</span>
                         <span className="text-white font-black text-lg -mt-1 tracking-tight">Enterprise <span className="text-blue-500">Suite</span></span>
                     </div>
                 </div>
@@ -3448,23 +3924,42 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                                             <div className="flex items-center gap-2 mt-0.5">
                                                 <span className="text-[8px] md:text-[10px] text-slate-500 font-bold uppercase tracking-widest leading-none">Local Repository</span>
                                                 <span className="w-0.5 h-0.5 rounded-full bg-slate-700"></span>
-                                                <span className="text-[8px] md:text-[10px] text-blue-400 font-mono tracking-tighter">C:\NADTALLY\DATA</span>
+                                                <span className="text-[8px] md:text-[10px] text-blue-400 font-mono tracking-tighter">C:\accpro\DATA</span>
                                             </div>
                                         </div>
                                     </div>
-                                    <button 
-                                        onClick={() => setView('menu')}
-                                        className="p-2 md:p-3 hover:bg-white/5 rounded-xl md:rounded-2xl text-slate-400 hover:text-white transition-colors"
-                                    >
-                                        <X size={18} className="md:w-6 md:h-6" />
-                                    </button>
+                                    <div className="flex items-center gap-1">
+                                        <button
+                                            onClick={handleRefreshStats}
+                                            disabled={refreshingStats}
+                                            title="Recheck statistics from database"
+                                            className="p-2 md:p-3 hover:bg-white/5 rounded-xl md:rounded-2xl text-slate-400 hover:text-emerald-400 transition-colors disabled:opacity-40"
+                                        >
+                                            <RefreshCw size={15} className={`md:w-5 md:h-5 ${refreshingStats ? 'animate-spin text-emerald-400' : ''}`} />
+                                        </button>
+                                        <button 
+                                            onClick={() => setView('menu')}
+                                            className="p-2 md:p-3 hover:bg-white/5 rounded-xl md:rounded-2xl text-slate-400 hover:text-white transition-colors"
+                                        >
+                                            <X size={18} className="md:w-6 md:h-6" />
+                                        </button>
+                                    </div>
                                 </div>
                                 {/* Cloud Sync progress indicator */}
                                 {makingLiveId && (
-                                    <div className="bg-emerald-600/10 border-b border-emerald-500/20 px-8 py-4 flex items-center gap-6 animate-pulse">
+                                    <div className="bg-emerald-600/10 border-b border-emerald-500/20 px-8 py-4 flex items-center gap-6">
                                         <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
                                         <div className="flex-1">
                                             <div className="text-sm font-black text-emerald-400 uppercase tracking-widest">Synchronizing to Cloud Hub...</div>
+                                            <div className="flex items-center gap-1.5 mt-1">
+                                                <div className="text-[10px] font-bold text-slate-400">
+                                                    VOUCHERS: <span className="text-white">{makeLiveProgress.vouchers} / {makeLiveProgress.totalVouchers}</span>
+                                                </div>
+                                                <div className="text-[10px] font-bold text-slate-500 mx-1">|</div>
+                                                <div className="text-[10px] font-bold text-slate-400">
+                                                    LEDGERS: <span className="text-white">{makeLiveProgress.ledgers} / {makeLiveProgress.totalLedgers}</span>
+                                                </div>
+                                            </div>
                                             {makeLiveProgress.total > 0 && (
                                                 <div className="w-full bg-emerald-950/50 rounded-full h-1.5 mt-2 overflow-hidden border border-emerald-500/10">
                                                     <div className="bg-emerald-500 h-full transition-all duration-300" style={{ width: `${Math.min(100, (makeLiveProgress.current / makeLiveProgress.total) * 100)}%` }}></div>
@@ -3472,14 +3967,63 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                                             )}
                                         </div>
                                         <div className="text-right">
-                                            <div className="text-[10px] font-black text-emerald-500 uppercase">Processing</div>
+                                            <div className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">Total Processing</div>
                                             <div className="text-lg font-mono text-white tracking-widest leading-none">
                                                 {makeLiveProgress.current} / {makeLiveProgress.total}
+                                            </div>
+                                            <div className="text-[9px] font-bold text-slate-500 mt-1 uppercase">
+                                                {makeLiveProgress.total - makeLiveProgress.current} Remaining
                                             </div>
                                         </div>
                                     </div>
                                 )}
-
+                                {/* Sync History toggle link */}
+                                {!makingLiveId && syncHistory.length > 0 && (
+                                    <div className="border-b border-white/5 px-8 py-2 flex justify-end">
+                                        <button
+                                            onClick={() => setShowSyncHistory(v => !v)}
+                                            className="text-[10px] font-bold text-slate-500 hover:text-emerald-400 uppercase tracking-widest transition-colors flex items-center gap-1"
+                                        >
+                                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1"></span>
+                                            {showSyncHistory ? 'Hide' : 'View'} Sync History ({syncHistory.length})
+                                        </button>
+                                    </div>
+                                )}
+                                {/* Sync History Panel */}
+                                {showSyncHistory && !makingLiveId && (
+                                    <div className="border-b border-white/5 bg-slate-900/60 px-8 py-4 max-h-52 overflow-y-auto custom-scrollbar">
+                                        <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Sync Event History</div>
+                                        <table className="w-full text-left border-separate border-spacing-y-1">
+                                            <thead>
+                                                <tr className="text-[9px] font-black text-slate-600 uppercase tracking-widest">
+                                                    <th className="pr-4 pb-1">Time</th>
+                                                    <th className="pr-4 pb-1">Company</th>
+                                                    <th className="pr-4 pb-1 text-center">Records</th>
+                                                    <th className="pr-4 pb-1 text-center">VCH</th>
+                                                    <th className="pr-4 pb-1 text-center">LGR</th>
+                                                    <th className="pb-1 text-center">Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {syncHistory.map(h => (
+                                                    <tr key={h.id} className="text-[10px] font-mono">
+                                                        <td className="pr-4 text-slate-500">{new Date(h.time).toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</td>
+                                                        <td className="pr-4 text-white font-bold truncate max-w-[120px]" title={h.company}>{h.company}</td>
+                                                        <td className="pr-4 text-center text-slate-300">{h.uploaded}</td>
+                                                        <td className="pr-4 text-center text-purple-400">{h.vouchers}</td>
+                                                        <td className="pr-4 text-center text-blue-400">{h.ledgers}</td>
+                                                        <td className="text-center">
+                                                            {h.status === 'success'
+                                                                ? <span className="text-emerald-400 font-bold">✓ OK</span>
+                                                                : <span className="text-red-400 font-bold" title={h.error}>✗ FAIL</span>
+                                                            }
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
 
                                 <div className="flex-1 overflow-y-auto p-2 md:p-4 custom-scrollbar">
                                     <table className="w-full text-left border-separate border-spacing-y-1.5 font-sans table-auto md:table-fixed">
@@ -3625,10 +4169,11 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                                     <div className="flex items-center gap-2">
                                         <button 
                                             onClick={handleRefreshLiveCompanies}
-                                            className="p-3 hover:bg-white/5 rounded-2xl text-slate-400 hover:text-white transition-colors"
-                                            title="Refresh Hub"
+                                            disabled={isRefreshingHub}
+                                            className={`p-3 hover:bg-white/5 rounded-2xl text-slate-400 hover:text-white transition-colors ${isRefreshingHub ? 'bg-white/10' : ''}`}
+                                            title="Refresh Hub & Compare Data"
                                         >
-                                            <RefreshCw size={20} />
+                                            <RefreshCw size={20} className={isRefreshingHub ? 'animate-spin text-blue-400' : ''} />
                                         </button>
                                         <button 
                                             onClick={() => setView('menu')}
@@ -3898,7 +4443,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo }) => {
                                             </div>
                                             <div className="flex flex-col gap-1.5">
                                                 <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest ml-1">Data Storage</label>
-                                                <div className="bg-white/5 px-4 py-2.5 rounded-xl text-slate-400 text-xs font-mono lowercase">C:\NADTALLY\DATA</div>
+                                                <div className="bg-white/5 px-4 py-2.5 rounded-xl text-slate-400 text-xs font-mono lowercase">C:\accpro\DATA</div>
                                             </div>
                                         </div>
                                     </div>
@@ -4063,7 +4608,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
             } else {
                 // Admin Login Verification
                 // Support Offline & Hybrid Authentication
-                const license = window.nadtallyLicense;
+                const license = window.accproLicense;
                 const cleanUser = username.trim().toLowerCase();
                 const isAdminMatch = (cleanUser === adminEmail?.toLowerCase()) || (cleanUser === license?.email?.toLowerCase());
                 
@@ -4182,7 +4727,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
                 </form>
                 <div className="p-3 bg-white border-t border-slate-200 text-center flex items-center justify-center gap-4">
                     <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
-                        NADTALLY <span className="text-[#005ea8] font-black opacity-90">v{version}</span>
+                        accpro <span className="text-[#005ea8] font-black opacity-90">v{version}</span>
                     </span>
                     <button 
                         type="button"
@@ -4199,8 +4744,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.5.7";
-    const IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+    const SYSTEM_VERSION = "2.6.2";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -4236,6 +4780,7 @@ export default function App() {
     const idleWarningStartRef = useRef(null);
     const idleMonitorIntervalRef = useRef(null);
     const idleAutoLogoutInProgressRef = useRef(false);
+    const syncInitializedRef = useRef({}); // record of which companyId has been initialized in this session to prevent race conditions
 
     // 1. ADD THIS NEW DATE STATE
     const [dashboardDate, setDashboardDate] = useState(new Date().toISOString().split('T')[0]);
@@ -4263,15 +4808,71 @@ export default function App() {
     const [onlineUsers, setOnlineUsers] = useState({}); // Store live data of everyone
     const [pendingTaskCount, setPendingTaskCount] = useState(0); // <--- New State for Badge
     const [deferredPrompt, setDeferredPrompt] = useState(null);
+    const [isPwaInstalled, setIsPwaInstalled] = useState(false);
     const [subUser, setSubUser] = useState(null);
     const [isCompanyLocked, setIsCompanyLocked] = useState(false);
+    const [cloudSyncStatus, setCloudSyncStatus] = useState({ state: 'offline', progress: 0, total: 0, message: '' });
+    const [syncPulse, setSyncPulse] = useState(false);
+    const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+
+
+    // Handle Cloud Sync Status updates
+    useEffect(() => {
+        window.onCloudSyncStatusChange = (state, details = {}) => {
+            setCloudSyncStatus(prev => ({
+                ...prev,
+                state,
+                progress: details.progress ?? prev.progress,
+                total: details.total ?? prev.total,
+                message: details.message ?? ''
+            }));
+            
+            // Trigger animation on progress pulse
+            setSyncPulse(true);
+            const timer = setTimeout(() => setSyncPulse(false), 1500);
+            return () => clearTimeout(timer);
+        };
+        return () => { delete window.onCloudSyncStatusChange; };
+    }, []);
+
+    const handleManualSync = () => {
+        if (!activeCompanyId) {
+            setToast({ type: 'error', title: 'Sync Restricted', message: 'Open a company first to sync data.' });
+            return;
+        }
+
+        // --- Check if data is on cloud ---
+        if (cloudSyncStatus.state === 'offline') {
+            alert("⚠️ This data is not on cloud. First put the data on cloud, then sync.");
+            return;
+        }
+        
+        // Visual feedback that something is happening
+        setToast({ type: 'loading', title: 'Manual Sync', message: 'Re-establishing cloud connection...' });
+        setCloudSyncStatus(prev => ({ ...prev, state: 'syncing', message: 'Re-checking records...' }));
+        
+        // Allow re-initialization of the sync listeners
+        if (syncInitializedRef.current) {
+            syncInitializedRef.current[activeCompanyId] = false;
+        }
+        
+        // Re-trigger auth and sync sequence
+        try {
+            startLiveSync(activeCompanyId);
+            setTimeout(() => {
+                setToast({ type: 'success', title: 'Sync Triggered', message: 'Cloud listeners have been refreshed.' });
+            }, 1000);
+        } catch (e) {
+            setToast({ type: 'error', title: 'Sync Failed', message: e.message });
+        }
+    };
 
 
     // Restore Guest Info on load
     useEffect(() => {
         const guestData = localStorage.getItem('nadtally_guest_info');
-        if (guestData && !window.nadtallyLicense) {
-            try { window.nadtallyLicense = JSON.parse(guestData); } catch (e) { }
+        if (guestData && !window.accproLicense) {
+            try { window.accproLicense = JSON.parse(guestData); } catch (e) { }
         }
     }, []);
 
@@ -4298,8 +4899,8 @@ export default function App() {
     // 1. Initialize Virtual Offline User if Company is Selected
     useEffect(() => {
         if (activeCompanyId) {
-            const license = window.nadtallyLicense;
-            const targetEmail = license?.email || (window.licenseMode === 'educational' ? 'educational@guest.nadtally' : 'offline@nadtally.local');
+            const license = window.accproLicense;
+            const targetEmail = license?.email || (window.licenseMode === 'educational' ? 'educational@guest.accpro' : 'offline@accpro.local');
             const targetName = license?.userName || (window.licenseMode === 'educational' ? 'Guest Explorer' : 'System Administrator');
 
             // 1a. Ensure Virtual User Session exists (Admin level)
@@ -4327,12 +4928,38 @@ export default function App() {
                 });
             }
 
+            // 🛠️ PWA QUICK SESSION PERSISTENCE: Load cached sub-user login 
+            const cachedSession = localStorage.getItem(`accpro_session_${activeCompanyId}`);
+            if (cachedSession) {
+                try {
+                    const parsed = JSON.parse(cachedSession);
+                    if (parsed.mode === 'admin') {
+                        if (subUser) setSubUser(null);
+                        const license = window.accproLicense;
+                        const email = license?.email || 'offline@accpro.local';
+                        const role = email === 'nadeemalsaham@gmail.com' ? 'developer' : 'owner';
+                        if (currentRole !== role) setCurrentRole(role);
+                        if (dataOwnerId !== activeCompanyId) setDataOwnerId(activeCompanyId);
+                    } else if (parsed.mode === 'user' && parsed.subUser) {
+                        const u = parsed.subUser;
+                        if (!subUser || subUser.id !== u.id) setSubUser(u);
+                        if (currentRole !== u.role) setCurrentRole(u.role);
+                        if (dataOwnerId !== (u.ownerId || activeCompanyId)) setDataOwnerId(u.ownerId || activeCompanyId);
+                    }
+                } catch (e) {
+                    console.error("Failed to restore persistent session:", e);
+                }
+            }
+
             // 1b. ALWAYS Ensure Data Owner and Sync are active for current company
-            // Don't override dataOwnerId when a sub-user is logged in (their ownerId IS the company ID)
-            // but always set it on initial load when it's null/empty
+            // Use a ref to prevent double-initialization in the same React lifecycle
             if (!dataOwnerId || (dataOwnerId !== activeCompanyId && !subUser)) {
                 setDataOwnerId(activeCompanyId);
-                startLiveSync(activeCompanyId);
+                
+                if (!syncInitializedRef.current[activeCompanyId]) {
+                    syncInitializedRef.current[activeCompanyId] = true;
+                    startLiveSync(activeCompanyId);
+                }
             }
 
             // 1c. Handle Roles (Sub-user vs Admin)
@@ -4380,8 +5007,10 @@ export default function App() {
     const [savedLedgerFilter, setSavedLedgerFilter] = useState(null);
     const [toast, setToast] = useState(null); // <--- ADD THIS
     const [editData, setEditData] = useState(null);
+    const [masterModalEditRequest, setMasterModalEditRequest] = useState(null);
 
     const [showVersionDetails, setShowVersionDetails] = useState(false);
+    const [showFeatureCatalogue, setShowFeatureCatalogue] = useState(false);
     const [lastUpdateStamp] = useState(new Date().toLocaleString());
 
     // --- FAVORITES SYSTEM ---
@@ -4515,6 +5144,25 @@ export default function App() {
 
     // Auth State removed (handled by LicenseGate)
 
+    // 🚀 PWA Quick-Action Shortcuts Handler
+    useEffect(() => {
+        if (activeCompanyId && !loading) {
+            const params = new URLSearchParams(window.location.search);
+            const voucher = params.get('voucher');
+            if (voucher) {
+                setTimeout(() => {
+                    if (['payment', 'receipt', 'contra'].includes(voucher)) {
+                        setActiveModal(voucher);
+                    } else if (voucher === 'journal') {
+                        if (typeof openJournalModal === 'function') openJournalModal();
+                    } else if (['sales', 'purchase'].includes(voucher)) {
+                        if (typeof openInvoiceModal === 'function') openInvoiceModal(voucher);
+                    }
+                }, 1000); 
+            }
+        }
+    }, [activeCompanyId, loading]);
+
     const effectiveName = useMemo(() => {
         const name = subUser?.name || userData?.name || user?.displayName || 'System';
         return `${name} (${user?.email || 'N/A'})`;
@@ -4583,22 +5231,46 @@ export default function App() {
 
     // --- PWA INSTALL PROMPT LISTENER ---
     useEffect(() => {
-        const handler = (e) => {
-            // Prevent Chrome 67 and earlier from automatically showing the prompt
+        const isStandaloneNow = () => {
+            const standaloneMedia = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+            const iosStandalone = window.navigator && window.navigator.standalone === true;
+            const twa = typeof document.referrer === 'string' && document.referrer.startsWith('android-app://');
+            return !!(standaloneMedia || iosStandalone || twa);
+        };
+
+        setIsPwaInstalled(isStandaloneNow());
+
+        const installPromptHandler = (e) => {
+            // Prevent Chrome from auto-showing prompt and keep it for manual trigger.
             e.preventDefault();
-            // Stash the event so it can be triggered later.
             setDeferredPrompt(e);
         };
 
-        window.addEventListener('beforeinstallprompt', handler);
-
-        // Listen for successful install to hide button
-        window.addEventListener('appinstalled', () => {
+        const appInstalledHandler = () => {
             setDeferredPrompt(null);
+            setIsPwaInstalled(true);
             setToast({ type: 'success', title: 'Installed!', message: 'App added to home screen.' });
-        });
+        };
 
-        return () => window.removeEventListener('beforeinstallprompt', handler);
+        const mediaQuery = window.matchMedia ? window.matchMedia('(display-mode: standalone)') : null;
+        const standaloneChangeHandler = (event) => setIsPwaInstalled(!!event.matches);
+
+        window.addEventListener('beforeinstallprompt', installPromptHandler);
+        window.addEventListener('appinstalled', appInstalledHandler);
+
+        if (mediaQuery) {
+            if (mediaQuery.addEventListener) mediaQuery.addEventListener('change', standaloneChangeHandler);
+            else if (mediaQuery.addListener) mediaQuery.addListener(standaloneChangeHandler);
+        }
+
+        return () => {
+            window.removeEventListener('beforeinstallprompt', installPromptHandler);
+            window.removeEventListener('appinstalled', appInstalledHandler);
+            if (mediaQuery) {
+                if (mediaQuery.removeEventListener) mediaQuery.removeEventListener('change', standaloneChangeHandler);
+                else if (mediaQuery.removeListener) mediaQuery.removeListener(standaloneChangeHandler);
+            }
+        };
     }, []);
 
     const handleInstallClick = async () => {
@@ -4616,6 +5288,28 @@ export default function App() {
         }
     };
 
+    const handleUninstallClick = () => {
+        const standaloneMedia = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+        const iosStandalone = window.navigator && window.navigator.standalone === true;
+        const twa = typeof document.referrer === 'string' && document.referrer.startsWith('android-app://');
+        const installedNow = !!(standaloneMedia || iosStandalone || twa || isPwaInstalled);
+
+        if (!installedNow) {
+            setToast({ type: 'error', title: 'Not Installed', message: 'ACCPRO PWA is not installed on this device.' });
+            return;
+        }
+
+        alert(
+            'To uninstall ACCPRO on mobile Chrome:\n\n' +
+            '1) Go to your phone home screen\n' +
+            '2) Long-press the ACCPRO app icon\n' +
+            '3) Tap Uninstall / Remove\n\n' +
+            'Alternative: Open Chrome menu and manage installed apps from there.'
+        );
+
+        setToast({ type: 'success', title: 'Uninstall Help', message: 'Use your phone uninstall prompt to remove the PWA.' });
+    };
+
     // 1. Initial Auth Setup & Menu Logic
     useEffect(() => {
         // Set menu open by default on larger screens
@@ -4628,7 +5322,7 @@ export default function App() {
             if (currentUser || window.isGuestMode) {
                 const effectiveUser = currentUser || { 
                     uid: 'GUEST_UID', 
-                    email: 'guest@nadtally.app', 
+                    email: 'guest@accpro.app', 
                     displayName: 'Guest User',
                     isGuest: true,
                     getIdTokenResult: async () => ({ claims: {} }) 
@@ -4677,7 +5371,7 @@ export default function App() {
                 } else {
                     // Guest Role
                     setCurrentRole('owner');
-                    setUserData({ name: 'Guest User', role: 'owner', email: 'guest@nadtally.app' });
+                    setUserData({ name: 'Guest User', role: 'owner', email: 'guest@accpro.app' });
                 }
             } else {
                 // 🛑 ONLY CLEAR IF NOT IN OFFLINE (LOCAL COMPANY) MODE
@@ -4708,17 +5402,32 @@ export default function App() {
                 const targetId = activeCompanyId || uid;
                 // Check Master DB first for the official registry entry
                 const master = await (window.getMasterDB ? window.getMasterDB() : getMasterDB());
+                
+                
+                try {
+                    // Prefer fresh settings from Firestore
+                    const docSnap = await getDoc(doc(db, "companies", targetId));
+                    if (docSnap.exists()) {
+                        const cloudData = docSnap.data();
+                        setCompanyProfile(cloudData);
+                        
+                        // Sync to local RxDB so offline is updated
+                        const existing = await master.companies.findOne({ selector: { id: targetId } }).exec();
+                        if (existing) {
+                            await existing.patch({ rules: cloudData.rules || {} });
+                        }
+                        return;
+                    }
+                } catch (e) {
+                    console.warn("Firestore fetch failed (offline?), falling back to local RxDB.", e);
+                }
+
+                // Fallback to local RxDB
                 const registryDoc = await master.companies.findOne({ selector: { id: targetId } }).exec();
                 if (registryDoc) {
                     setCompanyProfile(registryDoc.toJSON());
                 } else {
-                    // Fallback to searching in current DB (if it's there)
-                    const docSnap = await getDoc(doc(db, "companies", targetId));
-                    if (docSnap.exists()) {
-                        setCompanyProfile(docSnap.data());
-                    } else {
-                        setCompanyProfile({ name: 'Untitled Company', id: targetId });
-                    }
+                    setCompanyProfile({ name: 'Untitled Company', id: targetId });
                 }
             } catch (ex) {
                 console.error("Error loading company profile:", ex);
@@ -5040,21 +5749,38 @@ export default function App() {
             setIdleCountdown(IDLE_WARNING_SECONDS);
             idleWarningStartRef.current = null;
 
-            if (window.deactivateNadtallyLicense) {
-                await window.deactivateNadtallyLicense();
+            if (reason === 'auto' && subUser) {
+                // ✅ FOR TEAM USERS: Only clear sub-user session, don't kill main license
+                setSubUser(null);
+                const license = window.accproLicense;
+                const targetEmail = license?.email || '';
+                const isDev = targetEmail === 'nadeemalsaham@gmail.com';
+                setCurrentRole(isDev ? 'developer' : 'owner');
+                setActiveModal(null);
+                alert('Team session expired due to 2 hours of inactivity. Returning to user selection.');
             } else {
-                await signOut(auth);
-            }
+                // ✅ MANUAL OR FULL LOGOUT: Kill license/Firebase session
+                if (window.deactivateaccproLicense) {
+                    await window.deactivateaccproLicense();
+                } else {
+                    await signOut(auth);
+                }
 
-            // Clear company context and reload app to the main gate
-            if (getActiveCompanyId()) {
-                setCurrentCompany(null);
-            } else {
-                window.location.reload();
-            }
+                // 🚀 CLEAR PWA PERSISTENT SESSION
+                if (activeCompanyId) {
+                    localStorage.removeItem(`accpro_session_${activeCompanyId}`);
+                }
 
-            if (reason === 'auto') {
-                alert('You were automatically logged out due to inactivity.');
+                // Clear company context and reload app to the main gate
+                if (getActiveCompanyId()) {
+                    setCurrentCompany(null);
+                } else {
+                    window.location.reload();
+                }
+
+                if (reason === 'auto') {
+                    alert('You were automatically logged out due to inactivity.');
+                }
             }
 
             // 🧹 CLEAR IDLE STATE ON LOGOUT
@@ -5073,13 +5799,19 @@ export default function App() {
 
     const handleSubUserLogout = useCallback(() => {
         if (!window.confirm("Log out current sub-user and return to admin?")) return;
+        
+        // 🚀 CLEAR PWA PERSISTENT SESSION
+        if (activeCompanyId) {
+            localStorage.removeItem(`accpro_session_${activeCompanyId}`);
+        }
+
         setSubUser(null);
-        const license = window.nadtallyLicense;
+        const license = window.accproLicense;
         const targetEmail = license?.email || '';
         const isDev = targetEmail === 'nadeemalsaham@gmail.com';
         setCurrentRole(isDev ? 'developer' : 'owner');
         setActiveModal(null);
-    }, []);
+    }, [activeCompanyId]);
 
     const handleStayLoggedIn = useCallback(() => {
         const now = Date.now();
@@ -5091,7 +5823,10 @@ export default function App() {
     }, [IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY]);
 
     useEffect(() => {
-        if (!user) {
+        // ✅ ADMIN BYPASS: Owners and Developers are NEVER logged out automatically
+        const isAdmin = (currentRole === 'owner' || currentRole === 'developer');
+        
+        if (!user || isAdmin) {
             if (idleMonitorIntervalRef.current) {
                 clearInterval(idleMonitorIntervalRef.current);
                 idleMonitorIntervalRef.current = null;
@@ -5102,6 +5837,8 @@ export default function App() {
             return;
         }
 
+        // ✅ SET DYNAMIC TIMEOUT: 2 Hours for Team Users
+        const TIMEOUT_MS = 120 * 60 * 1000; 
         const now = Date.now();
 
         // ✅ ALWAYS start the idle clock fresh from "now" when the app is opened/reopened.
@@ -5122,7 +5859,7 @@ export default function App() {
             const currentNow = Date.now();
             const inactiveFor = currentNow - idleLastActivityRef.current;
 
-            if (!idleWarningStartRef.current && inactiveFor >= IDLE_TIMEOUT_MS) {
+            if (!idleWarningStartRef.current && inactiveFor >= TIMEOUT_MS) {
                 startWarning(currentNow);
             }
 
@@ -5164,7 +5901,7 @@ export default function App() {
                 idleMonitorIntervalRef.current = null;
             }
         };
-    }, [user, performLogout, IDLE_TIMEOUT_MS, IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY]);
+    }, [user, currentRole, subUser, performLogout, IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY]);
 
     const handleChangePassword = async () => {
         const newPassword = prompt("Enter new password (min 6 chars):");
@@ -6053,6 +6790,24 @@ export default function App() {
         setActiveModal(masterModalName);
     };
 
+    const handleMasterMoveSuccess = (targetType, recordId) => {
+        const targetModal = (
+            targetType === 'party' ? 'parties' :
+                targetType === 'expense' ? 'expenses' :
+                    targetType === 'account' ? 'accounts' :
+                        targetType === 'capital' ? 'capital_accounts' :
+                            targetType === 'asset' ? 'asset_accounts' : null
+        );
+        if (!targetModal || !recordId) {
+            handleCloseModal();
+            return;
+        }
+        setMasterModalEditRequest({ collectionName: targetModal, id: recordId });
+        setActiveModal(targetModal);
+    };
+
+    const clearMasterModalEditRequest = () => setMasterModalEditRequest(null);
+
     // --- ADD THIS NEW FUNCTION IN APP.JSX ---
     const handleMasterUpdate = async (collectionName, id, updatedFields) => {
         try {
@@ -6263,7 +7018,7 @@ export default function App() {
             const url = URL.createObjectURL(blob);
             const downloadAnchorNode = document.createElement('a');
             downloadAnchorNode.setAttribute("href", url);
-            downloadAnchorNode.setAttribute("download", `NADTALLY_Backup_${new Date().toISOString().split('T')[0]}.json`);
+            downloadAnchorNode.setAttribute("download", `nadtally_Backup_${new Date().toISOString().split('T')[0]}.json`);
             document.body.appendChild(downloadAnchorNode);
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
@@ -6279,6 +7034,10 @@ export default function App() {
 
     // --- RESTORE FUNCTION (Optional, if you want the Restore button to work too) ---
     const handleRestore = () => {
+        if (!activeCompanyId) {
+            alert("⚠️ DATA RESTORE DENIED\n\nYou must first SELECT and OPEN a company folder to restore data into.\n\n1. Select a company from the list\n2. Open it\n3. Then go to Management > Restore.");
+            return;
+        }
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = 'application/json';
@@ -6324,49 +7083,40 @@ export default function App() {
                         normalizedData[normalizedName].push(...records);
                     }
 
-                    let batch = writeBatch(db);
-                    let operationCount = 0;
-                    const MAX_BATCH_SIZE = 450;
                     const targetUid = dataOwnerId || user.uid;
 
+                    // ── Step 1: Write all records directly to the company DB (bypasses rxfs.js shim)
+                    // This guarantees data lands in the correct company's offline_records regardless
+                    // of what currentCompanyId happens to be at restore time.
+                    const totalRecords = Object.values(normalizedData).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
+                    setToast({ type: 'loading', title: 'Restoring...', message: `Writing ${totalRecords} records...` });
+
+                    // Stamp ownerId on records that reference it (users collection and any with ownerId)
+                    const dataForRestore = {};
                     for (const [colName, records] of Object.entries(normalizedData)) {
                         if (!Array.isArray(records)) continue;
-
-                        for (const record of records) {
-                            if (!record || typeof record !== 'object') continue;
-
-                            const recordId = typeof record.id === 'string' && record.id.trim()
-                                ? record.id
-                                : doc(collection(db, colName)).id;
-
-                            const { id, ...recordData } = record;
-
-                            const cleanRecord = {
-                                ...recordData,
-                                userId: targetUid
-                            };
-
-                            if (colName === 'users' || Object.prototype.hasOwnProperty.call(recordData, 'ownerId')) {
-                                cleanRecord.ownerId = targetUid;
+                        dataForRestore[colName] = records.map(record => {
+                            if (!record || typeof record !== 'object') return null;
+                            const patched = { ...record, userId: targetUid };
+                            if (colName === 'users' || Object.prototype.hasOwnProperty.call(record, 'ownerId')) {
+                                patched.ownerId = targetUid;
                             }
-
-                            const finalDocId = colName === 'companies' ? targetUid : recordId;
-                            const ref = doc(db, colName, finalDocId);
-
-                            batch.set(ref, cleanRecord);
-                            operationCount++;
-
-                            if (operationCount >= MAX_BATCH_SIZE) {
-                                await batch.commit();
-                                batch = writeBatch(db);
-                                operationCount = 0;
-                            }
-                        }
+                            return patched;
+                        }).filter(Boolean);
                     }
 
-                    if (operationCount > 0) await batch.commit();
+                    const restoreResult = await restoreCompanyData(
+                        activeCompanyId,
+                        dataForRestore,
+                        targetUid,
+                        (done, total) => {
+                            setToast({ type: 'loading', title: 'Restoring...', message: `Written ${done}/${total} records...` });
+                        }
+                    );
+                    console.log(`[Restore] restoreCompanyData result:`, restoreResult);
 
-                    // Repair missing master collections from available records (legacy backups may omit these collections).
+                    // ── Step 2: Repair missing master group collections
+                    // (written via rxfs.js shim — goes to current company DB, same place)
                     const upsertMasterByName = async (collectionName, names) => {
                         if (!Array.isArray(names) || names.length === 0) return 0;
 
@@ -6473,7 +7223,10 @@ export default function App() {
                         } catch (err) { console.warn("RTDB Tasks restore failed:", err); }
                     }
 
-                    setToast({ type: 'success', title: 'Restore Complete', message: 'System updated from backup.' });
+                    // Invalidate stats cache so Make Live shows fresh counts
+                    localStorage.removeItem(`accpro_stats_${activeCompanyId}`);
+
+                    setToast({ type: 'success', title: 'Restore Complete', message: `${restoreResult.written} records restored successfully.` });
                     window.location.reload();
 
                 } catch (err) {
@@ -7773,16 +8526,16 @@ export default function App() {
 
     // ✅ SYNC STATS TO FIREBASE REGISTRY
     useEffect(() => {
-        if (!dataOwnerId || !displayCompanyName || !voucherStats || !masterStats) return;
+        if (!dataOwnerId || !displayCompanyName || !masterStats) return;
+
+        const ledgersCount = masterStats.items.find(i => i.label === 'Ledgers (Total)')?.count || 0;
+        // Use all-time voucher count (not period-filtered) for accurate company badge stats
+        const vouchersCount = invoices.length + payments.length + journalVouchers.length + stockJournals.length;
+        const logsCount = dashboardLogCount || 0;
 
         const updateRemote = async () => {
             try {
-                const stats = {
-                    ledgers: masterStats.items.find(i => i.label === 'Ledgers (Total)')?.count || 0,
-                    vouchers: voucherStats.total || 0,
-                    logs: dashboardLogCount || 0
-                };
-
+                const stats = { ledgers: ledgersCount, vouchers: vouchersCount, logs: logsCount };
                 // Update Firestore registry
                 await updateLiveCompanyStats(dataOwnerId, stats);
             } catch (e) {
@@ -7790,9 +8543,14 @@ export default function App() {
             }
         };
 
+        // Save to local stats cache immediately (2s debounce)
+        const localSaveTimer = setTimeout(() => {
+            saveCachedCompanyStats(dataOwnerId, { ledgers: ledgersCount, vouchers: vouchersCount, logs: logsCount });
+        }, 2000);
+
         const timer = setTimeout(updateRemote, 10000); // Update every 10s of activity
-        return () => clearTimeout(timer);
-    }, [dataOwnerId, displayCompanyName, voucherStats, masterStats, dashboardLogCount]);
+        return () => { clearTimeout(timer); clearTimeout(localSaveTimer); };
+    }, [dataOwnerId, displayCompanyName, masterStats, invoices, payments, journalVouchers, stockJournals, dashboardLogCount]);
 
     // --- Render ---
 
@@ -7869,13 +8627,27 @@ export default function App() {
                     </div>
 
                     <div className="hidden md:flex flex-col pt-1 select-none cursor-default">
-                        <h1 className="text-2xl nadtally-brand-styled leading-none cursor-pointer" onClick={() => setShowVersionDetails(true)}>
-                            NADTALLY<span className="text-[10px] font-black ml-1 italic">v 2.5.6</span>
-                        </h1>
-                        {displayCompanyName && (
-                            <span className="text-[9px] uppercase tracking-[0.2em] font-black text-white/70 mt-0.5 ml-0.5 truncate max-w-[180px]">
-                                {displayCompanyName}
+                        <div className="flex items-center gap-2" onClick={() => setShowVersionDetails(true)}>
+                            <h1 className="text-2xl accpro-brand-styled leading-none cursor-pointer">
+                                {PLATFORM_ID.name}
+                            </h1>
+                            <span className={`
+                                text-[10px] px-2 py-0.5 rounded font-black italic tracking-tighter shadow-sm
+                                ${PLATFORM_ID.isDesktop ? 'bg-amber-400 text-[#8b0000] border border-amber-600/30' : 'bg-blue-600 text-white border border-blue-400/30'}
+                            `} style={{ fontFamily: "'Outfit', sans-serif" }}>
+                                {PLATFORM_ID.suffix}
                             </span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.2</span>
+                        </div>
+                        {displayCompanyName && (
+                            <div className="flex items-center gap-2 mt-0.5 ml-0.5">
+                                {PLATFORM_ID.isDesktop && (
+                                    <div className="text-[7px] font-black w-3.5 h-3.5 flex items-center justify-center rounded-full bg-white/10 border border-white/20 text-amber-300">D</div>
+                                )}
+                                <span className="text-[9px] uppercase tracking-[0.2em] font-black text-white/70 truncate max-w-[200px]">
+                                    {displayCompanyName}
+                                </span>
+                            </div>
                         )}
                     </div>
                 </div>
@@ -7983,6 +8755,50 @@ export default function App() {
                         })}
                     </div>
 
+                    {/* ✅ CLOUD SYNC STATUS INDICATOR (BUTTON) */}
+                    <div className="flex items-center">
+                        <button 
+                            onClick={handleManualSync}
+                            className={`
+                                flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all cursor-pointer group active:scale-95
+                                ${cloudSyncStatus.state === 'connected' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20' : 
+                                  cloudSyncStatus.state === 'syncing' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' :
+                                  cloudSyncStatus.state === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20' :
+                                  'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}
+                                ${syncPulse ? 'scale-110 shadow-[0_0_15px_rgba(59,130,246,0.5)]' : ''}
+                            `}
+                            title={
+                                cloudSyncStatus.state === 'connected' ? 'Connected to Cloud (Live). Click to re-sync.' :
+                                cloudSyncStatus.state === 'syncing' ? `Syncing: ${cloudSyncStatus.progress}/${cloudSyncStatus.total} records` :
+                                cloudSyncStatus.state === 'error' ? `Sync Error: ${cloudSyncStatus.message}` :
+                                'Offline Mode. Click to re-init.'
+                            }
+                        >
+                            {cloudSyncStatus.state === 'connected' && <Zap size={14} className={`fill-current ${syncPulse ? 'animate-bounce' : 'animate-pulse [animation-duration:3s]'}`} />}
+                            {cloudSyncStatus.state === 'syncing' && <RefreshCw size={14} className="animate-spin" />}
+                            {cloudSyncStatus.state === 'error' && <AlertCircle size={14} />}
+                            {cloudSyncStatus.state === 'offline' && <CloudOff size={14} />}
+                            
+                            <span className="text-[10px] font-black uppercase tracking-widest hidden lg:inline">
+                                {cloudSyncStatus.state === 'connected' ? 'Cloud Live' :
+                                 cloudSyncStatus.state === 'syncing' ? `${cloudSyncStatus.progress} / ${cloudSyncStatus.total} (R: ${cloudSyncStatus.total - cloudSyncStatus.progress})` :
+                                 cloudSyncStatus.state === 'error' ? 'Sync Error' :
+                                 'Offline'}
+                            </span>
+
+                            {cloudSyncStatus.state === 'syncing' && cloudSyncStatus.total > 0 && (
+                                <div className="w-16 h-1 bg-white/10 rounded-full overflow-hidden hidden xl:block ml-1">
+                                    <div 
+                                        className="h-full bg-blue-400 transition-all duration-300"
+                                        style={{ width: `${Math.round((cloudSyncStatus.progress / cloudSyncStatus.total) * 100)}%` }}
+                                    />
+                                </div>
+                            )}
+                            
+                            <RefreshCw size={10} className={`ml-1 opacity-0 group-hover:opacity-100 transition-opacity ${cloudSyncStatus.state === 'syncing' ? 'hidden' : ''} ${syncPulse ? 'opacity-100 animate-spin' : ''}`} />
+                        </button>
+                    </div>
+
                     <button
                         onClick={() => setActiveModal('profile')}
                             className="flex items-center gap-2 h-10 px-3 rounded-full bg-white/15 text-white hover:bg-white/25 transition-all border-2 border-white/30 shadow-sm hover:shadow-md active:scale-95"
@@ -8007,7 +8823,7 @@ export default function App() {
                     <div className="bg-white border border-slate-200 shadow-2xl rounded-xl w-full max-w-md p-5">
                         <h3 className="text-lg font-bold text-slate-800">Inactive Session Warning</h3>
                         <p className="mt-2 text-sm text-slate-600">
-                            No activity was detected for 20 minutes. You will be logged out in <span className="font-bold text-red-600">{idleCountdown}s</span>.
+                            No activity was detected for 2 hours. You will be logged out of your team session in <span className="font-bold text-red-600">{idleCountdown}s</span>.
                         </p>
                         <p className="mt-1 text-xs text-slate-500">Click &quot;Stay Logged In&quot; to continue your session.</p>
 
@@ -8105,7 +8921,7 @@ export default function App() {
                             }
                         }}
                     >
-                        <div className="tally-menu-header">Gateway of Nadtally</div>
+                        <div className="tally-menu-header">Gateway of accpro</div>
 
                         <div className="p-1 space-y-0.5 overflow-visible">
                             {/* --- FULL TALLY MENU (Enabled for all roles as per user request) --- */}
@@ -8501,6 +9317,7 @@ export default function App() {
                 systemInfo={systemInfo}
                 dataOwnerId={dataOwnerId}
                 onUpdateProfile={setCompanyProfile}
+                currentStats={dataOwnerId ? { ledgers: masterStats?.items?.find(i => i.label === 'Ledgers (Total)')?.count || 0, vouchers: (invoices.length + payments.length + journalVouchers.length + stockJournals.length), logs: dashboardLogCount || 0 } : null}
             />
 
             {activeModal === 'select_company' && (
@@ -8512,6 +9329,8 @@ export default function App() {
                     onClose={() => setActiveModal(null)}
                     user={user}
                     systemInfo={systemInfo}
+                    currentCompanyId={dataOwnerId}
+                    currentStats={dataOwnerId ? { ledgers: masterStats?.items?.find(i => i.label === 'Ledgers (Total)')?.count || 0, vouchers: (invoices.length + payments.length + journalVouchers.length + stockJournals.length), logs: dashboardLogCount || 0 } : null}
                 />
             )}
 
@@ -8520,12 +9339,15 @@ export default function App() {
                     companyId={activeCompanyId}
                     companyName={companyProfile?.name || 'This Company'}
                     onLogin={(u, mode) => {
+                        // 🚀 PERSIST LOGIN SESSION FOR THIS DEVICE
+                        localStorage.setItem(`accpro_session_${activeCompanyId}`, JSON.stringify({ mode, subUser: u }));
+
                         if (mode === 'admin') {
                             setSubUser(null);
                             setIsCompanyLocked(false);
                             // Restore full owner role
-                            const license = window.nadtallyLicense;
-                            const targetEmail = license?.email || 'offline@nadtally.local';
+                            const license = window.accproLicense;
+                            const targetEmail = license?.email || 'offline@accpro.local';
                             const targetName = license?.userName || 'System Administrator';
                             const isDev = targetEmail === 'nadeemalsaham@gmail.com';
                             const baseRole = isDev ? 'developer' : 'owner';
@@ -8833,6 +9655,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("parties", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'parties' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={handlePartyItemClick}
             />
 
@@ -8860,6 +9685,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'accounts' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={handleAccountItemClick}
             />
 
@@ -8878,6 +9706,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("capital_accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'capital_accounts' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -8896,6 +9727,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("asset_accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'asset_accounts' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -8977,6 +9811,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("expenses", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'expenses' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -9007,6 +9844,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("direct_expenses", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'direct_expenses' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -9198,6 +10038,8 @@ export default function App() {
                 showToast={setToast}
                 defaultMaximized={true}
                 companyProfile={companyProfile}
+                onUpdateProfile={setCompanyProfile}
+                confirmPassword={confirmPassword}
                 onSwitch={(targetType) => {
                     handleCloseModal();
                     setEditData(null);
@@ -9239,6 +10081,8 @@ export default function App() {
                 defaultMaximized={true}
                 currencySymbol={currencySymbol}
                 companyProfile={companyProfile}
+                onUpdateProfile={setCompanyProfile}
+                confirmPassword={confirmPassword}
                 onSwitchVoucher={(newType) => {
                     handleCloseModal();
                     setEditData(null);
@@ -9551,6 +10395,27 @@ export default function App() {
                 modalId="credit_note_register"
             />
 
+            <TaxRegisterModal
+                isOpen={activeModal === 'tax_register'}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                dateRange={registerDateRange}
+                onDateChange={setRegisterDateRange}
+                invoices={invoices}
+                payments={payments}
+                journalVouchers={journalVouchers}
+                parties={parties}
+                taxRates={taxRates}
+                currencySymbol={currencySymbol}
+                onOpenLedger={(type, id) => {
+                    setActiveModal(null);
+                    setTimeout(() => {
+                        setLedgerInitialState({ type, id });
+                        setActiveModal('ledgers');
+                    }, 100);
+                }}
+            />
+
             <ManageUsersModal
                 isOpen={activeModal === 'manage_users'}
                 onClose={handleCloseModal}
@@ -9586,6 +10451,7 @@ export default function App() {
                 assetAccounts={assetAccounts}
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
+                taxRates={taxRates}
                 user={user}
                 subUser={subUser}
                 effectiveName={effectiveName}
@@ -9923,8 +10789,10 @@ export default function App() {
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
+                taxRates={taxRates}
                 calculatedCosts={calculatedCosts}
                 locations={locations}
+                expenseGroups={expenseGroups}
                 onDrillDown={(type, id) => {
                     setActiveModal(null);
                     setTimeout(() => {
@@ -9936,6 +10804,7 @@ export default function App() {
                         else if (type === 'receivables') setActiveModal('receivables');
                         else if (type === 'payables') setActiveModal('payables');
                         else if (type === 'accounts') setActiveModal('account_balances');
+                        else if (type === 'tax_register') setActiveModal('tax_register');
                         else if (type === 'capital_list') setActiveModal('capital_accounts');
                         else if (type === 'asset_list') setActiveModal('asset_accounts');
                         else if (type === 'bag_inventory') setActiveModal('bag_inventory');
@@ -10017,6 +10886,7 @@ export default function App() {
                     onShowIncomeRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('indirect_income_register'); }}
                     onShowManufacturingRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('manufacturing_register'); }}
                     onShowLoansAdvancesRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('loans_advances_register'); }}
+                    onShowTaxRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('tax_register'); }}
                     user={user}
                     effectiveName={effectiveName}
                     companyProfile={companyProfile}
@@ -10026,6 +10896,7 @@ export default function App() {
             {activeModal === 'management' && (
                 <ManagementDashboard
                     onClose={() => { setActiveModal(null); setModalStack([]); }}
+                    confirmPassword={confirmPassword}
                     onRecalculateAll={handleRecalculateAll}
                     onRecalculateStock={handleRecalculateStock}
                     onRecalculateParties={handleRecalculateParties}
@@ -10048,7 +10919,9 @@ export default function App() {
                     onManageStaff={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_staff'); }}
                     onManageImageStorage={() => { setModalStack(s => [...s, 'management']); setActiveModal('image_storage'); }}
                     onShowInvoiceSettings={() => { setModalStack(s => [...s, 'management']); setActiveModal('invoice_settings'); }}
+                    onShowApiKey={() => { setModalStack(s => [...s, 'management']); setIsApiKeyModalOpen(true); }}
                     onShowLotProfit={() => { setModalStack(s => [...s, 'management']); setActiveModal('lot_report'); }}
+
                     onShowFinancials={() => { setModalStack(s => [...s, 'management']); setActiveModal('financial_reports'); }}
                     onShowPaymentRegister={() => { setModalStack(s => [...s, 'management']); setLedgerInitialState({ type: 'daybook', voucherType: 'out' }); setActiveModal('ledgers'); }}
                     onShowReceiptRegister={() => { setModalStack(s => [...s, 'management']); setLedgerInitialState({ type: 'daybook', voucherType: 'in' }); setActiveModal('ledgers'); }}
@@ -10078,6 +10951,12 @@ export default function App() {
                     vehicles={vehicles}
                 />
             )}
+
+            <ApiKeyModal 
+                isOpen={isApiKeyModalOpen} 
+                onClose={() => setIsApiKeyModalOpen(false)} 
+            />
+
 
             <SystemLogModal
                 isOpen={activeModal === 'system_logs'}
@@ -10270,6 +11149,10 @@ export default function App() {
                     onLogout={handleLogout}
                     onSubUserLogout={handleSubUserLogout}
                     onChangePassword={handleChangePassword}
+                    onInstallPwa={handleInstallClick}
+                    onUninstallPwa={handleUninstallClick}
+                    isInstallable={!!deferredPrompt}
+                    isPwaInstalled={isPwaInstalled}
                 />
             )}
 
@@ -10280,7 +11163,7 @@ export default function App() {
 
             {/* Version Details Modal */}
             {showVersionDetails && (
-                <Modal isOpen={showVersionDetails} onClose={() => setShowVersionDetails(false)} title="v2.4 Details">
+                <Modal isOpen={showVersionDetails} onClose={() => setShowVersionDetails(false)} title={`ACCPRO ${PLATFORM_ID.suffix} Details`}>
                     <div className="p-6 space-y-4">
                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3">
                             <Info className="text-blue-600" size={24} />
@@ -10297,7 +11180,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v {SYSTEM_VERSION}</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.2</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -10305,11 +11188,11 @@ export default function App() {
                                 </div>
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-green-500 mt-1 shrink-0" />
-                                    <p>Live Version Check: Real-time update notifications.</p>
+                                    <p>Multi-Platform Identity: ACCPRO ELITE & CLOUD Engine Selection.</p>
                                 </div>
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
-                                    <p>Enhanced Dashboard & Register Performance.</p>
+                                    <p>Live Version Check & Real-time Update Notifications.</p>
                                 </div>
                             </div>
                         </div>
@@ -10329,7 +11212,7 @@ export default function App() {
                                 <ul className="space-y-2 pl-6">
                                     <li className="text-sm text-slate-600 flex items-start gap-2">
                                         <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0"></div>
-                                        <span><strong>Idle Time Enhanced:</strong> Automatic logout extended to 25 minutes for improved security and user convenience.</span>
+                                        <span><strong>Platform Identity:</strong> Automatic environment detection for Elite (Desktop) vs Cloud (PWA) versions.</span>
                                     </li>
                                     <li className="text-sm text-slate-600 flex items-start gap-2">
                                         <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0"></div>
@@ -10343,17 +11226,40 @@ export default function App() {
                             </div>
                         </div>
 
-                        <div className="pt-4 mt-6 border-t border-slate-100">
+                        <div className="pt-4 mt-6 border-t border-slate-100 flex flex-col gap-3">
+                            <button
+                                onClick={() => {
+                                    setShowVersionDetails(false);
+                                    setShowFeatureCatalogue(true);
+                                }}
+                                className="w-full bg-white border-2 border-[#8b0000] text-[#8b0000] py-3.5 rounded-xl font-black transition-all hover:bg-red-50 flex items-center justify-center gap-3 uppercase tracking-widest text-[10px]"
+                            >
+                                <LayoutList size={18} className="text-[#8b0000]" /> VIEW FULL FEATURE CATALOGUE
+                            </button>
+                            
+                            {!PLATFORM_ID.isDesktop && (
+                                <button
+                                    onClick={() => window.open('https://github.com/nadeemk2050/ACCOUNTSPRO/releases', '_blank')}
+                                    className="w-full bg-gradient-to-r from-[#8b0000] to-[#b8860b] hover:from-[#5a0000] hover:to-[#8b0000] text-white py-4 rounded-xl font-black transition-all shadow-xl flex items-center justify-center gap-3 uppercase tracking-widest text-[10px]"
+                                >
+                                    <Download size={18} className="text-amber-200" /> DOWNLOAD ACCPRO ELITE (DESKTOP)
+                                </button>
+                            )}
                             <button
                                 onClick={() => setShowVersionDetails(false)}
-                                className="w-full bg-slate-900 hover:bg-black text-white py-3 rounded-xl font-bold transition-all shadow-lg active:scale-[0.98]"
+                                className="w-full bg-slate-50 hover:bg-slate-100 text-slate-400 py-3 rounded-xl font-bold transition-all active:scale-[0.98] text-[10px] uppercase tracking-widest"
                             >
-                                Got it
+                                Close Info
                             </button>
                         </div>
                     </div>
                 </Modal>
             )}
+            
+            <FeatureCatalogueModal 
+                isOpen={showFeatureCatalogue} 
+                onClose={() => setShowFeatureCatalogue(false)} 
+            />
 
             {/* V2 VOUCHER MENU */}
             <VoucherV2Menu 
@@ -10734,10 +11640,11 @@ const CompanyHistoryModal = ({ isOpen, onClose, company, deviceNames, onUpdateDe
     );
 };
 
-const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo, dataOwnerId, onUpdateProfile }) => {
+const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo, dataOwnerId, onUpdateProfile, currentStats }) => {
     const [formData, setFormData] = useState({ name: '', city: '', country: '', address: '', trn: '', email: '', phone: '' });
     const [loading, setLoading] = useState(false);
     const [activeTab, setActiveTab] = useState('profile'); // 'profile' or 'select'
+    const [refreshingStats, setRefreshingStats] = useState(false);
 
     // For Select/Create tab
     const [companies, setCompanies] = useState([]);
@@ -10778,31 +11685,46 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             };
             fetchProfile();
         } else if (isOpen && activeTab === 'select') {
-            const fetchList = async () => {
-                try {
-                    const list = await listCompanies();
-                    setCompanies(list); // Set list first
-                    
-                    // Fetch stats for local companies
-                    const withStats = await Promise.all(list.map(async (co) => {
-                        const stats = await getCompanyStats(co.id);
-                        return { ...co, stats };
-                    }));
-                    setCompanies(withStats);
-
-                    if (ipcRenderer) {
-                        const p = await ipcRenderer.invoke('get-data-path');
-                        setDataPath(p);
-                    } else {
-                        setDataPath('Browser Storage (IndexedDB)');
-                    }
-                    const dns = await getDeviceNames();
-                    setDeviceNames(dns);
-                } catch (e) { console.error(e); }
-            };
-            fetchList();
+            fetchCompanyList();
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, activeTab, dataOwnerId]);
+
+    const fetchCompanyList = async ({ forceRefresh = false } = {}) => {
+        try {
+            const list = await listCompanies();
+            setCompanies(list);
+            const withStats = [];
+            for (const co of list) {
+                try {
+                    if (forceRefresh) localStorage.removeItem(`accpro_stats_${co.id}`);
+                    const stats = (dataOwnerId && co.id === dataOwnerId && currentStats)
+                        ? currentStats
+                        : await getCompanyStats(co.id).catch(() => null);
+                    if (stats) saveCachedCompanyStats(co.id, stats);
+                    withStats.push(stats ? { ...co, stats } : co);
+                } catch (e) {
+                    withStats.push(co);
+                }
+            }
+            setCompanies(withStats);
+            if (ipcRenderer) {
+                const p = await ipcRenderer.invoke('get-data-path');
+                setDataPath(p);
+            } else {
+                setDataPath('Browser Storage (IndexedDB)');
+            }
+            const dns = await getDeviceNames();
+            setDeviceNames(dns);
+        } catch (e) { console.error(e); } finally {
+            setRefreshingStats(false);
+        }
+    };
+
+    const handleRefreshStats = async () => {
+        setRefreshingStats(true);
+        await fetchCompanyList({ forceRefresh: true });
+    };
 
     // Subscribe to live registry from Firebase
     useEffect(() => {
@@ -10818,14 +11740,25 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
 
     const handleMakeLive = async (co, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Make "${co.name}" LIVE on Firebase?\n\nThis will upload ALL its data to the cloud so it can be accessed from any device.`)) return;
+        // Use in-memory stats for the active company (accurate), fallback to co.stats
+        const liveStats = (dataOwnerId && co.id === dataOwnerId && currentStats) ? currentStats : co.stats;
+        const statsText = (liveStats && (liveStats.vouchers > 0 || liveStats.ledgers > 0))
+            ? `\n\nData to upload: ${liveStats.vouchers} Vouchers, ${liveStats.ledgers} Ledgers`
+            : '';
+        if (!window.confirm(`Make "${co.name}" LIVE on Firebase?${statsText}\n\nThis will upload ALL its data to the cloud so it can be accessed from any device.`)) return;
         setMakingLiveId(co.id);
         try {
-            const result = await makeCompanyLive(co.id, co.name);
+            const result = await makeCompanyLive(co.id, co.name, null, liveStats);
             if (result.success) {
                 startLiveSync(co.id);
                 const freshList = await listCompanies();
-                setCompanies(freshList);
+                const withStats = await Promise.all(freshList.map(async (c) => {
+                    const stats = (dataOwnerId && c.id === dataOwnerId && currentStats)
+                        ? currentStats
+                        : await getCompanyStats(c.id).catch(() => null);
+                    return stats ? { ...c, stats } : c;
+                }));
+                setCompanies(withStats);
                 alert(`✅ "${co.name}" is now LIVE on Firebase!\n${result.uploaded} records uploaded.`);
             } else {
                 alert(`❌ Failed: ${result.error}`);
@@ -10915,7 +11848,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             if (window.confirm(`⚠️ CHANGE DATA LOCATION?\n\nNew Path: ${newPath}\n\n1. The app will restart now.\n2. You must MANUALLY COPY your existing data folders to the new location.\n\nContinue?`)) {
                 try {
                     const config = { userDataPath: newPath };
-                    const configPath = nodePath.join(window.process.env.APPDATA, 'nadtally-config.json');
+                    const configPath = nodePath.join(window.process.env.APPDATA, 'accpro-config.json');
                     nodeFs.writeFileSync(configPath, JSON.stringify(config));
                     await ipcRenderer.invoke('restart-app');
                 } catch (err) { alert("Error saving config: " + err.message); }
@@ -10999,6 +11932,16 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                 >
                     Select Company
                 </button>
+                {activeTab === 'select' && (
+                    <button
+                        onClick={handleRefreshStats}
+                        disabled={refreshingStats}
+                        title="Recheck statistics from database"
+                        className="px-3 py-3 text-slate-400 hover:text-emerald-600 transition-colors disabled:opacity-40 border-b-2 border-transparent"
+                    >
+                        <RefreshCw size={14} className={refreshingStats ? 'animate-spin text-emerald-500' : ''} />
+                    </button>
+                )}
             </div>
 
             <div className="max-h-[80vh] overflow-y-auto">
@@ -11374,7 +12317,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
     );
 };
 
-const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, data, userId, fields, onDelete, onUpdate, listColumns = [], groupConfig, onItemClick, hideTotals = false, showViewToggle = false, logAuditActivity }) => {
+const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, data, userId, fields, onDelete, onUpdate, listColumns = [], groupConfig, onItemClick, hideTotals = false, showViewToggle = false, logAuditActivity, autoEditId = null, onAutoEditHandled, onMoveSuccess }) => {
     const [formData, setFormData] = useState({});
     const [editingId, setEditingId] = useState(null);
     const [showForm, setShowForm] = useState(false); // Toggle add/edit form visibility
@@ -11384,7 +12327,34 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
     const [viewMode, setViewMode] = useState(groupConfig ? 'grouped' : 'flat');
     const [verifyingEditId, setVerifyingEditId] = useState(null); // &lt;--- NEW: Track which item is being verified
     const [adminPass, setAdminPass] = useState(''); // &lt;--- NEW: Password input state
+    const [movePassPrompt, setMovePassPrompt] = useState({ isOpen: false, title: '', resolve: null });
     const searchNameRef = useRef(`search_${Math.random().toString(36).substring(7)}`); // &lt;--- FIXED: Stable name to prevent re-renders
+
+    const requestMovePassword = (promptTitle) => {
+        return new Promise((resolve) => {
+            setMovePassPrompt({
+                isOpen: true,
+                title: promptTitle || 'Enter Password',
+                resolve,
+            });
+        });
+    };
+
+    const openItemForEdit = (item) => {
+        if (!item) return;
+        setEditingId(item.id);
+        const newForm = {};
+        fields.forEach(f => { newForm[f.name] = item[f.name] !== undefined ? item[f.name] : ''; });
+        if (item.banks && item.banks.length > 0) {
+            newForm.banks = item.banks;
+            setShowBankDetails(true);
+        } else {
+            newForm.banks = [];
+            setShowBankDetails(false);
+        }
+        setFormData(newForm);
+        setShowForm(true);
+    };
 
     useEffect(() => {
         if (groupConfig) setViewMode('grouped');
@@ -11412,6 +12382,14 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
             setExpandedGroups(new Set()); // Reset on open
         }
     }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen || !autoEditId) return;
+        const item = data.find((entry) => entry.id === autoEditId);
+        if (!item) return;
+        openItemForEdit(item);
+        if (onAutoEditHandled) onAutoEditHandled();
+    }, [isOpen, autoEditId, data]);
 
     // Auto expand form when editing
     useEffect(() => {
@@ -11444,18 +12422,7 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
         if (adminPass.toLowerCase() === 'abcd') {
             const item = data.find(i => i.id === verifyingEditId);
             if (item) {
-                setEditingId(item.id);
-                const newForm = {};
-                fields.forEach(f => { newForm[f.name] = item[f.name] !== undefined ? item[f.name] : ''; });
-                if (item.banks && item.banks.length > 0) {
-                    newForm.banks = item.banks;
-                    setShowBankDetails(true);
-                } else {
-                    newForm.banks = [];
-                    setShowBankDetails(false);
-                }
-                setFormData(newForm);
-                setShowForm(true); // <--- FIXED: Now correctly opens the edit form
+                openItemForEdit(item);
             }
             setVerifyingEditId(null);
             setAdminPass('');
@@ -11550,6 +12517,18 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={title} zIndex={zIndex}>
+            <PasswordPromptModal
+                isOpen={movePassPrompt.isOpen}
+                title={movePassPrompt.title}
+                onConfirm={(password) => {
+                    setMovePassPrompt((prev) => ({ ...prev, isOpen: false }));
+                    if (movePassPrompt.resolve) movePassPrompt.resolve(password);
+                }}
+                onCancel={() => {
+                    setMovePassPrompt((prev) => ({ ...prev, isOpen: false }));
+                    if (movePassPrompt.resolve) movePassPrompt.resolve(null);
+                }}
+            />
             <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">
                     <button
@@ -11784,22 +12763,24 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                     </select>
                                     <button type="button" onClick={async () => {
                                         const targetType = document.getElementById('migrateType').value;
-                                        if (!targetType) return alert("Select a type");
-                                        if (targetType === (
+                                        const currentType = (
                                             collectionName === 'parties' ? 'party' :
                                                 collectionName === 'expenses' ? 'expense' :
-                                                    collectionName === 'accounts' ? 'account' :
-                                                        collectionName === 'capital_accounts' ? 'capital' :
-                                                            collectionName === 'asset_accounts' ? 'asset' : ''
-                                        )) return alert("Is already this type.");
+                                                    collectionName === 'direct_expenses' ? 'direct_expense' :
+                                                        collectionName === 'accounts' ? 'account' :
+                                                            collectionName === 'capital_accounts' ? 'capital' :
+                                                                collectionName === 'asset_accounts' ? 'asset' : ''
+                                        );
+                                        if (!targetType) return alert("Select a type");
+                                        if (targetType === currentType) return alert("Is already this type.");
 
-                                        const pwd = prompt("⚠️ DANGER: Moving Ledger Type.\n\nThis will MOVE this record and UPDATE all its transactions.\n\nEnter Password to Confirm:");
-                                        if (!pwd || pwd.toLowerCase() !== 'abcd') return alert("❌ Wrong Password");
+                                        const pwd = await requestMovePassword("⚠️ DANGER: Moving Ledger Type\n\nThis will MOVE this record and UPDATE all its transactions.\n\nEnter Password to Confirm");
+                                        if (!pwd || String(pwd).trim().toLowerCase() !== 'abcd') return alert("❌ Wrong Password");
 
                                         try {
                                             // MAPPING
                                             const TYPE_TO_COL = { 'party': 'parties', 'expense': 'expenses', 'account': 'accounts', 'capital': 'capital_accounts', 'asset': 'asset_accounts' };
-                                            const TYPE_TO_FIELD = { 'party': 'partyId', 'expense': 'expenseId', 'account': 'accountId', 'capital': 'capitalId', 'asset': 'assetId' };
+                                            const TYPE_TO_FIELD = { 'party': 'partyId', 'expense': 'expenseId', 'account': 'toAccountId', 'capital': 'capitalId', 'asset': 'assetId' };
 
                                             const srcCol = collectionName;
                                             const tgtCol = TYPE_TO_COL[targetType];
@@ -11809,9 +12790,14 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                             let srcType = ''; let srcField = '';
                                             if (srcCol === 'parties') { srcType = 'party'; srcField = 'partyId'; }
                                             else if (srcCol === 'expenses') { srcType = 'expense'; srcField = 'expenseId'; }
+                                            else if (srcCol === 'direct_expenses') { srcType = 'direct_expense'; srcField = 'expenseId'; }
                                             else if (srcCol === 'accounts') { srcType = 'account'; srcField = 'accountId'; }
                                             else if (srcCol === 'capital_accounts') { srcType = 'capital'; srcField = 'capitalId'; }
                                             else if (srcCol === 'asset_accounts') { srcType = 'asset'; srcField = 'assetId'; }
+
+                                            if (!srcType || !srcField || !tgtCol || !tgtField) {
+                                                throw new Error("This ledger type cannot be moved with current mapping.");
+                                            }
 
                                             // 1. Move Doc
                                             const srcRef = doc(db, srcCol, editingId);
@@ -11821,8 +12807,15 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
                                             const batch = writeBatch(db);
                                             const data = snap.data();
-                                            // Clean specific fields if needed
-                                            batch.set(tgtRef, { ...data, userId });
+                                            const movedData = {
+                                                ...data,
+                                                ...formData,
+                                                userId,
+                                            };
+                                            if (movedData.name) movedData.name_lowercase = String(movedData.name).toLowerCase();
+
+                                            // Adapter handles same-id cross-collection move during set.
+                                            batch.set(tgtRef, movedData);
                                             batch.delete(srcRef);
 
                                             // 2. Update Transactions
@@ -11839,6 +12832,13 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                                     update[tgtField] = editingId;
                                                     if (p.transactionCategory === srcType) update.transactionCategory = targetType;
                                                     // Special case: Accounts can be 'toAccountId' in Contra
+                                                }
+                                                if (srcType === 'account' && p.toAccountId === editingId) {
+                                                    update.toAccountId = deleteField();
+                                                    update[tgtField] = editingId;
+                                                    if (p.transactionCategory === srcType || p.type === 'contra') {
+                                                        update.transactionCategory = targetType;
+                                                    }
                                                 }
                                                 // Splits
                                                 if (p.isMulti && p.splits) {
@@ -11863,10 +12863,23 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                             });
 
                                             await batch.commit();
-                                            alert("✅ Ledger Moved & History Updated!");
+
+                                            // Verify target exists and source is actually removed.
+                                            const tgtAfter = await getDoc(tgtRef);
+                                            if (!tgtAfter.exists()) {
+                                                throw new Error("Move failed: target ledger was not created.");
+                                            }
+
+                                            const srcAfter = await getDoc(srcRef);
+                                            if (srcAfter.exists()) {
+                                                throw new Error("Move partially completed: source ledger still exists in old type.");
+                                            }
+
+                                            alert("✅ Ledger Moved & History Updated!\n\nNow press Update Record once in the new ledger type to finalize your edits.");
                                             setEditingId(null);
                                             setFormData({});
-                                            onClose(); // Close to refresh/avoid stale state
+                                            if (onMoveSuccess) onMoveSuccess(targetType, editingId);
+                                            else onClose();
 
                                         } catch (e) {
                                             console.error(e);
@@ -12770,6 +13783,11 @@ const InvoiceModal = (props) => {
                     setSelectedTaxId(initialData.taxId);
                     setEnableTax(true);
                     setTaxPercent(Number(initialData.taxPercent) || ''); // Load saved percent
+                } else {
+                    // Prevent stale tax state from previous voucher edits.
+                    setEnableTax(false);
+                    setSelectedTaxId('');
+                    setTaxPercent('');
                 }
                 // Restore Payment Terms
                 if (initialData.paymentTerms && initialData.paymentTerms !== initialData.date) {
@@ -13166,13 +14184,15 @@ const InvoiceModal = (props) => {
         // For Purchase: always increase rates (capitalize expenses)
         const shouldAdjustRates = voucherType === 'purchase' || (voucherType === 'sales' && salesExpenseMode === 'include');
 
-        if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && totals.itemsTotal > 0 && shouldAdjustRates) {
+        if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0)) && shouldAdjustRates) {
             finalItems = items.map(i => {
                 const iTot = Number(i.total) || 0;
                 const iQty = Number(i.quantity) || 0;
                 if (iQty === 0) return i;
 
-                const ratio = iTot / totals.itemsTotal;
+                const ratio = voucherType === 'purchase'
+                    ? (iQty / totals.totalQty)
+                    : (iTot / totals.itemsTotal);
                 const allocated = ratio * totals.addlExpTotal;
 
                 // Purchase: Increase Cost
@@ -13196,6 +14216,11 @@ const InvoiceModal = (props) => {
         const cleanAddlExpenses = addlExpenses.filter(e => e.expenseId && e.amount > 0).map(e => ({ expenseId: e.expenseId, amount: Number(e.amount) }));
         // Only require 'Paid By' for Purchase. Sales assumes deduction from invoice value.
         if (cleanAddlExpenses.length > 0 && voucherType === 'purchase' && !addlExpCreditId) return alert("⚠️ Please select a 'Paid By' account for the additional expenses.");
+
+        if (cleanAddlExpenses.length > 0 && voucherType === 'sales' && !salesExpenseMode) {
+            setShowExpenseModeModal(true);
+            return alert("⚠️ Please select how to handle additional expenses (Include or Add).");
+        }
 
         const cleanItems = finalItems.filter(i => i.productId && i.quantity > 0).map(i => {
             const q = round3(i.quantity);
@@ -14102,10 +15127,12 @@ const InvoiceModal = (props) => {
                                     // 🧮 Calculate RIE (Rate Inc Exp) & AIE (Amt Inc Exp)
                                     let rieDisplay = null;
                                     let aieDisplay = null;
-                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && totals.itemsTotal > 0) {
+                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
                                         const iTot = Number(item.total) || 0;
                                         const iQty = Number(item.quantity) || 0;
-                                        const ratio = iTot / totals.itemsTotal;
+                                        const ratio = voucherType === 'purchase'
+                                            ? (iQty / totals.totalQty)
+                                            : (iTot / totals.itemsTotal);
                                         const allocated = ratio * totals.addlExpTotal;
 
                                         // Purchase: Cost Increased
@@ -14263,7 +15290,17 @@ const InvoiceModal = (props) => {
                                         <Percent size={12} strokeWidth={3} />
                                         <span className="text-[9px] font-black">{enableTax ? 'VAT ACTIVE' : 'CALC VAT'}</span>
                                     </button>
-                                    <button type="button" onClick={() => setShowAddlExp(true)} className="flex items-center gap-1.5 px-3 py-1 rounded-lg border transition-all shadow-sm bg-white hover:bg-orange-50 text-slate-400 hover:text-orange-600 border-slate-200 hover:border-orange-300">
+                                    <button 
+                                        type="button" 
+                                        onClick={() => {
+                                            if (voucherType === 'sales') {
+                                                setShowExpenseModeModal(true);
+                                            } else {
+                                                setShowAddlExp(true);
+                                            }
+                                        }} 
+                                        className="flex items-center gap-1.5 px-3 py-1 rounded-lg border transition-all shadow-sm bg-white hover:bg-orange-50 text-slate-400 hover:text-orange-600 border-slate-200 hover:border-orange-300"
+                                    >
                                         {addlExpenses.length > 0 ? <Edit size={12} strokeWidth={3} /> : <Plus size={12} strokeWidth={3} />}
                                         <span className="text-[9px] font-black">{addlExpenses.length > 0 ? 'EDIT / VIEW EXP' : 'EXP'}</span>
                                     </button>
@@ -14526,6 +15563,7 @@ const InvoiceModal = (props) => {
                                             setSalesExpenseMode('include');
                                             setShowExpenseModeModal(false);
                                             setShowAddlExp(true);
+                                            if (addlExpenses.length === 0) setAddlExpenses([{ expenseId: '', amount: '' }]);
                                         }}
                                         className="w-full p-4 border-2 border-blue-200 rounded-lg hover:border-blue-400 hover:bg-blue-50 transition-all text-left group"
                                     >
@@ -14546,6 +15584,7 @@ const InvoiceModal = (props) => {
                                             setSalesExpenseMode('add');
                                             setShowExpenseModeModal(false);
                                             setShowAddlExp(true);
+                                            if (addlExpenses.length === 0) setAddlExpenses([{ expenseId: '', amount: '' }]);
                                         }}
                                         className="w-full p-4 border-2 border-green-200 rounded-lg hover:border-green-400 hover:bg-green-50 transition-all text-left group"
                                     >
@@ -15624,8 +16663,24 @@ const StockJournalModal = (props) => {
     const [creditAccountId, setCreditAccountId] = useState('');
     const [showExpList, setShowExpList] = useState(false);
     const [saving, setSaving] = useState(false); 
+    const [showDateModal, setShowDateModal] = useState(false);
+    const [showAutoCalcPanel, setShowAutoCalcPanel] = useState(false);
+    const [autoCalcView, setAutoCalcView] = useState('list');
+    const [autoCalcForm, setAutoCalcForm] = useState(createAutoCalcBomForm());
+    const [autoCalcSaving, setAutoCalcSaving] = useState(false);
+    const [autoCalcCalcInput, setAutoCalcCalcInput] = useState({ mainProductId: '', recordId: '', quantityNeeded: '' });
+    const [autoCalcCalcResult, setAutoCalcCalcResult] = useState(null);
     const refNoRef = useRef(null);
     const dateRef = useRef(null);
+
+    useEffect(() => {
+        const handler = (e) => {
+            if (!isOpen) return;
+            if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [isOpen]);
 
     // ✅ AUTO-FOCUS REF NO ON OPEN
     useEffect(() => {
@@ -15689,13 +16744,371 @@ const StockJournalModal = (props) => {
         text: p.name
     })), [products]);
 
+    const productNameMap = useMemo(() => Object.fromEntries(products.map(p => [p.id, p.name])), [products]);
+    const directExpenseNameMap = useMemo(() => Object.fromEntries(directExpenseAccounts.map(e => [e.id, e.name])), [directExpenseAccounts]);
+    const autoCalcProductOptions = useMemo(() => products.map(p => ({ value: p.id, text: p.name })), [products]);
+    const autoCalcDirectExpenseOptions = useMemo(() => directExpenseAccounts.map(e => ({ value: e.id, text: e.name })), [directExpenseAccounts]);
+
+    const autoCalcRecords = useMemo(() => {
+        const flattened = [];
+        products.forEach(product => {
+            const records = Array.isArray(product.autoCalcBomRecords) ? product.autoCalcBomRecords : [];
+            records.forEach(record => {
+                flattened.push({
+                    ...record,
+                    mainProductId: product.id,
+                    mainProductName: product.name
+                });
+            });
+        });
+        return flattened.map((record, index) => ({ ...record, serialNo: index + 1 }));
+    }, [products]);
+
+    const selectedAutoCalcRecords = useMemo(() => {
+        return autoCalcRecords.filter(record => record.mainProductId === autoCalcCalcInput.mainProductId);
+    }, [autoCalcRecords, autoCalcCalcInput.mainProductId]);
+
+    const autoCalcConsumedPercentTotal = useMemo(() => {
+        return round3(autoCalcForm.consumed.reduce((sum, item) => sum + (Number(item.percent) || 0), 0));
+    }, [autoCalcForm.consumed]);
+
+    const autoCalcProducedPercentTotal = useMemo(() => {
+        return round3((Number(autoCalcForm.mainPercent) || 0) + autoCalcForm.byProducts.reduce((sum, item) => sum + (Number(item.percent) || 0), 0));
+    }, [autoCalcForm.mainPercent, autoCalcForm.byProducts]);
+
     // Helper for 3-digit display
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+    const resetAutoCalcForm = () => {
+        setAutoCalcForm(createAutoCalcBomForm());
+    };
+
+    const openAutoCalcNewRecord = () => {
+        resetAutoCalcForm();
+        setAutoCalcCalcResult(null);
+        setAutoCalcView('form');
+        setShowAutoCalcPanel(true);
+    };
+
+    const editAutoCalcRecord = (record) => {
+        setAutoCalcForm({
+            recordId: record.id,
+            mainProductId: record.mainProductId,
+            mainPercent: String(record.mainPercent ?? 100),
+            consumed: (record.consumedItems || []).length > 0
+                ? record.consumedItems.map(item => ({ productId: item.productId || '', percent: String(item.percent ?? '') }))
+                : [createAutoCalcBomMaterial()],
+            expenses: (record.expenseItems || []).map(item => ({ expenseId: item.expenseId || '', ratePerTon: String(item.ratePerTon ?? '') })),
+            byProducts: (record.byProducts || []).map(item => ({ productId: item.productId || '', percent: String(item.percent ?? '') })),
+            lockedProduct: true
+        });
+        setAutoCalcCalcResult(null);
+        setAutoCalcView('form');
+        setShowAutoCalcPanel(true);
+    };
+
+    const updateAutoCalcFormField = (field, value) => {
+        setAutoCalcForm(prev => ({ ...prev, [field]: value }));
+    };
+
+    const updateAutoCalcListRow = (field, index, key, value) => {
+        setAutoCalcForm(prev => ({
+            ...prev,
+            [field]: prev[field].map((row, rowIndex) => rowIndex === index ? { ...row, [key]: value } : row)
+        }));
+    };
+
+    const addAutoCalcListRow = (field, factory) => {
+        setAutoCalcForm(prev => ({ ...prev, [field]: [...prev[field], factory()] }));
+    };
+
+    const removeAutoCalcListRow = (field, index, fallbackFactory = null) => {
+        setAutoCalcForm(prev => {
+            const nextRows = prev[field].filter((_, rowIndex) => rowIndex !== index);
+            return {
+                ...prev,
+                [field]: nextRows.length > 0 ? nextRows : (fallbackFactory ? [fallbackFactory()] : [])
+            };
+        });
+    };
+
+    const validateAutoCalcForm = () => {
+        if (!autoCalcForm.mainProductId) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Select the main item to be produced.' });
+            return false;
+        }
+
+        const mainPercent = Number(autoCalcForm.mainPercent || 0);
+        if (!mainPercent || mainPercent <= 0) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Main item percentage must be greater than zero.' });
+            return false;
+        }
+
+        const cleanConsumed = autoCalcForm.consumed.filter(item => item.productId && Number(item.percent) > 0);
+        if (cleanConsumed.length === 0) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Add at least one consumed item with percentage.' });
+            return false;
+        }
+
+        const cleanExpenses = autoCalcForm.expenses.filter(item => item.expenseId && Number(item.ratePerTon) > 0);
+        const halfExpense = autoCalcForm.expenses.some(item => (item.expenseId && !Number(item.ratePerTon)) || (!item.expenseId && Number(item.ratePerTon) > 0));
+        if (halfExpense) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Each direct expense row needs both ledger and per-ton rate.' });
+            return false;
+        }
+
+        const cleanByProducts = autoCalcForm.byProducts.filter(item => item.productId && Number(item.percent) > 0);
+        const halfByProduct = autoCalcForm.byProducts.some(item => (item.productId && !Number(item.percent)) || (!item.productId && Number(item.percent) > 0));
+        if (halfByProduct) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Each additional produced item needs product and percentage.' });
+            return false;
+        }
+
+        const consumedPercentTotal = round3(cleanConsumed.reduce((sum, item) => sum + Number(item.percent || 0), 0));
+        const producedPercentTotal = round3(mainPercent + cleanByProducts.reduce((sum, item) => sum + Number(item.percent || 0), 0));
+
+        if (Math.abs(consumedPercentTotal - 100) > 0.001) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: `Consumed percentages must total 100%. Current total: ${consumedPercentTotal.toFixed(3)}%.` });
+            return false;
+        }
+
+        if (Math.abs(producedPercentTotal - 100) > 0.001) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: `Produced percentages must total 100%. Current total: ${producedPercentTotal.toFixed(3)}%.` });
+            return false;
+        }
+
+        return {
+            mainPercent,
+            cleanConsumed,
+            cleanExpenses,
+            cleanByProducts
+        };
+    };
+
+    const handleSaveAutoCalcRecord = async () => {
+        if (autoCalcSaving) return;
+        const validated = validateAutoCalcForm();
+        if (!validated) return;
+
+        const targetProduct = products.find(product => product.id === autoCalcForm.mainProductId);
+        if (!targetProduct) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Selected product was not found.' });
+            return;
+        }
+
+        setAutoCalcSaving(true);
+        try {
+            const existingRecords = Array.isArray(targetProduct.autoCalcBomRecords) ? targetProduct.autoCalcBomRecords : [];
+            const now = new Date().toISOString();
+            const nextRecord = {
+                id: autoCalcForm.recordId || `bom_${Date.now()}`,
+                mainPercent: round3(validated.mainPercent),
+                consumedItems: validated.cleanConsumed.map(item => ({
+                    productId: item.productId,
+                    percent: round3(item.percent)
+                })),
+                expenseItems: validated.cleanExpenses.map(item => ({
+                    expenseId: item.expenseId,
+                    ratePerTon: round3(item.ratePerTon)
+                })),
+                byProducts: validated.cleanByProducts.map(item => ({
+                    productId: item.productId,
+                    percent: round3(item.percent)
+                })),
+                createdAt: autoCalcForm.recordId
+                    ? (existingRecords.find(record => record.id === autoCalcForm.recordId)?.createdAt || now)
+                    : now,
+                updatedAt: now
+            };
+
+            const updatedRecords = autoCalcForm.recordId
+                ? existingRecords.map(record => record.id === autoCalcForm.recordId ? nextRecord : record)
+                : [...existingRecords, nextRecord];
+
+            await updateDoc(doc(db, 'products', targetProduct.id), {
+                autoCalcBomRecords: updatedRecords
+            });
+
+            showToast({
+                type: 'success',
+                title: 'Auto Calc BOM Saved',
+                message: `${targetProduct.name} rule ${autoCalcForm.recordId ? 'updated' : 'created'} successfully.`
+            });
+
+            resetAutoCalcForm();
+            setAutoCalcView('list');
+        } catch (error) {
+            console.error('Auto Calc BOM save failed', error);
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: error.message || 'Failed to save BOM rule.' });
+        } finally {
+            setAutoCalcSaving(false);
+        }
+    };
+
+    const handleDeleteAutoCalcRecord = async (record) => {
+        const targetProduct = products.find(product => product.id === record.mainProductId);
+        if (!targetProduct) return;
+        if (!window.confirm(`Delete Auto Calc BOM rule for ${record.mainProductName}?`)) return;
+
+        try {
+            const updatedRecords = (Array.isArray(targetProduct.autoCalcBomRecords) ? targetProduct.autoCalcBomRecords : []).filter(item => item.id !== record.id);
+            await updateDoc(doc(db, 'products', targetProduct.id), {
+                autoCalcBomRecords: updatedRecords
+            });
+            if (autoCalcCalcInput.recordId === record.id) {
+                setAutoCalcCalcInput(prev => ({ ...prev, recordId: '' }));
+                setAutoCalcCalcResult(null);
+            }
+            showToast({ type: 'success', title: 'Auto Calc BOM', message: 'BOM rule deleted.' });
+        } catch (error) {
+            console.error('Auto Calc BOM delete failed', error);
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: error.message || 'Failed to delete BOM rule.' });
+        }
+    };
+
+    const handleRunAutoCalc = () => {
+        const quantityNeeded = toQtyNum(autoCalcCalcInput.quantityNeeded);
+        const selectedRecord = autoCalcRecords.find(record => record.id === autoCalcCalcInput.recordId && record.mainProductId === autoCalcCalcInput.mainProductId);
+
+        if (!autoCalcCalcInput.mainProductId || !selectedRecord) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Select a saved BOM rule before calculating.' });
+            return;
+        }
+
+        if (!quantityNeeded || quantityNeeded <= 0) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Quantity needed must be greater than zero.' });
+            return;
+        }
+
+        const mainPercent = Number(selectedRecord.mainPercent || 0);
+        if (!mainPercent) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Saved BOM main percentage is invalid.' });
+            return;
+        }
+
+        const batchBaseQty = round3(quantityNeeded / (mainPercent / 100));
+        if (!isFinite(batchBaseQty) || batchBaseQty <= 0) {
+            showToast({ type: 'error', title: 'Auto Calc BOM', message: 'Could not derive the production batch quantity from this rule.' });
+            return;
+        }
+
+        const consumedRows = (selectedRecord.consumedItems || []).map(item => {
+            const quantity = round3(batchBaseQty * (Number(item.percent || 0) / 100));
+            const fallbackRate = round3(liveStockBalances?.lastRateMap?.[item.productId]?.rate ?? products.find(product => product.id === item.productId)?.purchasePrice ?? 0);
+            return {
+                productId: item.productId,
+                quantity,
+                rate: fallbackRate,
+                total: round3(quantity * fallbackRate),
+                lotId: '',
+                pcs: ''
+            };
+        });
+
+        const expenseRows = (selectedRecord.expenseItems || []).map(item => ({
+            expenseId: item.expenseId,
+            amount: round3((batchBaseQty / 1000) * Number(item.ratePerTon || 0))
+        })).filter(item => item.expenseId && item.amount > 0);
+
+        const outputRows = [
+            { productId: selectedRecord.mainProductId, quantity: round3(quantityNeeded), percent: round3(mainPercent) },
+            ...((selectedRecord.byProducts || []).map(item => ({
+                productId: item.productId,
+                quantity: round3(batchBaseQty * (Number(item.percent || 0) / 100)),
+                percent: round3(item.percent)
+            })))
+        ].filter(item => item.productId && item.quantity > 0);
+
+        const consumedAmount = round3(consumedRows.reduce((sum, item) => sum + Number(item.total || 0), 0));
+        const expensesAmount = round3(expenseRows.reduce((sum, item) => sum + Number(item.amount || 0), 0));
+        const totalBatchAmount = round3(consumedAmount + expensesAmount);
+        const totalOutputQty = round3(outputRows.reduce((sum, item) => sum + Number(item.quantity || 0), 0));
+
+        let allocatedAmount = 0;
+        const producedRows = outputRows.map((item, index) => {
+            const total = index === outputRows.length - 1
+                ? round3(totalBatchAmount - allocatedAmount)
+                : round3(totalBatchAmount * (Number(item.quantity || 0) / (totalOutputQty || 1)));
+            allocatedAmount = round3(allocatedAmount + total);
+            return {
+                productId: item.productId,
+                quantity: item.quantity,
+                rate: item.quantity > 0 ? round3(total / item.quantity) : 0,
+                total,
+                lotId: '',
+                pcs: ''
+            };
+        });
+
+        setAutoCalcCalcResult({
+            rule: selectedRecord,
+            batchBaseQty,
+            consumedRows,
+            expenseRows,
+            producedRows,
+            totalBatchAmount,
+            totalOutputQty,
+            creditAccountMissing: expenseRows.length > 0 && !creditAccountId
+        });
+    };
+
+    const handleApplyAutoCalcResult = () => {
+        if (!autoCalcCalcResult) return;
+
+        setConsumed(autoCalcCalcResult.consumedRows.map(item => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            rate: item.rate,
+            total: item.total,
+            lotId: '',
+            pcs: ''
+        })));
+
+        setProduced(autoCalcCalcResult.producedRows.map(item => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            rate: item.rate,
+            total: item.total,
+            lotId: '',
+            pcs: ''
+        })));
+
+        setJournalExpenses(autoCalcCalcResult.expenseRows);
+        setShowExpList(false);
+        setShowAutoCalcPanel(false);
+
+        showToast({
+            type: autoCalcCalcResult.creditAccountMissing ? 'warning' : 'success',
+            title: 'Auto Calc BOM Applied',
+            message: autoCalcCalcResult.creditAccountMissing
+                ? 'Rows were applied. Select the expense credit ledger before saving the voucher.'
+                : 'Calculated rows were applied to the voucher.'
+        });
+    };
+
+    useEffect(() => {
+        if (selectedAutoCalcRecords.length === 1) {
+            setAutoCalcCalcInput(prev => ({
+                ...prev,
+                recordId: selectedAutoCalcRecords[0].id
+            }));
+            return;
+        }
+
+        if (!selectedAutoCalcRecords.some(record => record.id === autoCalcCalcInput.recordId)) {
+            setAutoCalcCalcInput(prev => ({ ...prev, recordId: '' }));
+        }
+    }, [selectedAutoCalcRecords]);
 
     useEffect(() => {
         if (!isOpen) {
             setJumboEnabled(false);
             setJumboBags([]);
+            setShowAutoCalcPanel(false);
+            setAutoCalcView('list');
+            resetAutoCalcForm();
+            setAutoCalcCalcInput({ mainProductId: '', recordId: '', quantityNeeded: '' });
+            setAutoCalcCalcResult(null);
             return;
         }
 
@@ -16309,7 +17722,7 @@ const StockJournalModal = (props) => {
 
                         {/* DATE — pushed to far right, adjacent to close button */}
                         <div className="ml-auto" />
-                        <div className="bg-[#003459] h-[34px] flex flex-col items-center justify-center px-4 rounded border border-white/10 shadow-lg group shrink-0">
+                        <div className="bg-[#003459] h-[34px] flex flex-col items-center justify-center px-4 rounded border border-white/10 shadow-lg group shrink-0 cursor-pointer hover:bg-[#004e82] transition-all" onClick={() => setShowDateModal(true)}>
                             <span className="text-[7px] font-black text-sky-200/50 uppercase leading-none mb-0.5">Voucher Date</span>
                             <div className="flex items-center gap-2">
                                 <Calendar size={12} className="text-sky-300 group-hover:text-white transition-colors" />
@@ -16416,7 +17829,7 @@ const StockJournalModal = (props) => {
                 )}
 
             >
-                <div className="flex flex-col h-[85vh]">
+                <div className="relative flex flex-col h-[85vh]">
                     <div className="flex flex-wrap items-center gap-4 mb-2 shrink-0 text-[10px] bg-slate-50 p-2 rounded border border-slate-200">
                         <label className="flex items-center gap-2 cursor-pointer text-slate-700">
                             <input
@@ -16462,8 +17875,383 @@ const StockJournalModal = (props) => {
                         {enableTimeEntry && !productionStartTime && !productionEndTime && (
                             <span className="text-slate-400">No time selected</span>
                         )}
+
+                        <div className="ml-auto flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowAutoCalcPanel(prev => !prev);
+                                    setAutoCalcView(prev => prev || 'list');
+                                }}
+                                className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${showAutoCalcPanel ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300 hover:text-blue-700'}`}
+                            >
+                                <Zap size={12} /> Auto Calc BOM
+                            </button>
+                        </div>
                     </div>
-                    <div className="flex-1 grid grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1 gap-4 overflow-hidden">
+
+                    {showAutoCalcPanel && (
+                        <div className="absolute right-0 top-14 z-20 flex h-[calc(100%-56px)] w-full md:w-[470px] max-w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                            <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-900 px-4 py-3 text-white">
+                                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/20 text-blue-300">
+                                    <Zap size={16} />
+                                </div>
+                                <div className="flex-1">
+                                    <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Auto Calc BOM</div>
+                                    <div className="text-sm font-black">Batch Rule Workspace</div>
+                                </div>
+                                <button type="button" onClick={() => setShowAutoCalcPanel(false)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white">
+                                    <X size={16} />
+                                </button>
+                            </div>
+
+                            <div className="flex items-center gap-4 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-black uppercase tracking-widest">
+                                <button type="button" onClick={openAutoCalcNewRecord} className={`transition-colors ${autoCalcView === 'form' ? 'text-blue-700' : 'text-slate-500 hover:text-blue-700'}`}>Add New Record</button>
+                                <button type="button" onClick={() => { setAutoCalcView('list'); setAutoCalcCalcResult(null); }} className={`transition-colors ${autoCalcView === 'list' ? 'text-blue-700' : 'text-slate-500 hover:text-blue-700'}`}>Data Of Auto Calc Items</button>
+                                <button type="button" onClick={() => { setAutoCalcView('calc'); setAutoCalcCalcResult(null); }} className={`transition-colors ${autoCalcView === 'calc' ? 'text-blue-700' : 'text-slate-500 hover:text-blue-700'}`}>Calculate</button>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto bg-white p-4">
+                                {autoCalcView === 'form' && (
+                                    <div className="space-y-4">
+                                        <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] font-semibold text-blue-700">
+                                            {autoCalcForm.recordId ? 'Update the saved BOM rule for this produced item.' : 'Create a reusable BOM rule and calculate batches directly inside the voucher.'}
+                                        </div>
+
+                                        <div className="grid grid-cols-[1fr_110px] gap-3">
+                                            <div>
+                                                <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Item To Be Produced</label>
+                                                <SearchableSelect
+                                                    options={autoCalcProductOptions}
+                                                    value={autoCalcForm.mainProductId}
+                                                    onChange={v => {
+                                                        if (!autoCalcForm.lockedProduct) updateAutoCalcFormField('mainProductId', v);
+                                                    }}
+                                                    placeholder={products.length > 0 ? 'Select item' : 'No items found'}
+                                                    compact={true}
+                                                    containerClassName={autoCalcForm.lockedProduct ? 'pointer-events-none opacity-60' : ''}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">%</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.001"
+                                                    value={autoCalcForm.mainPercent}
+                                                    onChange={e => updateAutoCalcFormField('mainPercent', e.target.value)}
+                                                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-2 rounded-2xl border border-slate-200 p-3">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Items To Be Consumed</div>
+                                                    <div className="text-[11px] font-semibold text-slate-400">Percentages must total 100%</div>
+                                                </div>
+                                                <button type="button" onClick={() => addAutoCalcListRow('consumed', createAutoCalcBomMaterial)} className="rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-blue-700">Add More</button>
+                                            </div>
+                                            {autoCalcForm.consumed.map((row, index) => (
+                                                <div key={`consumed-${index}`} className="grid grid-cols-[1fr_96px_36px] gap-2">
+                                                    <SearchableSelect
+                                                        options={autoCalcProductOptions}
+                                                        value={row.productId}
+                                                        onChange={v => updateAutoCalcListRow('consumed', index, 'productId', v)}
+                                                        placeholder={products.length > 0 ? 'Select consumed item' : 'No items found'}
+                                                        compact={true}
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        step="0.001"
+                                                        value={row.percent}
+                                                        onChange={e => updateAutoCalcListRow('consumed', index, 'percent', e.target.value)}
+                                                        placeholder="0.000"
+                                                        className="rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
+                                                    />
+                                                    <button type="button" onClick={() => removeAutoCalcListRow('consumed', index, createAutoCalcBomMaterial)} className="rounded-xl border border-slate-200 text-slate-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-500">
+                                                        <Trash2 size={14} className="mx-auto" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                            <div className={`text-right text-[11px] font-black ${Math.abs(autoCalcConsumedPercentTotal - 100) <= 0.001 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                Consumed Total: {format3(autoCalcConsumedPercentTotal)}%
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-2 rounded-2xl border border-slate-200 p-3">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Direct Expenses Expected</div>
+                                                    <div className="text-[11px] font-semibold text-slate-400">Rate is calculated per ton of batch quantity</div>
+                                                </div>
+                                                <button type="button" onClick={() => addAutoCalcListRow('expenses', createAutoCalcBomExpense)} className="rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-blue-700">Add More</button>
+                                            </div>
+                                            {autoCalcForm.expenses.length === 0 && (
+                                                <div className="rounded-xl border border-dashed border-slate-200 px-3 py-4 text-center text-[11px] font-semibold text-slate-400">No direct expense rows added.</div>
+                                            )}
+                                            {autoCalcForm.expenses.map((row, index) => (
+                                                <div key={`expense-${index}`} className="grid grid-cols-[1fr_110px_36px] gap-2">
+                                                    <SearchableSelect
+                                                        options={autoCalcDirectExpenseOptions}
+                                                        value={row.expenseId}
+                                                        onChange={v => updateAutoCalcListRow('expenses', index, 'expenseId', v)}
+                                                        placeholder={directExpenseAccounts.length > 0 ? 'Select direct expense' : 'No direct expense found'}
+                                                        compact={true}
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        step="0.001"
+                                                        value={row.ratePerTon}
+                                                        onChange={e => updateAutoCalcListRow('expenses', index, 'ratePerTon', e.target.value)}
+                                                        placeholder="Per ton"
+                                                        className="rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
+                                                    />
+                                                    <button type="button" onClick={() => removeAutoCalcListRow('expenses', index)} className="rounded-xl border border-slate-200 text-slate-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-500">
+                                                        <Trash2 size={14} className="mx-auto" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div className="space-y-2 rounded-2xl border border-slate-200 p-3">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Items To Be Produced</div>
+                                                    <div className="text-[11px] font-semibold text-slate-400">Use this area for by-products or additional outputs</div>
+                                                </div>
+                                                <button type="button" onClick={() => addAutoCalcListRow('byProducts', createAutoCalcBomMaterial)} className="rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-blue-700">Add More</button>
+                                            </div>
+                                            {autoCalcForm.byProducts.length === 0 && (
+                                                <div className="rounded-xl border border-dashed border-slate-200 px-3 py-4 text-center text-[11px] font-semibold text-slate-400">No extra produced items added.</div>
+                                            )}
+                                            {autoCalcForm.byProducts.map((row, index) => (
+                                                <div key={`by-product-${index}`} className="grid grid-cols-[1fr_96px_36px] gap-2">
+                                                    <SearchableSelect
+                                                        options={autoCalcProductOptions}
+                                                        value={row.productId}
+                                                        onChange={v => updateAutoCalcListRow('byProducts', index, 'productId', v)}
+                                                        placeholder={products.length > 0 ? 'Select produced item' : 'No items found'}
+                                                        compact={true}
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        step="0.001"
+                                                        value={row.percent}
+                                                        onChange={e => updateAutoCalcListRow('byProducts', index, 'percent', e.target.value)}
+                                                        placeholder="0.000"
+                                                        className="rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
+                                                    />
+                                                    <button type="button" onClick={() => removeAutoCalcListRow('byProducts', index)} className="rounded-xl border border-slate-200 text-slate-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-500">
+                                                        <Trash2 size={14} className="mx-auto" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                            <div className={`text-right text-[11px] font-black ${Math.abs(autoCalcProducedPercentTotal - 100) <= 0.001 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                Produced Total: {format3(autoCalcProducedPercentTotal)}%
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center justify-end gap-2 pt-2">
+                                            <button type="button" onClick={() => { resetAutoCalcForm(); setAutoCalcView('list'); }} className="rounded-xl border border-slate-200 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-slate-600">Cancel</button>
+                                            <button type="button" disabled={autoCalcSaving} onClick={handleSaveAutoCalcRecord} className="rounded-xl bg-blue-600 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300">
+                                                {autoCalcSaving ? 'Saving...' : (autoCalcForm.recordId ? 'Save Changes' : 'Save Rule')}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {autoCalcView === 'list' && (
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                            <div>
+                                                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Saved Auto Calc Rules</div>
+                                                <div className="text-[11px] font-semibold text-slate-400">These rules live inside product records and stay available with product sync.</div>
+                                            </div>
+                                            <div className="rounded-lg bg-white px-2 py-1 text-[11px] font-black text-slate-700">{autoCalcRecords.length}</div>
+                                        </div>
+
+                                        {autoCalcRecords.length === 0 && (
+                                            <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center">
+                                                <div className="text-sm font-black text-slate-500">No Auto Calc BOM rules yet</div>
+                                                <div className="mt-1 text-[11px] font-semibold text-slate-400">Use Add New Record to store your first production formula.</div>
+                                            </div>
+                                        )}
+
+                                        {autoCalcRecords.length > 0 && (
+                                            <div className="overflow-hidden rounded-2xl border border-slate-200">
+                                                <div className="grid grid-cols-[58px_1.2fr_70px_1.4fr_90px_1fr_90px_1.2fr_90px_70px] bg-slate-900 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white/70">
+                                                    <div>S.No.</div>
+                                                    <div>Item Produced</div>
+                                                    <div className="text-right">%</div>
+                                                    <div>Items Consumed</div>
+                                                    <div className="text-right">%</div>
+                                                    <div>Expenses</div>
+                                                    <div className="text-right">Per Ton</div>
+                                                    <div>Items Produced</div>
+                                                    <div className="text-right">%</div>
+                                                    <div className="text-right">Act</div>
+                                                </div>
+                                                <div className="max-h-[520px] overflow-y-auto bg-white">
+                                                    {autoCalcRecords.map(record => (
+                                                        <div key={record.id} className="grid grid-cols-[58px_1.2fr_70px_1.4fr_90px_1fr_90px_1.2fr_90px_70px] gap-2 border-b border-slate-100 px-3 py-3 text-[11px] font-semibold text-slate-700 last:border-b-0">
+                                                            <div className="font-black text-slate-400">{record.serialNo}</div>
+                                                            <div>{record.mainProductName}</div>
+                                                            <div className="text-right font-black">{format3(record.mainPercent)}%</div>
+                                                            <div>{(record.consumedItems || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || '—'}</div>
+                                                            <div className="text-right text-slate-500">{(record.consumedItems || []).map(item => `${format3(item.percent)}%`).join(', ') || '—'}</div>
+                                                            <div>{(record.expenseItems || []).map(item => directExpenseNameMap[item.expenseId]).filter(Boolean).join(', ') || '—'}</div>
+                                                            <div className="text-right text-slate-500">{(record.expenseItems || []).map(item => format3(item.ratePerTon)).join(', ') || '—'}</div>
+                                                            <div>{(record.byProducts || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || '—'}</div>
+                                                            <div className="text-right text-slate-500">{(record.byProducts || []).map(item => `${format3(item.percent)}%`).join(', ') || '—'}</div>
+                                                            <div className="flex items-start justify-end gap-1">
+                                                                <button type="button" onClick={() => editAutoCalcRecord(record)} className="rounded-lg border border-slate-200 p-1 text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600">
+                                                                    <Edit2 size={12} />
+                                                                </button>
+                                                                <button type="button" onClick={() => handleDeleteAutoCalcRecord(record)} className="rounded-lg border border-slate-200 p-1 text-slate-500 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600">
+                                                                    <Trash2 size={12} />
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {autoCalcView === 'calc' && (
+                                    <div className="space-y-4">
+                                        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-500">
+                                            Enter the finished quantity you need. The app will derive the total batch, raw material consumption, direct expenses, and by-products.
+                                        </div>
+
+                                        <div>
+                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Item To Be Produced</label>
+                                            <select
+                                                value={autoCalcCalcInput.mainProductId}
+                                                onChange={e => {
+                                                    setAutoCalcCalcInput(prev => ({ ...prev, mainProductId: e.target.value, recordId: '' }));
+                                                    setAutoCalcCalcResult(null);
+                                                }}
+                                                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-blue-400"
+                                            >
+                                                <option value="">Select item</option>
+                                                {products.filter(product => Array.isArray(product.autoCalcBomRecords) && product.autoCalcBomRecords.length > 0).map(product => (
+                                                    <option key={product.id} value={product.id}>{product.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Saved Rule</label>
+                                            <select
+                                                value={autoCalcCalcInput.recordId}
+                                                onChange={e => {
+                                                    setAutoCalcCalcInput(prev => ({ ...prev, recordId: e.target.value }));
+                                                    setAutoCalcCalcResult(null);
+                                                }}
+                                                disabled={selectedAutoCalcRecords.length === 0}
+                                                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 disabled:bg-slate-100 disabled:text-slate-400"
+                                            >
+                                                <option value="">Select BOM rule</option>
+                                                {selectedAutoCalcRecords.map(record => (
+                                                    <option key={record.id} value={record.id}>Rule #{record.serialNo} | Main {format3(record.mainPercent)}%</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Quantity Needed</label>
+                                            <input
+                                                type="number"
+                                                step="0.001"
+                                                value={autoCalcCalcInput.quantityNeeded}
+                                                onChange={e => {
+                                                    setAutoCalcCalcInput(prev => ({ ...prev, quantityNeeded: e.target.value }));
+                                                    setAutoCalcCalcResult(null);
+                                                }}
+                                                placeholder="0.000"
+                                                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
+                                            />
+                                        </div>
+
+                                        <div className="flex justify-end">
+                                            <button type="button" onClick={handleRunAutoCalc} className="rounded-xl bg-slate-900 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white transition-colors hover:bg-slate-800">Calculate</button>
+                                        </div>
+
+                                        {autoCalcCalcResult && (
+                                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                                                <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3">
+                                                    <div>
+                                                        <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Batch Base Qty</div>
+                                                        <div className="text-lg font-black text-slate-800">{format3(autoCalcCalcResult.batchBaseQty)}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total Batch Amount</div>
+                                                        <div className="text-lg font-black text-slate-800">{currencySymbol} {format3(autoCalcCalcResult.totalBatchAmount)}</div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="rounded-xl border border-slate-200">
+                                                    <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">Items To Be Consumed</div>
+                                                    <div className="divide-y divide-slate-100">
+                                                        {autoCalcCalcResult.consumedRows.map((row, index) => (
+                                                            <div key={`calc-consumed-${index}`} className="grid grid-cols-[1fr_92px_92px] gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                                                <div>{productNameMap[row.productId] || 'Unknown Item'}</div>
+                                                                <div className="text-right">{format3(row.quantity)}</div>
+                                                                <div className="text-right">{currencySymbol} {format3(row.total)}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <div className="rounded-xl border border-slate-200">
+                                                    <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">Expenses Expected</div>
+                                                    <div className="divide-y divide-slate-100">
+                                                        {autoCalcCalcResult.expenseRows.length === 0 && (
+                                                            <div className="px-3 py-3 text-[11px] font-semibold text-slate-400">No direct expenses calculated.</div>
+                                                        )}
+                                                        {autoCalcCalcResult.expenseRows.map((row, index) => (
+                                                            <div key={`calc-expense-${index}`} className="grid grid-cols-[1fr_110px] gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                                                <div>{directExpenseNameMap[row.expenseId] || 'Unknown Expense'}</div>
+                                                                <div className="text-right">{currencySymbol} {format3(row.amount)}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <div className="rounded-xl border border-slate-200">
+                                                    <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">Items Produced</div>
+                                                    <div className="divide-y divide-slate-100">
+                                                        {autoCalcCalcResult.producedRows.map((row, index) => (
+                                                            <div key={`calc-produced-${index}`} className="grid grid-cols-[1fr_92px_92px] gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                                                <div>{productNameMap[row.productId] || 'Unknown Item'}</div>
+                                                                <div className="text-right">{format3(row.quantity)}</div>
+                                                                <div className="text-right">{currencySymbol} {format3(row.total)}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                {autoCalcCalcResult.creditAccountMissing && (
+                                                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700">
+                                                        Direct expenses were calculated, but the voucher still needs a credit account before final save.
+                                                    </div>
+                                                )}
+
+                                                <div className="flex justify-end gap-2">
+                                                    <button type="button" onClick={handleApplyAutoCalcResult} className="rounded-xl bg-blue-600 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700">Apply To Voucher</button>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className={`flex-1 grid grid-cols-1 grid-rows-2 gap-4 overflow-hidden md:grid-cols-2 md:grid-rows-1 ${showAutoCalcPanel ? 'md:pr-[486px]' : ''}`}>
                         {renderTable(consumed, setConsumed, "Raw Materials (Consumed)", "red")}
                         {renderTable(produced, setProduced, "Finished Goods (Produced)", "green")}
                     </div>
@@ -16657,6 +18445,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [showDateOptionsMenu, setShowDateOptionsMenu] = useState(false);
     const [showRegisterPicker, setShowRegisterPicker] = useState(false);
     const [summaryMode, setSummaryMode] = useState('detailed'); // 'detailed', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'
+    const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
     const [hiddenStack, setHiddenStack] = useState([]); // Stack of arrays of IDs
     const hiddenSet = useMemo(() => new Set(hiddenStack.flat()), [hiddenStack]);
     const [hiddenCols, setHiddenCols] = useState(new Set());
@@ -16665,6 +18454,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [graphMetric, setGraphMetric] = useState('value');
     const [itemGraphFilter, setItemGraphFilter] = useState('both'); // 'sales', 'purchase', 'both'
     const [showSummaryOptions, setShowSummaryOptions] = useState(false);
+    const [showItemSummaryView, setShowItemSummaryView] = useState(false);
+    const [periodSummaryData, setPeriodSummaryData] = useState(null);
     const toggleColumn = (col) => {
         setHiddenCols(prev => {
             const next = new Set(prev);
@@ -16927,7 +18718,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     // ✅ CALCULATE OPENING BALANCE for Period Ledgers
     useEffect(() => {
         // Only calculate for specific entity ledgers
-        if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income'].includes(filter.type)) {
+        if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income', 'tax'].includes(filter.type)) {
             setOpeningBalance(0);
             setOpeningQty(0);
             return;
@@ -16945,6 +18736,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             case 'asset': entityList = assetAccounts; break;
             case 'item': entityList = products; break;
             case 'income': entityList = incomeAccounts; break;
+            case 'tax': entityList = taxRates; break;
         }
 
         const found = entityList.find(e => e.id === filter.id);
@@ -17051,6 +18843,22 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 }
                             } else if (filter.type === 'account' && hasAddlSplit && d.addlExpCreditId === filter.id) {
                                 amtOut += addlExpBase;
+                            } else if (filter.type === 'tax') {
+                                const taxAmt = safeNum(d.taxAmount || 0);
+                                if (!taxAmt) return;
+
+                                const taxNameNorm = String(d.taxName || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                                const filterNameNorm = String((taxRates.find(t => t.id === filter.id)?.name) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                                const filterIdNorm = String(filter.id || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                                const matchesTax = (d.taxId && d.taxId === filter.id)
+                                    || (!!taxNameNorm && !!filterNameNorm && taxNameNorm === filterNameNorm)
+                                    || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
+                                if (!matchesTax) return;
+
+                                const isInputTax = d.type === 'purchase' || d.type === 'credit_note';
+                                const isOutputTax = d.type === 'sales' || d.type === 'debit_note';
+                                if (isInputTax) amtIn += taxAmt;
+                                if (isOutputTax) amtOut += taxAmt;
                             }
                         } else if (docType === 'pay') {
                             const amt = baseVal;
@@ -17085,8 +18893,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 d.rows.forEach(r => {
                                     if (r.category === filter.type && r.id === filter.id) {
                                         const qty = safeNum(r.amount);
-                                        const rate = safeNum(r.rate);
-                                        const val = filter.type === 'item' ? (qty * rate) : qty;
+                                        const rowRate = safeNum(r.rate);
+                                        const val = filter.type === 'item' ? (qty * rowRate) : (qty * exRate);
                                         if (r.type === 'dr') {
                                             if (filter.type === 'item') qIn += qty;
                                             amtIn += val;
@@ -17158,7 +18966,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
 
         calculateOpening();
-    }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, capitalAccounts, assetAccounts, products, incomeAccounts]);
+    }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, capitalAccounts, assetAccounts, products, incomeAccounts, taxRates]);
 
     // ✅ REALTIME REPORT GENERATION (Replaces generateReport)
     useEffect(() => {
@@ -17430,6 +19238,29 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 processExpList(d.addlExpenses);
                             }
                         }
+                        else if (activeFilter.type === 'tax') {
+                            const taxAmt = safeNum(d.taxAmount || 0);
+                            if (!taxAmt) return;
+
+                            const taxNameNorm = String(d.taxName || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                            const filterNameNorm = String((taxRates.find(t => t.id === activeFilter.id)?.name) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                            const filterIdNorm = String(activeFilter.id || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                            const matchesTax = (d.taxId && d.taxId === activeFilter.id)
+                                || (!!taxNameNorm && !!filterNameNorm && taxNameNorm === filterNameNorm)
+                                || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
+                            if (!matchesTax) return;
+
+                            const isInputTax = d.type === 'purchase' || d.type === 'credit_note';
+                            const isOutputTax = d.type === 'sales' || d.type === 'debit_note';
+                            if (!isInputTax && !isOutputTax) return;
+
+                            row = buildRow(doc, d, {
+                                amtIn: isInputTax ? taxAmt : 0,
+                                amtOut: isOutputTax ? taxAmt : 0,
+                                foreignIn: 0,
+                                foreignOut: 0
+                            });
+                        }
 
                         // ➕ Add separate ledger row for additional expenses paid via another ledger
                         if (hasAddlSplit && activeFilter.type !== 'item') {
@@ -17479,15 +19310,19 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             else if (splitMatch) {
                                 // Receipt (in): Split is Giver (Credit/Out)
                                 // Payment (out): Split is Receiver (Debit/In)
-                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sAmt, foreignIn: 0, foreignOut: 0 });
-                                else row = buildRow(doc, d, { amtIn: sAmt, amtOut: 0, foreignIn: 0, foreignOut: 0 });
+                                const sForeignAmt = isForeign ? sAmt : 0;
+                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
+                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
+                                else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
                         }
                         else if (activeFilter.type === 'party') {
                             if (d.partyId === activeFilter.id) row = buildRow(doc, d, { amtIn: d.type === 'out' ? amt : 0, amtOut: d.type === 'in' ? amt : 0, foreignIn: d.type === 'out' ? fAmt : 0, foreignOut: d.type === 'in' ? fAmt : 0 });
                             else if (splitMatch) {
-                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sAmt, foreignIn: 0, foreignOut: 0 });
-                                else row = buildRow(doc, d, { amtIn: sAmt, amtOut: 0, foreignIn: 0, foreignOut: 0 });
+                                const sForeignAmt = isForeign ? sAmt : 0;
+                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
+                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
+                                else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
                         }
                         else if (activeFilter.type === 'expense') {
@@ -17495,11 +19330,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                // Expenses are always Debit (In) normally, but strictly speaking:
-                                // Payment (out) -> Expense Dr (In)
-                                // Receipt (in) -> Expense Cr (Out) - rare (refund)
-                                if (d.type === 'out') row = buildRow(doc, d, { amtIn: sAmt, amtOut: 0, foreignIn: 0, foreignOut: 0 });
-                                else row = buildRow(doc, d, { amtIn: 0, amtOut: sAmt, foreignIn: 0, foreignOut: 0 });
+                                const sForeignAmt = isForeign ? sAmt : 0;
+                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
+                                if (d.type === 'out') row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
+                                else row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                             }
                         }
                         else if (activeFilter.type === 'capital') {
@@ -17507,8 +19341,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sAmt, foreignIn: 0, foreignOut: 0 });
-                                else row = buildRow(doc, d, { amtIn: sAmt, amtOut: 0, foreignIn: 0, foreignOut: 0 });
+                                const sForeignAmt = isForeign ? sAmt : 0;
+                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
+                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
+                                else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
                         }
                         else if (activeFilter.type === 'asset') {
@@ -17516,8 +19352,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                if (d.type === 'out') row = buildRow(doc, d, { amtIn: sAmt, amtOut: 0, foreignIn: 0, foreignOut: 0 });
-                                else row = buildRow(doc, d, { amtIn: 0, amtOut: sAmt, foreignIn: 0, foreignOut: 0 });
+                                const sForeignAmt = isForeign ? sAmt : 0;
+                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
+                                if (d.type === 'out') row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
+                                else row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                             }
                         }
                         else if (activeFilter.type === 'income') {
@@ -17525,8 +19363,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sAmt, foreignIn: 0, foreignOut: 0 });
-                                else row = buildRow(doc, d, { amtIn: sAmt, amtOut: 0, foreignIn: 0, foreignOut: 0 });
+                                const sForeignAmt = isForeign ? sAmt : 0;
+                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
+                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
+                                else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
                         }
                         else if (['daybook', 'user'].includes(activeFilter.type)) {
@@ -17535,29 +19375,34 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     }
                     else if (docType === 'jv') {
                         // ⚡ Item Balance should NOT be affected by accounting JVs in this system
-                        // to maintain consistency with recaculate.js and avoid double counting issues.
                         if (activeFilter.type === 'item') return;
 
                         const amt = baseVal;
+                        const fAmt = foreignVal;
+
                         if (d.isMulti && d.rows) {
                             if (['daybook', 'user'].includes(activeFilter.type)) {
-                                row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: 0, foreignOut: 0 });
+                                row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: fAmt, foreignOut: fAmt });
                             } else {
                                 let myDrQty = 0; let myCrQty = 0;
                                 let myDrVal = 0; let myCrVal = 0;
+                                let myDrForeign = 0; let myCrForeign = 0;
+
                                 d.rows.forEach(r => {
                                     if (activeFilter.type === 'expense' && d.linkedStockJournalId && r.type === 'dr') return;
                                     if (r.category === activeFilter.type && r.id === activeFilter.id) {
                                         const qty = safeNum(r.amount);
-                                        const rate = safeNum(r.rate);
-                                        const val = activeFilter.type === 'item' ? (qty * rate) : qty;
+                                        const rowRate = safeNum(r.rate);
+                                        const val = activeFilter.type === 'item' ? (qty * rowRate) : (qty * rate);
 
                                         if (r.type === 'dr') {
                                             myDrQty += (activeFilter.type === 'item' ? qty : 0);
                                             myDrVal += val;
+                                            myDrForeign += qty;
                                         } else {
                                             myCrQty += (activeFilter.type === 'item' ? qty : 0);
                                             myCrVal += val;
+                                            myCrForeign += qty;
                                         }
                                     }
                                 });
@@ -17567,16 +19412,18 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         qtyIn: myDrQty, qtyOut: myCrQty,
                                         rateIn: myDrQty > 0 ? myDrVal / myDrQty : 0,
                                         rateOut: myCrQty > 0 ? myCrVal / myCrQty : 0,
-                                        foreignIn: 0, foreignOut: 0
+                                        foreignIn: myDrForeign, foreignOut: myCrForeign
                                     });
                                 }
                             }
                         } else {
-                            if (['daybook', 'user'].includes(activeFilter.type)) { row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: 0, foreignOut: 0 }); }
+                            if (['daybook', 'user'].includes(activeFilter.type)) { 
+                                row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: fAmt, foreignOut: fAmt }); 
+                            }
                             else {
                                 let isDr = (d.drType === activeFilter.type && d.drId === activeFilter.id);
                                 let isCr = (d.crType === activeFilter.type && d.crId === activeFilter.id);
-                                if (isDr || isCr) row = buildRow(doc, d, { amtIn: isDr ? amt : 0, amtOut: isCr ? amt : 0, foreignIn: 0, foreignOut: 0 });
+                                if (isDr || isCr) row = buildRow(doc, d, { amtIn: isDr ? amt : 0, amtOut: isCr ? amt : 0, foreignIn: isDr ? fAmt : 0, foreignOut: isCr ? fAmt : 0 });
                             }
                         }
                     }
@@ -17647,7 +19494,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         return () => clearSubs();
 
-    }, [filter, dataOwnerId, user]); // Dependencies trigger re-subscription
+    }, [filter, dataOwnerId, user, taxRates]); // Dependencies trigger re-subscription
 
     const getFilterOptions = () => {
         switch (filter.type) {
@@ -17736,21 +19583,30 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             } else if (type === 'annually') { // YYYY
                 start = `${key}-01-01`;
                 end = `${key}-12-31`;
-            } else if (type === 'weekly') { // YYYY-MM-DD (Friday start)
+            } else if (type === 'weekly') { // YYYY-MM-DD (Sunday start)
                 start = key;
                 end = addDaysToIso(key, 6);
             }
         }
 
         if (start && end) {
+            setSavedBreakupState({ summaryMode, startDate: filter.startDate, endDate: filter.endDate });
             setFilter(prev => ({ ...prev, startDate: start, endDate: end }));
             setSummaryMode('detailed');
             setCurrentPage(1);
         }
     };
 
+    const restoreBreakupView = () => {
+        if (!savedBreakupState) return;
+        setFilter(prev => ({ ...prev, startDate: savedBreakupState.startDate, endDate: savedBreakupState.endDate }));
+        setSummaryMode(savedBreakupState.summaryMode);
+        setSavedBreakupState(null);
+        setCurrentPage(1);
+    };
+
     // Data Processing & Display Logic
-    const { processedData, totalPages, summary, fullList, displayCurrency } = useMemo(() => {
+    const { processedData, totalPages, summary, fullList, detailedRows, displayCurrency } = useMemo(() => {
         let filtered = transactions.filter(t => {
             const matchesSearch = !searchTerm || t.searchStr.includes(searchTerm.toLowerCase());
             let matchesView = true;
@@ -17905,18 +19761,23 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                 if (summaryMode === 'daily') {
                     key = t.date;
-                    label = formatDate(t.date);
+                    const _d = txDate;
+                    const _dayFull = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][_d.getDay()];
+                    const _shortMon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][_d.getMonth()];
+                    label = `${_d.getDate()} ${_shortMon} ${_d.getFullYear()} (${_dayFull})`;
                 } else if (summaryMode === 'weekly') {
-                    // Weekly (Friday to Thursday cycle per Tally)
-                    // Find Friday before/at this date
-                    const day = txDate.getDay(); // 0=Sun, 5=Fri
-                    const diffToFri = (day + 2) % 7;
-                    const fri = new Date(txDate);
-                    fri.setDate(txDate.getDate() - diffToFri);
-                    const thu = new Date(fri);
-                    thu.setDate(fri.getDate() + 6);
-                    key = toIsoDate(fri);
-                    label = `${formatDate(key)} to ${formatDate(toIsoDate(thu))}`;
+                    // Weekly (Sunday to Saturday cycle)
+                    const day = txDate.getDay(); // 0=Sun, 6=Sat
+                    const sun = new Date(txDate);
+                    sun.setDate(txDate.getDate() - day);
+                    const sat = new Date(sun);
+                    sat.setDate(sun.getDate() + 6);
+                    key = toIsoDate(sun);
+                    const _wShortMon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                    const _wDayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+                    const startLbl = `${sun.getDate()} ${_wShortMon[sun.getMonth()]} (${_wDayNames[sun.getDay()]})`;
+                    const endLbl = `${sat.getDate()} ${_wShortMon[sat.getMonth()]} (${_wDayNames[sat.getDay()]})`;
+                    label = `${startLbl} - ${endLbl} ${sat.getFullYear()}`;
                 } else if (summaryMode === 'monthly') {
                     key = `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, '0')}`;
                     const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -17924,8 +19785,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 } else if (summaryMode === 'quarterly') {
                     const qIdx = Math.floor(txDate.getMonth() / 3);
                     key = `${txDate.getFullYear()}-Q${qIdx + 1}`;
-                    const qNames = ["Jan-Mar", "Apr-Jun", "Jul-Sep", "Oct-Dec"];
-                    label = `${qNames[qIdx]} ${txDate.getFullYear()}`;
+                    const qMonthRanges = ["Jan - Mar", "Apr - Jun", "Jul - Sep", "Oct - Dec"];
+                    label = `Q${qIdx + 1}: ${qMonthRanges[qIdx]} ${txDate.getFullYear()}`;
                 } else if (summaryMode === 'annually') {
                     key = `${txDate.getFullYear()}`;
                     label = `Year ${key}`;
@@ -17941,11 +19802,18 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
             let bal = openingBal;
             let qtyBal = openingQty;
-            displayList = Object.values(groups).sort((a, b) => a.key.localeCompare(b.key)).map(g => {
+            // Sort ascending first to compute running balances correctly, then reverse for display
+            const sortedGroupEntries = Object.values(groups).sort((a, b) => a.key.localeCompare(b.key));
+            sortedGroupEntries.forEach(g => {
                 bal += (g.dr - g.cr);
                 qtyBal += (g.qtyIn - g.qtyOut);
+                g._bal = bal;
+                g._qtyBal = qtyBal;
+            });
+            displayList = sortedGroupEntries.slice().reverse().map(g => {
                 return { 
                     id: `SUM_${summaryMode}_${g.key}`,
+                    summaryKey: g.key,
                     date: '', 
                     particulars: g.label,
                     drName: g.label, 
@@ -17954,11 +19822,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     ref: '-', 
                     displayIn: g.dr, 
                     displayOut: g.cr, 
-                    displayBalance: bal, 
+                    displayBalance: g._bal, 
                     qtyIn: g.qtyIn,
                     qtyOut: g.qtyOut,
                     qtyInOut: g.qtyIn - g.qtyOut,
-                    displayBalanceQty: qtyBal,
+                    displayBalanceQty: g._qtyBal,
                     isSummary: true 
                 };
             });
@@ -18080,11 +19948,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             totalPages: total,
             summary: sum,
             fullList: displayList,
+            detailedRows: detailedList,
             displayCurrency: sym
         };
     }, [transactions, searchTerm, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode]);
 
     const isTallyItemLedger = filter.type === 'item' && summaryMode === 'detailed';
+    const isItemLedgerReport = filter.type === 'item';
 
     const graphReportType = useMemo(() => {
         if (filter.type === 'sales') return 'sales';
@@ -18468,6 +20338,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             capital: "Capital Ledger",
             asset: "Asset Ledger",
             item: "Item Ledger",
+            tax: "Tax Ledger",
             user: "User / Staff Report"
         };
         let title = typeMap[filter.type] || filter.type.toUpperCase();
@@ -18477,7 +20348,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         else if (summaryMode === 'quarterly') title = `${title} Quarterly Summary`;
         else if (summaryMode === 'annually') title = `${title} Annual Summary`;
 
-        if (filter.id && ['party', 'account', 'expense', 'capital', 'asset', 'item', 'user'].includes(filter.type)) {
+        if (filter.id && ['party', 'account', 'expense', 'capital', 'asset', 'item', 'user', 'tax'].includes(filter.type)) {
             const options = getFilterOptions();
             const found = options.find(o => o.id === filter.id);
             if (found) title += ` : ${found.name}`;
@@ -18499,6 +20370,53 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         if (start) return `From ${start}`;
         if (end) return `Until ${end}`;
         return "All Time";
+    };
+
+    const getBreakupKeyForDate = (isoDate, mode) => {
+        const txDate = parseIsoDate(isoDate);
+        if (!txDate) return '';
+
+        if (mode === 'daily') return isoDate;
+        if (mode === 'weekly') {
+            const day = txDate.getDay();
+            const sun = new Date(txDate);
+            sun.setDate(txDate.getDate() - day);
+            return toIsoDate(sun);
+        }
+        if (mode === 'monthly') return `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, '0')}`;
+        if (mode === 'quarterly') {
+            const qIdx = Math.floor(txDate.getMonth() / 3);
+            return `${txDate.getFullYear()}-Q${qIdx + 1}`;
+        }
+        if (mode === 'annually') return `${txDate.getFullYear()}`;
+        return '';
+    };
+
+    const openBreakupSummaryView = (row) => {
+        if (!row?.summaryKey || !['daily', 'weekly', 'monthly', 'quarterly', 'annually'].includes(summaryMode)) return;
+
+        const periodRows = detailedRows.filter(t =>
+            !t.isOpening &&
+            !!t.date &&
+            getBreakupKeyForDate(t.date, summaryMode) === row.summaryKey
+        );
+
+        const data = periodRows.reduce((acc, t) => {
+            acc.qtyIn += safeNum(t.qtyIn);
+            acc.qtyOut += safeNum(t.qtyOut);
+            acc.valueIn += safeNum(t.displayIn);
+            acc.valueOut += safeNum(t.displayOut);
+            return acc;
+        }, { qtyIn: 0, qtyOut: 0, valueIn: 0, valueOut: 0 });
+
+        setPeriodSummaryData({
+            title: row.particulars || row.drName || 'Summary',
+            qtyIn: data.qtyIn,
+            qtyOut: data.qtyOut,
+            valueIn: data.valueIn,
+            valueOut: data.valueOut
+        });
+        setShowItemSummaryView(true);
     };
 
     const toggleSortOrder = (ascKey, descKey) => {
@@ -18541,23 +20459,52 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             let body = [];
 
             if (filter.type === 'item') {
-                head = [["Date", "Ref", "Type", "Particulars", "Qty In/Out", "Qty Bal", "Debit", "Credit", "Value"]];
-                body = fullList.map(r => [
-                    formatDate(r.date), r.ref, r.vchType, `${r.drName}`,
-                    r.isOpening ? '-' : formatQtyInOut(r.qtyIn || 0, r.qtyOut || 0),
-                    format3(r.displayBalanceQty),
-                    r.displayIn ? formatCurrency(r.displayIn) : '-',
-                    r.displayOut ? formatCurrency(r.displayOut) : '-',
-                    `${formatCurrency(Math.abs(r.displayBalance))} ${r.displayBalance >= 0 ? 'Dr' : 'Cr'}`
-                ]);
+                head = [["Date", "Ref", "Type", "Particulars", "Qty In", "Debit", "Qty Out", "Credit", "Qty Bal", "Value"]];
+                body = [];
+                fullList.forEach(r => {
+                    body.push([
+                        formatDate(r.date), r.ref, r.vchType, r.isSummary ? (r.particulars || r.drName) : `${r.drName}`,
+                        r.isOpening ? '-' : (safeNum(r.qtyIn) > 0 ? format3(safeNum(r.qtyIn)) : '-'),
+                        r.displayIn ? formatCurrency(r.displayIn) : '-',
+                        r.isOpening ? '-' : (safeNum(r.qtyOut) > 0 ? format3(safeNum(r.qtyOut)) : '-'),
+                        r.displayOut ? formatCurrency(r.displayOut) : '-',
+                        format3(r.displayBalanceQty),
+                        `${formatCurrency(Math.abs(r.displayBalance))} ${r.displayBalance >= 0 ? 'Dr' : 'Cr'}`
+                    ]);
+                    // Detailed rows if expanded
+                    if (expandDetails && !r.isOpening && !r.isSummary) {
+                        if (r.details && r.details.length > 0) {
+                            r.details.filter(d => d.label !== 'Remark/Cause').forEach(d => {
+                                body.push(["", "", "", `   ${d.label}: ${d.value}`, "", "", "", "", "", ""]);
+                            });
+                        }
+                        if (r.narration) {
+                             body.push(["", "", "", `   Narration: ${r.narration}`, "", "", "", "", "", ""]);
+                        }
+                    }
+                });
             } else {
                 head = [["Date", "Ref", "Type", "Particulars", "Debit", "Credit", "Value"]];
-                body = fullList.map(r => [
-                    formatDate(r.date), r.ref, r.vchType, `${r.drName}/${r.crName}`,
-                    r.displayIn ? formatCurrency(r.displayIn) : '-',
-                    r.displayOut ? formatCurrency(r.displayOut) : '-',
-                    `${formatCurrency(Math.abs(r.displayBalance))} ${r.displayBalance >= 0 ? 'Dr' : 'Cr'}`
-                ]);
+                body = [];
+                fullList.forEach(r => {
+                    body.push([
+                        formatDate(r.date), r.ref, r.vchType, r.isSummary ? (r.particulars || r.drName) : `${r.drName}/${r.crName}`,
+                        r.displayIn ? formatCurrency(r.displayIn) : '-',
+                        r.displayOut ? formatCurrency(r.displayOut) : '-',
+                        `${formatCurrency(Math.abs(r.displayBalance))} ${r.displayBalance >= 0 ? 'Dr' : 'Cr'}`
+                    ]);
+                    // Detailed rows if expanded
+                    if (expandDetails && !r.isOpening && !r.isSummary) {
+                        if (r.details && r.details.length > 0) {
+                            r.details.filter(d => d.label !== 'Remark/Cause').forEach(d => {
+                                body.push(["", "", "", `   ${d.label}: ${d.value}`, "", "", ""]);
+                            });
+                        }
+                        if (r.narration) {
+                             body.push(["", "", "", `   Narration: ${r.narration}`, "", "", ""]);
+                        }
+                    }
+                });
             }
 
             autoTable(doc, {
@@ -18583,28 +20530,56 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
             // Define Columns
             if (filter.type === 'item') {
-                data = fullList.map(r => ({
-                    Date: formatDate(r.date), Ref: r.ref, Type: r.vchType, Particulars: r.drName,
-                    "Qty In/Out": r.isOpening ? 0 : (safeNum(r.qtyIn) - safeNum(r.qtyOut)),
-                    "Qty Balance": r.displayBalanceQty,
-                    Debit: r.displayIn, Credit: r.displayOut,
-                    Value: r.displayBalance
-                }));
+                data = [];
+                fullList.forEach(r => {
+                    data.push({
+                        Date: formatDate(r.date), Ref: r.ref, Type: r.vchType, Particulars: r.isSummary ? (r.particulars || r.drName) : r.drName,
+                        "Qty In": r.isOpening ? 0 : safeNum(r.qtyIn),
+                        Debit: r.displayIn,
+                        "Qty Out": r.isOpening ? 0 : safeNum(r.qtyOut),
+                        Credit: r.displayOut,
+                        "Qty Balance": r.displayBalanceQty,
+                        Value: r.displayBalance
+                    });
+                    if (expandDetails && !r.isOpening && !r.isSummary) {
+                        if (r.details && r.details.length > 0) {
+                            r.details.filter(d => d.label !== 'Remark/Cause').forEach(d => {
+                                data.push({ Particulars: `  ${d.label}: ${d.value}` });
+                            });
+                        }
+                        if (r.narration) {
+                             data.push({ Particulars: `  Narration: ${r.narration}` });
+                        }
+                    }
+                });
                 // Append Total Row
                 data.push({
                     Date: 'TOTALS', Ref: '', Type: '', Particulars: '',
-                    "Qty In/Out": (summary.totalQtyIn - summary.totalQtyOut),
+                    "Qty In": summary.totalQtyIn,
+                    Debit: summary.debit,
+                    "Qty Out": summary.totalQtyOut,
+                    Credit: summary.credit,
                     "Qty Balance": summary.balanceQty,
-                    Debit: summary.debit, Credit: summary.credit,
                     Value: summary.balance
                 });
             } else {
-                data = fullList.map(r => ({
-                    Date: formatDate(r.date), Ref: r.ref, Type: r.vchType,
-                    DebitAccount: r.drName, CreditAccount: r.crName,
-                    Debit: r.displayIn, Credit: r.displayOut, Value: r.displayBalance,
-                    Narration: r.narration
-                }));
+                data = [];
+                fullList.forEach(r => {
+                    data.push({
+                        Date: formatDate(r.date), Ref: r.ref, Type: r.vchType,
+                        DebitAccount: r.isSummary ? (r.particulars || r.drName) : r.drName, 
+                        CreditAccount: r.isSummary ? '' : r.crName,
+                        Debit: r.displayIn, Credit: r.displayOut, Value: r.displayBalance,
+                        Narration: r.narration
+                    });
+                    if (expandDetails && !r.isOpening && !r.isSummary) {
+                        if (r.details && r.details.length > 0) {
+                            r.details.filter(d => d.label !== 'Remark/Cause').forEach(d => {
+                                data.push({ DebitAccount: `  ${d.label}: ${d.value}` });
+                            });
+                        }
+                    }
+                });
                 // Append Total Row
                 data.push({
                     Date: 'TOTALS', Ref: '', Type: '', DebitAccount: '', CreditAccount: '',
@@ -18653,13 +20628,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 e.preventDefault();
                 moveDateRange(e.key === 'ArrowLeft' ? -1 : 1);
             }
+
+            // ESC: if drilled into a breakup period, go back to breakup view instead of closing
+            if (e.key === 'Escape' && savedBreakupState) {
+                e.preventDefault();
+                e.stopPropagation();
+                restoreBreakupView();
+            }
         };
         window.addEventListener('keydown', handleKeys);
         return () => window.removeEventListener('keydown', handleKeys);
-    }, [isOpen, moveDateRange]);
+    }, [isOpen, moveDateRange, savedBreakupState]);
 
     if (!isOpen) return null;
     const isSalesPurchaseRegister = ['sales', 'purchase'].includes(filter.type);
+    const isBreakupMode = summaryMode !== 'detailed';
     
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} hideHeader={true} maxWidth="max-w-[100vw]" defaultMaximized={true} removePadding={true}>
@@ -18668,7 +20651,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 {/* --- CONSOLIDATED TALLY HEADER (SINGLE LINE) --- */}
                 <div className="bg-[#dceaff] text-[#1e3264] p-0.5 px-3 flex justify-between items-center text-[11px] font-black border-b border-blue-400 shadow-sm z-[100] h-10">
                     <div className="flex items-center gap-2">
-                        <button onClick={onBack} className="p-1 hover:bg-blue-200 rounded-sm text-[#2b5797] transition-colors" title="Go Back"><ArrowLeft size={18} /></button>
+                        <button onClick={savedBreakupState ? restoreBreakupView : onBack} className="p-1 hover:bg-blue-200 rounded-sm text-[#2b5797] transition-colors" title={savedBreakupState ? `Back to ${savedBreakupState.summaryMode.toUpperCase()} View (ESC)` : 'Go Back'}><ArrowLeft size={18} /></button>
+                        {savedBreakupState && (
+                            <button onClick={restoreBreakupView} className="flex items-center gap-1 px-2 py-0.5 bg-indigo-100 border border-indigo-300 rounded text-[9px] font-black text-indigo-700 hover:bg-indigo-200 transition-colors" title="ESC: Back to breakup view">
+                                <ArrowLeft size={10} />← {savedBreakupState.summaryMode.toUpperCase()} VIEW
+                            </button>
+                        )}
                         <div className="flex flex-col border-l border-blue-300 pl-2 leading-tight hidden xl:flex border-r pr-3 mr-1 relative">
                             <span className="text-[7px] opacity-60 uppercase font-black text-[#2b5797]">Ledger View</span>
                             <button
@@ -18708,14 +20696,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     {/* Redundant Summary Removed */}                    
 
                     {/* Controls & Actions */}
-                    <div className="flex flex-1 justify-center items-center gap-1 sm:gap-1.5 px-2 overflow-x-auto whitespace-nowrap hide-scrollbar">
-                         <div className="flex items-center gap-1 bg-white/40 p-0.5 rounded border border-blue-200 mr-2 shrink-0">
+                    <div className="flex flex-1 items-center gap-1 sm:gap-1.5 px-2 overflow-x-auto whitespace-nowrap hide-scrollbar">
+                         <div className="flex items-center gap-1 bg-white/40 p-0.5 rounded border border-blue-200 mr-1 shrink-0">
                             <select 
                                 className="bg-transparent border-none text-[10px] font-black p-0 outline-none h-4 min-w-[70px] cursor-pointer"
                                 value={viewCurrency}
                                 onChange={(e) => setViewCurrency(e.target.value)}
                             >
-                                <option value="ALL">ALL CURR</option>
+                                <option value="ALL">{currencies.find(c => c.isBase)?.symbol || 'BASE'}</option>
                                 {currencies.filter(c => !c.isBase).map(c => (<option key={c.id} value={c.id}>{c.symbol}</option>))}
                             </select>
                             <div className="w-px h-3 bg-blue-300"></div>
@@ -18734,21 +20722,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             </select>
                          </div>
 
-                        <button onClick={() => setExpandDetails(!expandDetails)} className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black ${expandDetails ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}>
+                        <button onClick={() => setExpandDetails(!expandDetails)} className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${expandDetails ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}>
                             {expandDetails ? 'ALT+D: COND' : 'ALT+D: DETL'}
                         </button>
                         <button
                             onClick={() => { setSortOrder('date_desc'); setCurrentPage(1); }}
-                            className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black ${sortOrder === 'date_desc' ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
+                            className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${sortOrder === 'date_desc' ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
                             title="Sort by newest date first"
                         >
                             VIEW BY NEWEST MODIFIED
                         </button>
                         
-                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1"></div>
+                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
                         
                         {/* --- BREAKUP / SUMMARY SWITCHER --- */}
-                        <div className="relative">
+                        <div className="relative shrink-0">
                             <button
                                 onClick={() => setShowSummaryOptions(!showSummaryOptions)}
                                 className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black flex items-center gap-1 ${summaryMode !== 'detailed' ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
@@ -18790,22 +20778,51 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             )}
                         </div>
 
-                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1"></div>
+                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
 
-                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1"></div>
+                        {/* --- DATE NAVIGATOR (NOW IN SCROLL BAR) --- */}
+                        <div className="flex items-center gap-1 shrink-0 group">
+                            <button
+                                onClick={() => moveDateRange(-1)}
+                                className="p-1.5 bg-white border border-blue-300 rounded-l-[2px] text-[#2b5797] hover:bg-blue-50 transition-colors"
+                                title="Previous Period"
+                            >
+                                <ChevronLeft size={11} fill="currentColor" />
+                            </button>
+                            <button
+                                onClick={() => setShowDateOptionsMenu(true)}
+                                className="flex flex-col items-center leading-[1] bg-white border border-blue-200 px-3 py-0.5 hover:bg-blue-50 transition-colors min-w-[140px]"
+                                title="Change Date/Period"
+                            >
+                                <span className="text-[7.5px] opacity-60 uppercase font-black text-[#2b5797] mb-0.5">Report Period</span>
+                                <div className="flex items-center gap-1">
+                                    <span className="text-[9px] font-black text-[#2b5797]">{getReportDuration()}</span>
+                                    <ChevronDown size={8} strokeWidth={3} className="ml-0.5 opacity-50" />
+                                </div>
+                            </button>
+                            <button
+                                onClick={() => moveDateRange(1)}
+                                className="p-1.5 bg-white rounded-r-[2px] text-[#2b5797] hover:bg-blue-50 transition-colors border-y border-r border-blue-300"
+                                title="Next Period"
+                            >
+                                <ChevronRight size={11} fill="currentColor" />
+                            </button>
+                        </div>
+
+                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
                         {supportsGraphView && (
                             <button
                                 onClick={() => setShowGraphView(prev => !prev)}
-                                className={`px-2 py-1 border rounded-[2px] text-[9.5px] font-black transition-colors ${showGraphView ? 'bg-indigo-700 text-white border-indigo-800' : 'bg-white border-blue-300 text-indigo-700 hover:bg-indigo-50'}`}
+                                className={`px-2 py-1 border rounded-[2px] text-[9.5px] font-black transition-colors shrink-0 ${showGraphView ? 'bg-indigo-700 text-white border-indigo-800' : 'bg-white border-blue-300 text-indigo-700 hover:bg-indigo-50'}`}
                                 title="Toggle Graph View"
                             >
                                 {showGraphView ? 'TABLE VIEW' : 'GRAPH VIEW'}
                             </button>
                         )}
-                        <button onClick={downloadExcel} className="hidden lg:block px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors">XLS</button>
-                        <button onClick={downloadPDF} className="hidden lg:block px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors">PDF</button>
+                        <button onClick={downloadExcel} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors shrink-0">XLS</button>
+                        <button onClick={downloadPDF} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors shrink-0">PDF</button>
 
-                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1"></div>
+                        <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
                         
                         {/* THE ADD VOUCHER BUTTON */}
                         <button 
@@ -18817,9 +20834,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             <span className="text-[10px] font-black uppercase tracking-wider">Add Voucher</span>
                         </button>
 
+                        <button 
+                            onClick={() => setShowSearch(!showSearch)}
+                            className={`flex items-center justify-center p-1.5 rounded border transition-all shrink-0 ${showSearch ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-blue-600 hover:bg-blue-50 shadow-sm'}`}
+                            title="Search / Filter Report (S)"
+                        >
+                            <Search size={16} strokeWidth={3} />
+                        </button>
 
                         {selectedIds.size > 0 && (
-                            <div className="flex items-center gap-1 border-r border-blue-300 pr-1.5 mr-1 animate-in slide-in-from-right-2">
+                            <div className="flex items-center gap-1 shrink-0 animate-in slide-in-from-right-2">
                                 <button onClick={handleHideSelected} className="px-2 py-1 bg-orange-500 text-white border border-orange-600 rounded-[2px] text-[9.5px] font-black hover:bg-orange-600 transition-colors animate-pulse" title="Alt+R: Hide From View">HIDE ({selectedIds.size})</button>
                                 <button onClick={handleBulkRemove} className="px-2 py-1 bg-red-600 text-white border border-red-700 rounded-[2px] text-[9.5px] font-black hover:bg-red-700 transition-colors flex items-center gap-1" title="Delete Permanently (Password Required)">
                                     <Trash2 size={11} fill="white" /> REMOVE
@@ -18827,46 +20851,48 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             </div>
                         )}
                         {hiddenStack.length > 0 && (
-                            <button onClick={handleRestoreLast} className="px-2 py-1 bg-blue-100 text-[#2b5797] border border-blue-300 rounded-[2px] text-[9.5px] font-black hover:bg-blue-200 transition-colors">RESTORE</button>
+                            <button onClick={handleRestoreLast} className="px-2 py-1 bg-blue-100 text-[#2b5797] border border-blue-300 rounded-[2px] text-[9.5px] font-black hover:bg-blue-200 transition-colors shrink-0">RESTORE</button>
+                        )}
+
+                        {hiddenCols.size > 0 && (
+                            <button onClick={restoreColumns} className="p-1 px-3 bg-blue-50 hover:bg-blue-600 hover:text-white rounded-sm text-blue-600 transition-all font-black flex items-center gap-1 border border-blue-200 hover:border-blue-600 shrink-0" title="Restore All Columns">
+                                <Plus size={15} /> <span className="text-[10px] uppercase font-black">Restore Columns</span>
+                            </button>
                         )}
                     </div>
 
                     <div className="flex items-center gap-2">
-                        <div className="hidden lg:flex items-center gap-1 border-r border-blue-300 pr-3 mr-1">
-                            <button
-                                onClick={() => moveDateRange(-1)}
-                                className="p-1 bg-white border border-blue-300 rounded-[2px] text-[#2b5797] hover:bg-blue-50 transition-colors"
-                                title="Previous Period"
-                            >
-                                <ChevronLeft size={11} fill="currentColor" />
-                            </button>
-                            <button
-                                onClick={() => setShowDateOptionsMenu(true)}
-                                className="flex flex-col items-center leading-[1] bg-white border-x border-blue-200 px-3 py-0.5 hover:bg-blue-50 transition-colors min-w-[140px]"
-                                title="Change Date/Period"
-                            >
-                                <span className="text-[7.5px] opacity-60 uppercase font-black text-[#2b5797] mb-0.5">Report Period</span>
-                                <div className="flex items-center gap-1">
-                                    <span className="text-[9px] font-black text-[#2b5797]">{getReportDuration()}</span>
-                                    <ChevronDown size={8} strokeWidth={3} className="ml-0.5 opacity-50" />
-                                </div>
-                            </button>
-                            <button
-                                onClick={() => moveDateRange(1)}
-                                className="p-1 px-1.5 bg-white rounded-r-[2px] text-[#2b5797] hover:bg-blue-50 transition-colors border-l border-blue-100"
-                                title="Next Period"
-                            >
-                                <ChevronRight size={11} fill="currentColor" />
-                            </button>
-                        </div>
-                        {hiddenCols.size > 0 && (
-                            <button onClick={restoreColumns} className="p-1 px-3 bg-blue-50 hover:bg-blue-600 hover:text-white rounded-sm text-blue-600 transition-all font-black flex items-center gap-1 border border-blue-200 hover:border-blue-600" title="Restore All Columns">
-                                <Plus size={15} /> <span className="text-[10px] hidden sm:inline uppercase font-black">Restore Columns</span>
-                            </button>
-                        )}
-
+                        {/* Redundant columns/date area removed as they are now in the scrollable row */}
                     </div>
                 </div>
+
+                {/* --- SEARCH BAR --- */}
+                {showSearch && (
+                    <div className="bg-blue-50 border-b border-blue-200 p-2 px-4 flex items-center gap-3 animate-in slide-in-from-top-2 duration-200">
+                        <div className="relative flex-1">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400" size={16} />
+                            <input 
+                                autoFocus
+                                type="text"
+                                value={searchTerm}
+                                onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
+                                placeholder="POWER SEARCH: Type anything (Ref, Name, Amount, Narration, User, Item...)"
+                                className="w-full pl-10 pr-10 py-2 bg-white border-2 border-blue-200 rounded-lg text-sm font-black text-blue-900 outline-none focus:border-blue-500 transition-all placeholder:text-blue-200"
+                            />
+                            {searchTerm && (
+                                <button 
+                                    onClick={() => { setSearchTerm(""); setCurrentPage(1); }}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-blue-100 rounded-full text-blue-400 transition-colors"
+                                >
+                                    <X size={14} />
+                                </button>
+                            )}
+                        </div>
+                        <div className="text-[10px] font-black text-blue-500 uppercase tracking-widest hidden md:block">
+                            Esc to Close
+                        </div>
+                    </div>
+                )}
 
                 {/* --- MAIN LAYOUT (CONTENT) --- */}
                 <div className="flex flex-1 overflow-hidden">
@@ -19067,7 +21093,52 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             ) : (
                             <table className="w-full border-collapse font-sans text-[11px] md:text-[12px]">
                                 <thead className="sticky top-0 z-10">
-                                    {isSalesPurchaseRegister ? (
+                                    {isBreakupMode && isSalesPurchaseRegister ? (
+                                        /* ── SALES/PURCHASE BREAKUP HEADERS ── */
+                                        (() => {
+                                            const _periodCount = processedData.filter(r => r.isSummary).length;
+                                            const _totalVch = processedData.filter(r => r.isSummary).reduce((s, r) => s + (parseInt((r.crName || '').replace(/\D/g,'')) || 0), 0);
+                                            const _totalQty = processedData.filter(r => r.isSummary).reduce((s, r) => s + safeNum(r.qtyIn) + safeNum(r.qtyOut), 0);
+                                            const _totalAmt = processedData.filter(r => r.isSummary).reduce((s, r) => s + safeNum(r.displayIn) + safeNum(r.displayOut), 0);
+                                            return (
+                                            <>
+                                                <tr className="bg-[#1e3264] text-white border-y border-slate-400 text-[10px]">
+                                                    <th className="p-1.5 border-r border-blue-400 text-center font-black">{_periodCount} Periods</th>
+                                                    <th className="p-1.5 border-r border-blue-400 text-center font-black">{_totalVch} Vouchers</th>
+                                                    <th className="p-1.5 border-r border-blue-400 text-right font-black">{format3(_totalQty)}</th>
+                                                    <th className="p-1.5 border-r border-blue-400 text-right font-black text-green-300">{formatCurrency(_totalAmt)}</th>
+                                                    <th className="p-1.5 text-center font-black">—</th>
+                                                </tr>
+                                                <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
+                                                    <th className="p-1.5 border-r border-slate-300 text-left w-52 cursor-pointer select-none" onClick={() => toggleSortOrder('date_asc', 'date_desc')}>PERIOD</th>
+                                                    <th className="p-1.5 border-r border-slate-300 text-center w-24">VOUCHERS</th>
+                                                    <th className="p-1.5 border-r border-slate-300 text-right w-28">QTY</th>
+                                                    <th className="p-1.5 border-r border-slate-300 text-right w-36">AMOUNT ({displayCurrency})</th>
+                                                    <th className="p-1.5 text-center w-20">SUMMARY</th>
+                                                </tr>
+                                            </>
+                                            );
+                                        })()
+                                    ) : isBreakupMode && !isSalesPurchaseRegister ? (
+                                        /* ── DAYBOOK/LEDGER/PAYMENT BREAKUP HEADERS ── */
+                                        <>
+                                            <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={2}>CURRENT TOTALS:</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{formatCurrency(summary.debit)}</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black text-red-700">{formatCurrency(summary.credit)}</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black">{formatCurrency(Math.abs(summary.balance))} {summary.balance >= 0 ? 'Dr' : 'Cr'}</th>
+                                                <th className="p-1.5 text-center font-black">—</th>
+                                            </tr>
+                                            <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
+                                                <th className="p-1.5 border-r border-slate-300 text-left w-52 cursor-pointer select-none" onClick={() => toggleSortOrder('date_asc', 'date_desc')}>PERIOD</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-center w-24">VOUCHERS</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right w-32 cursor-pointer select-none" onClick={() => toggleSortOrder('debit_asc', 'debit_desc')}>DEBIT ({displayCurrency})</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right w-32 cursor-pointer select-none" onClick={() => toggleSortOrder('credit_asc', 'credit_desc')}>CREDIT ({displayCurrency})</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right w-32">BALANCE</th>
+                                                <th className="p-1.5 text-center w-20">SUMMARY</th>
+                                            </tr>
+                                        </>
+                                    ) : isSalesPurchaseRegister ? (
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
                                                 <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 - ['check','date','ref','cust','part'].filter(c => hiddenCols.has(c)).length}>TOP TOTALS:</th>
@@ -19094,15 +21165,31 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     ) : (
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
-                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 - ['check','date','vch','part','ref'].filter(c => hiddenCols.has(c)).length}>CURRENT TOTALS:</th>
-                                                {isTallyItemLedger && !hiddenCols.has('item_qty') && (
-                                                    <th className="p-1.5 border-r border-slate-300 text-right font-black">{formatQtyInOut(summary.totalQtyIn || 0, summary.totalQtyOut || 0)}</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 - ['check','date','vch','part','ref'].filter(c => hiddenCols.has(c)).length}>
+                                                    <div className="flex items-center justify-end gap-1.5">
+                                                        {isTallyItemLedger && (
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); setPeriodSummaryData(null); setShowItemSummaryView(true); }}
+                                                                className="p-1 rounded border border-blue-300 bg-white text-[#2b5797] hover:bg-blue-50 transition-colors"
+                                                                title="Summary View"
+                                                            >
+                                                                <BarChart3 size={12} strokeWidth={2.5} />
+                                                            </button>
+                                                        )}
+                                                        <span>CURRENT TOTALS:</span>
+                                                    </div>
+                                                </th>
+                                                {isTallyItemLedger && !hiddenCols.has('item_qty_in') && (
+                                                    <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{format3(summary.totalQtyIn || 0)}</th>
                                                 )}
+                                                {!hiddenCols.has('debit') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{formatCurrency(summary.debit)}</th>}
+                                                {isTallyItemLedger && !hiddenCols.has('item_qty_out') && (
+                                                    <th className="p-1.5 border-r border-slate-300 text-right font-black text-red-700">{format3(summary.totalQtyOut || 0)}</th>
+                                                )}
+                                                {!hiddenCols.has('credit') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-red-700">{formatCurrency(summary.credit)}</th>}
                                                 {isTallyItemLedger && !hiddenCols.has('qty_bal') && (
                                                     <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3(summary.balanceQty)}</th>
                                                 )}
-                                                {!hiddenCols.has('debit') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{formatCurrency(summary.debit)}</th>}
-                                                {!hiddenCols.has('credit') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-red-700">{formatCurrency(summary.credit)}</th>}
                                                 {!hiddenCols.has('bal') && <th className="p-1.5 text-right font-black">{formatCurrency(Math.abs(summary.balance))} {summary.balance >= 0 ? 'Dr' : 'Cr'}</th>}
                                             </tr>
                                             <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
@@ -19111,10 +21198,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {!hiddenCols.has('vch') && <th className="p-1.5 border-r border-slate-300 text-left w-28"><HideCol name="VCH TYPE" id="vch" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('part') && <th className="p-1.5 border-r border-slate-300 text-left"><HideCol name="PARTICULARS" id="part" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('ref') && <th className="p-1.5 border-r border-slate-300 text-left w-24 cursor-pointer select-none" onClick={() => toggleSortOrder('ref_asc', 'ref_desc')}><HideCol name="REF" id="ref" onHide={toggleColumn} /></th>}
-                                                {isTallyItemLedger && !hiddenCols.has('item_qty') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY IN/OUT" id="item_qty" onHide={toggleColumn} /></th>}
-                                                {isTallyItemLedger && !hiddenCols.has('qty_bal') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY BALANCE" id="qty_bal" onHide={toggleColumn} /></th>}
+                                                {isTallyItemLedger && !hiddenCols.has('item_qty_in') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY IN" id="item_qty_in" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('debit') && <th className="p-1.5 border-r border-slate-300 text-right w-32 cursor-pointer select-none" onClick={() => toggleSortOrder('debit_asc', 'debit_desc')}><HideCol name={`DEBIT (${displayCurrency})`} id="debit" onHide={toggleColumn} /></th>}
+                                                {isTallyItemLedger && !hiddenCols.has('item_qty_out') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY OUT" id="item_qty_out" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('credit') && <th className="p-1.5 border-r border-slate-300 text-right w-32 cursor-pointer select-none" onClick={() => toggleSortOrder('credit_asc', 'credit_desc')}><HideCol name={`CREDIT (${displayCurrency})`} id="credit" onHide={toggleColumn} /></th>}
+                                                {isTallyItemLedger && !hiddenCols.has('qty_bal') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY BALANCE" id="qty_bal" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('bal') && <th className="p-1.5 text-right w-32"><HideCol name="VALUE" id="bal" onHide={toggleColumn} /></th>}
                                             </tr>
                                         </>
@@ -19123,7 +21211,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <tbody>
                                     {processedData.length === 0 ? (
                                         <tr>
-                                            <td colSpan={isSalesPurchaseRegister ? (10 - ['check','date','ref','cust','part','qty','rate','amount','due_date','payment'].filter(c => hiddenCols.has(c)).length) : (isTallyItemLedger ? (9 - ['check','date','vch','part','ref','debit','credit','item_qty','bal'].filter(c => hiddenCols.has(c)).length) : (8 - ['check','date','vch','part','ref','debit','credit','bal'].filter(c => hiddenCols.has(c)).length))} className="p-20 text-center">
+                                            <td colSpan={isSalesPurchaseRegister ? (10 - ['check','date','ref','cust','part','qty','rate','amount','due_date','payment'].filter(c => hiddenCols.has(c)).length) : (isTallyItemLedger ? (11 - ['check','date','vch','part','ref','item_qty_in','debit','item_qty_out','credit','qty_bal','bal'].filter(c => hiddenCols.has(c)).length) : (8 - ['check','date','vch','part','ref','debit','credit','bal'].filter(c => hiddenCols.has(c)).length))} className="p-20 text-center">
                                                 <div className="flex flex-col items-center gap-3 opacity-30">
                                                     <FileSearch size={48} />
                                                     <span className="text-sm font-black uppercase tracking-widest">No Transactions Found in this Period</span>
@@ -19131,7 +21219,65 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                             </td>
                                         </tr>
                                     ) : (
-                                        processedData.map((row, idx) => (
+                                        processedData.map((row, idx) => {
+                                            if (isBreakupMode && row.isSummary) {
+                                                // ── SIMPLIFIED BREAKUP ROW ──
+                                                if (isSalesPurchaseRegister) {
+                                                    const totalQty = safeNum(row.qtyIn) + safeNum(row.qtyOut);
+                                                    const totalAmt = safeNum(row.displayIn) + safeNum(row.displayOut);
+                                                    return (
+                                                        <tr key={`${row.id}_${idx}`} onClick={() => handleSummaryClick(row)}
+                                                            className="cursor-pointer bg-indigo-50/40 hover:bg-indigo-100 border-b border-indigo-100 font-bold transition-colors"
+                                                            title="Click to drill down into this period"
+                                                        >
+                                                            <td className="p-2 border-r border-indigo-100 text-indigo-700 font-black text-[11px] whitespace-nowrap">{row.particulars || row.drName || ''}</td>
+                                                            <td className="p-2 border-r border-indigo-100 text-center text-slate-600 font-black">{row.crName}</td>
+                                                            <td className="p-2 border-r border-indigo-100 text-right font-black text-slate-800">{format3(totalQty)}</td>
+                                                            <td className="p-2 border-r border-indigo-100 text-right font-black text-blue-900">{formatCurrency(totalAmt)}</td>
+                                                            <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                                                                {isItemLedgerReport ? (
+                                                                    <button
+                                                                        onClick={() => openBreakupSummaryView(row)}
+                                                                        className="mx-auto p-1 rounded border border-blue-300 bg-white text-[#2b5797] hover:bg-blue-50 transition-colors"
+                                                                        title="View Summary"
+                                                                    >
+                                                                        <BarChart3 size={11} strokeWidth={2.5} />
+                                                                    </button>
+                                                                ) : (
+                                                                    <span className="text-slate-300">—</span>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                } else {
+                                                    return (
+                                                        <tr key={`${row.id}_${idx}`} onClick={() => handleSummaryClick(row)}
+                                                            className="cursor-pointer bg-indigo-50/40 hover:bg-indigo-100 border-b border-indigo-100 font-bold transition-colors"
+                                                            title="Click to drill down into this period"
+                                                        >
+                                                            <td className="p-2 border-r border-indigo-100 text-indigo-700 font-black text-[11px] whitespace-nowrap">{row.particulars || row.drName || ''}</td>
+                                                            <td className="p-2 border-r border-indigo-100 text-center text-slate-600 font-black">{row.crName}</td>
+                                                            <td className={`p-2 border-r border-indigo-100 text-right font-black ${row.displayIn > 0 ? 'text-green-700' : 'text-slate-300'}`}>{row.displayIn > 0 ? formatCurrency(row.displayIn) : '-'}</td>
+                                                            <td className={`p-2 border-r border-indigo-100 text-right font-black ${row.displayOut > 0 ? 'text-red-700' : 'text-slate-300'}`}>{row.displayOut > 0 ? formatCurrency(row.displayOut) : '-'}</td>
+                                                            <td className="p-2 border-r border-indigo-100 text-right font-black text-slate-900">{formatCurrency(Math.abs(row.displayBalance))} <span className="text-[9px] text-slate-500">{row.displayBalance >= 0 ? 'Dr' : 'Cr'}</span></td>
+                                                            <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                                                                {isItemLedgerReport ? (
+                                                                    <button
+                                                                        onClick={() => openBreakupSummaryView(row)}
+                                                                        className="mx-auto p-1 rounded border border-blue-300 bg-white text-[#2b5797] hover:bg-blue-50 transition-colors"
+                                                                        title="View Summary"
+                                                                    >
+                                                                        <BarChart3 size={11} strokeWidth={2.5} />
+                                                                    </button>
+                                                                ) : (
+                                                                    <span className="text-slate-300">—</span>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                }
+                                            }
+                                            return (
                                             <tr 
                                                 key={`${row.id}_${idx}`} 
                                                 onClick={() => {
@@ -19149,11 +21295,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                         />}
                                                     </td>
                                                 )}
-                                                {!hiddenCols.has('date') && <td className="p-1.5 border-r border-slate-100 font-bold text-slate-500">{row.isSummary || row.isOpening ? '' : formatDate(row.date)}</td>}
+                                                {!hiddenCols.has('date') && <td className={`p-1.5 border-r border-slate-100 font-bold ${row.isSummary ? 'text-indigo-700 text-[10px] whitespace-nowrap' : 'text-slate-500'}`}>{row.isSummary ? (row.particulars || row.drName || '') : row.isOpening ? '' : formatDate(row.date)}</td>}
                                                 {isSalesPurchaseRegister ? (
                                                     <>
                                                         {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70">{row.ref}</td>}
-                                                        {!hiddenCols.has('cust') && <td className="p-1.5 border-r border-slate-100 font-bold text-slate-800">{row.customerName || '-'}</td>}
+                                                        {!hiddenCols.has('cust') && <td className="p-1.5 border-r border-slate-100 font-bold text-slate-800">{row.isSummary ? (row.crName || '') : (row.customerName || '-')}</td>}
                                                         {!hiddenCols.has('part') && (
                                                             <td className="p-1.5 border-r border-slate-100 relative">
                                                                 <div className="flex flex-col">
@@ -19215,7 +21361,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                         {!hiddenCols.has('part') && (
                                                             <td className="p-1.5 border-r border-slate-100 relative">
                                                                 <div className="flex flex-col">
-                                                                    <span className="font-black text-slate-900">{row.particulars}</span>
+                                                                    <span className="font-black text-slate-900">{row.isSummary ? (row.crName || '') : row.particulars}</span>
                                                                     {expandDetails && row.details && (
                                                                         <div className="mt-1 pl-4 border-l border-blue-200 text-[10px] text-slate-500 animate-in slide-in-from-left-2">
                                                                             {row.details.map((d, i) => (
@@ -19231,24 +21377,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                             </td>
                                                         )}
                                                         {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70">{row.ref}</td>}
-                                                        {isTallyItemLedger && !hiddenCols.has('item_qty') && (
-                                                            <td className={`p-1.5 border-r border-slate-100 text-right font-black ${safeNum(row.qtyInOut) > 0 ? 'text-green-700' : (safeNum(row.qtyInOut) < 0 ? 'text-red-700' : 'text-slate-300')}`}>
-                                                                {row.isOpening
-                                                                    ? '-'
-                                                                    : (safeNum(row.qtyInOut) === 0
-                                                                        ? '-'
-                                                                        : (safeNum(row.qtyInOut) < 0
-                                                                            ? `(${format3(Math.abs(safeNum(row.qtyInOut)))})`
-                                                                            : format3(safeNum(row.qtyInOut))))}
-                                                            </td>
-                                                        )}
+                                                        {isTallyItemLedger && !hiddenCols.has('item_qty_in') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${safeNum(row.qtyIn) > 0 ? 'text-green-700' : 'text-slate-300'}`}>{row.isOpening ? '-' : (safeNum(row.qtyIn) > 0 ? format3(safeNum(row.qtyIn)) : '-')}</td>}
+                                                        {!hiddenCols.has('debit') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${row.displayIn > 0 ? 'text-green-700' : 'text-slate-300'}`}>{row.displayIn > 0 ? formatCurrency(row.displayIn) : '-'}</td>}
+                                                        {isTallyItemLedger && !hiddenCols.has('item_qty_out') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${safeNum(row.qtyOut) > 0 ? 'text-red-700' : 'text-slate-300'}`}>{row.isOpening ? '-' : (safeNum(row.qtyOut) > 0 ? format3(safeNum(row.qtyOut)) : '-')}</td>}
+                                                        {!hiddenCols.has('credit') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${row.displayOut > 0 ? 'text-red-700' : 'text-slate-300'}`}>{row.displayOut > 0 ? formatCurrency(row.displayOut) : '-'}</td>}
                                                         {isTallyItemLedger && !hiddenCols.has('qty_bal') && (
                                                             <td className="p-1.5 border-r border-slate-100 text-right font-black text-slate-800 bg-blue-50/10">
                                                                 {format3(row.displayBalanceQty)}
                                                             </td>
                                                         )}
-                                                        {!hiddenCols.has('debit') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${row.displayIn > 0 ? 'text-green-700' : 'text-slate-300'}`}>{row.displayIn > 0 ? formatCurrency(row.displayIn) : '-'}</td>}
-                                                        {!hiddenCols.has('credit') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${row.displayOut > 0 ? 'text-red-700' : 'text-slate-300'}`}>{row.displayOut > 0 ? formatCurrency(row.displayOut) : '-'}</td>}
                                                         {!hiddenCols.has('bal') && (
                                                             <td className="p-1.5 text-right font-black text-slate-900 tracking-tight">
                                                                 {formatCurrency(Math.abs(row.displayBalance))} {row.displayBalance >= 0 ? 'Dr' : 'Cr'}
@@ -19257,7 +21394,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                     </>
                                                 )}
                                             </tr>
-                                        ))
+                                            );
+                                        })
                                     )}
                                 </tbody>
 
@@ -19340,6 +21478,54 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         </div>,
                         document.body
                     )}
+
+                    {showItemSummaryView && isItemLedgerReport && createPortal(
+                        <div className="fixed inset-0 z-[100001] flex items-center justify-center bg-black/40 backdrop-blur-sm p-3" onClick={() => { setShowItemSummaryView(false); setPeriodSummaryData(null); }}>
+                            <div className="w-full max-w-[560px] bg-white border-2 border-[#2b5797] shadow-2xl rounded-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                                <div className="px-3 py-2 bg-[#eef5ff] border-b border-blue-200 flex items-center justify-between">
+                                    <div className="flex items-center gap-2 text-[#1e3264]">
+                                        <BarChart3 size={14} />
+                                        <div className="flex flex-col leading-tight">
+                                            <span className="text-[10px] font-black uppercase tracking-widest">Summary View</span>
+                                            <span className="text-[9px] font-bold opacity-70">{periodSummaryData?.title || getReportTitle()}</span>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => { setShowItemSummaryView(false); setPeriodSummaryData(null); }}
+                                        className="p-1 rounded border border-blue-200 bg-white text-[#2b5797] hover:bg-blue-50"
+                                        title="Close"
+                                    >
+                                        <X size={13} />
+                                    </button>
+                                </div>
+
+                                <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 text-[9.5px] font-black text-slate-600 uppercase tracking-wide">
+                                    Filter Period: {periodSummaryData?.title || getReportDuration()}
+                                </div>
+
+                                <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div className="border border-green-200 bg-green-50/40 rounded p-3">
+                                        <div className="text-[10px] font-black uppercase tracking-widest text-green-700 mb-2">Total In</div>
+                                        <div className="space-y-1 text-[11px]">
+                                            <div className="flex justify-between"><span className="font-bold text-slate-600">QTTY IN</span><span className="font-black text-green-700">{format3(safeNum(periodSummaryData?.qtyIn ?? summary.totalQtyIn ?? 0))}</span></div>
+                                            <div className="flex justify-between"><span className="font-bold text-slate-600">VALUE IN</span><span className="font-black text-green-700">{formatCurrency(safeNum(periodSummaryData?.valueIn ?? summary.debit ?? 0))}</span></div>
+                                            <div className="flex justify-between border-t border-green-200 pt-1"><span className="font-bold text-slate-600">AVG IN</span><span className="font-black text-green-700">{formatCurrency(safeNum(periodSummaryData?.qtyIn ?? summary.totalQtyIn ?? 0) > 0 ? (safeNum(periodSummaryData?.valueIn ?? summary.debit ?? 0) / safeNum(periodSummaryData?.qtyIn ?? summary.totalQtyIn ?? 0)) : 0)}</span></div>
+                                        </div>
+                                    </div>
+
+                                    <div className="border border-red-200 bg-red-50/40 rounded p-3">
+                                        <div className="text-[10px] font-black uppercase tracking-widest text-red-700 mb-2">Total Out</div>
+                                        <div className="space-y-1 text-[11px]">
+                                            <div className="flex justify-between"><span className="font-bold text-slate-600">QTTY OUT</span><span className="font-black text-red-700">{format3(safeNum(periodSummaryData?.qtyOut ?? summary.totalQtyOut ?? 0))}</span></div>
+                                            <div className="flex justify-between"><span className="font-bold text-slate-600">VALUE OUT</span><span className="font-black text-red-700">{formatCurrency(safeNum(periodSummaryData?.valueOut ?? summary.credit ?? 0))}</span></div>
+                                            <div className="flex justify-between border-t border-red-200 pt-1"><span className="font-bold text-slate-600">AVG OUT</span><span className="font-black text-red-700">{formatCurrency(safeNum(periodSummaryData?.qtyOut ?? summary.totalQtyOut ?? 0) > 0 ? (safeNum(periodSummaryData?.valueOut ?? summary.credit ?? 0) / safeNum(periodSummaryData?.qtyOut ?? summary.totalQtyOut ?? 0)) : 0)}</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>,
+                        document.body
+                    )}
                 </div>
 
         </Modal>
@@ -19353,7 +21539,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
 
 const PaymentModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onDeleteTransaction, invoices, payments, journalVouchers, currentRole } = props;
+    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onUpdateProfile, confirmPassword, onDeleteTransaction, invoices, payments, journalVouchers, currentRole } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     // 1. Initialize State
     const [formData, setFormData] = useState({
@@ -19385,6 +21571,8 @@ const PaymentModal = (props) => {
 
     const [currencies, setCurrencies] = useState([]);
     const [saving, setSaving] = useState(false);
+    const [baseTotalInput, setBaseTotalInput] = useState(''); // local edit state for Voucher Total field
+    const [isRefNoUnlocked, setIsRefNoUnlocked] = useState(false);
 
     // 2. Transaction Mode State
     const [mode, setMode] = useState('multi'); // Forced to 'multi' as requested
@@ -19394,6 +21582,8 @@ const PaymentModal = (props) => {
     const [splits, setSplits] = useState([{ id: 1, category: 'party', targetId: '', amount: '', description: '' }]);
 
     const [showInvoiceOptions, setShowInvoiceOptions] = useState(false);
+    const [showGenModal, setShowGenModal] = useState(false);
+    const [showDateModal, setShowDateModal] = useState(false);
     // Payment Against tracking
     const [payAgainstRowId, setPayAgainstRowId] = useState(null);
     const [payAgainstPurchases, setPayAgainstPurchases] = useState([]);
@@ -19735,7 +21925,40 @@ const PaymentModal = (props) => {
             setDate(lastDate || new Date().toISOString().split('T')[0]);
             const t = initialData?.type || defaultType || 'in';
             setType(t);
-            setAccountId(''); setRefNo(''); setNarration('');
+            
+            let nextRefNo = '';
+            let modeToUse = '';
+            let patternToUse = '';
+            let currentSeqToUse = undefined;
+
+            if (t === 'out') {
+                modeToUse = companyProfile?.rules?.paymentRefMode || 'manual';
+                patternToUse = companyProfile?.rules?.paymentRefPattern || '';
+                currentSeqToUse = companyProfile?.rules?.paymentRefCurrentSeq;
+            } else if (t === 'in') {
+                modeToUse = companyProfile?.rules?.receiptRefMode || 'manual';
+                patternToUse = companyProfile?.rules?.receiptRefPattern || '';
+                currentSeqToUse = companyProfile?.rules?.receiptRefCurrentSeq;
+            } else if (t === 'contra') {
+                modeToUse = companyProfile?.rules?.contraRefMode || 'manual';
+                patternToUse = companyProfile?.rules?.contraRefPattern || '';
+                currentSeqToUse = companyProfile?.rules?.contraRefCurrentSeq;
+            }
+
+            if (modeToUse === 'auto') {
+                const pattern = patternToUse;
+                const match = pattern.match(/^(.*?)(\d+)$/);
+                if (match) {
+                    const prefix = match[1];
+                    const startNum = parseInt(match[2], 10);
+                    const currentSeq = currentSeqToUse !== undefined ? currentSeqToUse : startNum;
+                    nextRefNo = `${prefix}${currentSeq}`;
+                } else {
+                    nextRefNo = pattern;
+                }
+            }
+
+            setAccountId(''); setRefNo(nextRefNo); setNarration('');
             setLotId(''); setEnableLot(false);
             setCurrencyId('BASE'); setExchangeRate(1);
             setMode('multi'); 
@@ -19743,8 +21966,9 @@ const PaymentModal = (props) => {
             setSingleId('');
             setSingleCategory(t === 'contra' ? 'account' : 'party');
             setSplits([{ id: Date.now(), category: t === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
+            setIsRefNoUnlocked(false);
         }
-    }, [isOpen, initialData, lastDate, defaultType]);
+    }, [isOpen]); // Only run on modal open/close to prevent state resets during edit
 
     // Split Lines Logic
     const addLine = () => setSplits([...splits, { id: Date.now(), category: type === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
@@ -19846,6 +22070,7 @@ const PaymentModal = (props) => {
 
         setSaving(true);
         try {
+            let nextSeqToSave = null;
             await runTransaction(db, async (transaction) => {
                 const targetUid = dataOwnerId || user.uid;
 
@@ -19953,7 +22178,51 @@ const PaymentModal = (props) => {
                 baseData.transactionCategory = 'multi';
 
                 if (initialData) transaction.update(docRef, baseData);
-                else transaction.set(docRef, baseData);
+                else {
+                    transaction.set(docRef, baseData);
+                    let modeToUse = '';
+                    let patternToUse = '';
+                    let currentSeqToUse = undefined;
+                    let seqKey = '';
+
+                    if (type === 'out') {
+                        modeToUse = companyProfile?.rules?.paymentRefMode || 'manual';
+                        patternToUse = companyProfile?.rules?.paymentRefPattern || '';
+                        currentSeqToUse = companyProfile?.rules?.paymentRefCurrentSeq;
+                        seqKey = 'rules.paymentRefCurrentSeq';
+                    } else if (type === 'in') {
+                        modeToUse = companyProfile?.rules?.receiptRefMode || 'manual';
+                        patternToUse = companyProfile?.rules?.receiptRefPattern || '';
+                        currentSeqToUse = companyProfile?.rules?.receiptRefCurrentSeq;
+                        seqKey = 'rules.receiptRefCurrentSeq';
+                    } else if (type === 'contra') {
+                        modeToUse = companyProfile?.rules?.contraRefMode || 'manual';
+                        patternToUse = companyProfile?.rules?.contraRefPattern || '';
+                        currentSeqToUse = companyProfile?.rules?.contraRefCurrentSeq;
+                        seqKey = 'rules.contraRefCurrentSeq';
+                    }
+
+                    if (modeToUse === 'auto') {
+                        const match = patternToUse.match(/^(.*?)(\d+)$/);
+                        if (match) {
+                            const startNum = parseInt(match[2], 10);
+                            const currentSeq = currentSeqToUse !== undefined ? currentSeqToUse : startNum;
+                            const expectedRefNo = `${match[1]}${currentSeq}`;
+                            
+                            if (refNo === expectedRefNo) {
+                                nextSeqToSave = currentSeq + 1;
+                                const profileRef = doc(db, 'nadtally_live_registry', companyProfile.id || targetUid);
+                                const companiesRef = doc(db, 'companies', companyProfile.id || targetUid);
+                                transaction.update(profileRef, {
+                                    [seqKey]: nextSeqToSave
+                                });
+                                transaction.update(companiesRef, {
+                                    [seqKey]: nextSeqToSave
+                                });
+                            }
+                        }
+                    }
+                }
 
                 // Audit Log
                 const logRef = doc(collection(db, 'audit_logs'));
@@ -19983,10 +22252,37 @@ const PaymentModal = (props) => {
             if (initialData) {
                 onClose();
             } else {
-                setRefNo('');
+                let freshRef = '';
+                if (nextSeqToSave !== null) {
+                    let pattern = '';
+                    if (type === 'out') pattern = companyProfile?.rules?.paymentRefPattern || '';
+                    else if (type === 'in') pattern = companyProfile?.rules?.receiptRefPattern || '';
+                    else if (type === 'contra') pattern = companyProfile?.rules?.contraRefPattern || '';
+                    
+                    const match = pattern.match(/^(.*?)(\d+)$/);
+                    if (match) freshRef = `${match[1]}${nextSeqToSave}`;
+                    
+                    let seqKey = '';
+                    if (type === 'out') seqKey = 'paymentRefCurrentSeq';
+                    else if (type === 'in') seqKey = 'receiptRefCurrentSeq';
+                    else if (type === 'contra') seqKey = 'contraRefCurrentSeq';
+
+                    if (onUpdateProfile && seqKey) {
+                        onUpdateProfile({
+                            ...companyProfile,
+                            rules: {
+                                ...(companyProfile.rules || {}),
+                                [seqKey]: nextSeqToSave
+                            }
+                        });
+                    }
+                }
+
+                setRefNo(freshRef);
                 setNarration('');
                 setSingleAmount('');
                 setSplits([{ id: Date.now(), category: 'party', targetId: '', amount: '', description: '' }]);
+                setIsRefNoUnlocked(false);
             }
         } catch (e) { console.error(e); alert(e.message); }
         finally { setSaving(false); }
@@ -19996,6 +22292,7 @@ const PaymentModal = (props) => {
     useEffect(() => {
         const handler = (e) => {
             if (!isOpen) return;
+            if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
             if (e.altKey && e.key.toLowerCase() === 'd') { e.preventDefault(); setShowDatePopup(true); setDateInputValue(formatVoucherDateText(date)); }
             if (e.altKey && e.key.toLowerCase() === 'a') { e.preventDefault(); sourceAccRef.current?.focus(); }
             if (e.altKey && e.key.toLowerCase() === 'x') { e.preventDefault(); amountRef.current?.focus(); }
@@ -20200,7 +22497,8 @@ const PaymentModal = (props) => {
         >
             <div className="flex flex-col h-screen max-h-screen bg-slate-50 font-sans select-none overflow-hidden">
                 {/* --- PROFESSIONAL TOP OPTIONS TOOLBAR --- */}
-                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-10 shrink-0">
+                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-10 shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="flex flex-nowrap items-center gap-3 shrink-0">
                     <div className="flex items-center gap-2">
                         <button onClick={onBack} className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-white hover:text-white" title="Go Back"><ArrowLeft size={16} /></button>
                         <div className="w-px h-5 bg-white/10 mx-1"></div>
@@ -20228,17 +22526,44 @@ const PaymentModal = (props) => {
                     <div className="w-px h-5 bg-white/10 mx-1"></div>
 
                     {/* 2. REFERENCE NUMBER */}
-                    <div className="flex flex-col justify-center min-w-[90px]">
-                        <input
-                            ref={refNoRef}
-                            type="text"
-                            placeholder="REF NO"
-                            className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-white/60 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-white/20"
-                            value={refNo}
-                            onChange={e => setRefNo(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); dateRef.current?.focus(); } }}
-                        />
+                    {(() => {
+                        const isAutoRef = (type === 'out' && companyProfile?.rules?.paymentRefMode === 'auto') ||
+                                          (type === 'in' && companyProfile?.rules?.receiptRefMode === 'auto') ||
+                                          (type === 'contra' && companyProfile?.rules?.contraRefMode === 'auto');
+                        return (
+                            <div className="flex flex-col justify-center min-w-[90px]">
+                                <div className="flex items-center gap-1">
+                                    <input
+                                        ref={refNoRef}
+                                        type="text"
+                                        placeholder="REF NO"
+                                        className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-white/60 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-white/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        value={refNo}
+                                        onChange={e => setRefNo(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); dateRef.current?.focus(); } }}
+                                        disabled={isAutoRef && !isRefNoUnlocked}
+                                    />
+                                    {isAutoRef && !isRefNoUnlocked && (
+                                <button 
+                                    tabIndex="-1"
+                                    onClick={async () => {
+                                        const pwd = await confirmPassword("Enter password to edit Ref No");
+                                        if (pwd === 'abcd') {
+                                            setIsRefNoUnlocked(true);
+                                            setTimeout(() => refNoRef.current?.focus(), 50);
+                                        } else if (pwd !== null && pwd !== false && pwd !== undefined) {
+                                            alert("Incorrect password!");
+                                        }
+                                    }}
+                                    className="text-white/50 hover:text-white"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                                </button>
+                            )}
+                        </div>
                     </div>
+                );
+            })()}
 
                     <div className="flex-1"></div>
 
@@ -20308,7 +22633,7 @@ const PaymentModal = (props) => {
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
                     {/* 7. DATE (FAR RIGHT) — Tally DateInput */}
-                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10">
+                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20" onClick={() => setShowDateModal(true)}>
                         <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
                             <Calendar size={12} className="text-white opacity-60" />
@@ -20320,6 +22645,7 @@ const PaymentModal = (props) => {
                                 className="text-[11px] font-black text-white bg-transparent border-none focus:ring-0 p-0 w-20 cursor-pointer text-right shadow-sm"
                             />
                         </div>
+                    </div>
                     </div>
                 </div>
 
@@ -20354,7 +22680,7 @@ const PaymentModal = (props) => {
                                 <thead className="sticky top-0 bg-slate-50/80 backdrop-blur-sm z-10 border-b border-slate-200">
                                     <tr>
                                         <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest">Account / Particulars</th>
-                                        <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-44">Amount ({currencySymbol})</th>
+                                        <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-44">Amount ({currentSym})</th>
                                         <th className="py-2 text-center w-12">
                                             <button onClick={addLine} className="p-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-all shadow-sm" title="Add New Entry Row">
                                                 <Plus size={14} strokeWidth={3} />
@@ -20430,7 +22756,8 @@ const PaymentModal = (props) => {
                     </div>
 
                     {/* ✅ DOCKED BOTTOM BAR (FULL REDESIGN) */}
-                    <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center h-14 shrink-0 px-4 md:px-10 gap-6 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative">
+                    <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center h-14 shrink-0 px-4 md:px-10 gap-6 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                        <div className="flex flex-nowrap items-center gap-6 shrink-0 min-w-full">
                         {/* Subtle Audit Labels (Floating) */}
                         {initialData && (
                             <div className="absolute -top-6 right-10 text-[7px] font-black uppercase text-slate-400 bg-white/80 px-2 py-0.5 rounded-t-lg border-t border-x border-slate-100 flex gap-4 transition-opacity opacity-0 hover:opacity-100 cursor-default">
@@ -20442,7 +22769,13 @@ const PaymentModal = (props) => {
                         {/* DELETE — far left */}
                         {initialData?.id && (
                             <button
-                                onClick={() => { if (confirm("Delete this transaction?")) { onDeleteTransaction(initialData.id, initialData.type || defaultType); onClose(); } }}
+                                onClick={() => { 
+                                    const msg = companyProfile?.rules?.paymentRefMode === 'auto' ? "⚠️ THIS REF NO. WILL NOT BE ALLOCATED AGAIN AUTOMATICALLY, ARE YOU SURE YOU WANT TO DELETE IT?" : "Delete this transaction?";
+                                    if (confirm(msg)) { 
+                                        onDeleteTransaction(initialData.id, initialData.type || defaultType); 
+                                        onClose(); 
+                                    } 
+                                }}
                                 className="p-2.5 hover:bg-red-500/20 text-red-300 rounded-xl transition-all shrink-0"
                                 title="Delete Voucher"
                             >
@@ -20468,9 +22801,26 @@ const PaymentModal = (props) => {
                         <div className="flex items-center gap-4 border-l border-white/10 pl-6 h-full py-2">
                             {currencyId !== 'BASE' && (
                                 <div className="hidden lg:flex flex-col items-end gap-0.5 pr-4 border-r border-white/5 mr-2">
-                                    <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none tracking-widest">FCY Total</span>
-                                    <div className="text-[10px] font-bold text-pink-300 leading-none">
-                                        {format3(rawInputAmount)} {currentSym}
+                                    <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none tracking-widest">FCY Total ({currentSym})</span>
+                                    <div className="flex items-center gap-1">
+                                        <input
+                                            type="number"
+                                            step="0.001"
+                                            className="bg-white/10 border border-pink-300/30 focus:border-pink-300 rounded px-1 text-[10px] font-bold text-pink-300 w-24 text-right outline-none leading-none"
+                                            value={rawInputAmount || ''}
+                                            title="Edit FCY total to auto-calculate exchange rate"
+                                            onChange={e => {
+                                                const newFcy = Number(e.target.value || 0);
+                                                if (newFcy > 0 && baseAmount > 0) {
+                                                    setExchangeRate(round3(baseAmount / newFcy));
+                                                } else if (newFcy > 0) {
+                                                    // Scale split amounts proportionally
+                                                    const factor = newFcy / (rawInputAmount || 1);
+                                                    setSplits(prev => prev.map(s => ({ ...s, amount: round3(Number(s.amount || 0) * factor) })));
+                                                }
+                                            }}
+                                        />
+                                        <span className="text-[9px] text-pink-300/60">{currentSym}</span>
                                     </div>
                                 </div>
                             )}
@@ -20485,10 +22835,38 @@ const PaymentModal = (props) => {
 
                         {/* 2. TOTALS */}
                         <div className="flex flex-col items-end justify-center px-6 border-l border-white/10 h-full">
-                            <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-1 tracking-widest">Voucher Total</span>
-                            <div className="text-2xl font-black text-white leading-none tracking-tighter shadow-sm">
-                                <span className="text-[10px] mr-1 opacity-50 font-bold">{currencySymbol}</span>
-                                {format3(baseAmount)}
+                            <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-1 tracking-widest">Voucher Total ({currencySymbol})</span>
+                            <div className="flex items-center gap-1 leading-none">
+                                <span className="text-[10px] opacity-50 font-bold text-white">{currencySymbol}</span>
+                                <input
+                                    type="number"
+                                    step="0.001"
+                                    className="bg-white/10 border border-white/20 focus:border-white/60 rounded px-1 text-2xl font-black text-white w-36 text-right outline-none tracking-tighter"
+                                    value={baseTotalInput !== '' ? baseTotalInput : (baseAmount || '')}
+                                    title="Type base currency total, press Enter or click away to auto-set rate"
+                                    onFocus={e => { setBaseTotalInput(baseAmount || ''); e.target.select(); }}
+                                    onChange={e => setBaseTotalInput(e.target.value)}
+                                    onBlur={() => {
+                                        const newBase = Number(baseTotalInput || 0);
+                                        if (newBase > 0 && rawInputAmount > 0) {
+                                            setExchangeRate(round3(newBase / rawInputAmount));
+                                        }
+                                        setBaseTotalInput('');
+                                    }}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                            const newBase = Number(baseTotalInput || 0);
+                                            if (newBase > 0 && rawInputAmount > 0) {
+                                                setExchangeRate(round3(newBase / rawInputAmount));
+                                            }
+                                            setBaseTotalInput('');
+                                            e.target.blur();
+                                        } else if (e.key === 'Escape') {
+                                            setBaseTotalInput('');
+                                            e.target.blur();
+                                        }
+                                    }}
+                                />
                             </div>
                         </div>
 
@@ -20506,6 +22884,7 @@ const PaymentModal = (props) => {
                                 {saving ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />}
                             </button>
                         </div>
+                    </div>
                     </div>
                 </div>
 
@@ -20872,6 +23251,26 @@ const PaymentModal = (props) => {
                         </div>
                     );
                 })()}
+
+                <DocumentGeneratorV2
+                    isOpen={showGenModal} onClose={() => setShowGenModal(false)}
+                    data={{ ...formData, date, totalAmount: baseAmount, splits, type, currencySymbol, narration }}
+                    type={type}
+                    companyProfile={companyProfile}
+                    dataOwnerId={dataOwnerId}
+                    user={user}
+                />
+
+                <ChangeDateModal 
+                    isOpen={showDateModal} 
+                    onClose={() => setShowDateModal(false)} 
+                    onSubmit={(d) => {
+                        setDate(d);
+                        if (onUpdateDate) onUpdateDate(d);
+                        setShowDateModal(false);
+                    }} 
+                    baseDate={date} 
+                />
             </div>
         </Modal>
     );
@@ -20879,7 +23278,7 @@ const PaymentModal = (props) => {
 
 // --- UPDATED JOURNAL VOUCHER MODAL (Saves 'createdBy') ---
 const JournalVoucherModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher } = props;
+    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher, onUpdateProfile, confirmPassword } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
     // FIX 1: Safety check to ensure date is never undefined
@@ -20887,6 +23286,9 @@ const JournalVoucherModal = (props) => {
     const [refNo, setRefNo] = useState('');
     const [amount, setAmount] = useState('');
     const [description, setDescription] = useState('');
+    const [currencyId, setCurrencyId] = useState('BASE');
+    const [exchangeRate, setExchangeRate] = useState(1);
+    const [currencies, setCurrencies] = useState([]);
 
     // Single Mode State
     const [drType, setDrType] = useState('party'); const [drId, setDrId] = useState('');
@@ -20898,9 +23300,30 @@ const JournalVoucherModal = (props) => {
 
     const [lotId, setLotId] = useState(''); const [enableLot, setEnableLot] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [isJournalRefNoUnlocked, setIsJournalRefNoUnlocked] = useState(false);
+    const [showDateModal, setShowDateModal] = useState(false);
     const [dateInputValue, setDateInputValue] = useState('');
     const dateRef = useRef(null);
     const refNoRef = useRef(null);
+    const [exchangeRateInput, setExchangeRateInput] = useState('');
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const targetUid = dataOwnerId || user?.uid;
+        if (!targetUid) return;
+        const unsub = onSnapshot(query(collection(db, 'currencies'), where('userId', '==', targetUid)), snap => setCurrencies(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+        return () => unsub();
+    }, [isOpen, dataOwnerId, user]);
+
+    // ✅ GLOBAL SHORTCUTS
+    useEffect(() => {
+        const handler = (e) => {
+            if (!isOpen) return;
+            if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [isOpen]);
 
     // ✅ AUTO-FOCUS REF NO ON OPEN
     useEffect(() => {
@@ -20942,7 +23365,20 @@ const JournalVoucherModal = (props) => {
             } else {
                 // === NEW MODE ===
                 setDate(lastDate || new Date().toISOString().split('T')[0]);
-                setRefNo('');
+                let nextRefNo = '';
+                if (companyProfile?.rules?.journalRefMode === 'auto') {
+                    const pattern = companyProfile?.rules?.journalRefPattern || '';
+                    const match = pattern.match(/^(.*?)(\d+)$/);
+                    if (match) {
+                        const prefix = match[1];
+                        const startNum = parseInt(match[2], 10);
+                        const currentSeq = companyProfile.rules.journalRefCurrentSeq !== undefined ? companyProfile.rules.journalRefCurrentSeq : startNum;
+                        nextRefNo = `${prefix}${currentSeq}`;
+                    } else {
+                        nextRefNo = pattern;
+                    }
+                }
+                setRefNo(nextRefNo);
                 setAmount('');
                 setDescription('');
                 setDrId('');
@@ -20954,7 +23390,7 @@ const JournalVoucherModal = (props) => {
                 setEnableLot(false);
             }
         }
-    }, [isOpen, initialData, lastDate]);
+    }, [isOpen]); // Only run on modal open/close to prevent state resets during edit
 
     // Live balances logic (Single Mode)
     const getBalanceProps = (type, id) => ({ type: type === 'tax' ? 'tax' : (type === 'party' ? 'party' : (type === 'account' ? 'account' : type)), id, date, user, parties, accounts });
@@ -21061,6 +23497,7 @@ const JournalVoucherModal = (props) => {
 
         setSaving(true);
         try {
+            let nextSeqToSave = null;
             await runTransaction(db, async (transaction) => {
                 const targetUid = dataOwnerId || user.uid;
 
@@ -21090,24 +23527,29 @@ const JournalVoucherModal = (props) => {
 
                 // REVERT OLD (If Editing)
                 if (initialData) {
+                    const oldRate = Number(initialData.exchangeRate || 1);
                     if (initialData.isMulti && initialData.rows) {
                         initialData.rows.forEach(r => {
-                            trackChange(doc(db, getColName(r.category), r.id), Number(r.amount), r.type === 'cr', r.category); // Note: swapped isDebit for revert
+                            const oldAmtBase = Number(r.amount || 0) * oldRate;
+                            trackChange(doc(db, getColName(r.category), r.id), oldAmtBase, r.type === 'cr', r.category); // Note: swapped isDebit for revert
                         });
                     } else if (initialData.drId && initialData.crId) {
-                        const oldAmt = Number(initialData.amount);
-                        trackChange(doc(db, getColName(initialData.drType), initialData.drId), oldAmt, false, initialData.drType); // Swapped: Revert DR as CR
-                        trackChange(doc(db, getColName(initialData.crType), initialData.crId), oldAmt, true, initialData.crType);  // Swapped: Revert CR as DR
+                        const oldAmtBase = Number(initialData.amount || 0) * oldRate;
+                        trackChange(doc(db, getColName(initialData.drType), initialData.drId), oldAmtBase, false, initialData.drType); // Swapped: Revert DR as CR
+                        trackChange(doc(db, getColName(initialData.crType), initialData.crId), oldAmtBase, true, initialData.crType);  // Swapped: Revert CR as DR
                     }
                 }
 
                 // APPLY NEW
+                const currentRate = Number(exchangeRate || 1);
                 if (mode === 'single') {
-                    trackChange(doc(db, getColName(drType), drId), Number(amount), true, drType);
-                    trackChange(doc(db, getColName(crType), crId), Number(amount), false, crType);
+                    const amtBase = Number(amount || 0) * currentRate;
+                    trackChange(doc(db, getColName(drType), drId), amtBase, true, drType);
+                    trackChange(doc(db, getColName(crType), crId), amtBase, false, crType);
                 } else {
                     rows.forEach(r => {
-                        trackChange(doc(db, getColName(r.category), r.aid), Number(r.amount), r.type === 'dr', r.category);
+                        const amtBase = Number(r.amount || 0) * currentRate;
+                        trackChange(doc(db, getColName(r.category), r.aid), amtBase, r.type === 'dr', r.category);
                     });
                 }
 
@@ -21145,19 +23587,48 @@ const JournalVoucherModal = (props) => {
                 };
 
                 if (mode === 'single') {
-                    payload.amount = Number(amount);
+                    payload.amount = Number(amount || 0) * currentRate;
+                    payload.foreignAmount = Number(amount || 0);
                     payload.drType = drType; payload.drId = drId;
                     payload.crType = crType; payload.crId = crId;
                     payload.rows = null;
                 } else {
-                    payload.amount = totalDr;
+                    payload.amount = totalDr * currentRate;
+                    payload.foreignAmount = totalDr;
                     payload.rows = rows.map(r => ({
                         type: r.type, category: r.category, id: r.aid, amount: Number(r.amount), description: r.description
                     }));
                 }
 
+                payload.currencyId = currencyId;
+                payload.exchangeRate = currentRate;
+                payload.currencySymbol = currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || '');
+
                 if (initialData) transaction.update(jvRef, payload);
-                else transaction.set(jvRef, payload);
+                else {
+                    transaction.set(jvRef, payload);
+                    if (companyProfile?.rules?.journalRefMode === 'auto') {
+                        const pattern = companyProfile?.rules?.journalRefPattern || '';
+                        const match = pattern.match(/^(.*?)(\d+)$/);
+                        if (match) {
+                            const startNum = parseInt(match[2], 10);
+                            const currentSeq = companyProfile.rules.journalRefCurrentSeq !== undefined ? companyProfile.rules.journalRefCurrentSeq : startNum;
+                            const expectedRefNo = `${match[1]}${currentSeq}`;
+                            
+                            if (refNo === expectedRefNo) {
+                                nextSeqToSave = currentSeq + 1;
+                                const profileRef = doc(db, 'nadtally_live_registry', companyProfile.id || targetUid);
+                                const companiesRef = doc(db, 'companies', companyProfile.id || targetUid);
+                                transaction.update(profileRef, {
+                                    'rules.journalRefCurrentSeq': nextSeqToSave
+                                });
+                                transaction.update(companiesRef, {
+                                    'rules.journalRefCurrentSeq': nextSeqToSave
+                                });
+                            }
+                        }
+                    }
+                }
 
                 // --- 4. AUDIT LOG ---
                 const logRef = doc(collection(db, 'audit_logs'));
@@ -21180,7 +23651,24 @@ const JournalVoucherModal = (props) => {
             if (initialData) {
                 onClose();
             } else {
-                setRefNo(''); setAmount(''); setDescription('');
+                let freshRef = '';
+                if (nextSeqToSave !== null) {
+                    const pattern = companyProfile?.rules?.journalRefPattern || '';
+                    const match = pattern.match(/^(.*?)(\d+)$/);
+                    if (match) freshRef = `${match[1]}${nextSeqToSave}`;
+                    
+                    if (onUpdateProfile) {
+                        onUpdateProfile({
+                            ...companyProfile,
+                            rules: {
+                                ...(companyProfile.rules || {}),
+                                journalRefCurrentSeq: nextSeqToSave
+                            }
+                        });
+                    }
+                }
+                setRefNo(freshRef);
+                setAmount(''); setDescription('');
                 setDrId(''); setCrId('');
                 setRows([{ id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
             }
@@ -21267,29 +23755,79 @@ const JournalVoucherModal = (props) => {
                     {/* 2. REFERENCE NUMBER */}
                     <div className="flex flex-col justify-center min-w-[90px]">
                         <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">JV Ref No.</span>
-                        <input
-                            ref={refNoRef}
-                            type="text"
-                            placeholder="JV-001"
-                            className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none placeholder:text-white/20 w-24 uppercase"
-                            value={refNo}
-                            onChange={e => setRefNo(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') dateRef.current?.focus(); }}
-                        />
+                        <div className="flex items-center gap-1">
+                            <input
+                                ref={refNoRef}
+                                type="text"
+                                placeholder="JV-001"
+                                className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none placeholder:text-white/20 w-24 uppercase disabled:opacity-50 disabled:cursor-not-allowed"
+                                value={refNo}
+                                onChange={e => setRefNo(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') dateRef.current?.focus(); }}
+                                disabled={companyProfile?.rules?.journalRefMode === 'auto' && !isJournalRefNoUnlocked}
+                            />
+                            {companyProfile?.rules?.journalRefMode === 'auto' && !isJournalRefNoUnlocked && (
+                                <button 
+                                    tabIndex="-1"
+                                    onClick={async () => {
+                                        const pwd = await confirmPassword("Enter password to edit Ref No");
+                                        if (pwd === 'abcd') {
+                                            setIsJournalRefNoUnlocked(true);
+                                            setTimeout(() => refNoRef.current?.focus(), 50);
+                                        } else if (pwd !== null && pwd !== false && pwd !== undefined) {
+                                            alert("Incorrect password!");
+                                        }
+                                    }}
+                                    className="text-white/50 hover:text-white"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                                </button>
+                            )}
+                        </div>
                     </div>
 
                     <div className="flex-1"></div>
 
-                    {/* 5. UTILITY TOOLS */}
-                    <div className="flex items-center gap-1.5 bg-black/10 p-1 rounded-lg">
-                        <button type="button" onClick={() => handleGeneratePDF('preview')} className="p-1.5 hover:bg-white/10 rounded-md transition-all text-white/70 hover:text-white" title="Preview JV PDF"><Printer size={16} /></button>
-                        <button type="button" onClick={() => handleGeneratePDF('download')} className="p-1.5 hover:bg-white/10 rounded-md transition-all text-white/70 hover:text-white" title="Download JV PDF"><Download size={16} /></button>
+                    {/* 4. CURRENCY SELECTOR */}
+                    <div className="flex flex-col justify-center border border-white/10 bg-black/10 p-1 px-3 rounded-lg transition-all hover:bg-black/20">
+                        <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">Currency</span>
+                        <select 
+                            className="bg-transparent border-none p-0 text-[10px] font-black text-cyan-300 outline-none cursor-pointer"
+                            value={currencyId}
+                            onChange={e => {
+                                const val = e.target.value;
+                                setCurrencyId(val);
+                                if (val === 'BASE') setExchangeRate(1);
+                                else {
+                                    const c = currencies.find(curr => curr.id === val);
+                                    if (c) setExchangeRate(Number(c.rate || 1));
+                                }
+                            }}
+                        >
+                            <option value="BASE" className="text-slate-900 font-bold">{currencySymbol} (Base)</option>
+                            {currencies.map(c => (
+                                <option key={c.id} value={c.id} className="text-slate-900 font-bold">{c.symbol} {c.name}</option>
+                            ))}
+                        </select>
                     </div>
+
+                    {currencyId !== 'BASE' && (
+                        <div className="flex flex-col justify-center border border-amber-400/40 bg-amber-400/10 p-1 px-3 rounded-lg animate-in zoom-in-95 duration-200">
+                            <span className="text-[7px] font-black uppercase text-amber-100 opacity-60 leading-none mb-0.5 tracking-widest">Exch Rate</span>
+                            <input 
+                                type="number"
+                                step="0.0001"
+                                className="bg-transparent border-none p-0 text-[10px] font-black text-amber-300 outline-none w-16"
+                                value={exchangeRate}
+                                onChange={e => setExchangeRate(Number(e.target.value))}
+                            />
+                        </div>
+                    )}
 
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
                     {/* 6. DATE (FAR RIGHT) */}
-                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10">
+                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20" onClick={() => setShowDateModal(true)}>
                         <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
                             <Calendar size={12} className="text-white opacity-60" />
@@ -21310,12 +23848,6 @@ const JournalVoucherModal = (props) => {
                 {/* === SCROLLABLE CONTENT === */}
                 <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-white">
 
-                    {/* NARRATION */}
-                    <div className="mb-5">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1.5">Narration (Main)</label>
-                        <textarea className="w-full p-2.5 border border-slate-200 rounded-lg text-sm focus:border-blue-400 focus:ring-2 focus:ring-blue-50 outline-none transition-all resize-none" rows="1" value={description} onChange={e => setDescription(e.target.value)} placeholder="Overall narration..."></textarea>
-                    </div>
-
                     {/* === MULTI MODE UI === */}
                     <div className="border rounded-xl overflow-hidden bg-white shadow-sm animate-in fade-in">
                         <table className="w-full text-left text-xs border-collapse">
@@ -21326,7 +23858,12 @@ const JournalVoucherModal = (props) => {
                                     <th className="p-2">Account Name</th>
                                     <th className="p-2 w-48">Description</th>
                                     <th className="p-2 w-32 text-right">Debit</th>
-                                    <th className="p-2 w-32 text-right">Credit</th>
+                                    <th className="p-1 w-32">
+                                        <div className="flex items-center justify-between">
+                                            <span>Credit</span>
+                                            <button onClick={addRow} className="ml-1 p-0.5 rounded hover:bg-white/20 transition-colors" title="Add Line"><Plus size={13} /></button>
+                                        </div>
+                                    </th>
                                     <th className="p-2 w-8"></th>
                                 </tr>
                             </thead>
@@ -21334,13 +23871,13 @@ const JournalVoucherModal = (props) => {
                                 {rows.map((row, idx) => (
                                     <tr key={row.id}>
                                         <td className="p-1 text-center">
-                                            <select className={`font-bold p-1 rounded border ${row.type === 'dr' ? 'text-blue-600 bg-blue-50 border-blue-200' : 'text-green-600 bg-green-50 border-green-200'}`} value={row.type} onChange={e => updateRow(row.id, 'type', e.target.value)}>
+                                            <select style={{height:'22px',fontSize:'11px',padding:'0 2px'}} className={`font-bold rounded border ${row.type === 'dr' ? 'text-blue-600 bg-blue-50 border-blue-200' : 'text-green-600 bg-green-50 border-green-200'}`} value={row.type} onChange={e => updateRow(row.id, 'type', e.target.value)}>
                                                 <option value="dr">Dr</option>
                                                 <option value="cr">Cr</option>
                                             </select>
                                         </td>
                                         <td className="p-1">
-                                            <select className="w-full p-1 border rounded" value={row.category} onChange={e => updateRow(row.id, 'category', e.target.value)}>
+                                            <select style={{height:'22px',fontSize:'11px',padding:'0 2px'}} className="w-full border rounded" value={row.category} onChange={e => updateRow(row.id, 'category', e.target.value)}>
                                                 <option value="party">Party</option>
                                                 <option value="expense">Ind. Expense</option>
                                                 <option value="direct_expense">Direct Exp (COGS)</option>
@@ -21352,7 +23889,7 @@ const JournalVoucherModal = (props) => {
                                             </select>
                                         </td>
                                         <td className="p-1">
-                                            <SearchableSelect options={getOptions(row.category).map(x => ({
+                                            <SearchableSelect triggerClassName="h-[22px] !text-[11px] !py-0 !px-1.5" options={getOptions(row.category).map(x => ({
                                                 value: x.id,
                                                 text: x.name,
                                                 balance: row.category === 'account' ? `${currencySymbol} ${format3(x.balance)}` : null,
@@ -21360,13 +23897,13 @@ const JournalVoucherModal = (props) => {
                                             }))} value={row.aid} onChange={v => updateRow(row.id, 'aid', v)} placeholder="Select..." onCreateNew={() => onQuickCreate(getColName(row.category))} />
                                         </td>
                                         <td className="p-1">
-                                            <input type="text" className="w-full p-1 border rounded outline-none focus:border-blue-400" placeholder="Remark..." value={row.description} onChange={e => updateRow(row.id, 'description', e.target.value)} />
+                                            <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="text" className="w-full border rounded outline-none focus:border-blue-400" placeholder="Remark..." value={row.description} onChange={e => updateRow(row.id, 'description', e.target.value)} />
                                         </td>
                                         <td className="p-1 text-right bg-blue-50/10">
-                                            {row.type === 'dr' && <input type="number" step="0.001" className="w-full p-1 border rounded text-right font-bold" value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
+                                            {row.type === 'dr' && <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="number" step="0.001" className="w-full border rounded text-right font-bold" value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
                                         </td>
                                         <td className="p-1 text-right bg-green-50/10">
-                                            {row.type === 'cr' && <input type="number" step="0.001" className="w-full p-1 border rounded text-right font-bold" value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
+                                            {row.type === 'cr' && <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="number" step="0.001" className="w-full border rounded text-right font-bold" value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
                                         </td>
                                         <td className="p-1 text-center">
                                             <button onClick={() => removeRow(row.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
@@ -21377,15 +23914,22 @@ const JournalVoucherModal = (props) => {
                             <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-300">
                                 <tr>
                                     <td colSpan={4} className="p-2 text-right uppercase text-slate-500">Totals:</td>
-                                    <td className="p-2 text-right text-blue-700">{currencySymbol} {format3(totalDr)}</td>
-                                    <td className="p-2 text-right text-green-700">{currencySymbol} {format3(totalCr)}</td>
+                                    <td className="p-2 text-right text-blue-700">
+                                        <div className="flex flex-col">
+                                            <span>{(currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || ''))} {format3(totalDr)}</span>
+                                            {currencyId !== 'BASE' && <span className="text-[9px] text-slate-400 font-normal">{currencySymbol} {format3(totalDr * (exchangeRate || 1))}</span>}
+                                        </div>
+                                    </td>
+                                    <td className="p-2 text-right text-green-700">
+                                        <div className="flex flex-col">
+                                            <span>{(currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || ''))} {format3(totalCr)}</span>
+                                            {currencyId !== 'BASE' && <span className="text-[9px] text-slate-400 font-normal">{currencySymbol} {format3(totalCr * (exchangeRate || 1))}</span>}
+                                        </div>
+                                    </td>
                                     <td></td>
                                 </tr>
                             </tfoot>
                         </table>
-                        <div className="p-2">
-                            <button onClick={addRow} className="text-xs font-bold text-blue-600 flex items-center gap-1 hover:underline"><Plus size={14} /> Add Line</button>
-                        </div>
                     </div>
 
                     <div className="flex flex-col md:flex-row gap-4 items-center mt-2">
@@ -21399,55 +23943,78 @@ const JournalVoucherModal = (props) => {
 
                     {!isBalanced && (
                         <div className="text-center text-xs font-bold text-red-500 bg-red-50 p-2 rounded border border-red-100">
-                            ⚠️ Total Debit ({totalDr}) must equal Total Credit ({totalCr})
-                            <br />Difference: {Math.abs(totalDr - totalCr).toFixed(2)}
+                            ⚠️ Total Debit ({(currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || ''))} {format3(totalDr)}) must equal Total Credit ({(currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || ''))} {format3(totalCr)})
+                            <br />Difference: {Math.abs(totalDr - totalCr).toFixed(3)}
                         </div>
                     )}
                 </div>
 
-                {/* ✅ FIXED BOTTOM BAR (MATCHES TOP BAR HEIGHT) */}
-                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center h-11 shrink-0 px-4 md:px-10 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative">
-                    <div className="flex items-center gap-8">
-                        <div className="flex flex-col justify-center">
-                            <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-[0.2em]">Total Transaction Amount</span>
-                            <div className="text-base font-black text-white leading-none tracking-tighter flex items-center gap-1.5">
-                                <span className="text-[10px] opacity-50 font-bold">{currencySymbol}</span>
-                                <span className="font-mono">{format3(totalDr)}</span>
-                            </div>
+                {/* ✅ FIXED BOTTOM BAR */}
+                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center shrink-0 px-4 gap-3 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative" style={{minHeight:'48px'}}>
+                    {/* TOTAL */}
+                    <div className="flex flex-col justify-center shrink-0">
+                        <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-[0.2em]">Total</span>
+                        <div className="text-sm font-black text-white leading-none flex items-center gap-1">
+                            <span className="text-[9px] opacity-50 font-bold">{currencySymbol}</span>
+                            <span className="font-mono">{format3(totalDr * (exchangeRate || 1))}</span>
                         </div>
-
-                        {initialData && (
-                            <div className="hidden lg:flex items-center gap-4 text-[7px] font-black uppercase tracking-tighter text-blue-100/30 border-l border-white/10 pl-6 h-6">
-                                <span>Created: {initialData.createdByName || 'Admin'} · {formatAuditDate(initialData.createdAt)}</span>
-                                <span>Modified: {initialData.lastModifiedByName || 'Admin'} · {formatAuditDate(initialData.lastModifiedAt)}</span>
-                            </div>
-                        )}
                     </div>
 
-                    <div className="flex-1"></div>
+                    <div className="w-px h-6 bg-white/20 shrink-0"></div>
 
-                    <div className="flex items-center gap-2 h-full py-1">
-                        {initialData?.id && (
-                            <button
-                                onClick={() => { if (window.confirm("Delete this JV?")) { onDeleteTransaction(initialData.id, 'journal'); onClose(); } }}
-                                className="p-2 hover:bg-red-500/20 text-red-300 rounded-lg transition-all"
-                                title="Delete JV"
-                            >
-                                <Trash2 size={16} />
-                            </button>
-                        )}
-                        <div className="w-px h-5 bg-white/10 mx-1"></div>
+                    {/* NARRATION */}
+                    <div className="flex-1 flex flex-col justify-center min-w-0">
+                        <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">Narration</span>
+                        <input
+                            type="text"
+                            maxLength={170}
+                            value={description}
+                            onChange={e => setDescription(e.target.value)}
+                            placeholder="Overall narration... (max 170)"
+                            className="bg-transparent border-none outline-none text-[11px] text-white placeholder:text-white/25 font-medium w-full truncate"
+                        />
+                    </div>
+
+                    <div className="w-px h-6 bg-white/20 shrink-0"></div>
+
+                    {/* PRINT / DOWNLOAD */}
+                    <button type="button" onClick={() => handleGeneratePDF('preview')} className="p-1.5 hover:bg-white/15 rounded-md transition-all text-white/70 hover:text-white shrink-0" title="Preview JV PDF"><Printer size={15} /></button>
+                    <button type="button" onClick={() => handleGeneratePDF('download')} className="p-1.5 hover:bg-white/15 rounded-md transition-all text-white/70 hover:text-white shrink-0" title="Download JV PDF"><Download size={15} /></button>
+
+                    <div className="w-px h-6 bg-white/20 shrink-0"></div>
+
+                    {/* DELETE */}
+                    {initialData?.id && (
                         <button
-                            onClick={handleSave}
-                            disabled={saving}
-                            className={`flex items-center justify-center gap-2 px-8 h-full rounded-lg shadow-lg transition-all active:scale-95 disabled:opacity-50 font-black text-[10px] uppercase tracking-widest
-                                ${saving ? 'bg-white/10 text-white' : 'bg-white text-[#00457c] hover:bg-blue-50'}`}
+                            onClick={() => { if (window.confirm("Delete this JV?")) { onDeleteTransaction(initialData.id, 'journal'); onClose(); } }}
+                            className="p-1.5 hover:bg-red-500/20 text-red-300 rounded-md transition-all shrink-0"
+                            title="Delete JV"
                         >
-                            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                            {saving ? 'Saving...' : 'Save Voucher'}
+                            <Trash2 size={15} />
                         </button>
-                    </div>
+                    )}
+
+                    {/* SAVE (icon only) */}
+                    <button
+                        onClick={handleSave}
+                        disabled={saving}
+                        title={saving ? 'Saving...' : 'Save Voucher'}
+                        className={`flex items-center justify-center w-10 h-9 rounded-lg shadow-lg transition-all active:scale-95 disabled:opacity-50 shrink-0
+                            ${saving ? 'bg-white/10 text-white' : 'bg-white text-[#00457c] hover:bg-blue-50'}`}
+                    >
+                        {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                    </button>
                 </div>
+                <ChangeDateModal 
+                    isOpen={showDateModal} 
+                    onClose={() => setShowDateModal(false)} 
+                    onSubmit={(d) => {
+                        setDate(d);
+                        if (onUpdateDate) onUpdateDate(d);
+                        setShowDateModal(false);
+                    }} 
+                    baseDate={date} 
+                />
             </div>
         </Modal>
     );
@@ -23958,11 +26525,11 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
 };
 
 // --- UPDATED FINANCIAL REPORTS MODAL (With Consistent Stock Valuation) ---
-const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, parties, products, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, calculatedCosts, locations, onDrillDown, currencySymbol }) => {
+const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, parties, products, expenses, expenseGroups = [], directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates = [], calculatedCosts, locations, onDrillDown, currencySymbol }) => {
     const [reportType, setReportType] = useState('pnl');
 
-    // ✅ NEW: Valuation Method State
-    const [valuationMethod, setValuationMethod] = useState('avg'); // 'avg', 'last_purchase', 'last_sale'
+    // Stock valuation for balance sheet / COGS
+    const [valuationMethod, setValuationMethod] = useState('fifo'); // 'fifo' | 'last_purchase' | 'last_sale'
 
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -23975,6 +26542,12 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     const [isDateOpen, setIsDateOpen] = useState(false);
     const [isPeriodOpen, setIsPeriodOpen] = useState(false);
+
+    // ✅ NEW: Expanded Groups State for Indirect Expenses
+    const [expandedGroups, setExpandedGroups] = useState({});
+    const toggleGroup = (groupName) => {
+        setExpandedGroups(prev => ({ ...prev, [groupName]: !prev[groupName] }));
+    };
 
     const onDateChange = (newRange) => {
         setDateRange(newRange);
@@ -24011,6 +26584,52 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     const getDirectExpenseName = (id) => (directExpenseAccounts || []).find(d => d.id === id)?.name || 'Direct Expense';
     const getIncomeName = (id) => (incomeAccounts || []).find(e => e.id === id)?.name || 'Uncategorized Income';
 
+    const downloadPNL_PDF = async () => {
+        if (!data) return;
+        try {
+            const { jsPDF } = await import("jspdf");
+            const { default: autoTable } = await import("jspdf-autotable");
+            const doc = new jsPDF('p', 'mm', 'a4');
+            doc.setFontSize(18); doc.setTextColor(10, 46, 56); doc.text("Profit & Loss Statement", 14, 20);
+            doc.setFontSize(10); doc.setTextColor(100); doc.text(`Period: ${dateRange.from} to ${dateRange.to}`, 14, 28);
+            const body = [];
+            body.push([{ content: "Sales Account (Net)", styles: { fontStyle: 'bold' } }, { content: formatCurrency(data.sales), styles: { fontStyle: 'bold', halign: 'right' } }]);
+            body.push([{ content: "Cost of Goods Sold (COGS)", styles: { fontStyle: 'bold', fillColor: [245, 247, 250] } }, ""]);
+            body.push(["  Opening Stock", formatCurrency(data.openingStock)]);
+            body.push(["  Purchases (Net)", formatCurrency(data.purchases)]);
+            data.directExpensesList.forEach(e => body.push([`  (+) ${e.name}`, formatCurrency(e.amount)]));
+            body.push(["  (-) Closing Stock", `(${formatCurrency(data.closingStock)})`]);
+            body.push([{ content: "Gross Profit", styles: { fontStyle: 'bold' } }, { content: formatCurrency(data.grossProfit), styles: { fontStyle: 'bold', halign: 'right' } }]);
+            body.push([{ content: "Operating Expenses (Indirect)", styles: { fontStyle: 'bold', fillColor: [245, 247, 250] } }, ""]);
+            data.indirectExpensesGroupsList.forEach(g => {
+                body.push([{ content: `  ${g.name}`, styles: { fontStyle: 'bold' } }, formatCurrency(g.total)]);
+                g.items.forEach(i => body.push([`    ${i.name}`, formatCurrency(i.amount)]));
+            });
+            body.push([{ content: "Net Profit", styles: { fontStyle: 'bold', fillColor: [10, 46, 56], textColor: [255, 255, 255] } }, { content: formatCurrency(data.netProfit), styles: { fontStyle: 'bold', halign: 'right', fillColor: [10, 46, 56], textColor: [255, 255, 255] } }]);
+            autoTable(doc, { startY: 35, body: body, theme: 'plain', styles: { fontSize: 8, cellPadding: 1.5 } });
+            doc.save(`PNL_${dateRange.to}.pdf`);
+        } catch (e) { console.error(e); alert("PDF Export Failed"); }
+    };
+
+    const downloadPNL_Excel = async () => {
+        if (!data) return;
+        try {
+            const XLSX = await import("xlsx");
+            const wb = XLSX.utils.book_new();
+            const rows = [["PROFIT & LOSS STATEMENT"], [`Period: ${dateRange.from} to ${dateRange.to}`], [], ["Category", "Amount"], ["Sales Account (Net)", data.sales], [], ["Cost of Goods Sold (COGS)"], ["Opening Stock", data.openingStock], ["Purchases (Net)", data.purchases]];
+            data.directExpensesList.forEach(e => rows.push([e.name, e.amount]));
+            rows.push(["(-) Closing Stock", -data.closingStock], ["GROSS PROFIT", data.grossProfit], [], ["Operating Expenses (Indirect)"]);
+            data.indirectExpensesGroupsList.forEach(g => {
+                rows.push([`[Group] ${g.name}`, g.total]);
+                g.items.forEach(i => rows.push([`  ${i.name}`, i.amount]));
+            });
+            rows.push(["NET PROFIT", data.netProfit]);
+            const ws = XLSX.utils.aoa_to_sheet(rows);
+            XLSX.utils.book_append_sheet(wb, ws, "Profit & Loss");
+            XLSX.writeFile(wb, `PNL_${dateRange.to}.xlsx`);
+        } catch (e) { console.error(e); alert("Excel Export Failed"); }
+    };
+
     const generateReport = async (range = dateRange) => {
         setLoading(true);
         const targetUid = dataOwnerId || user.uid;
@@ -24022,9 +26641,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const qInv = query(collection(db, 'invoices'), where('userId', '==', targetUid));
             const qMfg = query(collection(db, 'stock_journals'), where('userId', '==', targetUid));
 
-            // B. Payments & JVs: Only needed for the selected period for P&L (Expenses)
-            const qPay = query(collection(db, 'payments'), where('date', '>=', range.from), where('date', '<=', range.to));
-            const qJv = query(collection(db, 'journal_vouchers'), where('date', '>=', range.from), where('date', '<=', range.to));
+            // B. Payments & JVs: Fetch all docs up to report date for exact as-of balances
+            const qPay = query(collection(db, 'payments'), where('userId', '==', targetUid), where('date', '<=', range.to));
+            const qJv = query(collection(db, 'journal_vouchers'), where('userId', '==', targetUid), where('date', '<=', range.to));
 
             const [invSnap, mfgSnap, paySnap, jvSnap] = await Promise.all([
                 getDocs(qInv), getDocs(qMfg), getDocs(qPay), getDocs(qJv)
@@ -24032,19 +26651,44 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
             // --- 2. PREPARE DATA HELPERS ---
             const directExpIds = new Set((directExpenseAccounts || []).map(d => d.id));
+            const directExpensesMap = {};
+            const indirectExpensesMap = {};
+            const indirectExpensesGroups = {}; // { groupName: { name, total, items: [] } }
+            const indirectIncomeMap = {};
+
+            const addExpenseToMaps = (id, amt, type = 'out') => {
+                if (!id) return;
+                const sign = type === 'out' ? 1 : -1;
+                const val = safeNum(amt) * sign;
+                const isDirect = directExpIds.has(id);
+                const expObj = expenses.find(e => e.id === id) || (directExpenseAccounts || []).find(d => d.id === id);
+                const name = expObj?.name || (id.length > 20 ? getExpenseName(id) : id) || 'Uncategorized Expense';
+                
+                if (isDirect) {
+                    directExpensesMap[name] = (directExpensesMap[name] || 0) + val;
+                } else {
+                    const gName = expObj?.group || 'Other Indirect Expenses';
+                    if (!indirectExpensesGroups[gName]) indirectExpensesGroups[gName] = { name: gName, total: 0, items: {} };
+                    if (!indirectExpensesGroups[gName].items[id]) indirectExpensesGroups[gName].items[id] = { name, amount: 0, id };
+                    indirectExpensesGroups[gName].total += val;
+                    indirectExpensesGroups[gName].items[id].amount += val;
+                    indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) + val;
+                }
+            };
             const itemMap = {};
+            const stockMovements = [];
             products.forEach(p => {
                 itemMap[p.id] = {
                     openingQty: Number(p.openingStock || 0), // Base Master Opening
                     closingQty: Number(p.openingStock || 0), // Will be adjusted
-
+                    
                     // Tracking for Valuation
                     lastPurchaseRate: Number(p.purchasePrice || 0),
                     lastPurchaseDate: '1970-01-01',
                     lastSaleRate: Number(p.salePrice || 0),
                     lastSaleDate: '1970-01-01',
 
-                    inQty: 0, inVal: 0, // For Period Avg Cost
+                    inQty: 0, inVal: 0,
                     outQty: 0, outVal: 0
                 };
             });
@@ -24095,9 +26739,6 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             let totalSales = 0;
             let totalPurchases = 0;
             let totalMfgDirectExpenses = 0;
-            const directExpensesMap = {};
-            const indirectExpensesMap = {};
-            const indirectIncomeMap = {};
 
             invSnap.forEach(doc => {
                 const d = doc.data();
@@ -24132,10 +26773,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
                     if (d.expenses && Array.isArray(d.expenses)) {
                         d.expenses.forEach(e => {
-                            const amt = safeNum(e.amount);
-                            docDirectExp += amt;
-                            const name = getExpenseName(e.expenseId);
-                            directExpensesMap[name] = (directExpensesMap[name] || 0) + amt;
+                            addExpenseToMaps(e.expenseId, e.amount, 'out');
                         });
                     }
 
@@ -24177,25 +26815,21 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     d.journalExpenses.forEach(je => {
                         const amt = safeNum(je.amount);
                         if (!amt || !je.expenseId) return;
-                        const expAcc = (directExpenseAccounts || []).find(x => x.id === je.expenseId);
-                        const name = expAcc?.name || je.expenseId || 'Manufacturing Expense';
-                        directExpensesMap[name] = (directExpensesMap[name] || 0) + amt;
+                        addExpenseToMaps(je.expenseId, amt, 'out');
                         totalMfgDirectExpenses += amt;
                     });
                 }
             });
 
-            // C. PAYMENTS (Filtered by Date in Query)
+            // C. PAYMENTS (Fetched as-of report date; period filters applied below)
             paySnap.forEach(doc => {
                 const d = doc.data();
                 const amt = safeNum(d.amount);
 
+                if (!(d.date >= range.from && d.date <= range.to)) return;
+
                 if (d.transactionCategory === 'expense' && d.expenseId) {
-                    const name = getExpenseName(d.expenseId);
-                    const isDirect = directExpIds.has(d.expenseId);
-                    const targetMap = isDirect ? directExpensesMap : indirectExpensesMap;
-                    if (d.type === 'out') targetMap[name] = (targetMap[name] || 0) + amt;
-                    else if (d.type === 'in') targetMap[name] = (targetMap[name] || 0) - amt;
+                    addExpenseToMaps(d.expenseId, amt, d.type);
                 }
                 if (d.transactionCategory === 'income' && d.incomeId) {
                     const name = getIncomeName(d.incomeId);
@@ -24205,12 +26839,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 if (d.isMulti && d.splits) {
                     d.splits.forEach(s => {
                         if (s.category === 'expense' && s.targetId) {
-                            const splitAmt = safeNum(s.amount);
-                            const name = getExpenseName(s.targetId);
-                            const isDirect = directExpIds.has(s.targetId);
-                            const targetMap = isDirect ? directExpensesMap : indirectExpensesMap;
-                            if (d.type === 'out') targetMap[name] = (targetMap[name] || 0) + splitAmt;
-                            else targetMap[name] = (targetMap[name] || 0) - splitAmt;
+                            addExpenseToMaps(s.targetId, s.amount, d.type);
                         }
                         if (s.category === 'income' && s.targetId) {
                             const splitAmt = safeNum(s.amount);
@@ -24222,20 +26851,18 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 }
             });
 
-            // D. JVs (Filtered by Date in Query)
+            // D. JVs (Fetched as-of report date; period filters applied below)
             jvSnap.forEach(doc => {
                 const d = doc.data();
                 const amt = safeNum(d.amount);
                 const isMfg = !!d.linkedStockJournalId;
 
+                if (!(d.date >= range.from && d.date <= range.to)) return;
+
                 const processLine = (type, id, rowAmt, isDr) => {
                     const safeA = safeNum(rowAmt);
                     if (type === 'expense' && id) {
-                        const name = getExpenseName(id);
-                        const isDirect = directExpIds.has(id);
-                        const targetMap = isDirect ? directExpensesMap : indirectExpensesMap;
-                        if (isDr) targetMap[name] = (targetMap[name] || 0) + safeA;
-                        else targetMap[name] = (targetMap[name] || 0) - safeA;
+                        addExpenseToMaps(id, rowAmt, isDr ? 'out' : 'in');
                     }
                     if (type === 'income' && id) {
                         const name = getIncomeName(id);
@@ -24256,39 +26883,123 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             });
 
             // --- 4. CALCULATE FINAL STOCK VALUES ---
-            let totalClosingStockValue = 0;
-            let totalOpeningStockValue = 0;
-
-            Object.values(itemMap).forEach(i => {
-                // Valuation Rate selection based on chosen method
-                const periodAvgCost = i.inQty > 0 ? (i.inVal / i.inQty) : 0;
-                // All-time weighted avg from pre-calculated app-level costs (more accurate than period-only)
-                const globalAvgCost = calculatedCosts[i.id]?.avg || 0;
-
-                let valRate = 0;
-                if (valuationMethod === 'last_purchase') {
-                    valRate = i.lastPurchaseRate;
-                } else if (valuationMethod === 'last_sale') {
-                    valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
-                } else {
-                    // Avg: prefer period avg → global pre-calculated avg → last purchase rate
-                    valRate = periodAvgCost > 0 ? periodAvgCost : (globalAvgCost > 0 ? globalAvgCost : i.lastPurchaseRate);
-                }
-
-                // Final fallback: product master price
-                if (!valRate || valRate === 0) {
-                    const prod = products.find(p => p.id === i.id);
-                    valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
-                }
-
-
-                totalOpeningStockValue += (i.openingQty * valRate); // Valuation at constant rate for P&L simplicity or should we use Opening Rate? 
-                // Tally P&L typically values Opening and Closing stock. 
-                // Here we use the selected rate for both to avoid weird swings, or strictly speaking Opening should use Opening Rate.
-                // But simplified: Use same rate strategy.
-
-                totalClosingStockValue += (i.closingQty * valRate);
+            // Build movement ledger for FIFO and quantity tracking
+            invSnap.forEach(doc => {
+                const d = doc.data();
+                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
+                if (!isLocMatch || !Array.isArray(d.items)) return;
+                d.items.forEach(i => {
+                    const qty = safeNum(i.quantity);
+                    if (!qty || !d.date || d.date > range.to) return;
+                    const rate = safeNum(i.rate);
+                    if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') {
+                        stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate });
+                    }
+                    if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') {
+                        stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate });
+                    }
+                });
             });
+
+            mfgSnap.forEach(doc => {
+                const d = doc.data();
+                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
+                if (!isLocMatch || !d.date || d.date > range.to) return;
+                (d.produced || []).forEach(i => {
+                    const qty = safeNum(i.quantity);
+                    if (!qty) return;
+                    stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate: safeNum(i.rate) });
+                });
+                (d.consumed || []).forEach(i => {
+                    const qty = safeNum(i.quantity);
+                    if (!qty) return;
+                    stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate: safeNum(i.rate) });
+                });
+            });
+
+            const sortedMovements = stockMovements.sort((a, b) => {
+                const da = new Date(a.date).getTime();
+                const db = new Date(b.date).getTime();
+                if (da !== db) return da - db;
+                if (a.type === b.type) return 0;
+                return a.type === 'in' ? -1 : 1;
+            });
+
+            const initFifoLayers = () => {
+                const layers = {};
+                products.forEach(p => {
+                    const q = safeNum(p.openingStock || 0);
+                    if (q <= 0) return;
+                    const r = safeNum(p.purchasePrice || p.salePrice || 0);
+                    layers[p.id] = [{ qty: q, rate: r }];
+                });
+                return layers;
+            };
+
+            const applyMoveToLayers = (layers, move) => {
+                if (!move?.productId || !itemMap[move.productId]) return;
+                if (!layers[move.productId]) layers[move.productId] = [];
+
+                if (move.type === 'in') {
+                    const inRate = safeNum(move.rate || itemMap[move.productId].lastPurchaseRate || 0);
+                    layers[move.productId].push({ qty: safeNum(move.qty), rate: inRate });
+                    return;
+                }
+
+                let rem = safeNum(move.qty);
+                const q = layers[move.productId];
+                while (rem > 0 && q.length > 0) {
+                    const head = q[0];
+                    const take = Math.min(rem, safeNum(head.qty));
+                    head.qty -= take;
+                    rem -= take;
+                    if (head.qty <= 0) q.shift();
+                }
+            };
+
+            const layersValue = (layers) => {
+                return Object.values(layers).reduce((sum, q) => {
+                    const itemTotal = (q || []).reduce((s, layer) => s + (safeNum(layer.qty) * safeNum(layer.rate)), 0);
+                    return sum + itemTotal;
+                }, 0);
+            };
+
+            const fifoLayersForOpening = initFifoLayers();
+            sortedMovements.forEach((m) => {
+                if (m.date < range.from) applyMoveToLayers(fifoLayersForOpening, m);
+            });
+            const fifoOpeningValue = layersValue(fifoLayersForOpening);
+
+            const fifoLayersForClosing = initFifoLayers();
+            sortedMovements.forEach((m) => {
+                if (m.date <= range.to) applyMoveToLayers(fifoLayersForClosing, m);
+            });
+            const fifoClosingValue = layersValue(fifoLayersForClosing);
+
+            let totalOpeningStockValue = 0;
+            let totalClosingStockValue = 0;
+
+            if (valuationMethod === 'fifo') {
+                totalOpeningStockValue = fifoOpeningValue;
+                totalClosingStockValue = fifoClosingValue;
+            } else {
+                Object.values(itemMap).forEach(i => {
+                    let valRate = 0;
+                    if (valuationMethod === 'last_purchase') {
+                        valRate = i.lastPurchaseRate;
+                    } else {
+                        valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
+                    }
+
+                    if (!valRate || valRate === 0) {
+                        const prod = products.find(p => p.id === i.id);
+                        valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
+                    }
+
+                    totalOpeningStockValue += (i.openingQty * valRate);
+                    totalClosingStockValue += (i.closingQty * valRate);
+                });
+            }
 
 
             // E. SUMMARIZE DATA
@@ -24296,6 +27007,11 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const totalDirectExpenses = directExpensesList.reduce((sum, i) => sum + i.amount, 0);
 
             const indirectExpensesList = Object.entries(indirectExpensesMap).map(([name, amount]) => ({ name, amount }));
+            const indirectExpensesGroupsList = Object.values(indirectExpensesGroups).map(g => ({
+                ...g,
+                items: Object.values(g.items).sort((a, b) => b.amount - a.amount)
+            })).sort((a, b) => b.total - a.total);
+
             const totalIndirectExpenses = indirectExpensesList.reduce((sum, i) => sum + i.amount, 0);
 
             const indirectIncomeList = Object.entries(indirectIncomeMap).map(([name, amount]) => ({ name, amount }));
@@ -24305,23 +27021,173 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const grossProfit = totalSales - cogs;
             const netProfit = grossProfit - totalIndirectExpenses + totalIndirectIncome;
 
-            // Balance Sheet Items (Calculated simply)
-            const debtors = parties.filter(p => p.balance > 0).reduce((sum, p) => sum + p.balance, 0);
-            const creditors = parties.filter(p => p.balance < 0).reduce((sum, p) => sum + Math.abs(p.balance), 0);
-            const cashBank = accounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+            // Balance Sheet Items (Exact as-of balances from ledger movements)
+            const invoicesAsOf = invSnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
+            const paymentsAsOf = paySnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
+            const jvsAsOf = jvSnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
+
+            const calculateBalancesAsOf = (entities, ledgerType) => {
+                const map = {};
+                (entities || []).forEach(ent => {
+                    map[ent.id] = Number(ent.openingBalance || 0);
+                });
+
+                invoicesAsOf.forEach((d) => {
+                    const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
+                    const rate = Number(d.exchangeRate || 1);
+                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
+                        : baseVal;
+
+                    if (ledgerType === 'party' && d.partyId && map[d.partyId] !== undefined) {
+                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
+                        if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') map[d.partyId] += amt;
+                        else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') map[d.partyId] -= amt;
+                    }
+
+                    if (ledgerType === 'account' && d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && map[d.addlExpCreditId] !== undefined) {
+                        map[d.addlExpCreditId] -= addlExpBase;
+                    }
+                });
+
+                paymentsAsOf.forEach((v) => {
+                    const rate = Number(v.exchangeRate || 1);
+                    const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
+
+                    if (ledgerType === 'account' && v.accountId && map[v.accountId] !== undefined) {
+                        if (v.type === 'in') map[v.accountId] += amtBase;
+                        else map[v.accountId] -= amtBase;
+                    }
+
+                    const applyTarget = (tid, tcat, tval) => {
+                        if (ledgerType === tcat && map[tid] !== undefined) {
+                            if (v.type === 'in') map[tid] -= tval;
+                            else map[tid] += tval;
+                        }
+                    };
+
+                    if (v.isMulti && Array.isArray(v.splits)) {
+                        v.splits.forEach((s) => applyTarget(s.targetId, s.category, Number(s.amount || 0) * rate));
+                    } else {
+                        let cat = v.transactionCategory;
+                        let tid = null;
+                        if (cat === 'party') tid = v.partyId;
+                        else if (cat === 'expense') tid = v.expenseId;
+                        else if (cat === 'account' || v.type === 'contra') { cat = 'account'; tid = v.toAccountId; }
+                        else if (cat === 'capital') tid = v.capitalId;
+                        else if (cat === 'asset') tid = v.assetId;
+                        else if (cat === 'income') tid = v.incomeId;
+                        if (tid) applyTarget(tid, cat, amtBase);
+                    }
+                });
+
+                jvsAsOf.forEach((v) => {
+                    const amt = Number(v.amount || 0);
+                    if (v.isMulti && Array.isArray(v.rows)) {
+                        v.rows.forEach((r) => {
+                            if (ledgerType === r.category && map[r.id] !== undefined) {
+                                if (r.type === 'dr') map[r.id] += Number(r.amount || 0);
+                                else map[r.id] -= Number(r.amount || 0);
+                            }
+                        });
+                    } else {
+                        if (ledgerType === v.drType && v.drId && map[v.drId] !== undefined) map[v.drId] += amt;
+                        if (ledgerType === v.crType && v.crId && map[v.crId] !== undefined) map[v.crId] -= amt;
+                    }
+                });
+
+                return map;
+            };
+
+            const partyBalances = calculateBalancesAsOf(parties, 'party');
+            const accountBalances = calculateBalancesAsOf(accounts, 'account');
+
+            const debtors = Object.values(partyBalances).reduce((sum, bal) => sum + (bal > 0 ? bal : 0), 0);
+            const creditors = Object.values(partyBalances).reduce((sum, bal) => sum + (bal < 0 ? Math.abs(bal) : 0), 0);
+            const cashBank = Object.values(accountBalances).reduce((sum, bal) => sum + Number(bal || 0), 0);
+
+            // Tax balance (Input - Output) aligned with All Taxes Register logic
+            const normalizeTax = (v) => String(v || '').trim().toLowerCase();
+            const taxBalance = (taxRates || []).reduce((sum, taxRate) => {
+                const taxId = String(taxRate?.id || '').trim();
+                if (!taxId) return sum;
+
+                const taxNameNorm = normalizeTax(taxRate?.name);
+                let drAmount = 0;
+                let crAmount = 0;
+
+                // Invoices
+                invoicesAsOf.forEach((inv) => {
+                    if (!['sales', 'debit_note', 'purchase', 'credit_note'].includes(inv?.type)) return;
+
+                    const invTaxId = String(inv?.taxId || '').trim();
+                    const matchesTax = (invTaxId === taxId) || (normalizeTax(inv?.taxName) === taxNameNorm);
+                    if (!matchesTax) return;
+
+                    const taxAmt = Number(inv?.taxAmount || 0);
+                    if (taxAmt <= 0) return;
+
+                    const isInputTax = inv.type === 'purchase' || inv.type === 'credit_note';
+                    if (isInputTax) drAmount += taxAmt;
+                    else crAmount += taxAmt;
+                });
+
+                // Journal vouchers (simple + multi-row)
+                jvsAsOf.forEach((jv) => {
+                    if (!jv?.isMulti) {
+                        const drTypeNorm = normalizeTax(jv?.drType);
+                        const crTypeNorm = normalizeTax(jv?.crType);
+                        const drIdNorm = normalizeTax(jv?.drId);
+                        const crIdNorm = normalizeTax(jv?.crId);
+
+                        const drMatch =
+                            (jv?.drType === 'tax' && String(jv?.drId || '').trim() === taxId) ||
+                            (drTypeNorm === 'tax' && drIdNorm === taxNameNorm) ||
+                            (drIdNorm === taxNameNorm);
+                        if (drMatch) drAmount += Number(jv?.amount || 0);
+
+                        const crMatch =
+                            (jv?.crType === 'tax' && String(jv?.crId || '').trim() === taxId) ||
+                            (crTypeNorm === 'tax' && crIdNorm === taxNameNorm) ||
+                            (crIdNorm === taxNameNorm);
+                        if (crMatch) crAmount += Number(jv?.amount || 0);
+                    }
+
+                    if (jv?.isMulti && Array.isArray(jv?.rows)) {
+                        jv.rows.forEach((row) => {
+                            const rowCatNorm = normalizeTax(row?.category);
+                            const rowIdNorm = normalizeTax(row?.id);
+                            const rowMatches =
+                                (row?.category === 'tax' && String(row?.id || '').trim() === taxId) ||
+                                (rowCatNorm === 'tax' && rowIdNorm === taxNameNorm) ||
+                                (rowIdNorm === taxNameNorm);
+                            if (!rowMatches) return;
+
+                            const amt = Number(row?.amount || 0);
+                            if (row?.type === 'dr') drAmount += amt;
+                            else crAmount += amt;
+                        });
+                    }
+                });
+
+                return sum + (drAmount - crAmount);
+            }, 0);
+
             const totalCapital = capitalAccounts.reduce((sum, c) => sum + (c.balance || 0), 0);
             const totalAssetAccountsValue = assetAccounts.reduce((s, a) => s + (Number(a.balance || 0)), 0);
 
             // Valuation Label
-            let valLabel = "Avg Cost";
+            let valLabel = "FIFO";
             if (valuationMethod === 'last_purchase') valLabel = "Last Purch. Rate";
-            if (valuationMethod === 'last_sale') valLabel = "Last Sale Rate";
+            if (valuationMethod === 'last_sale') valLabel = "Last Sold Rate";
 
             const assets = [
                 { name: `Closing Stock (${valLabel})`, amount: totalClosingStockValue, type: 'stock' },
                 { name: "Fixed & Other Assets", amount: totalAssetAccountsValue, type: 'asset_list' },
                 { name: "Receivables (Debtors)", amount: debtors, type: 'receivables' },
-                { name: "Cash/Bank Balances", amount: cashBank, type: 'accounts' }
+                { name: "Cash/Bank Balances", amount: cashBank, type: 'accounts' },
+                { name: "Tax Balance (Input - Output)", amount: taxBalance, type: 'tax_register' }
             ];
             const liabilities = [
                 { name: "Payables (Creditors)", amount: creditors, type: 'payables' }
@@ -24336,6 +27202,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 directExpensesList,
                 totalDirectExpenses,
                 indirectExpensesList,
+                indirectExpensesGroupsList,
                 totalIndirectExpenses,
                 indirectIncomeList,
                 totalIndirectIncome,
@@ -24378,7 +27245,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>
 
                         <div className="flex bg-black/20 p-1 rounded-md border border-white/10">
-                            <button onClick={() => setValuationMethod('avg')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'avg' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>AVG COST</button>
+                            <button onClick={() => setValuationMethod('fifo')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'fifo' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>FIFO</button>
                             <button onClick={() => setValuationMethod('last_purchase')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_purchase' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST PURCH. RATE</button>
                             <button onClick={() => setValuationMethod('last_sale')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_sale' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST SOLD RATE</button>
                         </div>
@@ -24437,9 +27304,17 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                 <div className="bg-white border border-blue-200 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans">
                                     {/* REPORT TITLE BAR */}
                                     <div className="bg-[#0a2e38] text-white px-4 py-2 flex justify-between items-center border-b border-white/10 shadow-md">
-                                        <span className="text-[9px] font-black uppercase tracking-[0.2em] opacity-60">Financial Statement</span>
-                                        <span className="text-[11px] font-black uppercase tracking-widest text-[#facc15]">Profit & Loss</span>
-                                        <span className="text-[9px] font-mono font-bold opacity-60">{dateRange.from} — {dateRange.to}</span>
+                                        <div className="flex flex-col">
+                                            <span className="text-[9px] font-black uppercase tracking-[0.2em] opacity-60">Financial Statement</span>
+                                            <span className="text-[11px] font-black uppercase tracking-widest text-[#facc15]">Profit & Loss</span>
+                                        </div>
+                                        <div className="flex items-center gap-4">
+                                            <div className="flex items-center gap-1 no-print">
+                                                <button onClick={downloadPNL_PDF} className="p-1.5 hover:bg-white/10 rounded transition-colors text-white/70 hover:text-white" title="Download PDF"><FileText size={16} /></button>
+                                                <button onClick={downloadPNL_Excel} className="p-1.5 hover:bg-white/10 rounded transition-colors text-white/70 hover:text-white" title="Download Excel"><FileSpreadsheet size={16} /></button>
+                                            </div>
+                                            <span className="text-[9px] font-mono font-bold opacity-60">{dateRange.from} — {dateRange.to}</span>
+                                        </div>
                                     </div>
 
                                     <div className="p-3 space-y-2">
@@ -24509,14 +27384,32 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                 <span>Operating Expenses (Indirect)</span>
                                             </div>
                                             <div className="p-2 space-y-1">
-                                                {data.indirectExpensesList.map((exp, i) => (
-                                                    <div
-                                                        key={i}
-                                                        className="flex justify-between text-[11px] font-bold text-slate-600 hover:bg-white p-1 rounded-lg border border-transparent hover:border-slate-200 cursor-pointer transition-all"
-                                                        onClick={() => onDrillDown('expense', exp.id)}
-                                                    >
-                                                        <span>{exp.name}</span>
-                                                        <span className="font-mono">{formatCurrency(exp.amount)}</span>
+                                                {data.indirectExpensesGroupsList.map((group, gi) => (
+                                                    <div key={gi} className="mb-1 border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                                                        <div 
+                                                            className="bg-slate-50 px-3 py-2 flex justify-between items-center cursor-pointer hover:bg-slate-100 transition-all border-b border-slate-100"
+                                                            onClick={() => toggleGroup(group.name)}
+                                                        >
+                                                            <div className="flex items-center gap-2">
+                                                                {expandedGroups[group.name] ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />}
+                                                                <span className="text-[10px] font-black text-slate-700 uppercase tracking-tight">{group.name}</span>
+                                                            </div>
+                                                            <span className="font-mono text-xs font-black text-slate-800">{formatCurrency(group.total)}</span>
+                                                        </div>
+                                                        {expandedGroups[group.name] && (
+                                                            <div className="p-1 space-y-0.5 bg-white animate-in slide-in-from-top-1">
+                                                                {group.items.map((exp, ei) => (
+                                                                    <div 
+                                                                        key={ei} 
+                                                                        className="flex justify-between text-[11px] font-bold text-slate-500 hover:bg-blue-50 p-1.5 rounded cursor-pointer pl-8 transition-colors group"
+                                                                        onClick={() => onDrillDown('expense', exp.id)}
+                                                                    >
+                                                                        <span className="group-hover:text-blue-600 transition-colors underline decoration-dotted underline-offset-2">{exp.name}</span>
+                                                                        <span className="font-mono">{formatCurrency(exp.amount)}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 ))}
                                                 <div className="flex justify-between font-black text-red-600 border-t border-slate-200 pt-2 mt-1 text-[10px] uppercase">
@@ -24667,6 +27560,336 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 onClose={() => setIsPeriodOpen(false)}
                 onSubmit={(f, t) => { onDateChange({ from: f, to: t }); setIsPeriodOpen(false); }}
                 baseDate={dateRange?.to}
+            />
+        </Modal>
+    );
+};
+
+const TaxRegisterModal = ({ isOpen, onClose, onBack, dateRange, onDateChange, invoices = [], payments = [], journalVouchers = [], parties = [], taxRates = [], currencySymbol, onOpenLedger }) => {
+    const [closingDate, setClosingDate] = useState(dateRange?.to || new Date().toISOString().split('T')[0]);
+    const [isDateOpen, setIsDateOpen] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+
+    useEffect(() => {
+        if (isOpen && dateRange?.to) {
+            setClosingDate(dateRange.to);
+        }
+    }, [isOpen, dateRange?.to]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleKeys = (e) => {
+            if ((e.key === 'F2' || e.key === 'f2') && !e.altKey) {
+                e.preventDefault();
+                setIsDateOpen(true);
+            }
+        };
+        window.addEventListener('keydown', handleKeys);
+        return () => window.removeEventListener('keydown', handleKeys);
+    }, [isOpen]);
+
+    // Aggregate tax balances as-of closingDate using complete transaction history
+    const taxLedgers = useMemo(() => {
+        const map = new Map();
+        const safeNum = (n) => Number(n || 0);
+
+        // Helper: normalize string for comparison (lowercase, trim spaces)
+        const normalize = (str) => String(str || '').trim().toLowerCase();
+
+        // Initialize only from actual taxRates (no fallbacks/duplicates)
+        (taxRates || []).forEach((taxRate) => {
+            const taxId = String(taxRate.id || '').trim();
+            if (!taxId) return;
+            map.set(taxId, {
+                id: taxId,
+                name: String(taxRate.name || '').trim() || `Tax ${taxRate.percentage || 0}%`,
+                balance: 0,
+                percentage: Number(taxRate.percentage || 0),
+                nameNorm: normalize(taxRate.name) // normalized name for matching
+            });
+        });
+
+        // Calculate balance for each tax using complete transaction history
+        (taxRates || []).forEach((taxRate) => {
+            const taxId = String(taxRate.id || '').trim();
+            if (!taxId || !map.has(taxId)) return;
+
+            let drAmount = 0;
+            let crAmount = 0;
+            const taxEntry = map.get(taxId);
+            const taxNameNorm = taxEntry.nameNorm;
+
+            // Process invoices - classify by tax type
+            (invoices || []).forEach((inv) => {
+                if ((inv?.date || '') > closingDate) return;
+                if (!['sales', 'debit_note', 'purchase', 'credit_note'].includes(inv?.type)) return;
+
+                const invTaxId = String(inv?.taxId || '').trim();
+                // Match by exact ID or by normalized name
+                const matchesTax = (invTaxId === taxId) || (normalize(inv?.taxName) === taxNameNorm);
+                if (!matchesTax) return;
+
+                const taxAmt = safeNum(inv?.taxAmount);
+                if (taxAmt <= 0) return;
+
+                // Input Tax (Purchase/Credit Note) = DR
+                // Output Tax (Sales/Debit Note) = CR
+                const isInputTax = ['purchase', 'credit_note'].includes(inv?.type);
+                if (isInputTax) {
+                    drAmount += taxAmt;
+                } else {
+                    crAmount += taxAmt;
+                }
+            });
+
+            // Process journal vouchers for tax adjustments - ENHANCED MATCHING
+            (journalVouchers || []).forEach((jv) => {
+                if ((jv?.date || '') > closingDate) return;
+
+                // Simple JV (non-multi)
+                if (!jv.isMulti) {
+                    const drTypeNorm = normalize(jv.drType);
+                    const crTypeNorm = normalize(jv.crType);
+                    const drIdNorm = normalize(jv.drId);
+                    const crIdNorm = normalize(jv.crId);
+
+                    // Check debit side - match by ID, type=='tax', or by name
+                    if ((jv.drType === 'tax' && String(jv.drId || '').trim() === taxId) ||
+                        (drTypeNorm === 'tax' && drIdNorm === taxNameNorm) ||
+                        (normalize(jv.drId) === taxNameNorm)) {
+                        drAmount += safeNum(jv.amount);
+                    }
+
+                    // Check credit side - match by ID, type=='tax', or by name
+                    if ((jv.crType === 'tax' && String(jv.crId || '').trim() === taxId) ||
+                        (crTypeNorm === 'tax' && crIdNorm === taxNameNorm) ||
+                        (normalize(jv.crId) === taxNameNorm)) {
+                        crAmount += safeNum(jv.amount);
+                    }
+                }
+
+                // Multi-row JV: check rows for tax entries
+                if (jv.isMulti && jv.rows) {
+                    jv.rows.forEach((row) => {
+                        const rowCatNorm = normalize(row.category);
+                        const rowIdNorm = normalize(row.id);
+
+                        if ((row.category === 'tax' && String(row.id || '').trim() === taxId) ||
+                            (rowCatNorm === 'tax' && rowIdNorm === taxNameNorm) ||
+                            (rowIdNorm === taxNameNorm)) {
+                            const amt = safeNum(row.amount);
+                            if (row.type === 'dr') {
+                                drAmount += amt;
+                            } else {
+                                crAmount += amt;
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Calculate net balance: DR - CR
+            map.get(taxId).balance = drAmount - crAmount;
+        });
+
+        // Convert to array and filter
+        let list = Array.from(map.values());
+
+        // Filter by search
+        if (searchTerm.trim()) {
+            const q = searchTerm.trim().toLowerCase();
+            list = list.filter((t) => t.name.toLowerCase().includes(q));
+        }
+
+        return list.sort((a, b) => a.name.localeCompare(b.name));
+    }, [invoices, journalVouchers, closingDate, searchTerm, taxRates]);
+
+    const totalBalance = useMemo(() => {
+        return taxLedgers.reduce((sum, t) => sum + t.balance, 0);
+    }, [taxLedgers]);
+
+    const downloadPDF = () => {
+        const doc = new jsPDF();
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = 10;
+
+        // Header with blue background
+        doc.setFillColor(30, 58, 138); // Dark blue
+        doc.rect(0, 0, pageWidth, 25, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(16);
+        doc.setFont(undefined, 'bold');
+        doc.text('All Taxes Register', margin, 15);
+        doc.setFontSize(10);
+        doc.setFont(undefined, 'normal');
+        doc.text(`As on: ${closingDate}`, pageWidth - margin - 40, 15);
+
+        // Table
+        const tableData = [
+            ['Ledger Name', 'Present Balance'],
+            ...taxLedgers.map((t) => [
+                t.name,
+                `${currencySymbol || ''} ${t.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            ])
+        ];
+
+        doc.autoTable({
+            head: [tableData[0]],
+            body: tableData.slice(1),
+            startY: 30,
+            margin: margin,
+            headerStyles: { fillColor: [66, 139, 202], textColor: [255, 255, 255], fontStyle: 'bold' },
+            bodyStyles: { textColor: [40, 40, 40] },
+            alternateRowStyles: { fillColor: [245, 247, 250] },
+            columnStyles: { 0: { halign: 'left' }, 1: { halign: 'right' } }
+        });
+
+        // Footer with total
+        const finalY = doc.lastAutoTable.finalY || 30;
+        doc.setFillColor(200, 220, 240); // Light blue
+        doc.rect(margin, finalY + 5, pageWidth - 2 * margin, 10, 'F');
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(30, 58, 138);
+        doc.text('Total Balance', margin + 5, finalY + 10);
+        doc.text(
+            `${currencySymbol || ''} ${totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            pageWidth - margin - 30,
+            finalY + 10
+        );
+
+        doc.save(`AllTaxesRegister_${closingDate}.pdf`);
+    };
+
+    const downloadExcel = () => {
+        const data = [
+            ['All Taxes Register', `As on: ${closingDate}`],
+            [],
+            ['Ledger Name', 'Present Balance'],
+            ...taxLedgers.map((t) => [
+                t.name,
+                t.balance
+            ]),
+            [],
+            ['Total Balance', totalBalance]
+        ];
+
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        ws['!cols'] = [{ wch: 30 }, { wch: 18 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Tax Register');
+        XLSX.writeFile(wb, `AllTaxesRegister_${closingDate}.xlsx`);
+    };
+
+    if (!isOpen) return null;
+
+    const formatAmt = (n) => `${currencySymbol || ''} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="All Taxes Register" centerTitle={true} maxWidth="max-w-4xl" defaultMaximized={true}>
+            <div className="space-y-4 bg-blue-50 p-4 rounded-lg">
+                {/* TOOLBAR */}
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white border border-blue-200 rounded-lg p-3 shadow-sm">
+                    <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Closing Date</span>
+                        <button
+                            onClick={() => setIsDateOpen(true)}
+                            className="px-3 py-1.5 border-2 border-blue-400 rounded-md text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-500 transition-all flex items-center gap-2"
+                            title="F2"
+                        >
+                            <Calendar size={16} /> {closingDate}
+                        </button>
+                    </div>
+
+                    <input
+                        type="text"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder="Search ledger name..."
+                        className="px-3 py-1.5 border border-blue-200 rounded-md text-xs font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={downloadPDF}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-bold transition-all"
+                            title="Download PDF"
+                        >
+                            <FileText size={14} /> PDF
+                        </button>
+                        <button
+                            onClick={downloadExcel}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-bold transition-all"
+                            title="Download Excel"
+                        >
+                            <Download size={14} /> Excel
+                        </button>
+                    </div>
+                </div>
+
+                {/* SUMMARY CARDS */}
+                <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-white border-l-4 border-blue-600 rounded-lg p-3 shadow-sm">
+                        <div className="text-[9px] font-black text-blue-600 uppercase">Total Ledgers</div>
+                        <div className="text-lg font-black text-blue-800">{taxLedgers.length}</div>
+                    </div>
+                    <div className="bg-white border-l-4 border-blue-600 rounded-lg p-3 shadow-sm">
+                        <div className="text-[9px] font-black text-blue-600 uppercase">Total Balance</div>
+                        <div className={`text-lg font-black ${totalBalance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                            {formatAmt(totalBalance)}
+                        </div>
+                    </div>
+                </div>
+
+                {/* TABLE */}
+                <div className="border-2 border-blue-200 rounded-lg overflow-hidden bg-white shadow-md">
+                    <div className="overflow-auto max-h-[60vh]">
+                        <table className="w-full text-xs">
+                            <thead className="bg-blue-600 text-white uppercase tracking-widest text-[9px] font-black sticky top-0">
+                                <tr>
+                                    <th className="p-3 text-left">Ledger Name</th>
+                                    <th className="p-3 text-right">Present Balance</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {taxLedgers.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={2} className="p-6 text-center text-slate-500 font-semibold">
+                                            No tax ledgers found.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    taxLedgers.map((ledger) => (
+                                        <tr key={ledger.id} className="border-t border-blue-100 hover:bg-blue-50 transition-colors cursor-pointer" onClick={() => onOpenLedger?.('tax', ledger.id)} title="Click to view ledger">
+                                            <td className="p-3 font-semibold text-blue-600 hover:text-blue-800 underline cursor-pointer">{ledger.name}</td>
+                                            <td className={`p-3 text-right font-mono font-bold ${ledger.balance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                                {formatAmt(ledger.balance)}
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                            {taxLedgers.length > 0 && (
+                                <tfoot className="bg-blue-700 text-white text-[10px] font-black uppercase sticky bottom-0">
+                                    <tr>
+                                        <td className="p-3">Total</td>
+                                        <td className="p-3 text-right font-mono">{formatAmt(totalBalance)}</td>
+                                    </tr>
+                                </tfoot>
+                            )}
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <ChangeDateModal
+                isOpen={isDateOpen}
+                onClose={() => setIsDateOpen(false)}
+                onSubmit={(d) => {
+                    setClosingDate(d);
+                    setIsDateOpen(false);
+                }}
+                baseDate={closingDate}
             />
         </Modal>
     );
@@ -25114,7 +28337,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     );
 };
 
-// --- LIVE TASK BOARD COMPONENT (Fixed: Team Specific) ---
+// --- LIVE TASK BOARD COMPONENT (Uses cloudRtdb to bypass rxrtdb.js stub alias) ---
 const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveName }) => {
     const [tasks, setTasks] = useState([]);
     const [newTask, setNewTask] = useState('');
@@ -25123,19 +28346,19 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
     const [editingTaskId, setEditingTaskId] = useState(null);
     const [editTaskText, setEditTaskText] = useState('');
 
-    // ✅ Helper: Get the correct path for this team
+    // Helper: Get the correct path for this licence/team
     const getTeamPath = () => `tasks/${dataOwnerId}`;
 
-    // 1. Listen for Tasks (Team Specific)
+    // 1. Listen for Tasks (Team Specific) — uses cloudRtdb (real Firebase RTDB)
     useEffect(() => {
         if (!isOpen || !dataOwnerId) return;
 
-        const tasksRef = ref(rtdb, getTeamPath());
-        const unsubscribe = onValue(tasksRef, (snapshot) => {
+        const tasksRef = realRef(cloudRtdb, getTeamPath());
+        const unsubscribe = realOnValue(tasksRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
                 const taskList = Object.entries(data).map(([key, val]) => ({ id: key, ...val }));
-                // Sort: Pending first
+                // Sort: Pending first, then done
                 taskList.sort((a, b) => (a.status === 'done' ? 1 : -1));
                 setTasks(taskList);
             } else {
@@ -25150,11 +28373,10 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
         e.preventDefault();
         if (!newTask.trim() || !dataOwnerId) return;
 
-        // ✅ Push to team specific path
-        push(ref(rtdb, getTeamPath()), {
+        realPush(realRef(cloudRtdb, getTeamPath()), {
             text: newTask,
             createdBy: effectiveName,
-            createdAt: rtdbTimestamp(),
+            createdAt: Date.now(),
             status: 'pending'
         });
         setNewTask('');
@@ -25166,40 +28388,47 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
         setEditTaskText(task.text);
     };
 
-    // 4. Save Edit
+    // 4. Save Edit — records who edited
     const saveEdit = (taskId) => {
-        // ✅ Update at team specific path
-        update(ref(rtdb, `${getTeamPath()}/${taskId}`), { text: editTaskText });
+        realUpdate(realRef(cloudRtdb, `${getTeamPath()}/${taskId}`), {
+            text: editTaskText,
+            editedBy: effectiveName,
+            editedAt: Date.now()
+        });
         setEditingTaskId(null);
         setEditTaskText('');
     };
 
     // 5. Delete Task
-    const handleDeleteTask = (taskId) => {
-        if (confirm("Are you sure you want to remove this task?")) {
-            // ✅ Remove from team specific path
-            remove(ref(rtdb, `${getTeamPath()}/${taskId}`));
+    const handleDeleteTask = (taskId, taskText) => {
+        if (confirm(`Delete task: "${taskText}"?`)) {
+            realRemove(realRef(cloudRtdb, `${getTeamPath()}/${taskId}`));
         }
     };
 
-    // 6. Toggle Done
+    // 6. Toggle Done / Undo Done
     const handleToggleTask = (task) => {
         const isDone = task.status === 'done';
-        // ✅ Update at team specific path
-        update(ref(rtdb, `${getTeamPath()}/${task.id}`), {
+        realUpdate(realRef(cloudRtdb, `${getTeamPath()}/${task.id}`), {
             status: isDone ? 'pending' : 'done',
-            completedBy: isDone ? null : effectiveName
+            completedBy: isDone ? null : effectiveName,
+            completedAt: isDone ? null : Date.now()
         });
     };
 
     if (!isOpen) return null;
+
+    const formatDate = (ts) => {
+        if (!ts) return '';
+        try { return new Date(ts).toLocaleString(); } catch { return ''; }
+    };
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="Notice Board & Tasks" maxWidth="max-w-4xl">
             <div className="flex flex-col h-[70vh]">
                 <form onSubmit={handleAddTask} className="flex gap-2 mb-6 bg-slate-100 p-4 rounded-xl shadow-inner">
                     <input type="text" className="flex-1 p-3 border rounded-lg" placeholder="✍️ Add new task for the team..." value={newTask} onChange={e => setNewTask(e.target.value)} autoFocus />
-                    <button type="submit" className="bg-blue-600 text-white px-6 rounded-lg font-bold"><Plus size={20} /> Add</button>
+                    <button type="submit" className="bg-blue-600 text-white px-6 rounded-lg font-bold flex items-center gap-2"><Plus size={20} /> Add</button>
                 </form>
 
                 <div className="flex-1 overflow-y-auto space-y-3 px-1">
@@ -25210,34 +28439,46 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
                         const isEditing = editingTaskId === task.id;
 
                         return (
-                            <div key={task.id} className={`group flex items-start gap-3 p-4 rounded-xl border transition-all ${isDone ? 'bg-green-50 opacity-75' : 'bg-white shadow-sm'}`}>
+                            <div key={task.id} className={`group flex items-start gap-3 p-4 rounded-xl border transition-all ${isDone ? 'bg-green-50 opacity-75 border-green-200' : 'bg-white shadow-sm border-slate-200'}`}>
 
                                 {/* CHECKBOX */}
-                                <button onClick={() => handleToggleTask(task)} className={`mt-1 min-w-[24px] h-6 rounded border flex items-center justify-center ${isDone ? 'bg-green-500 text-white' : 'bg-white'}`}>
+                                <button
+                                    onClick={() => handleToggleTask(task)}
+                                    title={isDone ? `Marked done by ${task.completedBy}` : 'Mark as done'}
+                                    className={`mt-1 min-w-[24px] h-6 rounded border flex items-center justify-center transition-colors ${isDone ? 'bg-green-500 text-white border-green-500' : 'bg-white border-slate-300 hover:border-green-400'}`}
+                                >
                                     {isDone && <span className="font-bold text-sm">✓</span>}
                                 </button>
 
                                 {/* CONTENT */}
-                                <div className="flex-1">
+                                <div className="flex-1 min-w-0">
                                     {isEditing ? (
                                         <div className="flex gap-2">
-                                            <input className="flex-1 p-1 border rounded" value={editTaskText} onChange={e => setEditTaskText(e.target.value)} />
-                                            <button onClick={() => saveEdit(task.id)} className="text-green-600 font-bold text-xs bg-green-100 px-2 rounded">SAVE</button>
-                                            <button onClick={() => setEditingTaskId(null)} className="text-gray-500 font-bold text-xs bg-gray-100 px-2 rounded">CANCEL</button>
+                                            <input className="flex-1 p-1 border rounded text-sm" value={editTaskText} onChange={e => setEditTaskText(e.target.value)} autoFocus onKeyDown={e => { if (e.key === 'Enter') saveEdit(task.id); if (e.key === 'Escape') setEditingTaskId(null); }} />
+                                            <button onClick={() => saveEdit(task.id)} className="text-green-600 font-bold text-xs bg-green-100 px-2 rounded hover:bg-green-200">SAVE</button>
+                                            <button onClick={() => setEditingTaskId(null)} className="text-gray-500 font-bold text-xs bg-gray-100 px-2 rounded hover:bg-gray-200">CANCEL</button>
                                         </div>
                                     ) : (
                                         <>
                                             <p className={`text-base font-medium ${isDone ? 'line-through text-slate-500' : 'text-slate-800'}`}>{task.text}</p>
-                                            <div className="text-xs text-slate-400 mt-1">Added by {task.createdBy} {isDone && <span className="text-green-600 font-bold ml-2">✅ Done by {task.completedBy}</span>}</div>
+                                            <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                                                <span>📝 Added by <strong className="text-slate-600">{task.createdBy}</strong>{task.createdAt ? ` · ${formatDate(task.createdAt)}` : ''}</span>
+                                                {isDone && task.completedBy && (
+                                                    <span className="text-green-600 font-bold">✅ Done by {task.completedBy}{task.completedAt ? ` · ${formatDate(task.completedAt)}` : ''}</span>
+                                                )}
+                                                {task.editedBy && (
+                                                    <span className="text-orange-500">✏️ Edited by {task.editedBy}{task.editedAt ? ` · ${formatDate(task.editedAt)}` : ''}</span>
+                                                )}
+                                            </div>
                                         </>
                                     )}
                                 </div>
 
                                 {/* ACTIONS */}
                                 {!isEditing && (
-                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button onClick={() => startEdit(task)} className="p-2 text-blue-400 hover:text-blue-600 bg-blue-50 rounded"><Edit size={14} /></button>
-                                        <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-red-400 hover:text-red-600 bg-red-50 rounded"><Trash2 size={14} /></button>
+                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                        <button onClick={() => startEdit(task)} title="Edit task" className="p-2 text-blue-400 hover:text-blue-600 bg-blue-50 rounded"><Edit size={14} /></button>
+                                        <button onClick={() => handleDeleteTask(task.id, task.text)} title="Delete task" className="p-2 text-red-400 hover:text-red-600 bg-red-50 rounded"><Trash2 size={14} /></button>
                                     </div>
                                 )}
                             </div>
@@ -25487,9 +28728,9 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
 };
 
 // --- GLOBAL SEARCH MODAL (F4) ---
-const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directExpenseAccounts = [], incomeAccounts, assetAccounts, accounts, capitalAccounts, onSelect, user, dataOwnerId, userRole }) => {
+const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directExpenseAccounts = [], incomeAccounts, assetAccounts, accounts, capitalAccounts, taxRates = [], onSelect, user, dataOwnerId, userRole }) => {
     const [searchTerm, setSearchTerm] = useState('');
-    const [activeTab, setActiveTab] = useState('all'); // all, party, expense, income, asset, capital, bank
+    const [activeTab, setActiveTab] = useState('all'); // all, party, expense, direct_expense, income, tax, asset, capital, bank
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 12;
     const inputRef = useRef(null);
@@ -25510,6 +28751,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
         if (expenses) expenses.forEach(e => list.push({ ...e, type: 'expense', typeLabel: 'Indirect Exp' }));
         if (directExpenseAccounts) directExpenseAccounts.forEach(e => list.push({ ...e, type: 'direct_expense', typeLabel: 'Direct Exp' }));
         if (incomeAccounts) incomeAccounts.forEach(i => list.push({ ...i, type: 'income', typeLabel: 'Income' }));
+        if (taxRates) taxRates.forEach(t => list.push({ ...t, type: 'tax', typeLabel: 'Tax' }));
         if (assetAccounts) assetAccounts.forEach(a => list.push({ ...a, type: 'asset', typeLabel: 'Asset' }));
         if (accounts) accounts.forEach(a => list.push({ ...a, type: 'account', typeLabel: 'Cash/Bank' }));
         // Add Static Reports
@@ -25517,7 +28759,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
 
         if (capitalAccounts) capitalAccounts.forEach(c => list.push({ ...c, type: 'capital', typeLabel: 'Capital' }));
         return list;
-    }, [parties, expenses, directExpenseAccounts, incomeAccounts, assetAccounts, accounts, capitalAccounts]);
+    }, [parties, expenses, directExpenseAccounts, incomeAccounts, taxRates, assetAccounts, accounts, capitalAccounts]);
 
     const filtered = allData.filter(item => {
         if (activeTab === 'all') { /* show all */ }
@@ -25638,11 +28880,13 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                 jvS.forEach(doc => {
                     const v = doc.data();
                     const amt = Number(v.amount || 0);
+                    const rate = Number(v.exchangeRate || 1);
                     if (v.isMulti && v.rows) {
                         v.rows.forEach(r => {
                             if (balMap[r.id] !== undefined) {
-                                if (r.type === 'dr') balMap[r.id] += Number(r.amount || 0);
-                                else balMap[r.id] -= Number(r.amount || 0);
+                                const rowAmt = Number(r.amount || 0) * rate;
+                                if (r.type === 'dr') balMap[r.id] += rowAmt;
+                                else balMap[r.id] -= rowAmt;
                             }
                         });
                     } else {
@@ -25701,6 +28945,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                         { key: 'expense', label: 'INDIRECT EXP' },
                         { key: 'direct_expense', label: 'DIRECT EXP' },
                         { key: 'income', label: 'INCOME' },
+                        { key: 'tax', label: 'TAX' },
                         { key: 'asset', label: 'ASSET' },
                         { key: 'capital', label: 'CAPITAL' },
                         { key: 'bank', label: 'BANK / CASH' },
@@ -25746,6 +28991,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                                                     item.type === 'expense' ? 'bg-orange-100 text-orange-700' :
                                                         item.type === 'direct_expense' ? 'bg-red-100 text-red-700' :
                                                             item.type === 'income' ? 'bg-green-100 text-green-700' :
+                                                                item.type === 'tax' ? 'bg-amber-100 text-amber-700' :
                                                                 item.type === 'account' ? 'bg-purple-100 text-purple-700' :
                                                                     'bg-gray-100 text-gray-700'}`}>
                                                 {item.typeLabel}
@@ -25819,16 +29065,16 @@ const Toast = ({ toast, onClose }) => {
     );
 };
 
-const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyProfile, onLogout, onSubUserLogout, onChangePassword, currentRole }) => {
+const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyProfile, onLogout, onSubUserLogout, onChangePassword, currentRole, onInstallPwa, onUninstallPwa, isInstallable, isPwaInstalled }) => {
     const [formData, setFormData] = useState({ name: '', mobile: '' });
     const [loading, setLoading] = useState(false);
 
-    const license = window.nadtallyLicense;
+    const license = window.accproLicense;
     const isEdu = window.licenseMode === 'educational';
     
     // Explicitly derive current identity based on session type
     const baseName = subUser?.name || userData?.name || (currentRole === 'owner' ? license?.userName : '') || user?.displayName || (isEdu ? 'Guest User' : 'Authorized Personnel');
-    const adminEmail = user?.email || license?.email || (isEdu ? 'guest@nadtally.local' : 'authorized@nadtally.local');
+    const adminEmail = user?.email || license?.email || (isEdu ? 'guest@accpro.local' : 'authorized@accpro.local');
     const effectiveName = `${baseName} (${adminEmail})`;
     const effectiveEmail = adminEmail;
 
@@ -25843,6 +29089,20 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
     };
 
     const days = getDaysLeft(license?.expiresAt);
+
+    const handlePwaButtonClick = () => {
+        if (isPwaInstalled) {
+            onUninstallPwa && onUninstallPwa();
+            return;
+        }
+
+        if (isInstallable && onInstallPwa) {
+            onInstallPwa();
+            return;
+        }
+
+        alert('Install prompt is not ready right now.\n\nIn mobile Chrome, open menu (⋮) and tap "Add to Home screen" or "Install app".');
+    };
 
     useEffect(() => {
         if (isOpen) {
@@ -26092,13 +29352,27 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                             >
                                 <Key size={13} /> Change Password
                             </button>
+
+                            <button
+                                type="button"
+                                onClick={handlePwaButtonClick}
+                                className="w-full flex items-center gap-2 px-3 py-2 rounded transition-all text-xs font-black uppercase tracking-wider"
+                                style={
+                                    isPwaInstalled
+                                        ? { border: '1px solid #fecaca', background: '#fff5f5', color: '#b91c1c' }
+                                        : { border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8' }
+                                }
+                            >
+                                {isPwaInstalled ? <Trash2 size={13} /> : <Download size={13} />}
+                                {isPwaInstalled ? 'Uninstall PWA' : 'Install PWA'}
+                            </button>
                         </div>
                     </div>
 
                     {/* ── DEACTIVATE LINK ── */}
                     <button
                         type="button"
-                        onClick={() => { if (window.deactivateNadtallyLicense) window.deactivateNadtallyLicense(); }}
+                        onClick={() => { if (window.deactivateaccproLicense) window.deactivateaccproLicense(); }}
                         className="w-full flex items-center justify-center gap-2 py-2 rounded transition-all text-[9px] font-bold uppercase tracking-[2px]"
                         style={{ border: '1px solid #e5e7eb', color: '#aaa', background: 'transparent' }}
                         onMouseEnter={e => { e.currentTarget.style.borderColor = '#f87171'; e.currentTarget.style.color = '#dc2626'; e.currentTarget.style.background = '#fff5f5'; }}

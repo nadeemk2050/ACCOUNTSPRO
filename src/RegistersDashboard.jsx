@@ -25,6 +25,7 @@ const RegistersDashboard = ({
     onShowIncomeRegister,
     onShowManufacturingRegister,
     onShowLoansAdvancesRegister,
+    onShowTaxRegister,
     user,
     effectiveName,
     companyProfile
@@ -52,6 +53,7 @@ const RegistersDashboard = ({
         { id: 'income_reg', name: 'Indirect Incomes Register', action: onShowIncomeRegister, v2: true, desc: 'Non-operating revenue sources' },
         { id: 'manuf_reg', name: 'Manufacturing Register', action: onShowManufacturingRegister, v2: true, desc: 'Production & processing logs' },
         { id: 'loans_adv', name: 'Loans & Advances Tracker', action: onShowLoansAdvancesRegister, v2: true, desc: 'OA · TA · OL · TL — Track outstanding balances & due dates' },
+        { id: 'tax_reg', name: 'Tax Registers', action: onShowTaxRegister, v2: true, desc: 'Tax-wise invoice values and running balances' },
         { id: 'bill_wise', name: 'Bill Wise Details', action: null, comingSoon: true, desc: 'Party-wise outstanding bill tracking' },
     ];
 

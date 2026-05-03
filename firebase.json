@@ -2,6 +2,9 @@
   "firestore": {
     "rules": "firestore.rules"
   },
+  "database": {
+    "rules": "database.rules.json"
+  },
   "hosting": {
     "public": "dist",
     "ignore": [
@@ -10,6 +13,10 @@
       "**/node_modules/**"
     ],
     "rewrites": [
+      {
+        "source": "/api/**",
+        "function": "accproApi"
+      },
       {
         "source": "**",
         "destination": "/index.html"

@@ -10,10 +10,11 @@ import {
 } from 'lucide-react';
 import { db, auth } from './firebase';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { getMasterDB } from './localDB';
 
 import {
     collection, addDoc, serverTimestamp, query,
-    where, onSnapshot, deleteDoc, doc, setDoc, getDoc
+    where, onSnapshot, deleteDoc, doc, setDoc, getDoc, updateDoc
 } from 'firebase/firestore';
 import {
     generateInvoicePDF,
@@ -52,11 +53,13 @@ const ManagementDashboard = ({
     onShowLotProfit,
     onShowFinancials,
     onShowProfile,
+    onShowApiKey,
     onManageOrders,
     user,
     effectiveName,
     companyProfile,
     onUpdateProfile,
+    confirmPassword,
     onShowPaymentRegister,
     onShowReceiptRegister,
     onShowContraRegister,
@@ -80,6 +83,32 @@ const ManagementDashboard = ({
     const [summarySubTab, setSummarySubTab] = useState('cashflow');
     const [rulesSubTab, setRulesSubTab] = useState('general');
     const [selectedSummaryProductId, setSelectedSummaryProductId] = useState('');
+    const [saveStatus, setSaveStatus] = useState('');
+    const [localRefMode, setLocalRefMode] = useState(companyProfile?.rules?.paymentRefMode || 'manual');
+    const [localRefPattern, setLocalRefPattern] = useState(companyProfile?.rules?.paymentRefPattern || '');
+
+    const [localReceiptRefMode, setLocalReceiptRefMode] = useState(companyProfile?.rules?.receiptRefMode || 'manual');
+    const [localReceiptRefPattern, setLocalReceiptRefPattern] = useState(companyProfile?.rules?.receiptRefPattern || '');
+
+    const [localJournalRefMode, setLocalJournalRefMode] = useState(companyProfile?.rules?.journalRefMode || 'manual');
+    const [localJournalRefPattern, setLocalJournalRefPattern] = useState(companyProfile?.rules?.journalRefPattern || '');
+
+    const [localContraRefMode, setLocalContraRefMode] = useState(companyProfile?.rules?.contraRefMode || 'manual');
+    const [localContraRefPattern, setLocalContraRefPattern] = useState(companyProfile?.rules?.contraRefPattern || '');
+
+    React.useEffect(() => {
+        if (companyProfile?.rules?.paymentRefMode) setLocalRefMode(companyProfile.rules.paymentRefMode);
+        if (companyProfile?.rules?.paymentRefPattern) setLocalRefPattern(companyProfile.rules.paymentRefPattern);
+
+        if (companyProfile?.rules?.receiptRefMode) setLocalReceiptRefMode(companyProfile.rules.receiptRefMode);
+        if (companyProfile?.rules?.receiptRefPattern) setLocalReceiptRefPattern(companyProfile.rules.receiptRefPattern);
+
+        if (companyProfile?.rules?.journalRefMode) setLocalJournalRefMode(companyProfile.rules.journalRefMode);
+        if (companyProfile?.rules?.journalRefPattern) setLocalJournalRefPattern(companyProfile.rules.journalRefPattern);
+
+        if (companyProfile?.rules?.contraRefMode) setLocalContraRefMode(companyProfile.rules.contraRefMode);
+        if (companyProfile?.rules?.contraRefPattern) setLocalContraRefPattern(companyProfile.rules.contraRefPattern);
+    }, [companyProfile]);
     const [summaryDateRange, setSummaryDateRange] = useState({
         from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
         to: new Date().toISOString().split('T')[0]
@@ -616,7 +645,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="nadtally-brand-styled text-xl leading-none">NADTALLY<span className="text-[10px] font-black ml-1 italic">v 2.5.1</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">v 2.6.2</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -735,6 +764,13 @@ const ManagementDashboard = ({
                                     onClick={onShowInvoiceSettings}
                                     color="blue"
                                     icon={<FileText />}
+                                />
+                                <ActionCard
+                                    title="API & Widget Access"
+                                    desc="Generate API keys for external widgets and apps."
+                                    onClick={onShowApiKey}
+                                    color="indigo"
+                                    icon={<Key />}
                                 />
                             </div>
                         </div>
@@ -902,6 +938,390 @@ const ManagementDashboard = ({
                                                     </td>
                                                 </tr>
                                             ))}
+                                            {/* NEW ROW FOR AUTO REF NO */}
+                                            <tr className="hover:bg-white/5 transition-colors">
+                                                <td className="px-4 py-4 text-sm font-medium">
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-3">
+                                                             <span>In payment voucher generate ref no. (Automatically/Manually)</span>
+                                                             {saveStatus && (
+                                                                 <span className={`text-[10px] px-2 py-0.5 rounded font-black tracking-widest uppercase ${saveStatus.includes('Error') ? 'bg-red-500/20 text-red-400' : saveStatus.includes('Saved') ? 'bg-green-500/20 text-green-400 animate-pulse' : 'bg-blue-500/20 text-cyan-400'}`}>
+                                                                     {saveStatus}
+                                                                 </span>
+                                                             )}
+                                                         </div>
+                                                        {localRefMode === 'auto' && (
+                                                            <div className="flex items-center gap-2 mt-2">
+                                                                <span className="text-xs opacity-60">Pattern & Starting Number:</span>
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="e.g. p1600"
+                                                                    className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none focus:border-teal-500 w-32 text-white"
+                                                                    value={localRefPattern}
+                                                                    onChange={(e) => setLocalRefPattern(e.target.value)}
+                                                                />
+                                                            </div>
+                                                        )}
+                                                        
+                                                        <button
+                                                            onClick={async () => {
+                                                                const pwd = await confirmPassword("Enter password to save rule settings");
+                                                                if (!pwd || pwd.toLowerCase() !== "abcd") {
+                                                                    return alert("Incorrect Password. Rule change denied.");
+                                                                }
+                                                                
+                                                                const match = localRefPattern.match(/^(.*?)(\d+)$/);
+                                                                const updatedRules = { 
+                                                                    ...(companyProfile?.rules || {}), 
+                                                                    paymentRefMode: localRefMode,
+                                                                    paymentRefPattern: localRefPattern
+                                                                };
+                                                                if (match) {
+                                                                    updatedRules.paymentRefCurrentSeq = parseInt(match[2], 10);
+                                                                }
+                                                                
+                                                                const updatedProfile = {
+                                                                    ...companyProfile,
+                                                                    rules: updatedRules
+                                                                };
+                                                                if (onUpdateProfile) onUpdateProfile(updatedProfile);
+                                                                
+                                                                setSaveStatus('Saving...');
+                                                                try {
+                                                                    const targetId = dataOwnerId || companyProfile?.id;
+                                                                    if (targetId) {
+                                                                        if (functions) {
+                                                                            try {
+                                                                                const { httpsCallable } = await import('firebase/functions');
+                                                                                const updateFn = httpsCallable(functions, 'updateCompanyProfile');
+                                                                                await updateFn({ targetId, data: updatedProfile });
+                                                                            } catch (e) { console.warn("Cloud function failed", e); }
+                                                                        }
+                                                                        
+                                                                        let updates = { 
+                                                                            'rules.paymentRefMode': localRefMode,
+                                                                            'rules.paymentRefPattern': localRefPattern 
+                                                                        };
+                                                                        if (match) updates['rules.paymentRefCurrentSeq'] = parseInt(match[2], 10);
+                                                                        
+                                                                        try { await updateDoc(doc(db, 'companies', targetId), updates); } catch(e){}
+                                                                        try { await updateDoc(doc(db, 'nadtally_live_registry', targetId), updates); } catch(e){}
+                                                                        
+                                                                        const master = await getMasterDB();
+                                                                        const existing = await master.companies.findOne({ selector: { id: targetId } }).exec();
+                                                                        if (existing) {
+                                                                            await existing.patch({ rules: updatedRules });
+                                                                        }
+                                                                        setSaveStatus('Saved Securely!');
+                                                                        setTimeout(() => setSaveStatus(''), 3000);
+                                                                    }
+                                                                } catch (err) {
+                                                                    console.error("Failed to save rule:", err);
+                                                                    setSaveStatus('Error Saving');
+                                                                }
+                                                            }}
+                                                            className="mt-2 px-3 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-xs font-bold rounded shadow-md transition-all"
+                                                        >
+                                                            Save Settings
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-4 text-center">
+                                                    <select
+                                                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
+                                                        value={localRefMode}
+                                                        onChange={(e) => setLocalRefMode(e.target.value)}
+                                                    >
+                                                        <option className="bg-slate-800" value="manual">Manually</option>
+                                                        <option className="bg-slate-800" value="auto">Automatically</option>
+                                                    </select>
+
+                                                </td>
+                                            </tr>
+                                            {/* RECEIPT VOUCHER AUTO REF NO */}
+                                            <tr className="hover:bg-white/5 transition-colors">
+                                                <td className="px-4 py-4 text-sm font-medium">
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-3">
+                                                             <span>In receipt voucher generate ref no. (Automatically/Manually)</span>
+                                                         </div>
+                                                        {localReceiptRefMode === 'auto' && (
+                                                            <div className="flex items-center gap-2 mt-2">
+                                                                <span className="text-xs opacity-60">Pattern & Starting Number:</span>
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="e.g. r1600"
+                                                                    className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none focus:border-teal-500 w-32 text-white"
+                                                                    value={localReceiptRefPattern}
+                                                                    onChange={(e) => setLocalReceiptRefPattern(e.target.value)}
+                                                                />
+                                                            </div>
+                                                        )}
+                                                        
+                                                        <button
+                                                            onClick={async () => {
+                                                                const pwd = await confirmPassword("Enter password to save rule settings");
+                                                                if (!pwd || pwd.toLowerCase() !== "abcd") {
+                                                                    return alert("Incorrect Password. Rule change denied.");
+                                                                }
+                                                                
+                                                                const match = localReceiptRefPattern.match(/^(.*?)(\d+)$/);
+                                                                const updatedRules = { 
+                                                                    ...(companyProfile?.rules || {}), 
+                                                                    receiptRefMode: localReceiptRefMode,
+                                                                    receiptRefPattern: localReceiptRefPattern
+                                                                };
+                                                                if (match) {
+                                                                    updatedRules.receiptRefCurrentSeq = parseInt(match[2], 10);
+                                                                }
+                                                                
+                                                                const updatedProfile = {
+                                                                    ...companyProfile,
+                                                                    rules: updatedRules
+                                                                };
+                                                                if (onUpdateProfile) onUpdateProfile(updatedProfile);
+                                                                
+                                                                setSaveStatus('Saving...');
+                                                                try {
+                                                                    const targetId = dataOwnerId || companyProfile?.id;
+                                                                    if (targetId) {
+                                                                        if (functions) {
+                                                                            try {
+                                                                                const { httpsCallable } = await import('firebase/functions');
+                                                                                const updateFn = httpsCallable(functions, 'updateCompanyProfile');
+                                                                                await updateFn({ targetId, data: updatedProfile });
+                                                                            } catch (e) { console.warn("Cloud function failed", e); }
+                                                                        }
+                                                                        
+                                                                        let updates = { 
+                                                                            'rules.receiptRefMode': localReceiptRefMode,
+                                                                            'rules.receiptRefPattern': localReceiptRefPattern 
+                                                                        };
+                                                                        if (match) updates['rules.receiptRefCurrentSeq'] = parseInt(match[2], 10);
+                                                                        
+                                                                        try { await updateDoc(doc(db, 'companies', targetId), updates); } catch(e){}
+                                                                        try { await updateDoc(doc(db, 'nadtally_live_registry', targetId), updates); } catch(e){}
+                                                                        
+                                                                        const master = await getMasterDB();
+                                                                        const existing = await master.companies.findOne({ selector: { id: targetId } }).exec();
+                                                                        if (existing) {
+                                                                            await existing.patch({ rules: updatedRules });
+                                                                        }
+                                                                        setSaveStatus('Saved Securely!');
+                                                                        setTimeout(() => setSaveStatus(''), 3000);
+                                                                    }
+                                                                } catch (err) {
+                                                                    console.error("Failed to save rule:", err);
+                                                                    setSaveStatus('Error Saving');
+                                                                }
+                                                            }}
+                                                            className="mt-2 px-3 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-xs font-bold rounded shadow-md transition-all w-fit"
+                                                        >
+                                                            Save Settings
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-4 text-center">
+                                                    <select
+                                                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
+                                                        value={localReceiptRefMode}
+                                                        onChange={(e) => setLocalReceiptRefMode(e.target.value)}
+                                                    >
+                                                        <option className="bg-slate-800" value="manual">Manually</option>
+                                                        <option className="bg-slate-800" value="auto">Automatically</option>
+                                                    </select>
+                                                </td>
+                                            </tr>
+
+                                            {/* JOURNAL VOUCHER AUTO REF NO */}
+                                            <tr className="hover:bg-white/5 transition-colors">
+                                                <td className="px-4 py-4 text-sm font-medium">
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-3">
+                                                             <span>In journal voucher generate ref no. (Automatically/Manually)</span>
+                                                         </div>
+                                                        {localJournalRefMode === 'auto' && (
+                                                            <div className="flex items-center gap-2 mt-2">
+                                                                <span className="text-xs opacity-60">Pattern & Starting Number:</span>
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="e.g. j1600"
+                                                                    className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none focus:border-teal-500 w-32 text-white"
+                                                                    value={localJournalRefPattern}
+                                                                    onChange={(e) => setLocalJournalRefPattern(e.target.value)}
+                                                                />
+                                                            </div>
+                                                        )}
+                                                        
+                                                        <button
+                                                            onClick={async () => {
+                                                                const pwd = await confirmPassword("Enter password to save rule settings");
+                                                                if (!pwd || pwd.toLowerCase() !== "abcd") {
+                                                                    return alert("Incorrect Password. Rule change denied.");
+                                                                }
+                                                                
+                                                                const match = localJournalRefPattern.match(/^(.*?)(\d+)$/);
+                                                                const updatedRules = { 
+                                                                    ...(companyProfile?.rules || {}), 
+                                                                    journalRefMode: localJournalRefMode,
+                                                                    journalRefPattern: localJournalRefPattern
+                                                                };
+                                                                if (match) {
+                                                                    updatedRules.journalRefCurrentSeq = parseInt(match[2], 10);
+                                                                }
+                                                                
+                                                                const updatedProfile = {
+                                                                    ...companyProfile,
+                                                                    rules: updatedRules
+                                                                };
+                                                                if (onUpdateProfile) onUpdateProfile(updatedProfile);
+                                                                
+                                                                setSaveStatus('Saving...');
+                                                                try {
+                                                                    const targetId = dataOwnerId || companyProfile?.id;
+                                                                    if (targetId) {
+                                                                        if (functions) {
+                                                                            try {
+                                                                                const { httpsCallable } = await import('firebase/functions');
+                                                                                const updateFn = httpsCallable(functions, 'updateCompanyProfile');
+                                                                                await updateFn({ targetId, data: updatedProfile });
+                                                                            } catch (e) { console.warn("Cloud function failed", e); }
+                                                                        }
+                                                                        
+                                                                        let updates = { 
+                                                                            'rules.journalRefMode': localJournalRefMode,
+                                                                            'rules.journalRefPattern': localJournalRefPattern 
+                                                                        };
+                                                                        if (match) updates['rules.journalRefCurrentSeq'] = parseInt(match[2], 10);
+                                                                        
+                                                                        try { await updateDoc(doc(db, 'companies', targetId), updates); } catch(e){}
+                                                                        try { await updateDoc(doc(db, 'nadtally_live_registry', targetId), updates); } catch(e){}
+                                                                        
+                                                                        const master = await getMasterDB();
+                                                                        const existing = await master.companies.findOne({ selector: { id: targetId } }).exec();
+                                                                        if (existing) {
+                                                                            await existing.patch({ rules: updatedRules });
+                                                                        }
+                                                                        setSaveStatus('Saved Securely!');
+                                                                        setTimeout(() => setSaveStatus(''), 3000);
+                                                                    }
+                                                                } catch (err) {
+                                                                    console.error("Failed to save rule:", err);
+                                                                    setSaveStatus('Error Saving');
+                                                                }
+                                                            }}
+                                                            className="mt-2 px-3 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-xs font-bold rounded shadow-md transition-all w-fit"
+                                                        >
+                                                            Save Settings
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-4 text-center">
+                                                    <select
+                                                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
+                                                        value={localJournalRefMode}
+                                                        onChange={(e) => setLocalJournalRefMode(e.target.value)}
+                                                    >
+                                                        <option className="bg-slate-800" value="manual">Manually</option>
+                                                        <option className="bg-slate-800" value="auto">Automatically</option>
+                                                    </select>
+                                                </td>
+                                            </tr>
+
+                                            {/* CONTRA VOUCHER AUTO REF NO */}
+                                            <tr className="hover:bg-white/5 transition-colors">
+                                                <td className="px-4 py-4 text-sm font-medium">
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-3">
+                                                             <span>In contra voucher generate ref no. (Automatically/Manually)</span>
+                                                         </div>
+                                                        {localContraRefMode === 'auto' && (
+                                                            <div className="flex items-center gap-2 mt-2">
+                                                                <span className="text-xs opacity-60">Pattern & Starting Number:</span>
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="e.g. c1600"
+                                                                    className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none focus:border-teal-500 w-32 text-white"
+                                                                    value={localContraRefPattern}
+                                                                    onChange={(e) => setLocalContraRefPattern(e.target.value)}
+                                                                />
+                                                            </div>
+                                                        )}
+                                                        
+                                                        <button
+                                                            onClick={async () => {
+                                                                const pwd = await confirmPassword("Enter password to save rule settings");
+                                                                if (!pwd || pwd.toLowerCase() !== "abcd") {
+                                                                    return alert("Incorrect Password. Rule change denied.");
+                                                                }
+                                                                
+                                                                const match = localContraRefPattern.match(/^(.*?)(\d+)$/);
+                                                                const updatedRules = { 
+                                                                    ...(companyProfile?.rules || {}), 
+                                                                    contraRefMode: localContraRefMode,
+                                                                    contraRefPattern: localContraRefPattern
+                                                                };
+                                                                if (match) {
+                                                                    updatedRules.contraRefCurrentSeq = parseInt(match[2], 10);
+                                                                }
+                                                                
+                                                                const updatedProfile = {
+                                                                    ...companyProfile,
+                                                                    rules: updatedRules
+                                                                };
+                                                                if (onUpdateProfile) onUpdateProfile(updatedProfile);
+                                                                
+                                                                setSaveStatus('Saving...');
+                                                                try {
+                                                                    const targetId = dataOwnerId || companyProfile?.id;
+                                                                    if (targetId) {
+                                                                        if (functions) {
+                                                                            try {
+                                                                                const { httpsCallable } = await import('firebase/functions');
+                                                                                const updateFn = httpsCallable(functions, 'updateCompanyProfile');
+                                                                                await updateFn({ targetId, data: updatedProfile });
+                                                                            } catch (e) { console.warn("Cloud function failed", e); }
+                                                                        }
+                                                                        
+                                                                        let updates = { 
+                                                                            'rules.contraRefMode': localContraRefMode,
+                                                                            'rules.contraRefPattern': localContraRefPattern 
+                                                                        };
+                                                                        if (match) updates['rules.contraRefCurrentSeq'] = parseInt(match[2], 10);
+                                                                        
+                                                                        try { await updateDoc(doc(db, 'companies', targetId), updates); } catch(e){}
+                                                                        try { await updateDoc(doc(db, 'nadtally_live_registry', targetId), updates); } catch(e){}
+                                                                        
+                                                                        const master = await getMasterDB();
+                                                                        const existing = await master.companies.findOne({ selector: { id: targetId } }).exec();
+                                                                        if (existing) {
+                                                                            await existing.patch({ rules: updatedRules });
+                                                                        }
+                                                                        setSaveStatus('Saved Securely!');
+                                                                        setTimeout(() => setSaveStatus(''), 3000);
+                                                                    }
+                                                                } catch (err) {
+                                                                    console.error("Failed to save rule:", err);
+                                                                    setSaveStatus('Error Saving');
+                                                                }
+                                                            }}
+                                                            className="mt-2 px-3 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-xs font-bold rounded shadow-md transition-all w-fit"
+                                                        >
+                                                            Save Settings
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-4 text-center">
+                                                    <select
+                                                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
+                                                        value={localContraRefMode}
+                                                        onChange={(e) => setLocalContraRefMode(e.target.value)}
+                                                    >
+                                                        <option className="bg-slate-800" value="manual">Manually</option>
+                                                        <option className="bg-slate-800" value="auto">Automatically</option>
+                                                    </select>
+                                                </td>
+                                            </tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -1735,7 +2155,7 @@ const ManagementDashboard = ({
                                 <h3 className="text-xl font-bold flex items-center gap-2"><ShieldAlert className="text-red-400" /> Developer Control Center</h3>
                                 <div className="flex items-center gap-3">
                                     <button onClick={fetchAllLicenses} className="text-[10px] bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg font-black uppercase tracking-wider flex items-center gap-1"><RefreshCw size={10} /> Refresh</button>
-                                    <div className="text-[10px] font-black bg-red-500/20 px-3 py-1 rounded-full text-red-400 uppercase tracking-widest">NADTALLY INTERNAL USE ONLY</div>
+                                    <div className="text-[10px] font-black bg-red-500/20 px-3 py-1 rounded-full text-red-400 uppercase tracking-widest">accpro INTERNAL USE ONLY</div>
                                 </div>
                             </div>
 

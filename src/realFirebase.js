@@ -2,8 +2,9 @@ import { initializeApp } from "firebase/app";
 // Use @firebase/* directly so Vite's rxfs.js alias for 'firebase/firestore' is bypassed
 import { initializeFirestore, memoryLocalCache } from "@firebase/firestore";
 import { getAuth } from "firebase/auth";
-import { getFunctions } from "firebase/functions";
-import { getDatabase } from "firebase/database";
+import { getFunctions } from "@firebase/functions";
+
+import { getDatabase } from "@firebase/database"; // Use @firebase/* to bypass Vite alias → rxrtdb.js stub
 
 const firebaseConfig = {
   apiKey: "AIzaSyDaKgWXJiz_NTYo4NBCXhVZ7qIo9SwkooY",

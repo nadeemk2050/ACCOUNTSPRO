@@ -93,12 +93,13 @@ const TallySelect = ({ options = [], value, onChange, placeholder = 'Search...',
                         filtered.map((o, idx) => (
                             <div
                                 key={o.value}
-                                className={`px-2 py-1 text-[13px] cursor-pointer ${idx === highlightedIndex ? 'bg-[#2196f3] text-white' : 'text-slate-800 hover:bg-blue-50'}`}
+                                className={`px-2 py-1 text-[13px] cursor-pointer flex items-center justify-between gap-2 ${idx === highlightedIndex ? 'bg-[#2196f3] text-white' : 'text-slate-800 hover:bg-blue-50'}`}
                                 onClick={() => { onChange(o.value); setOpen(false); setQ(''); if (onEnter) onEnter(o.value); }}
                             >
-                                {o.text}
+                                <span>{o.text}</span>
+                                {o.type && <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${idx === highlightedIndex ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{o.type}</span>}
                             </div>
-                        ))
+                        )))
                     ) : (
                         <div className="px-2 py-1 text-[13px] text-slate-400 italic font-medium">No results found</div>
                     )}
@@ -131,6 +132,7 @@ const FinanceVoucherV2 = ({
     // field: 'date' | 'source' | 'ledger' | 'amount' | 'narration'
     const [focusIndex, setFocusIndex] = useState(0); // For rows
     const [focusField, setFocusField] = useState('source'); 
+    const [isRefNoUnlocked, setIsRefNoUnlocked] = useState(false);
 
     const refNoRef = useRef(null);
     const dateRef = useRef(null);
@@ -159,6 +161,9 @@ const FinanceVoucherV2 = ({
 
     useEffect(() => {
         if (!isOpen) return;
+        setIsRefNoUnlocked(false);
+
+        if (initialData) {
             setFormData({
                 date: initialData.date || new Date().toISOString().split('T')[0],
                 refNo: initialData.refNo || '',
@@ -171,15 +176,29 @@ const FinanceVoucherV2 = ({
             setFocusField('refNo');
             setTimeout(() => refNoRef.current?.focus(), 100);
         } else {
+            let nextRefNo = '';
+            if (type === 'payment' && companyProfile?.rules?.paymentRefMode === 'auto') {
+                const pattern = companyProfile?.rules?.paymentRefPattern || '';
+                const match = pattern.match(/^(.*?)(\d+)$/);
+                if (match) {
+                    const prefix = match[1];
+                    const startNum = parseInt(match[2], 10);
+                    const currentSeq = companyProfile.rules.paymentRefCurrentSeq !== undefined ? companyProfile.rules.paymentRefCurrentSeq : startNum;
+                    nextRefNo = `${prefix}${currentSeq}`;
+                } else {
+                    nextRefNo = pattern;
+                }
+            }
+
             setFormData({
                 date: lastDate || new Date().toISOString().split('T')[0],
-                refNo: '', sourceId: '', currencyId: 'BASE', exchangeRate: 1, narration: '',
+                refNo: nextRefNo, sourceId: '', currencyId: 'BASE', exchangeRate: 1, narration: '',
             });
             setRows([{ accountId: '', amount: '', narration: '' }]);
             setFocusField('refNo');
             setTimeout(() => refNoRef.current?.focus(), 100);
         }
-    }, [isOpen, initialData]);
+    }, [isOpen, initialData, companyProfile, type, lastDate]);
 
     const totals = useMemo(() => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0), [rows]);
 
@@ -226,7 +245,22 @@ const FinanceVoucherV2 = ({
                 };
 
                 if (initialData?.id) transaction.update(docRef, payload);
-                else transaction.set(docRef, payload);
+                else {
+                    transaction.set(docRef, payload);
+                    
+                    if (type === 'payment' && companyProfile?.rules?.paymentRefMode === 'auto') {
+                        const pattern = companyProfile?.rules?.paymentRefPattern || '';
+                        const match = pattern.match(/^(.*?)(\d+)$/);
+                        if (match) {
+                            const startNum = parseInt(match[2], 10);
+                            const currentSeq = companyProfile.rules.paymentRefCurrentSeq !== undefined ? companyProfile.rules.paymentRefCurrentSeq : startNum;
+                            const profileRef = doc(db, 'company_profiles', companyProfile.id || targetUid);
+                            transaction.update(profileRef, {
+                                'rules.paymentRefCurrentSeq': currentSeq + 1
+                            });
+                        }
+                    }
+                }
 
                 const logRef = doc(collection(db, 'audit_logs'));
                 transaction.set(logRef, {
@@ -308,15 +342,36 @@ const FinanceVoucherV2 = ({
                         {/* 2. Voucher Number */}
                         <div className="flex items-center gap-2 bg-black/20 p-1 px-2.5 rounded-lg border border-white/10 shadow-inner backdrop-blur-sm transition-all focus-within:ring-2 focus-within:ring-blue-400">
                             <span className="text-[10px] font-black text-blue-100 uppercase tracking-tight opacity-60">Vch No.</span>
-                            <input 
-                                ref={refNoRef}
-                                className="bg-transparent border-none w-24 px-1.5 py-0.5 outline-none text-white font-black text-sm placeholder-white/30" 
-                                value={formData.refNo || ''} 
-                                onChange={e => setFormData(p => ({ ...p, refNo: e.target.value }))}
-                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); moveToNext(); } }}
-                                onFocus={() => setFocusField('refNo')}
-                                placeholder="Ref..."
-                            />
+                            <div className="flex items-center gap-1">
+                                <input 
+                                    ref={refNoRef}
+                                    className="bg-transparent border-none w-24 px-1.5 py-0.5 outline-none text-white font-black text-sm placeholder-white/30 disabled:opacity-70 disabled:cursor-not-allowed" 
+                                    value={formData.refNo || ''} 
+                                    onChange={e => setFormData(p => ({ ...p, refNo: e.target.value }))}
+                                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); moveToNext(); } }}
+                                    onFocus={() => setFocusField('refNo')}
+                                    placeholder="Ref..."
+                                    disabled={type === 'payment' && companyProfile?.rules?.paymentRefMode === 'auto' && !isRefNoUnlocked}
+                                />
+                                {type === 'payment' && companyProfile?.rules?.paymentRefMode === 'auto' && !isRefNoUnlocked && (
+                                    <button 
+                                        tabIndex="-1"
+                                        onClick={() => {
+                                            const pwd = window.prompt("Enter password to edit Ref No:");
+                                            if (pwd === 'abcd') {
+                                                setIsRefNoUnlocked(true);
+                                                setTimeout(() => refNoRef.current?.focus(), 50);
+                                            } else if (pwd !== null) {
+                                                alert("Incorrect password!");
+                                            }
+                                        }}
+                                        className="text-white/40 hover:text-white transition-colors p-0.5"
+                                        title="Unlock for editing"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
                         {/* 3. Tools Group */}
@@ -409,8 +464,9 @@ const FinanceVoucherV2 = ({
                                                     placeholder=""
                                                 />
                                                 {ledger && (
-                                                    <div className="ml-4 text-[11px] font-bold text-slate-400 italic mt-0.5">
-                                                        Cur Bal: {Number(ledger.balance || 0).toFixed(2).toLocaleString()} {Number(ledger.balance || 0) >= 0 ? 'Dr' : 'Cr'}
+                                                    <div className="ml-4 text-[11px] font-bold text-slate-400 italic mt-0.5 flex items-center gap-2">
+                                                        {ledger.type && <span className="bg-blue-50 text-blue-600 px-1 py-0 rounded text-[10px] font-semibold not-italic">{ledger.type}</span>}
+                                                        <span>Cur Bal: {Number(ledger.balance || 0).toFixed(2).toLocaleString()} {Number(ledger.balance || 0) >= 0 ? 'Dr' : 'Cr'}</span>
                                                     </div>
                                                 )}
                                             </td>

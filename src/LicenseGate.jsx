@@ -335,7 +335,7 @@ function LicenseProfileModal({ licenseInfo, onClose, onDeactivate, mode }) {
             <div style={S.profileCard} onClick={e => e.stopPropagation()}>
                 <div style={{ padding: '24px 28px 20px', borderBottom: '1px solid rgba(74,222,128,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 4, color: '#4ade80', textTransform: 'uppercase', marginBottom: 4 }}>NADTALLY</div>
+                        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 4, color: '#4ade80', textTransform: 'uppercase', marginBottom: 4 }}>accpro</div>
                         <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9' }}>
                             {isEducational ? '🎓 Educational Mode' : '🔑 License Information'}
                         </div>
@@ -404,7 +404,7 @@ function LicenseProfileModal({ licenseInfo, onClose, onDeactivate, mode }) {
     );
 }
 
-const SYSTEM_VERSION = '2.5.7';
+const SYSTEM_VERSION = '2.5.9';
 const EDU_KEY = 'nadtally_edu_v1';
 
 export default function LicenseGate({ children }) {
@@ -446,8 +446,8 @@ export default function LicenseGate({ children }) {
     };
 
     useEffect(() => {
-        window.openNadtallyProfile = () => setProfileOpen?.(true) || (window.dispatchEvent(new CustomEvent('open-nadtally-profile')));
-        window.deactivateNadtallyLicense = handleDeactivate;
+        window.openaccproProfile = () => setProfileOpen?.(true) || (window.dispatchEvent(new CustomEvent('open-accpro-profile')));
+        window.deactivateaccproLicense = handleDeactivate;
         const unsub = onAuthStateChanged(auth, (u) => {
             if (!u && !window.isGuestMode && (phase === 'approved' || phase === 'educational')) {
                 setPhase('gate');
@@ -455,8 +455,8 @@ export default function LicenseGate({ children }) {
             }
         });
         return () => {
-            delete window.openNadtallyProfile;
-            delete window.deactivateNadtallyLicense;
+            delete window.openaccproProfile;
+            delete window.deactivateaccproLicense;
             unsub();
         };
     }, [phase]);
@@ -485,7 +485,7 @@ export default function LicenseGate({ children }) {
                         if (offlineHash) saveOfflineBackup(info);
                         setLicenseInfo(info);
                         window.licenseMode = 'licensed';
-                        window.nadtallyLicense = info;
+                        window.accproLicense = info;
                         setPhase('approved');
                         return;
                     }
@@ -494,7 +494,7 @@ export default function LicenseGate({ children }) {
                     const cachedAt = stored.cachedAt ? new Date(stored.cachedAt) : new Date(0);
                     if (isDev || (Date.now() - cachedAt.getTime()) / 86400000 <= OFFLINE_GRACE_DAYS) {
                         setLicenseInfo(stored);
-                        window.licenseMode = 'licensed'; window.nadtallyLicense = stored; setPhase('approved');
+                        window.licenseMode = 'licensed'; window.accproLicense = stored; setPhase('approved');
                     } else { clearLicense(stored.email); setPhase('gate'); }
                 }
                 return;
@@ -529,7 +529,7 @@ export default function LicenseGate({ children }) {
                         const restoredInfo = { ...backup, cachedAt: new Date().toISOString() };
                         saveLicense(restoredInfo);
                         saveAuthEmail(cleanEmail);
-                        setLicenseInfo(restoredInfo); window.licenseMode = 'licensed'; window.nadtallyLicense = restoredInfo; setPhase('approved');
+                        setLicenseInfo(restoredInfo); window.licenseMode = 'licensed'; window.accproLicense = restoredInfo; setPhase('approved');
                         setLoading(false); return;
                     } else { setError('⏰ License has expired.'); setLoading(false); return; }
                 }
@@ -545,7 +545,7 @@ export default function LicenseGate({ children }) {
                 saveLicense(info);
                 saveOfflineBackup(info);
                 saveAuthEmail(cleanEmail);
-                setLicenseInfo(info); window.licenseMode = 'licensed'; window.nadtallyLicense = info; setPhase('approved'); return;
+                setLicenseInfo(info); window.licenseMode = 'licensed'; window.accproLicense = info; setPhase('approved'); return;
             }
             if (data.status === 'pending') { setSuccess('⏳ Pending admin approval.'); setLoading(false); return; }
             if (!data.status || data.status === 'not_requested' || data.status === 'inactive') {
@@ -592,7 +592,7 @@ export default function LicenseGate({ children }) {
                             const info = { ...stored, offlinePassHash: hashedPwd, cachedAt: new Date().toISOString() };
                             saveLicense(info);
                             saveOfflineBackup(info);
-                            setLicenseInfo(info); window.licenseMode = 'licensed'; window.nadtallyLicense = info; setPhase('approved');
+                            setLicenseInfo(info); window.licenseMode = 'licensed'; window.accproLicense = info; setPhase('approved');
                             return { success: true };
                         }
                         return { success: false, msg: '🔑 No offline credentials saved. Connect online and login once to enable offline access.' };
@@ -601,7 +601,7 @@ export default function LicenseGate({ children }) {
                     if (stored.email.toLowerCase() === cleanEmail && storedHash === hashedPwd) {
                         if (isDev || expiry > new Date()) {
                             console.log('[LocalAuth] SUCCESS via main store.');
-                            setLicenseInfo(stored); window.licenseMode = 'licensed'; window.nadtallyLicense = stored; setPhase('approved');
+                            setLicenseInfo(stored); window.licenseMode = 'licensed'; window.accproLicense = stored; setPhase('approved');
                             return { success: true };
                         }
                         return { success: false, msg: '⏰ Your license has expired.' };
@@ -622,7 +622,7 @@ export default function LicenseGate({ children }) {
                             console.log('[LocalAuth] SUCCESS via backup store. Restoring...');
                             const restoredInfo = { ...backup, cachedAt: new Date().toISOString() };
                             saveLicense(restoredInfo);
-                            setLicenseInfo(restoredInfo); window.licenseMode = 'licensed'; window.nadtallyLicense = restoredInfo; setPhase('approved');
+                            setLicenseInfo(restoredInfo); window.licenseMode = 'licensed'; window.accproLicense = restoredInfo; setPhase('approved');
                             return { success: true };
                         }
                         return { success: false, msg: '⏰ Your license has expired.' };
@@ -658,7 +658,7 @@ export default function LicenseGate({ children }) {
                 saveLicense(info);
                 saveOfflineBackup(info);
                 saveAuthEmail(cleanEmail);
-                setLicenseInfo(info); window.licenseMode = 'licensed'; window.nadtallyLicense = info; setPhase('approved');
+                setLicenseInfo(info); window.licenseMode = 'licensed'; window.accproLicense = info; setPhase('approved');
             } catch (err) {
                 console.warn('[DirectLogin] Online attempt failed:', err.code, '|', err.message);
                 const isNetErr = !navigator.onLine
@@ -688,7 +688,7 @@ export default function LicenseGate({ children }) {
     };
 
     const handleEducational = (guestInfo = null) => {
-        if (guestInfo) { window.nadtally_license = guestInfo; localStorage.setItem('nadtally_guest_info', JSON.stringify(guestInfo)); }
+        if (guestInfo) { window.accproLicense = guestInfo; localStorage.setItem('nadtally_guest_info', JSON.stringify(guestInfo)); }
         localStorage.setItem(EDU_KEY, 'yes'); window.licenseMode = 'educational'; setPhase('educational');
     };
 
@@ -698,14 +698,14 @@ export default function LicenseGate({ children }) {
         window.guestTxCount = 0;
         const guestInfo = { 
             userName: 'Guest User', 
-            email: 'guest@nadtally.app', 
+            email: 'guest@accpro.app', 
             serialKey: 'GUEST-SESSION',
             expiresAt: new Date(Date.now() + 86400000).toISOString(),
             isGuest: true 
         };
         setLicenseInfo(guestInfo);
         window.licenseMode = 'licensed'; 
-        window.nadtallyLicense = guestInfo; 
+        window.accproLicense = guestInfo; 
         setPhase('approved');
     };
 
@@ -731,7 +731,7 @@ export default function LicenseGate({ children }) {
                 saveLicense(info);
                 saveOfflineBackup(info);
                 saveAuthEmail(cleanEmail);
-                setLicenseInfo(info); window.licenseMode = 'licensed'; window.nadtallyLicense = info; setPhase('approved');
+                setLicenseInfo(info); window.licenseMode = 'licensed'; window.accproLicense = info; setPhase('approved');
             } else {
                 handleEducational({ userName: cleanName, email: cleanEmail, uid: user.uid, isGuest: true, activatedAt: new Date().toISOString() });
             }
@@ -760,7 +760,7 @@ export default function LicenseGate({ children }) {
         try { await signOut(auth); } catch (e) { }
         if (licenseInfo) saveOfflineBackup(licenseInfo); // Keep backup so user can re-login offline
         clearLicense(licenseInfo?.email); localStorage.removeItem(EDU_KEY); setLicenseInfo(null);
-        setProfileOpen(false); window.licenseMode = null; window.nadtallyLicense = null; setView('main'); setPhase('gate');
+        setProfileOpen(false); window.licenseMode = null; window.accproLicense = null; setView('main'); setPhase('gate');
     };
 
     if (phase === 'checking') {
@@ -769,7 +769,7 @@ export default function LicenseGate({ children }) {
                 <div style={S.grid} /><div style={S.glow} />
                 <div style={{ position: 'relative', textAlign: 'center' }}>
                     <div style={{ width: 40, height: 40, border: '3px solid #4ade8022', borderTopColor: '#4ade80', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 16px' }} />
-                    <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 4, color: '#4ade80' }}>NADTALLY</div>
+                    <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 4, color: '#4ade80' }}>accpro</div>
                 </div>
                 <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
@@ -875,7 +875,7 @@ export default function LicenseGate({ children }) {
 
                 <div style={{ ...S.card, margin: 0, animation: 'fadeInUp 0.4s ease' }}>
                     <div style={S.header}>
-                        <div style={S.logo}>NADTALLY · Professional Accounting</div>
+                        <div style={S.logo}>accpro · Professional Accounting</div>
                         <div style={{ ...S.appName, fontSize: isFormView ? 22 : 28 }}>{isFormView ? (view === 'login' ? '👤 Sign In' : '🔑 Activation') : 'Welcome'}</div>
                     </div>
                     <div style={S.body}>
@@ -923,7 +923,7 @@ export default function LicenseGate({ children }) {
                         )}
                     </div>
                     <div style={{ padding: '16px 36px', borderTop: '1px solid #4ade8011', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
-                        <div style={{ fontSize: 10, color: '#64748b' }}>NADTALLY <span style={{ color: '#4ade80' }}>v{SYSTEM_VERSION}</span></div>
+                        <div style={{ fontSize: 10, color: '#64748b' }}>accpro <span style={{ color: '#4ade80' }}>v{SYSTEM_VERSION}</span></div>
                         <button onClick={handleRefreshApp} style={{ background: '#4ade8011', border: '1px solid #4ade8022', borderRadius: 4, padding: 4, cursor: 'pointer', color: '#4ade80', display: 'flex' }}><IconRefresh /></button>
                     </div>
                 </div>

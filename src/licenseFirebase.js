@@ -1,5 +1,5 @@
 // ==============================================================
-// NADTALLY LICENSE SYSTEM — Firestore REST API (no SDK needed)
+// accpro LICENSE SYSTEM — Firestore REST API (no SDK needed)
 // Uses direct fetch() calls to avoid Firebase SDK multi-app
 // initialization issues in Electron environments.
 // ==============================================================

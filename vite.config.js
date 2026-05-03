@@ -7,6 +7,10 @@ import path from 'path';
 // https://vitejs.dev/config/
 export default defineConfig({
   base: './', // CRUCIAL FOR ELECTRON
+  server: {
+    open: true, // open in external default browser, not VS Code simple browser
+    browser: 'external',
+  },
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {
@@ -44,6 +48,50 @@ export default defineConfig({
             sizes: '512x512',
             type: 'image/png',
             purpose: 'any maskable'
+          }
+        ],
+        shortcuts: [
+          {
+            name: 'New Payment',
+            short_name: 'Payment',
+            description: 'Create a new payment voucher',
+            url: './?app=accpro-offline&voucher=payment',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'New Receipt',
+            short_name: 'Receipt',
+            description: 'Create a new receipt voucher',
+            url: './?app=accpro-offline&voucher=receipt',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'New Journal',
+            short_name: 'Journal',
+            description: 'Create a new journal voucher',
+            url: './?app=accpro-offline&voucher=journal',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'New Contra',
+            short_name: 'Contra',
+            description: 'Create a new contra voucher',
+            url: './?app=accpro-offline&voucher=contra',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'New Sales',
+            short_name: 'Sales',
+            description: 'Create a new sales invoice',
+            url: './?app=accpro-offline&voucher=sales',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
+          },
+          {
+            name: 'New Purchase',
+            short_name: 'Purchase',
+            description: 'Create a new purchase invoice',
+            url: './?app=accpro-offline&voucher=purchase',
+            icons: [{ src: 'pwa-192x192.png', sizes: '192x192' }]
           }
         ]
       },

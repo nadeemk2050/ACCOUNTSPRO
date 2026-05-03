@@ -160,9 +160,8 @@ export const getDoc = async (docRef) => {
 
     const parts = docRef.path.split('/');
     const id = parts[parts.length - 1];
-
-    if (!db.offline_records) return snap;
-    const rxDoc = await db.offline_records.findOne({ selector: { id } }).exec();
+    const colName = parts.slice(0, -1).join('/');
+    const rxDoc = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
 
     const snap = {
         id,
@@ -198,8 +197,9 @@ export const onSnapshot = (q, callback) => {
         if (targetType === 'doc') {
             const parts = queryPath.split('/');
             const id = parts[parts.length - 1];
+            const colName = parts.slice(0, -1).join('/');
 
-            const sub = db.offline_records.findOne({ selector: { id } }).$.subscribe(rxDoc => {
+            const sub = db.offline_records.findOne({ selector: { id, collectionName: colName } }).$.subscribe(rxDoc => {
                 const snap = {
                     id,
                     ref: { id, path: queryPath },
@@ -264,13 +264,28 @@ export const onSnapshot = (q, callback) => {
     return () => { /* Unsubscribe logic */ };
 };
 
+// Helper to ensure data is a plain JSON object (avoids DataCloneError in RxDB/BroadcastChannel)
+function wash(data) {
+    if (!data) return data;
+    return JSON.parse(JSON.stringify(data, (key, value) => {
+        // If it's a Firestore Timestamp (resilient check for minified builds)
+        if (value && typeof value === 'object' && (value.constructor?.name === 'Timestamp' || typeof value.toDate === 'function')) {
+            const date = typeof value.toDate === 'function' ? value.toDate() : new Date(value.seconds * 1000);
+            return { seconds: Math.floor(date.getTime() / 1000), nanoseconds: 0 };
+        }
+        // Handle serverTimestamp sentinel
+        if (value && value.type === 'serverTimestamp') {
+            return Date.now();
+        }
+        return value;
+    }));
+}
+
 export const addDoc = async (colRef, data) => {
     const db = await getDB();
     const newId = uuidv4();
 
-    const cleanData = JSON.parse(JSON.stringify(data, (k, v) =>
-        (v && v.type === 'serverTimestamp') ? Timestamp.now() : v
-    ));
+    const cleanData = wash(data);
 
     await db.offline_records.insert({
         id: newId,
@@ -286,29 +301,52 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
     const db = await getDB();
     if (!docRef || !docRef.path) return;
     const parts = docRef.path.split('/');
-    const colName = parts[0];
+    const colName = parts.slice(0, -1).join('/');
     const id = parts[parts.length - 1];
 
     if (!db.offline_records) return;
-    const exist = await db.offline_records.findOne({ selector: { id } }).exec();
+    const cleanData = wash(data);
 
-    const cleanData = JSON.parse(JSON.stringify(data, (k, v) =>
-        (v && v.type === 'serverTimestamp') ? Timestamp.now() : v
-    ));
+    const isConflictError = (e) =>
+        e?.rxdb === true ||
+        e?.code === 'CONFLICT' ||
+        (e?.message && e.message.includes('CONFLICT')) ||
+        (e?.parameters?.writeError?.status === 409) ||
+        e?.status === 409;
 
-    if (exist) {
-        if (options.merge) {
-            await exist.patch({ data: { ...exist.data, ...cleanData } });
-        } else {
-            await exist.patch({ data: cleanData });
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const exist = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
+        const existAny = exist ? null : await db.offline_records.findOne({ selector: { id } }).exec();
+        try {
+            if (exist) {
+                if (options.merge) {
+                    const existingData = JSON.parse(JSON.stringify(exist.toJSON().data || {}));
+                    await exist.patch({ data: { ...existingData, ...cleanData }, timestamp: Date.now() });
+                } else {
+                    await exist.patch({ data: cleanData, timestamp: Date.now() });
+                }
+            } else if (existAny) {
+                // Same id exists in another collection: treat as a move to target collection.
+                const anyData = JSON.parse(JSON.stringify(existAny.toJSON().data || {}));
+                const nextData = options.merge ? { ...anyData, ...cleanData } : cleanData;
+                await existAny.patch({ collectionName: colName, data: nextData, timestamp: Date.now() });
+            } else {
+                await db.offline_records.insert({
+                    id: id,
+                    collectionName: colName,
+                    data: cleanData,
+                    timestamp: Date.now()
+                });
+            }
+            return;
+        } catch (e) {
+            if (isConflictError(e) && attempt < MAX_RETRIES - 1) {
+                await new Promise(r => setTimeout(r, 30 * (attempt + 1)));
+                continue;
+            }
+            throw e;
         }
-    } else {
-        await db.offline_records.insert({
-            id: id,
-            collectionName: colName,
-            data: cleanData,
-            timestamp: Date.now()
-        });
     }
 };
 
@@ -316,15 +354,34 @@ export const updateDoc = async (docRef, data) => {
     const db = await getDB();
     if (!docRef || !docRef.path) return;
     const parts = docRef.path.split('/');
+    const colName = parts.slice(0, -1).join('/');
     const id = parts[parts.length - 1];
 
     if (!db.offline_records) return;
-    const exist = await db.offline_records.findOne({ selector: { id } }).exec();
-    if (exist) {
-        const cleanData = JSON.parse(JSON.stringify(data, (k, v) =>
-            (v && v.type === 'serverTimestamp') ? Timestamp.now() : v
-        ));
-        await exist.patch({ data: { ...exist.data, ...cleanData } });
+    const cleanData = wash(data);
+
+    const isConflictError = (e) =>
+        e?.rxdb === true ||
+        e?.code === 'CONFLICT' ||
+        (e?.message && e.message.includes('CONFLICT')) ||
+        (e?.parameters?.writeError?.status === 409) ||
+        e?.status === 409;
+
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const exist = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
+        if (!exist) return;
+        try {
+            const existingData = JSON.parse(JSON.stringify(exist.toJSON().data || {}));
+            await exist.patch({ data: { ...existingData, ...cleanData }, timestamp: Date.now() });
+            return;
+        } catch (e) {
+            if (isConflictError(e) && attempt < MAX_RETRIES - 1) {
+                await new Promise(r => setTimeout(r, 30 * (attempt + 1)));
+                continue;
+            }
+            throw e;
+        }
     }
 };
 
@@ -332,6 +389,7 @@ export const deleteDoc = async (docRef) => {
     const db = await getDB();
     if (!docRef || !docRef.path) return;
     const parts = docRef.path.split('/');
+    const colName = parts.slice(0, -1).join('/');
     const id = parts[parts.length - 1];
 
     if (!db.offline_records) return;
@@ -339,7 +397,7 @@ export const deleteDoc = async (docRef) => {
     // Re-fetch fresh on each attempt to avoid _rev conflict with background sync
     const MAX_RETRIES = 5;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        const fresh = await db.offline_records.findOne({ selector: { id } }).exec();
+        const fresh = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
         if (!fresh) return; // already deleted
         try {
             await fresh.remove();

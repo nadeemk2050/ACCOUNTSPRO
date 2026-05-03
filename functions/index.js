@@ -2,7 +2,9 @@
  * COMPLETE BACKEND CODE (Restores all deleted functions)
  */
 
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, HttpsError, onRequest } = require("firebase-functions/v2/https");
+const crypto = require('crypto');
+
 const admin = require('firebase-admin');
 
 // 1. Initialize Admin App
@@ -695,3 +697,137 @@ exports.getTeamList = onCall({ cors: true }, async (request) => {
         throw new HttpsError('internal', error.message);
     }
 });
+
+// ==========================================
+// 6. API KEY MANAGEMENT
+// ==========================================
+
+exports.generateApiKey = onCall({ cors: true }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Login required.');
+    
+    const { companyId } = request.data;
+    if (!companyId) throw new HttpsError('invalid-argument', 'Company ID is required.');
+
+    const userId = request.auth.token.ownerId || request.auth.uid;
+    const db = admin.firestore();
+
+    const apiKey = crypto.randomBytes(24).toString('hex');
+    
+    // Store key with a composite ID to allow one key per company
+    await db.collection('api_keys').doc(`${userId}_${companyId}`).set({
+        apiKey,
+        userId,
+        companyId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { apiKey };
+});
+
+exports.getApiKey = onCall({ cors: true }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Login required.');
+    
+    const { companyId } = request.data;
+    if (!companyId) throw new HttpsError('invalid-argument', 'Company ID is required.');
+
+    const userId = request.auth.token.ownerId || request.auth.uid;
+    const doc = await admin.firestore().collection('api_keys').doc(`${userId}_${companyId}`).get();
+    
+    return doc.exists ? doc.data() : null;
+});
+
+// ==========================================
+// 7. PUBLIC API FOR WIDGETS
+// ==========================================
+
+exports.accproApi = onRequest({ cors: true }, async (req, res) => {
+    const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+    
+    if (!apiKey) {
+        return res.status(401).json({ error: 'API Key missing' });
+    }
+
+    try {
+        const db = admin.firestore();
+        
+        // Find the user and company associated with this API Key
+        const keySnap = await db.collection('api_keys').where('apiKey', '==', apiKey).limit(1).get();
+        
+        if (keySnap.empty) {
+            return res.status(403).json({ error: 'Invalid API Key' });
+        }
+
+        const keyData = keySnap.docs[0].data();
+        const userId = keyData.userId;
+        const companyId = keyData.companyId;
+
+        const action = req.query.action || 'summary';
+
+        // Helper to query the company's live records
+        const getRecords = (colName) => db.collection('companies_live').doc(companyId).collection('records').where('collectionName', '==', colName);
+
+        if (action === 'summary') {
+            // Get basic summary for widget from live records
+            const [partySnap, accountSnap, invoiceSnap] = await Promise.all([
+                getRecords('parties').get(),
+                getRecords('accounts').get(),
+                getRecords('invoices').orderBy('data.date', 'desc').limit(5).get()
+            ]);
+
+            let totalReceivable = 0;
+            let totalPayable = 0;
+            partySnap.forEach(doc => {
+                const item = doc.data();
+                const bal = item.data?.balance || 0;
+                if (bal > 0) totalReceivable += bal;
+                else totalPayable += Math.abs(bal);
+            });
+
+            let cashBankBalance = 0;
+            accountSnap.forEach(doc => {
+                const item = doc.data();
+                cashBankBalance += (item.data?.balance || 0);
+            });
+
+            const recentInvoices = invoiceSnap.docs.map(doc => {
+                const item = doc.data();
+                return {
+                    id: item.id,
+                    ...item.data
+                };
+            });
+
+            return res.json({
+                companyId,
+                totalReceivable,
+                totalPayable,
+                cashBankBalance,
+                recentInvoices
+            });
+        }
+
+        if (action === 'party_balance') {
+            const partyId = req.query.partyId;
+            if (!partyId) return res.status(400).json({ error: 'partyId required' });
+
+            const doc = await db.collection('companies_live').doc(companyId).collection('records').doc(partyId).get();
+            if (!doc.exists || doc.data().collectionName !== 'parties') {
+                return res.status(404).json({ error: 'Party not found' });
+            }
+
+            const item = doc.data();
+            return res.json({
+                name: item.data?.name,
+                balance: item.data?.balance || 0
+            });
+        }
+
+        return res.status(400).json({ error: 'Unknown action' });
+
+    } catch (error) {
+        console.error("API Error:", error);
+        return res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+

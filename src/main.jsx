@@ -9,12 +9,15 @@ import LicenseGate from './LicenseGate.jsx'
 if (process.env.NODE_ENV === 'development') {
   const originalError = console.error;
   console.error = (...args) => {
-    const first = typeof args[0] === 'string' ? args[0] : '';
+    const first = args[0];
+    const msg = typeof first === 'string' ? first : (first?.message || '');
     if (
-      (first.includes('Expected static flag was missing') ||
-        first.includes('Internal React error') ||
-        first.includes('Could not establish connection. Receiving end does not exist') ||
-        first.includes('A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received'))
+      (msg.includes('Expected static flag was missing') ||
+        msg.includes('Internal React error') ||
+        msg.includes('Cannot find menu item with id') ||
+        msg.includes('RxStorageInstanceDexie is closed') || 
+        msg.includes('DM4') ||
+        msg.includes('Could not establish connection. Receiving end does not exist'))
     ) {
       return; // Suppress this specific error
     }
@@ -22,8 +25,8 @@ if (process.env.NODE_ENV === 'development') {
   };
 }
 
-const APP_VERSION = '2.5.7'; // Update this string whenever you deploy a breaking change
-console.log(`NADTALLY Running Version: ${APP_VERSION}`);
+const APP_VERSION = '2.6.2'; // Update this string whenever you deploy a breaking change
+console.log(`ACCPRO Running Version: ${APP_VERSION}`);
 
 // 🛡️ SECURITY & CACHE FIX: Unregister any existing service workers that might be serving old code
 if ('serviceWorker' in navigator) {
@@ -60,7 +63,7 @@ const GlobalEffects = () => {
           if (data.version && data.version !== APP_VERSION) {
             console.warn(`Version mismatch! Detected ${data.version}, but currently running ${APP_VERSION}. Forcing reload...`);
             // Show a brief alert, so the user isn't totally shocked when the page blinks out
-            alert("A new update for NADTALLY has been released! The page will now refresh to apply the latest changes.");
+            alert("A new update for ACCPRO has been released! The page will now refresh to apply the latest changes.");
             // Hard reload, clearing cache
             window.location.reload(true);
           }

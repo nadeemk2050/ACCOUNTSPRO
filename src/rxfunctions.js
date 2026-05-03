@@ -1,7 +1,7 @@
 export const getFunctions = () => ({});
 export const httpsCallable = (funcs, name) => async (data) => {
     if (name === 'getCompanyProfile') {
-        return { data: { name: 'NAD Tally (Offline)', id: 'offline-company', currency: 'AED' } };
+        return { data: { name: 'ACCPRO (Offline)', id: 'offline-company', currency: 'AED' } };
     }
     if (name === 'getTeamList') {
         return { data: [] };

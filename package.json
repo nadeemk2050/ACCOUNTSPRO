@@ -1,9 +1,9 @@
 {
-  "name": "accnad-app-offline",
-  "version": "2.5.7",
+  "name": "accpro-app-offline",
+  "version": "2.6.2",
   "type": "module",
   "description": "Professional Offline Accounting & Inventory System",
-  "author": "NADTALLY Solutions",
+  "author": "ACCPRO Solutions",
   "private": true,
   "main": "electron-main.cjs",
   "scripts": {
@@ -17,7 +17,7 @@
   },
   "build": {
     "appId": "com.accpro.offline",
-    "productName": "ACCPRO Offline",
+    "productName": "ACCPRO ELITE",
     "npmRebuild": false,
     "directories": {
       "output": "dist_electron_v2"

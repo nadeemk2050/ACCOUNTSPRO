@@ -668,7 +668,8 @@ const InventoryVoucherV2 = ({
         <>
             <div className="fixed inset-0 bg-[#f8fafc] flex flex-col overflow-hidden animate-in fade-in duration-200" style={{ zIndex }}>
                 {/* === GATEWAY BLUE TOP BAR === */}
-                <div className="flex-shrink-0 bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] px-5 py-2.5 flex items-center justify-between select-none shadow-xl z-20">
+                <div className="flex-shrink-0 bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] px-5 py-2.5 flex items-center justify-between select-none shadow-xl z-20 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="flex flex-nowrap items-center gap-6 shrink-0">
                     <div className="flex items-center gap-6">
                         {/* 1. Identity & Mode */}
                         <div className="flex flex-col shrink-0 min-w-[140px]">
@@ -763,6 +764,7 @@ const InventoryVoucherV2 = ({
                             {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
                             {saving ? 'Saving...' : 'Save Voucher'}
                         </button>
+                    </div>
                     </div>
                 </div>
 
@@ -1104,7 +1106,8 @@ const InventoryVoucherV2 = ({
                 </div>
 
                 {/* === STANDARDIZED FOOTER ACTIONS === */}
-                <div className="flex-shrink-0 bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] p-5 shadow-[0_-8px_30px_rgba(0,0,0,0.3)] z-30">
+                <div className="flex-shrink-0 bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] p-5 shadow-[0_-8px_30px_rgba(0,0,0,0.3)] z-30 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="flex flex-nowrap items-center justify-between shrink-0 min-w-full">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                             <button onClick={onClose} className="bg-white/10 hover:bg-red-500/80 text-white px-4 h-[40px] text-[10px] font-black uppercase tracking-widest border border-white/20 rounded-lg transition-all active:scale-95 flex items-center gap-2" title="ESC: Close">
@@ -1136,6 +1139,7 @@ const InventoryVoucherV2 = ({
                                 {saving ? 'Synchronizing...' : 'Accept Transaction'}
                             </button>
                         </div>
+                    </div>
                     </div>
                 </div>
             </div>

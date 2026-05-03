@@ -11,15 +11,17 @@ function createWindow() {
         width: 1300,
         height: 900,
         show: true,
+        title: "ACCPRO ELITE",
+        autoHideMenuBar: true,
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false
         }
     });
 
-    // 🚀 SOFT UPDATE SYSTEM: Check for external 'nadtally_update' folder next to the .exe
+    // 🚀 SOFT UPDATE SYSTEM: Check for external 'accpro_update' folder next to the .exe
     const exeDir = path.dirname(app.getPath('exe'));
-    const updatePath = path.join(exeDir, 'nadtally_update', 'index.html');
+    const updatePath = path.join(exeDir, 'accpro_update', 'index.html');
     const builtInPath = path.join(__dirname, 'dist', 'index.html');
 
     if (fs.existsSync(updatePath)) {
@@ -80,7 +82,7 @@ ipcMain.handle('restart-app', () => {
 app.whenReady().then(() => {
     console.log("App Ready!");
     try {
-        const configPath = path.join(app.getPath('appData'), 'nadtally-config.json');
+        const configPath = path.join(app.getPath('appData'), 'accpro-config.json');
         if (fs.existsSync(configPath)) {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
             if (config.userDataPath) app.setPath('userData', config.userDataPath);

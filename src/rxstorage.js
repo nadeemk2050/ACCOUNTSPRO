@@ -1,4 +1,4 @@
-const DB_NAME = 'accpro_offline_storage';
+const DB_NAME = 'nadtally_offline_storage';
 const STORE_NAME = 'files';
 
 let dbPromise = null;
