@@ -1,0 +1,2 @@
+"const fs = require('fs');\n\nconst logPath = 'C:\\\\Users\\\\Dell\\\\.gemini\\\\antigravity\\\\brain\\\\ec52110f-7a86-41a9-9f0b-00112117c8ff\\\\.system_generated\\\\logs\\\\overview.txt';\nif (!fs.existsSync(logPath)) {\n    console.error('Log file does n
+<truncated 627 bytes>

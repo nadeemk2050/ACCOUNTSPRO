@@ -1,0 +1,2 @@
+"const fs = require('fs');\nconst path = 'c:/app2026/accountspro/src/PackagingSmartReportModal.jsx';\nlet content = fs.readFileSync(path, 'utf8');\n\n// 1. Update getSummary logic\nconst logicSearch = /inBags\\.forEach\\(b\\s*=>\\s*\\{[\\s\\S]+?return\\s+O
+<truncated 2867 bytes>

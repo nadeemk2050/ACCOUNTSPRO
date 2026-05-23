@@ -120,7 +120,6 @@ import {
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
 import { createSheetInDB, updateSheetInDB } from "./sheetService";
 import { generateInvoicePDF, generatePackingListPDF, generateBillOfExchangePDF, generateBankApplicationPDF, downloadInvoiceExcel, generateAccountingVoucherPDF } from "./invoiceGenerator";
-import BagWiseInventoryModal from "./BagWiseInventoryModal.jsx"; // IMPORT
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
@@ -4824,6 +4823,8 @@ export default function App() {
     const [currentRole, setCurrentRole] = useState(null); // role (owner, data_entry_1, etc)
     const [loading, setLoading] = useState(true);
     const [activeModal, setActiveModal] = useState(null);
+    const [packagingLaunchView, setPackagingLaunchView] = useState(null);
+    const [readyDispatchBags, setReadyDispatchBags] = useState({ count: 0, weight: 0 });
     const [currency_manager, setCurrencyManager] = useState(false);
     const [modalStack, setModalStack] = useState([]);
 
@@ -4843,6 +4844,72 @@ export default function App() {
     const [cloudSyncStatus, setCloudSyncStatus] = useState({ state: 'offline', progress: 0, total: 0, message: '' });
     const [syncPulse, setSyncPulse] = useState(false);
     const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+
+    useEffect(() => {
+        if (activeModal !== 'packaging_smart_report') {
+            setPackagingLaunchView(null);
+        }
+    }, [activeModal]);
+
+    useEffect(() => {
+        const targetUid = dataOwnerId || user?.uid;
+        if (!targetUid) {
+            setReadyDispatchBags({ count: 0, weight: 0 });
+            return;
+        }
+
+        const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+        if (!uidCandidates.length) {
+            setReadyDispatchBags({ count: 0, weight: 0 });
+            return;
+        }
+
+        let disposed = false;
+        const bucketDocs = new Map();
+
+        const recompute = () => {
+            if (disposed) return;
+
+            const mergedMap = new Map();
+            bucketDocs.forEach(docsMap => {
+                docsMap.forEach((row, id) => mergedMap.set(id, row));
+            });
+
+            const inStockRows = [...mergedMap.values()];
+            const totalWeight = inStockRows.reduce((sum, row) => sum + Number(row?.qty || 0), 0);
+            setReadyDispatchBags({ count: inStockRows.length, weight: totalWeight });
+        };
+
+        const makeBucketKey = (scope, uid) => `${scope}:${uid}`;
+
+        const unsubs = uidCandidates.flatMap(uid => [
+            onSnapshot(
+                query(collection(db, 'jumbo_bags'), where('userId', '==', uid), where('status', '==', 'in_stock')),
+                (snap) => {
+                    const docsMap = new Map();
+                    snap.docs.forEach(d => docsMap.set(d.id, { id: d.id, ...d.data() }));
+                    bucketDocs.set(makeBucketKey('user', uid), docsMap);
+                    recompute();
+                },
+                (err) => console.warn('Ready bags userId snapshot failed:', err)
+            ),
+            onSnapshot(
+                query(collection(db, 'jumbo_bags'), where('ownerId', '==', uid), where('status', '==', 'in_stock')),
+                (snap) => {
+                    const docsMap = new Map();
+                    snap.docs.forEach(d => docsMap.set(d.id, { id: d.id, ...d.data() }));
+                    bucketDocs.set(makeBucketKey('owner', uid), docsMap);
+                    recompute();
+                },
+                (err) => console.warn('Ready bags ownerId snapshot failed:', err)
+            )
+        ]);
+
+        return () => {
+            disposed = true;
+            unsubs.forEach(unsub => unsub && unsub());
+        };
+    }, [dataOwnerId, user?.uid]);
 
 
     // Handle Cloud Sync Status updates
@@ -6703,46 +6770,23 @@ export default function App() {
                         const bagBatch = writeBatch(db);
                         let bagCount = 0;
                         const docRef = docData.refNo;
-                        const isSalesVoucher = type === 'sales' || type === 'sale';
-
-                        const bagQueries = [];
-                        if (isSalesVoucher) {
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
-                            if (docRef) {
-                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', docRef))));
-                            }
-                        } else {
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
-                            if (docRef) {
-                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', docRef))));
-                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', docRef))));
-                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', docRef))));
-                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('refNo', '==', docRef))));
-                            }
+                        const bagQueries = [
+                            getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))),
+                            getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))),
+                            getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))),
+                        ];
+                        if (docRef) {
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', docRef))));
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', docRef))));
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', docRef))));
                         }
-
                         const bagResults = await Promise.all(bagQueries);
-                        const processedBagIds = new Set();
-
-                        bagResults.forEach((sn) => {
+                        bagResults.forEach((sn, idx) => {
                             if (sn.empty) return;
+                            const isSales = idx === 2 || idx === 5;
                             sn.docs.forEach(d => {
-                                if (processedBagIds.has(d.id)) return;
-                                processedBagIds.add(d.id);
-
-                                if (isSalesVoucher) {
-                                    bagBatch.update(d.ref, { 
-                                        status: 'in_stock', 
-                                        salesId: deleteField(), 
-                                        salesRefNo: deleteField(), 
-                                        soldDate: deleteField(),
-                                        weightVariance: deleteField(),
-                                        varianceNote: deleteField()
-                                    });
-                                } else {
-                                    bagBatch.delete(d.ref);
-                                }
+                                if (isSales) bagBatch.update(d.ref, { status: 'in_stock', salesId: deleteField(), soldDate: deleteField() });
+                                else bagBatch.delete(d.ref);
                                 bagCount++;
                             });
                         });
@@ -6837,43 +6881,30 @@ export default function App() {
                 const batch = writeBatch(db);
                 let count = 0;
                 const ref = docData.refNo;
-                const isSalesVoucher = type === 'sales' || type === 'sale';
 
-                const queries = [];
-                if (isSalesVoucher) {
-                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
-                    if (ref) {
-                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', ref))));
-                    }
-                } else {
-                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
-                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
-                    if (ref) {
-                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', ref))));
-                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', ref))));
-                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', ref))));
-                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('refNo', '==', ref))));
-                    }
-                }
+                // 1. Find bags linked by Document ID
+                const qSjId = query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id));
+                const qPurId = query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id));
+                const qSalId = query(collection(db, 'jumbo_bags'), where('salesId', '==', id));
+
+                // 2. Find bags linked by Reference Number (Support for older records)
+                const qSjRef = ref ? query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', ref)) : null;
+                const qPurRef = ref ? query(collection(db, 'jumbo_bags'), where('purchaseId', '==', ref)) : null;
+                const qSalRef = ref ? query(collection(db, 'jumbo_bags'), where('salesId', '==', ref)) : null;
+
+                const queries = [getDocs(qSjId), getDocs(qPurId), getDocs(qSalId)];
+                if (qSjRef) queries.push(getDocs(qSjRef));
+                if (qPurRef) queries.push(getDocs(qPurRef));
+                if (qSalRef) queries.push(getDocs(qSalRef));
 
                 const results = await Promise.all(queries);
-                const processedBagIds = new Set();
                 
-                results.forEach((sn) => {
+                results.forEach((sn, idx) => {
                     if (sn.empty) return;
+                    const isSales = idx === 2 || idx === 5; // qSalId (idx 2) or qSalRef (idx 5)
                     sn.docs.forEach(d => {
-                        if (processedBagIds.has(d.id)) return;
-                        processedBagIds.add(d.id);
-                        
-                        if (isSalesVoucher) { // Sales Reversal
-                            batch.update(d.ref, { 
-                                status: 'in_stock', 
-                                salesId: deleteField(), 
-                                salesRefNo: deleteField(), 
-                                soldDate: deleteField(),
-                                weightVariance: deleteField(),
-                                varianceNote: deleteField()
-                            });
+                        if (isSales) { // Sales Reversal
+                            batch.update(d.ref, { status: 'in_stock', salesId: deleteField(), soldDate: deleteField() });
                         } else { // Mfg/Pur Deletion
                             batch.delete(d.ref);
                         }
@@ -7635,128 +7666,6 @@ export default function App() {
     const handleRecalculateExpenses = (skip = false) => handleRecalculateSystem('expenses', skip);
     const handleRecalculateCapital = (skip = false) => handleRecalculateSystem('capital', skip);
     const handleRecalculateAll = () => handleRecalculateSystem('all');
-
-    // --- JUMBO BAGS RECALCULATE & CLEANUP ---
-    const handleRecalculateJumboBags = async () => {
-        if (!user) return;
-        const ownerUid = dataOwnerId || user.uid;
-        setIsRecalculating(true);
-        setToast({ type: 'info', title: 'Jumbo Bags Cleanup', message: 'Scanning and cleaning Jumbo Bag records...' });
-
-        try {
-            const db = getFirestore();
-            const uidCandidates = [...new Set([dataOwnerId, user.uid].filter(Boolean))];
-
-            // 1. Fetch all stock_journals for this owner
-            const sjSnaps = await Promise.all(
-                uidCandidates.flatMap(uid =>
-                    ['userId', 'ownerId'].map(field =>
-                        getDocs(query(collection(db, 'stock_journals'), where(field, '==', uid)))
-                    )
-                )
-            );
-            const sjMap = new Map();
-            sjSnaps.forEach(snap => snap.docs.forEach(d => sjMap.set(d.id, { id: d.id, ...d.data() })));
-            const activeJournals = [...sjMap.values()].filter(
-                sj => !sj.isDeleted && sj.status !== 'deleted' && sj.status !== 'bulk_deleted'
-            );
-            const activeJournalIds = new Set(activeJournals.map(sj => String(sj.id)));
-            const activeJournalRefs = new Set(activeJournals.map(sj => (sj.refNo || '').toLowerCase()).filter(Boolean));
-
-            // 2. Fetch all bags (all ownership fields)
-            const bagSnaps = await Promise.all(
-                uidCandidates.flatMap(uid =>
-                    ['userId', 'ownerId', 'companyId'].map(field =>
-                        getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid)))
-                    )
-                )
-            );
-            const bagMap = new Map();
-            bagSnaps.forEach(snap => snap.docs.forEach(d => bagMap.set(d.id, { id: d.id, ref: d.ref, ...d.data() })));
-            const allBags = [...bagMap.values()];
-
-            let deletedCount = 0;
-            let fixedStatusCount = 0;
-            const batchOps = [];
-
-            for (const bag of allBags) {
-                // Case A: Bag is explicitly marked deleted — hard delete from Firestore
-                if (bag.isDeleted || bag.status === 'deleted' || bag.status === 'bulk_deleted') {
-                    batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
-                    deletedCount++;
-                    continue;
-                }
-
-                // Case B: Bag is linked to a journal that was deleted — mark bag as deleted
-                const linkedJournalId = String(bag.stockJournalId || bag.linkedStockJournalId || bag.voucherId || bag.originId || '');
-                const linkedJournalRef = (bag.stockJournalRefNo || bag.voucherRefNo || '').toLowerCase();
-
-                const journalExists =
-                    (linkedJournalId && activeJournalIds.has(linkedJournalId)) ||
-                    (linkedJournalRef && activeJournalRefs.has(linkedJournalRef));
-
-                // Only auto-delete if the bag has a journal link but the journal is gone
-                if (linkedJournalId && !journalExists && bag.status !== 'sold') {
-                    batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
-                    deletedCount++;
-                    continue;
-                }
-
-                // Case C: Fix bags that are marked sold but the sale voucher is deleted
-                // (bag.salesId / bag.salesRefNo points to a non-existent voucher)
-                if (bag.status === 'sold') {
-                    const saleId = String(bag.salesId || '');
-                    const saleRef = (bag.salesRefNo || '').toLowerCase();
-                    // Fetch sale vouchers to check existence
-                    // We only reset if we can detect the sale is gone
-                    // This is done via a quick check against known invoice collections
-                    if (saleId) {
-                        try {
-                            const saleDoc = await getDoc(doc(db, 'invoices', saleId));
-                            if (!saleDoc.exists()) {
-                                // Sale voucher gone — reset bag status back to in_stock
-                                batchOps.push({
-                                    type: 'update',
-                                    ref: doc(db, 'jumbo_bags', bag.id),
-                                    data: {
-                                        status: 'in_stock',
-                                        soldDate: null,
-                                        salesId: null,
-                                        salesRefNo: null,
-                                        soldTo: null
-                                    }
-                                });
-                                fixedStatusCount++;
-                            }
-                        } catch (_) { /* ignore permission errors */ }
-                    }
-                }
-            }
-
-            // Execute all batch operations (Firestore has 500 limit per batch)
-            const chunkSize = 400;
-            for (let i = 0; i < batchOps.length; i += chunkSize) {
-                const chunk = batchOps.slice(i, i + chunkSize);
-                const batch = writeBatch(db);
-                chunk.forEach(op => {
-                    if (op.type === 'delete') batch.delete(op.ref);
-                    else if (op.type === 'update') batch.update(op.ref, op.data);
-                });
-                await batch.commit();
-            }
-
-            setToast({
-                type: 'success',
-                title: 'Jumbo Bags Cleanup Complete',
-                message: `Removed ${deletedCount} deleted/orphaned bag(s). Fixed ${fixedStatusCount} status mismatch(es).`
-            });
-        } catch (e) {
-            console.error('Jumbo Bags recalculate error:', e);
-            setToast({ type: 'error', title: 'Cleanup Failed', message: e.message });
-        } finally {
-            setIsRecalculating(false);
-        }
-    };
     const handleRecalculateStockLocal = (skip = false) => handleRecalculateSystem('products', skip);
 
     // --- SYSTEM SCAN LOGIC ---
@@ -9273,7 +9182,7 @@ export default function App() {
                                     <MenuButton
                                         label="Packaging Smart Report"
                                         shortcut="P"
-                                        onClick={() => { setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
+                                        onClick={() => { setPackagingLaunchView(null); setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
                                         className="text-[#005994] font-black"
                                     />
                                     <MenuButton
@@ -9469,6 +9378,33 @@ export default function App() {
                             title="View Log History"
                         >
                             Logs: <span className="font-black text-[#005994]">{displayLogCount}</span>
+                        </button>
+                    </div>
+
+                    <div className="px-4 pb-2">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setPackagingLaunchView({ detail: 'ready_stock', subTab: 'remaining', mode: 'detail' });
+                                setActiveModal('packaging_smart_report');
+                            }}
+                            className="w-full md:w-[420px] flex items-center justify-between gap-3 rounded-lg border border-blue-100 bg-[#f6fbff] px-3 py-2 text-left hover:bg-[#edf7ff] transition-colors"
+                            title="Open remaining jumbo bags balance"
+                        >
+                            <div className="flex items-center gap-2">
+                                <Box size={15} className="text-[#005994]" />
+                                <span className="text-[11px] font-black uppercase tracking-tight text-[#1e3264]">
+                                    Ready Bags To Dispatch
+                                </span>
+                            </div>
+                            <div className="flex flex-col items-end leading-none">
+                                <span className="text-[13px] font-black text-[#00457c] font-mono">
+                                    {readyDispatchBags.count} BAGS
+                                </span>
+                                <span className="text-[9px] font-black text-[#0b8f5d] uppercase tracking-tight">
+                                    {formatQty(readyDispatchBags.weight)} {units.find(u => u.isBase)?.symbol || 'kg'}
+                                </span>
+                            </div>
                         </button>
                     </div>
 
@@ -10267,7 +10203,6 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
-                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -10312,7 +10247,6 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
-                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -10466,13 +10400,17 @@ export default function App() {
 
             <PackagingSmartReportModal
                 isOpen={activeModal === 'packaging_smart_report'}
-                onClose={handleCloseModal}
+                onClose={() => {
+                    setPackagingLaunchView(null);
+                    handleCloseModal();
+                }}
                 user={user}
                 subUser={subUser}
                 dataOwnerId={dataOwnerId}
                 products={products}
                 units={units}
                 currencySymbol={currencySymbol}
+                launchView={packagingLaunchView}
             />
 
             {/* Simple List Modals - WITH SAFETY CHECKS */}
@@ -11176,7 +11114,7 @@ export default function App() {
                     else if (type === 'tax_register') setActiveModal('tax_register');
                     else if (type === 'capital_list') setActiveModal('capital_accounts');
                     else if (type === 'asset_list') setActiveModal('asset_accounts');
-                    else if (type === 'bag_inventory') setActiveModal('bag_inventory');
+                    else if (type === 'bag_inventory') setActiveModal('packaging_smart_report');
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -11244,7 +11182,6 @@ export default function App() {
                     onShowCreditNoteRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('credit_note_register'); }}
                     onShowStockInventory={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('stock_inventory'); }}
                     onShowPieceInventory={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('piece_inventory'); }}
-                    onShowBagInventory={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('bag_inventory'); }}
                     onShowLotDetail={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('lot_list'); }}
                     onShowCashierRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('cashier_register'); }}
                     onShowCustomerRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('customer_register'); }}
@@ -11272,7 +11209,6 @@ export default function App() {
                     onRecalculateAccounts={handleRecalculateAccounts}
                     onRecalculateExpenses={handleRecalculateExpenses}
                     onRecalculateCapital={handleRecalculateCapital}
-                    onRecalculateJumboBags={handleRecalculateJumboBags}
                     onInstall={handleInstallClick}
                     onBackup={handleBackup}
                     onRestore={handleRestore}
@@ -11424,20 +11360,6 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 products={products}
             />
-            {/* NEW BAG WISE INVENTORY */}
-            <BagWiseInventoryModal
-                {...getModalState('bag_inventory')}
-                onClose={handleCloseModal}
-                onBack={handleModalBack}
-                user={user}
-                subUser={subUser}
-                effectiveName={effectiveName}
-                dataOwnerId={dataOwnerId}
-                products={products}
-                globalDateCmd={globalDateCmd}
-                onDateCmdProcessed={handleDateCmdProcessed}
-                onOpenVoucher={handleViewTransaction}
-            />
 
             {/* ✅ RESTORE THIS MISSING LEDGER MODAL */}
             <LedgerModal
@@ -11454,14 +11376,11 @@ export default function App() {
                 userRole={currentRole}
                 subUsers={subUsers}
                 parties={parties}
-                partiesRef={partiesRef}
                 products={products}
-                productsRef={productsRef}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts} // <--- PASS PROP
                 incomeAccounts={incomeAccounts} // <--- PASS PROP (for LedgerModal)
                 accounts={accounts}
-                accountsRef={accountsRef}
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
                 taxRates={taxRates}
@@ -13888,7 +13807,7 @@ const AttendanceModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, s
 
 // --- UPDATED INVOICE MODAL (With Container/Seal/Other Ref) ---
 const InvoiceModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances, stockJournals } = props;
+    const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances } = props;
     const companyBanks = companyProfile?.banks || [];
     const headerScrollRef = useRef(null);
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
@@ -14008,7 +13927,6 @@ const InvoiceModal = (props) => {
 
     // ✅ Store bag counts per product for UI Display
     const [productsBagMap, setProductsBagMap] = useState({});
-    const [allRemainingBagsMemo, setAllRemainingBagsMemo] = useState([]);
 
     // Fetch Company Images for Printing
     useEffect(() => {
@@ -14049,79 +13967,21 @@ const InvoiceModal = (props) => {
         }
     }, [isOpen, showInvoiceOptions, dataOwnerId, user]);
 
-    // Fetch remaining (unsold) bag counts when Sales Voucher is open
+    // Fetch In-Stock Bags Count when Sales Voucher is open
     useEffect(() => {
         if (isOpen && voucherType === 'sales') {
-            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
-            const bagCache = {};
-
-            const recomputeBagMap = () => {
-                const merged = new Map();
-                Object.values(bagCache).forEach((list) => {
-                    list.forEach((b) => merged.set(b.id, b));
-                });
-
-                const globalBags = [...merged.values()];
-                const soldBagNos = new Set(globalBags.filter(b => b.status === 'sold').map(b => String(b.bagNo || '').toLowerCase()));
-                const seenIds = new Set(globalBags.map(b => String(b.id)));
-                const seenBagNos = new Set(globalBags.map(b => String(b.bagNo || '').toLowerCase()));
-                
-                const uniqueEmbedded = [];
-                (stockJournals || []).forEach(vch => {
-                    const vchId = String(vch.id);
-                    const embedded = [
-                        ...(Array.isArray(vch.jumboBags) ? vch.jumboBags : []),
-                        ...(Array.isArray(vch.jumbo_bags) ? vch.jumbo_bags : []),
-                        ...(Array.isArray(vch.producedBags) ? vch.producedBags : []),
-                        ...(Array.isArray(vch.produced) ? vch.produced.flatMap(p => (Array.isArray(p.jumboBags) ? p.jumboBags : Array.isArray(p.jumbo_bags) ? p.jumbo_bags : [])) : [])
-                    ].filter(jb => jb && typeof jb === 'object');
-                    
-                    embedded.forEach((eb, idx) => {
-                        const ebId = eb.id || `embedded-${vchId}-${idx}`;
-                        const ebBagNo = String(eb.bagNo || '').toLowerCase();
-                        if (!seenIds.has(ebId) && (!ebBagNo || !seenBagNos.has(ebBagNo))) {
-                            seenIds.add(ebId);
-                            if (ebBagNo) seenBagNos.add(ebBagNo);
-                            uniqueEmbedded.push({
-                                ...eb,
-                                id: ebId,
-                                date: eb.date || vch.date,
-                                voucherRefNo: eb.voucherRefNo || vch.refNo,
-                                stockJournalRefNo: vch.refNo,
-                                stockJournalId: vchId
-                            });
-                        }
-                    });
-                });
-                
-                const combined = [...globalBags, ...uniqueEmbedded];
-                const finalRemaining = combined.filter(b => b.status !== 'sold' && !soldBagNos.has(String(b.bagNo || '').toLowerCase()));
-                
-                setAllRemainingBagsMemo(finalRemaining);
-
+            const targetUid = dataOwnerId || user.uid;
+            // Fetch ALL in_stock bags to aggregate counts
+            const q = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'));
+            const unsub = onSnapshot(q, (snap) => {
                 const map = {};
-                finalRemaining.forEach((b) => {
-                    const pid = b.productId;
-                    if (pid) map[pid] = (map[pid] || 0) + 1;
+                snap.forEach(d => {
+                    const pid = d.data().productId;
+                    if (pid) map[pid] = (map[pid] || 0) + 1; // Count bags
                 });
                 setProductsBagMap(map);
-            };
-
-            const unsubs = uidCandidates.flatMap((uid) => {
-                return ['userId', 'ownerId', 'companyId'].map((field) => {
-                    const q = query(collection(db, 'jumbo_bags'), where(field, '==', uid));
-                    return onSnapshot(q, (snap) => {
-                        bagCache[`${uid}-${field}`] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-                        recomputeBagMap();
-                    }, (err) => {
-                        console.warn(`Sales bag count sync error (${field}):`, err);
-                    });
-                });
             });
-
-            return () => {
-                unsubs.forEach((unsub) => unsub());
-            };
+            return () => unsub();
         } else {
             setProductsBagMap({});
         }
@@ -14402,12 +14262,17 @@ const InvoiceModal = (props) => {
             newItems[index].pieces = '';
             newItems[index].total = '';
 
-            // Use the in-memory bags to avoid a slow refetch and ensure embedded bags are included
-            const avail = allRemainingBagsMemo.filter(b => b.productId === value);
-            setAvailableBags(avail);
-            setActiveBagRowIndex(index);
-            setActiveBagProduct({ id: value, name: products.find(p => p.id === value)?.name });
-            setShowJumboSelection(true);
+            // Trigger Fetch & Open Modal
+            const targetUid = dataOwnerId || user.uid;
+            const qAvail = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'), where('productId', '==', value));
+            getDocs(qAvail).then(snap => {
+                const avail = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                // If editing, merge old bags if any (though usually we start fresh or load existing)
+                setAvailableBags(avail);
+                setActiveBagRowIndex(index);
+                setActiveBagProduct({ id: value, name: products.find(p => p.id === value)?.name });
+                setShowJumboSelection(true);
+            });
         }
 
         setItems(newItems);
@@ -15626,8 +15491,6 @@ const InvoiceModal = (props) => {
                                                         onClick={() => {
                                                             setActiveBagRowIndex(index);
                                                             setActiveBagProduct(item.productId);
-                                                            const avail = allRemainingBagsMemo.filter(b => b.productId === item.productId);
-                                                            setAvailableBags(avail);
                                                             setShowJumboSelection(true);
                                                         }}
                                                         className="mt-2 relative z-10 flex items-center gap-1 text-[9px] font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200 hover:bg-orange-100 transition-colors w-fit shadow-sm"
@@ -17167,7 +17030,6 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                                 {!targetProductId && <th className="p-3">Product</th>}
                                 <th className="p-3 text-right">Quantity</th>
                                 <th className="p-3">Date</th>
-                                <th className="p-3">Mfg Vch Ref</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -17186,7 +17048,6 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                                     </td>}
                                     <td className="p-3 text-right font-black text-slate-900 text-lg">{bag.qty} <span className="text-xs text-slate-400 font-normal">kg</span></td>
                                     <td className="p-3 text-[10px] text-slate-400 font-bold">{bag.date}</td>
-                                    <td className="p-3 text-xs font-bold text-indigo-600 bg-indigo-50/30 rounded border border-indigo-100/50">{bag.stockJournalRefNo || bag.voucherRefNo || '-'}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -19113,7 +18974,7 @@ const HideCol = ({ name, id, onHide, color = 'inherit' }) => (
 );
 
 // --- UPDATED LEDGER MODAL (With Collapsible Tools & Persistent Header) ---
-const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
+const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, products, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
 
     // Filters
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
@@ -19509,13 +19370,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         // ✅ FIX: Get entity list early to access master opening values
         let entityList = [];
         switch (filter.type) {
-            case 'party': entityList = (partiesRef?.current?.length > 0) ? partiesRef.current : parties; break;
-            case 'account': entityList = (accountsRef?.current?.length > 0) ? accountsRef.current : accounts; break;
+            case 'party': entityList = parties; break;
+            case 'account': entityList = accounts; break;
             case 'expense': entityList = expenses; break;
             case 'direct_expense': entityList = directExpenseAccounts; break;
             case 'capital': entityList = capitalAccounts; break;
             case 'asset': entityList = assetAccounts; break;
-            case 'item': entityList = (productsRef?.current?.length > 0) ? productsRef.current : products; break;
+            case 'item': entityList = products; break;
             case 'income': entityList = incomeAccounts; break;
             case 'tax': entityList = taxRates; break;
         }
@@ -19777,7 +19638,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         if (activeFilter.startDate) dateConstraints.push(where('date', '>=', activeFilter.startDate));
         if (activeFilter.endDate) dateConstraints.push(where('date', '<=', activeFilter.endDate));
 
-        const baseConstraints = [where('userId', '==', targetUid), ...dateConstraints];
+        const baseConstraints = [...dateConstraints];
 
         // Recalculate Logic (Runs when any snapshot fires)
         const recalculate = () => {
@@ -20516,19 +20377,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const r = q > 0 ? (totalItemVal / q) : 0;
 
                         // Check Invoice Type consistency
-                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.type);
-                        const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(t.type);
-                        
-                        const baseSign = isInward ? 1 : -1;
-                        let signedFlow = (t.amountIn || t.amountOut || 0) * baseSign;
-                        if (signedFlow === 0) signedFlow = q * baseSign;
-
-                        if (signedFlow >= 0) {
-                            dQtyIn = Math.abs(q); dRateIn = r;
-                            qtyInTotal += Math.abs(q);
+                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.vchType);
+                        if (t.amountIn > 0) {
+                            dQtyIn = q; dRateIn = r;
+                            qtyInTotal += q;
                         } else {
-                            dQtyOut = Math.abs(q); dRateOut = r;
-                            qtyOutTotal += Math.abs(q);
+                            dQtyOut = q; dRateOut = r;
+                            qtyOutTotal += q;
                         }
                     }
                 }
@@ -24975,11 +24830,9 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             const itemMap = {};
             products.forEach(p => {
                 const basePurchaseRate = Number(p.purchasePrice || 0);
-                // Keep Stock Summary aligned with Item Ledger totals by deriving opening
-                // from transaction history (date < from) instead of master opening stock.
-                const openingQty = 0;
-                const openingVal = 0;
-                const openingRate = basePurchaseRate;
+                const openingQty = Number(p.openingStock || 0);
+                const openingVal = Number(p.openingBalance || 0);
+                const openingRate = openingQty !== 0 ? Math.abs(openingVal / openingQty) : basePurchaseRate;
 
                 itemMap[p.id] = {
                     id: p.id, name: p.name,
@@ -25095,25 +24948,10 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 if (!isInward && !isOutward) return;
 
                 (d.items || []).forEach(item => {
-                    const qtyRaw = Number(item.quantity || 0);
-                    const rateRaw = Number(item.rate || 0);
-                    const rate = Math.abs(rateRaw);
-                    if (!item.productId || qtyRaw === 0) return;
-
-                    // Keep behavior consistent with Item Ledger:
-                    // negative line amounts (qty*rate) reverse voucher direction,
-                    // and if amount is zero, signed qty decides.
-                    const baseSign = isInward ? 1 : -1;
-                    let signedFlow = qtyRaw * rateRaw * baseSign;
-                    if (signedFlow === 0) signedFlow = qtyRaw * baseSign;
-                    movements.push({
-                        seq: movementSeq++,
-                        date: d.date,
-                        productId: item.productId,
-                        qty: Math.abs(qtyRaw),
-                        rate,
-                        type: signedFlow >= 0 ? 'in' : 'out'
-                    });
+                    const qty = Number(item.quantity || 0);
+                    const rate = Number(item.rate || 0);
+                    if (!item.productId || qty <= 0) return;
+                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate, type: isInward ? 'in' : 'out' });
                 });
             });
 
@@ -25121,34 +24959,14 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 const d = doc.data();
                 if (selectedLoc && d.locationId !== selectedLoc) return;
                 (d.produced || []).forEach(item => {
-                    const qtyRaw = Number(item.quantity || 0);
-                    if (!item.productId || qtyRaw === 0) return;
-                    const rateRaw = Number(item.rate || 0);
-                    let signedFlow = qtyRaw * rateRaw;
-                    if (signedFlow === 0) signedFlow = qtyRaw;
-                    movements.push({
-                        seq: movementSeq++,
-                        date: d.date,
-                        productId: item.productId,
-                        qty: Math.abs(qtyRaw),
-                        rate: Math.abs(rateRaw),
-                        type: signedFlow >= 0 ? 'in' : 'out'
-                    });
+                    const qty = Number(item.quantity || 0);
+                    if (!item.productId || qty <= 0) return;
+                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate: Number(item.rate || 0), type: 'in' });
                 });
                 (d.consumed || []).forEach(item => {
-                    const qtyRaw = Number(item.quantity || 0);
-                    if (!item.productId || qtyRaw === 0) return;
-                    const rateRaw = Number(item.rate || 0);
-                    let signedFlow = -(qtyRaw * rateRaw);
-                    if (signedFlow === 0) signedFlow = -qtyRaw;
-                    movements.push({
-                        seq: movementSeq++,
-                        date: d.date,
-                        productId: item.productId,
-                        qty: Math.abs(qtyRaw),
-                        rate: Math.abs(rateRaw),
-                        type: signedFlow >= 0 ? 'in' : 'out'
-                    });
+                    const qty = Number(item.quantity || 0);
+                    if (!item.productId || qty <= 0) return;
+                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate: Number(item.rate || 0), type: 'out' });
                 });
             });
 
@@ -29765,8 +29583,6 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
         if (taxRates) taxRates.forEach(t => list.push({ ...t, type: 'tax', typeLabel: 'Tax' }));
         if (assetAccounts) assetAccounts.forEach(a => list.push({ ...a, type: 'asset', typeLabel: 'Asset' }));
         if (accounts) accounts.forEach(a => list.push({ ...a, type: 'account', typeLabel: 'Cash/Bank' }));
-        // Add Static Reports
-        list.push({ id: 'bag_inventory_report', name: 'Bag Wise Inventory', type: 'report', typeLabel: 'Report', reportType: 'bag_inventory' });
 
         if (capitalAccounts) capitalAccounts.forEach(c => list.push({ ...c, type: 'capital', typeLabel: 'Capital' }));
         return list;

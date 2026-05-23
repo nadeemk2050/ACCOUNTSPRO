@@ -99,7 +99,7 @@ const DateInput = ({ value, onChange, className = "", onEnter, ...props }) => {
     };
 
     const handleKeyDown = (e) => {
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
             e.preventDefault();
             finalizeDate();
             if (onEnter) onEnter();

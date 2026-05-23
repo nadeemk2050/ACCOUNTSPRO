@@ -1,0 +1,2 @@
+"                                         </div>\n                                     </div>\n                                 </div>\n                             );\n                         })() : viewingDetail === 'ready_stock' ? (() => {\n           
+<truncated 26507 bytes>

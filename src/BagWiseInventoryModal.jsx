@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getFirestore, collection, query, where, getDocs, doc, getDoc, deleteDoc, writeBatch, documentId, updateDoc } from 'firebase/firestore'; // Added updateDoc
+import { getFirestore, collection, query, where, getDocs, doc, getDoc, deleteDoc, documentId, updateDoc, onSnapshot } from 'firebase/firestore'; // Added updateDoc, onSnapshot
 import { httpsCallable } from 'firebase/functions';
 import { functions as firebaseFunctions } from './firebase';
 
 
 import { Modal } from './components/Modal';
-import { Download, ArrowLeft, X, RefreshCw, History, TrendingUp, FileText } from 'lucide-react';
+import { Download, ArrowLeft, X, RefreshCw, History, TrendingUp, FileText, Search, Filter } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { createPortal } from 'react-dom';
 
@@ -31,21 +31,67 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     });
     const [showDatePopup, setShowDatePopup] = useState(false);
     const [recalcLoading, setRecalcLoading] = useState(false);
+    const [showSearchField, setShowSearchField] = useState(false);
     const db = getFirestore();
     const getProductName = (id) => products.find(p => p.id === id)?.name || 'Unknown Item';
-
-    const toggleBagReuse = async (bagId, currentStatus) => {
-        try {
-            const ref = doc(db, 'jumbo_bags', bagId);
-            await updateDoc(ref, { allowReuse: !currentStatus });
-
-            // Optimistic update of local state
-            setBags(prev => prev.map(b => b.id === bagId ? { ...b, allowReuse: !currentStatus } : b));
-        } catch (e) {
-            console.error("Failed to toggle reuse", e);
-            alert("Error updating bag status");
-        }
+    const getBagSourceType = (bag = {}) => {
+        const src = String(bag.source || '').toLowerCase();
+        if (bag.stockJournalId || src.includes('prod') || src.includes('manufact')) return 'manufactured';
+        if (bag.purchaseId || src.includes('purch')) return 'purchased';
+        return 'unknown';
     };
+    const getBagRefNo = (bag = {}) => {
+        return (
+            bag.voucherRefNo ||
+            bag.stockJournalRefNo ||
+            bag.purchaseRefNo ||
+            bag.salesRefNo ||
+            bag.refNo ||
+            bag.stockJournalId ||
+            bag.purchaseId ||
+            bag.salesId ||
+            '-'
+        );
+    };
+    const normalizeDateKey = (value) => {
+        if (!value) return '';
+
+        if (typeof value?.toDate === 'function') {
+            const d = value.toDate();
+            if (d instanceof Date && !isNaN(d.getTime())) return d.toISOString().split('T')[0];
+        }
+
+        if (value instanceof Date && !isNaN(value.getTime())) {
+            return value.toISOString().split('T')[0];
+        }
+
+        const raw = String(value).trim();
+        if (!raw) return '';
+
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+        const slashMatch = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+        if (slashMatch) {
+            const day = slashMatch[1].padStart(2, '0');
+            const month = slashMatch[2].padStart(2, '0');
+            const year = slashMatch[3];
+            return `${year}-${month}-${day}`;
+        }
+
+        const parsed = new Date(raw);
+        if (!isNaN(parsed.getTime())) return parsed.toISOString().split('T')[0];
+
+        return '';
+    };
+
+    const dateSortValue = (value) => {
+        const key = normalizeDateKey(value);
+        if (!key) return 0;
+        const t = new Date(`${key}T00:00:00`).getTime();
+        return isNaN(t) ? 0 : t;
+    };
+
+
 
     useEffect(() => {
         if (!isOpen || !globalDateCmd) return;
@@ -59,131 +105,186 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     }, [globalDateCmd, isOpen]);
 
     useEffect(() => {
-        if (isOpen) {
-            fetchBags();
-        }
-    }, [isOpen]);
+        if (!isOpen) return;
+        const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+        if (uidCandidates.length === 0) return;
 
-    const fetchBags = async () => {
+        const unsubs = uidCandidates.flatMap(uid => {
+            const qUser = query(collection(db, 'jumbo_bags'), where('userId', '==', uid));
+            const qOwner = query(collection(db, 'jumbo_bags'), where('ownerId', '==', uid));
+            return [qUser, qOwner].map(q => onSnapshot(q, () => {
+                console.log(`Jumbo bags collection changed for ${uid}, updating state...`);
+                fetchBags();
+            }));
+        });
+
+        return () => unsubs.forEach(fn => fn && fn());
+    }, [isOpen, user?.uid, dataOwnerId]);
+
+    const isFetching = React.useRef(false);
+    const pendingSnapshotRef = React.useRef(null);
+    const fetchBags = async (snap = null) => {
+        if (isFetching.current) {
+            if (snap?.docs) pendingSnapshotRef.current = snap;
+            return;
+        }
+        isFetching.current = true;
         setLoading(true);
         try {
             const targetUid = dataOwnerId || user?.uid;
-            if (!targetUid) {
-                console.warn("Skipping fetchBags: No targetUid available", { user, dataOwnerId });
-                setLoading(false);
-                return;
-            }
+            if (!targetUid) return;
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            const isOwnedByCandidate = (data = {}) => {
+                const owner = data.userId || data.ownerId;
+                return !owner || uidCandidates.includes(owner);
+            };
 
-            console.log("Fetching bags for:", targetUid);
+            let latestSnap = snap;
+            do {
+                pendingSnapshotRef.current = null;
 
-            // Fetch ALL jumbo_bags
-            let list = [];
-            try {
-                const q = query(
-                    collection(db, 'jumbo_bags'),
-                    where('userId', '==', targetUid)
-                );
-                const snap = await getDocs(q);
-                list = snap.docs.map(d => ({
-                    id: d.id,
-                    ...d.data(),
-                    qty: Number(d.data().qty || 0)
-                }));
-            } catch (err) {
-                console.error("Error fetching jumbo_bags:", err);
-                throw new Error("Failed to load bags list: " + err.message);
-            }
-
-            // Enrich percent for production bags if missing
-            try {
-                const prodIds = [...new Set(list.map(b => b.stockJournalId).filter(Boolean))];
-                if (prodIds.length > 0) {
-                    const chunkSize = 10;
-                    const journalMap = {};
-                    for (let i = 0; i < prodIds.length; i += chunkSize) {
-                        const chunk = prodIds.slice(i, i + chunkSize);
-                        // Query by 'refNo' instead of documentId() as stockJournalId is likely the readable Ref No
-                        const qJ = query(collection(db, 'stock_journals'), where('userId', '==', targetUid), where('refNo', 'in', chunk));
-                        const jSnap = await getDocs(qJ);
-                        jSnap.forEach(j => {
-                            const jd = j.data();
-                            const totalConsumed = (jd.consumed || []).reduce((s, p) => s + Number(p.quantity || 0), 0);
-                            // Store by RefNo (which is usually unique per user context in this app design) 
-                            // If RefNo is stored in 'refNo' field.
-                            const ref = jd.refNo;
-                            if (ref) journalMap[ref] = totalConsumed;
+                let list = [];
+                if (latestSnap?.docs) {
+                    list = latestSnap.docs.map(d => ({
+                        id: d.id,
+                        ...d.data(),
+                        qty: Number(d.data().qty || 0),
+                        dateKey: normalizeDateKey(d.data().date),
+                        soldDateKey: normalizeDateKey(d.data().soldDate)
+                    }));
+                } else {
+                    // Merge across possible owner scopes to avoid missing newly saved bags.
+                    const snaps = await Promise.all(
+                        uidCandidates.flatMap(uid => [
+                            getDocs(query(collection(db, 'jumbo_bags'), where('userId', '==', uid))),
+                            getDocs(query(collection(db, 'jumbo_bags'), where('ownerId', '==', uid)))
+                        ])
+                    );
+                    const mergedMap = new Map();
+                    snaps.forEach(snapFetch => {
+                        snapFetch.docs.forEach(d => {
+                            mergedMap.set(d.id, {
+                                id: d.id,
+                                ...d.data(),
+                                qty: Number(d.data().qty || 0),
+                                dateKey: normalizeDateKey(d.data().date),
+                                soldDateKey: normalizeDateKey(d.data().soldDate)
+                            });
                         });
+                    });
+                    list = [...mergedMap.values()];
+                }
+
+                // Enrich percent for production bags if missing
+                try {
+                    const prodIds = [...new Set(list.map(b => b.stockJournalId).filter(Boolean))];
+                    if (prodIds.length > 0) {
+                        const chunkSize = 30;
+                        const journalMap = {};
+                        const targetUid = dataOwnerId || user?.uid;
+                        for (let i = 0; i < prodIds.length; i += chunkSize) {
+                            const chunk = prodIds.slice(i, i + chunkSize);
+                            // Corrected to use documentId() because prodIds contains document IDs, not refNos
+                            const qJ = query(collection(db, 'stock_journals'), where(documentId(), 'in', chunk));
+                            const jSnap = await getDocs(qJ);
+                            jSnap.forEach(j => {
+                                const jd = j.data();
+                                const totalConsumed = (jd.consumed || []).reduce((s, p) => s + Number(p.quantity || 0), 0);
+                                journalMap[j.id] = totalConsumed;
+                            });
+                        }
+
+                        list = list.map(b => {
+                            if (!b.stockJournalId) return b;
+                            const totalConsumed = journalMap[b.stockJournalId] || 0;
+                            const pct = totalConsumed > 0 ? (Number(b.qty || 0) / totalConsumed) * 100 : 0;
+                            return { ...b, percent: b.percent || pct };
+                        });
+                    }
+                } catch (err) {
+                    console.error("Error fetching related stock_journals (non-critical):", err);
+                }
+
+                // Mark orphan bags so only orphan records are removable from this screen.
+                try {
+                    const chunkSize = 30;
+                    const sjIds = [...new Set(list.map(b => b.stockJournalId).filter(Boolean))];
+                    const purIds = [...new Set(list.map(b => b.purchaseId).filter(Boolean))];
+                    const existingSj = new Set();
+                    const existingPur = new Set();
+
+                    for (let i = 0; i < sjIds.length; i += chunkSize) {
+                        const chunk = sjIds.slice(i, i + chunkSize);
+                        const [snapId, snapRef] = await Promise.all([
+                            getDocs(query(collection(db, 'stock_journals'), where(documentId(), 'in', chunk))),
+                            getDocs(query(collection(db, 'stock_journals'), where('refNo', 'in', chunk)))
+                        ]);
+                        snapId.forEach(d => {
+                            if (isOwnedByCandidate(d.data())) existingSj.add(d.id);
+                        });
+                        snapRef.forEach(d => {
+                            if (isOwnedByCandidate(d.data())) {
+                                existingSj.add(d.id);
+                                if (d.data().refNo) existingSj.add(d.data().refNo);
+                            }
+                        });
+
+                        // Fallback check by direct doc id to avoid false negatives from query/index limitations.
+                        const unresolved = chunk.filter(id => !existingSj.has(id));
+                        if (unresolved.length > 0) {
+                            const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'stock_journals', id))));
+                            directDocs.forEach((s, idx) => {
+                                if (s.exists() && isOwnedByCandidate(s.data())) existingSj.add(unresolved[idx]);
+                            });
+                        }
+                    }
+
+                    for (let i = 0; i < purIds.length; i += chunkSize) {
+                        const chunk = purIds.slice(i, i + chunkSize);
+                        const [snapId, snapRef] = await Promise.all([
+                            getDocs(query(collection(db, 'invoices'), where(documentId(), 'in', chunk))),
+                            getDocs(query(collection(db, 'invoices'), where('refNo', 'in', chunk)))
+                        ]);
+                        snapId.forEach(d => {
+                            if (isOwnedByCandidate(d.data())) existingPur.add(d.id);
+                        });
+                        snapRef.forEach(d => {
+                            if (isOwnedByCandidate(d.data())) {
+                                existingPur.add(d.id);
+                                if (d.data().refNo) existingPur.add(d.data().refNo);
+                            }
+                        });
+
+                        const unresolved = chunk.filter(id => !existingPur.has(id));
+                        if (unresolved.length > 0) {
+                            const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'invoices', id))));
+                            directDocs.forEach((s, idx) => {
+                                if (s.exists() && isOwnedByCandidate(s.data())) existingPur.add(unresolved[idx]);
+                            });
+                        }
                     }
 
                     list = list.map(b => {
-                        if (!b.stockJournalId) return b;
-                        const storedPct = Number(b.percent);
-                        if (!isNaN(storedPct) && storedPct > 0) return b;
-
-                        const totalConsumed = journalMap[b.stockJournalId] || 0;
-                        const pct = totalConsumed > 0 ? (Number(b.qty || 0) / totalConsumed) * 100 : 0;
-                        return { ...b, percent: pct };
+                        const hasMfgLink = !!b.stockJournalId;
+                        const hasPurLink = !!b.purchaseId;
+                        if (!hasMfgLink && !hasPurLink) return { ...b, isOrphan: true, orphanReason: 'No source voucher link' };
+                        if (hasMfgLink && !existingSj.has(b.stockJournalId)) return { ...b, isOrphan: true, orphanReason: 'Source production voucher deleted' };
+                        if (hasPurLink && !existingPur.has(b.purchaseId)) return { ...b, isOrphan: true, orphanReason: 'Source purchase voucher deleted' };
+                        return { ...b, isOrphan: false, orphanReason: '' };
                     });
-                }
-            } catch (err) {
-                console.error("Error fetching related stock_journals (non-critical):", err);
-                // Non-critical: continue showing bags without precise percent if this fails
-            }
-
-            // Mark orphan bags so only orphan records are removable from this screen.
-            try {
-                const chunkSize = 10;
-                const sjIds = [...new Set(list.map(b => b.stockJournalId).filter(Boolean))];
-                const purIds = [...new Set(list.map(b => b.purchaseId).filter(Boolean))];
-
-                const existingSj = new Set();
-                const existingPur = new Set();
-
-                for (let i = 0; i < sjIds.length; i += chunkSize) {
-                    const chunk = sjIds.slice(i, i + chunkSize);
-                    const [snapId, snapRef] = await Promise.all([
-                        getDocs(query(collection(db, 'stock_journals'), where(documentId(), 'in', chunk))),
-                        getDocs(query(collection(db, 'stock_journals'), where('refNo', 'in', chunk)))
-                    ]);
-                    snapId.forEach(d => existingSj.add(d.id));
-                    snapRef.forEach(d => existingSj.add(d.data().refNo));
+                } catch (err) {
+                    console.warn('Orphan check failed (non-critical):', err);
+                    list = list.map(b => ({ ...b, isOrphan: false, orphanReason: '' }));
                 }
 
-                for (let i = 0; i < purIds.length; i += chunkSize) {
-                    const chunk = purIds.slice(i, i + chunkSize);
-                    const [snapId, snapRef] = await Promise.all([
-                        getDocs(query(collection(db, 'invoices'), where(documentId(), 'in', chunk))),
-                        getDocs(query(collection(db, 'invoices'), where('refNo', 'in', chunk)))
-                    ]);
-                    snapId.forEach(d => existingPur.add(d.id));
-                    snapRef.forEach(d => existingPur.add(d.data().refNo));
-                }
-
-                list = list.map(b => {
-                    const hasMfgLink = !!b.stockJournalId;
-                    const hasPurLink = !!b.purchaseId;
-                    if (!hasMfgLink && !hasPurLink) {
-                        return { ...b, isOrphan: true, orphanReason: 'No source voucher link' };
-                    }
-                    if (hasMfgLink && !existingSj.has(b.stockJournalId)) {
-                        return { ...b, isOrphan: true, orphanReason: 'Source production voucher deleted' };
-                    }
-                    if (hasPurLink && !existingPur.has(b.purchaseId)) {
-                        return { ...b, isOrphan: true, orphanReason: 'Source purchase voucher deleted' };
-                    }
-                    return { ...b, isOrphan: false, orphanReason: '' };
-                });
-            } catch (err) {
-                console.warn('Orphan check failed (non-critical):', err);
-                list = list.map(b => ({ ...b, isOrphan: false, orphanReason: '' }));
-            }
-
-            setBags(list);
+                setBags(list);
+                latestSnap = pendingSnapshotRef.current;
+            } while (latestSnap);
         } catch (e) {
             console.error("Fatal error in fetchBags:", e);
-            alert("Error loading bags: " + e.message);
         } finally {
             setLoading(false);
+            isFetching.current = false;
         }
     };
 
@@ -204,16 +305,22 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     const handleRecalculateBagInventory = async () => {
         if (recalcLoading) return;
-        if (!window.confirm('Recalculate bag inventory now? This will find and delete bag records that belong to vouchers you have already deleted.')) return;
+        if (!window.confirm('Recalculate bag inventory now? This will scan and list orphan bags only. No bag will be auto-deleted.')) return;
 
         setRecalcLoading(true);
         try {
             const targetUid = dataOwnerId || user.uid;
             
-            // 1. Get ALL bags for this user
-            const qBags = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid));
-            const bagSnap = await getDocs(qBags);
-            const allBags = bagSnap.docs.map(d => ({ id: d.id, ref: d.ref, ...d.data() }));
+            // 1. Get ALL bags for this user (supports both ownership key styles)
+            const [bagSnapUser, bagSnapOwner] = await Promise.all([
+                getDocs(query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid))),
+                getDocs(query(collection(db, 'jumbo_bags'), where('ownerId', '==', targetUid)))
+            ]);
+            const allBagsMap = new Map();
+            [bagSnapUser, bagSnapOwner].forEach(snap => {
+                snap.docs.forEach(d => allBagsMap.set(d.id, { id: d.id, ref: d.ref, ...d.data() }));
+            });
+            const allBags = [...allBagsMap.values()];
 
             if (allBags.length === 0) {
                 alert("No bags found to scan.");
@@ -225,7 +332,12 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const sjIds = [...new Set(allBags.map(b => b.stockJournalId).filter(Boolean))];
             const purIds = [...new Set(allBags.map(b => b.purchaseId).filter(Boolean))];
 
-            // 3. Batch Check SJ Existence (By ID or RefNo)
+            const isOwnedByTarget = (data = {}) => {
+                const owner = data.userId || data.ownerId;
+                return !owner || owner === targetUid;
+            };
+
+            // 3. Batch Check SJ Existence (By ID or RefNo + direct doc fallback)
             const deadSjIds = new Set();
             const sjChunkSize = 10;
             for (let i = 0; i < sjIds.length; i += sjChunkSize) {
@@ -234,14 +346,28 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const qExistRef = query(collection(db, 'stock_journals'), where('refNo', 'in', chunk));
                 
                 const [snap, snapRef] = await Promise.all([getDocs(qExist), getDocs(qExistRef)]);
-                const existIds = new Set([
-                    ...snap.docs.map(d => d.id),
-                    ...snapRef.docs.map(d => d.data().refNo)
-                ]);
+                const existIds = new Set();
+                snap.docs.forEach(d => {
+                    if (isOwnedByTarget(d.data())) existIds.add(d.id);
+                });
+                snapRef.docs.forEach(d => {
+                    if (isOwnedByTarget(d.data())) {
+                        existIds.add(d.id);
+                        if (d.data().refNo) existIds.add(d.data().refNo);
+                    }
+                });
+
+                const unresolved = chunk.filter(id => !existIds.has(id));
+                if (unresolved.length > 0) {
+                    const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'stock_journals', id))));
+                    directDocs.forEach((s, idx) => {
+                        if (s.exists() && isOwnedByTarget(s.data())) existIds.add(unresolved[idx]);
+                    });
+                }
                 chunk.forEach(id => { if (!existIds.has(id)) deadSjIds.add(id); });
             }
 
-            // 4. Batch Check Purchase Existence (By ID or RefNo)
+            // 4. Batch Check Purchase Existence (By ID or RefNo + direct doc fallback)
             const deadPurIds = new Set();
             for (let i = 0; i < purIds.length; i += sjChunkSize) {
                 const chunk = purIds.slice(i, i + sjChunkSize);
@@ -249,14 +375,28 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const qExistRef = query(collection(db, 'invoices'), where('refNo', 'in', chunk));
 
                 const [snap, snapRef] = await Promise.all([getDocs(qExist), getDocs(qExistRef)]);
-                const existIds = new Set([
-                    ...snap.docs.map(d => d.id),
-                    ...snapRef.docs.map(d => d.data().refNo)
-                ]);
+                const existIds = new Set();
+                snap.docs.forEach(d => {
+                    if (isOwnedByTarget(d.data())) existIds.add(d.id);
+                });
+                snapRef.docs.forEach(d => {
+                    if (isOwnedByTarget(d.data())) {
+                        existIds.add(d.id);
+                        if (d.data().refNo) existIds.add(d.data().refNo);
+                    }
+                });
+
+                const unresolved = chunk.filter(id => !existIds.has(id));
+                if (unresolved.length > 0) {
+                    const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'invoices', id))));
+                    directDocs.forEach((s, idx) => {
+                        if (s.exists() && isOwnedByTarget(s.data())) existIds.add(unresolved[idx]);
+                    });
+                }
                 chunk.forEach(id => { if (!existIds.has(id)) deadPurIds.add(id); });
             }
 
-            // 5. Delete Orphans (dead source voucher or no source voucher at all)
+            // 5. Identify Orphans only (do NOT auto-delete)
             const orphans = allBags.filter(b =>
                 (!b.stockJournalId && !b.purchaseId) ||
                 (b.stockJournalId && deadSjIds.has(b.stockJournalId)) ||
@@ -264,20 +404,18 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             );
             
             if (orphans.length > 0) {
-                let batch = writeBatch(db);
-                let count = 0;
-                for (const b of orphans) {
-                    batch.delete(b.ref);
-                    count++;
-                    if (count % 400 === 0) {
-                        await batch.commit();
-                        batch = writeBatch(db);
-                    }
-                }
-                await batch.commit();
-                alert(`✅ Cleanup Complete!\n\nScanned ${allBags.length} bags.\nFound and deleted ${orphans.length} orphaned records from deleted vouchers.`);
+                const previewLines = orphans.slice(0, 20).map((b, idx) => {
+                    const reason = !b.stockJournalId && !b.purchaseId
+                        ? 'No source link'
+                        : (b.stockJournalId && deadSjIds.has(b.stockJournalId))
+                            ? `Missing MFG: ${b.stockJournalId}`
+                            : `Missing Purchase: ${b.purchaseId}`;
+                    return `${idx + 1}. Bag #${b.bagNo || b.id} - ${reason}`;
+                });
+                const extra = orphans.length > 20 ? `\n...and ${orphans.length - 20} more` : '';
+                alert(`⚠️ Recalculate Complete\n\nScanned ${allBags.length} bags.\nFound ${orphans.length} orphaned bag records.\n\nNo records were deleted automatically.\nPlease review and remove manually from the 'REMOVE ORPHAN BAGS' column.\n\n${previewLines.join('\n')}${extra}`);
             } else {
-                alert("✅ Sync Complete! No orphaned bags found. Your inventory is already consistent.");
+                alert("✅ Recalculate Complete! No orphaned bags found. Your inventory is consistent.");
             }
 
             await fetchBags();
@@ -302,14 +440,16 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         setDetailLoading(true);
         try {
             const targetUid = dataOwnerId || user.uid;
-            // Get all instances of this bag number from jumbo_bags
-            const q = query(
-                collection(db, 'jumbo_bags'),
-                where('userId', '==', targetUid),
-                where('bagNo', '==', bagNo)
-            );
-            const snap = await getDocs(q);
-            const history = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+            // Get all instances of this bag number from jumbo_bags (supports both ownership key styles)
+            const [snapUser, snapOwner] = await Promise.all([
+                getDocs(query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('bagNo', '==', bagNo))),
+                getDocs(query(collection(db, 'jumbo_bags'), where('ownerId', '==', targetUid), where('bagNo', '==', bagNo)))
+            ]);
+            const historyMap = new Map();
+            [snapUser, snapOwner].forEach(s => {
+                s.docs.forEach(d => historyMap.set(d.id, { ...d.data(), id: d.id }));
+            });
+            const history = [...historyMap.values()];
 
             // 2. Fetch source vouchers (MFG or Purchase)
             const mfgIds = [...new Set(history.map(h => h.stockJournalId).filter(Boolean))];
@@ -387,6 +527,16 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const journal = journalDetails[bagRec.stockJournalId];
                 const purchase = purchaseDetails[bagRec.purchaseId];
                 const sale = saleDetailsMap[bagRec.salesId];
+                const fallbackVoucherId =
+                    bagRec.voucherRefNo ||
+                    bagRec.stockJournalRefNo ||
+                    bagRec.purchaseRefNo ||
+                    bagRec.salesRefNo ||
+                    bagRec.refNo ||
+                    bagRec.stockJournalId ||
+                    bagRec.purchaseId ||
+                    bagRec.salesId ||
+                    'N/A';
 
                 if (journal) {
                     const totalProduced = (journal.produced || []).reduce((s, p) => s + Number(p.quantity || 0), 0);
@@ -397,7 +547,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
                     return {
                         ...bagRec,
-                        voucherId: journal.refNo || 'N/A',
+                        voucherId: journal.refNo || fallbackVoucherId,
                         type: 'Manufacturing',
                         productionStaffNames: journal.productionStaffNames || [],
                         productionStartTime: journal.productionStartTime || '',
@@ -431,7 +581,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
                     return {
                         ...bagRec,
-                        voucherId: purchase.refNo || 'N/A',
+                        voucherId: purchase.refNo || fallbackVoucherId,
                         type: 'Purchase',
                         consumed: [{
                             name: `Purchased: ${getProductName(item.productId)}`,
@@ -450,7 +600,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 } else if (sale) {
                     return {
                         ...bagRec,
-                        voucherId: sale.refNo || 'N/A',
+                        voucherId: sale.refNo || fallbackVoucherId,
                         type: 'Sale',
                         consumed: [{
                             name: `Sold to: ${sale.partyName || 'Unknown'}`,
@@ -466,10 +616,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     };
                 }
 
-                return { ...bagRec, consumed: [], expenses: [], totalBagValue: 0, materialValue: 0, expenseValue: 0, type: 'Unknown' };
+                return { ...bagRec, voucherId: fallbackVoucherId, consumed: [], expenses: [], totalBagValue: 0, materialValue: 0, expenseValue: 0, type: 'Unknown' };
             });
 
-            enrichedHistory.sort((a, b) => new Date(a.date) - new Date(b.date));
+            enrichedHistory.sort((a, b) => dateSortValue(a.date) - dateSortValue(b.date));
             setBagHistory(enrichedHistory);
 
         } catch (e) {
@@ -484,13 +634,16 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         return bags.filter(b => {
             const name = getProductName(b.productId).toLowerCase();
             const bNo = (b.bagNo || '').toLowerCase();
+            const ref = getBagRefNo(b).toLowerCase();
+            const dateStr = (b.date || '').toLowerCase();
+            const statusStr = (b.status || '').toLowerCase();
             const s = searchTerm.toLowerCase();
-            const matchesSearch = name.includes(s) || bNo.includes(s);
+            const matchesSearch = name.includes(s) || bNo.includes(s) || ref.includes(s) || dateStr.includes(s) || statusStr.includes(s);
             const matchesProduct = !filterProductId || b.productId === filterProductId;
 
             // Period Filter Logic
-            const bDate = b.date || '';
-            const sDate = b.soldDate || '';
+            const bDate = b.dateKey || normalizeDateKey(b.date);
+            const sDate = b.soldDateKey || normalizeDateKey(b.soldDate);
             let matchesDate = false;
 
             if (viewMode === 'in_stock') {
@@ -505,7 +658,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
             const matchesMode = viewMode === 'all' ? true : b.status === viewMode;
             return matchesSearch && matchesProduct && matchesMode && matchesDate;
-        }).sort((a, b) => new Date(b.date) - new Date(a.date));
+        }).sort((a, b) => dateSortValue(b.date) - dateSortValue(a.date));
     };
 
     const downloadExcel = () => {
@@ -514,9 +667,9 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             'Date': b.date,
             'Bag Number': b.bagNo,
             'Item': getProductName(b.productId),
-            'Percent (%)': (b.percent && b.stockJournalId) ? Number(b.percent).toFixed(2) : '',
+            'Percent (%)': (b.percent && getBagSourceType(b) === 'manufactured') ? Number(b.percent).toFixed(2) : '',
             [`Weight (${baseUnitSymbol})`]: b.qty,
-            'Source': b.stockJournalId ? 'Production' : 'Purchase',
+            'Source': getBagSourceType(b) === 'manufactured' ? 'Production' : getBagSourceType(b) === 'purchased' ? 'Purchase' : 'Unknown',
             'Status': b.status === 'sold' ? 'SOLD' : 'IN STOCK'
         }));
 
@@ -539,9 +692,12 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             doc.setFontSize(10);
             const totalWeight = bagHistory.reduce((s, h) => s + h.qty, 0).toFixed(3);
             const totalValue = bagHistory.reduce((s, h) => s + h.totalBagValue, 0).toFixed(2);
+            const latestEntry = bagHistory.length > 0 ? bagHistory[bagHistory.length - 1] : null;
+            const sameVoucherBagCount = countBagsInSameVoucher(latestEntry);
             doc.text(`Total Weight Filled: ${totalWeight} ${baseUnitSymbol}`, 14, 25);
             doc.text(`Total Estimated Value: AED ${totalValue}`, 14, 30);
-            doc.text(`Generation Date: ${new Date().toLocaleString()}`, 14, 35);
+            doc.text(`Bags In Linked Voucher: ${sameVoucherBagCount}`, 14, 35);
+            doc.text(`Generation Date: ${new Date().toLocaleString()}`, 14, 40);
 
             const body = [];
             bagHistory.forEach((h, idx) => {
@@ -572,7 +728,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             autoTable(doc, {
                 head: [['Label/Item', 'Qty/Date', 'Rate/Ref', 'Percent', 'Value/Total']],
                 body: body,
-                startY: 40,
+                startY: 45,
                 theme: 'grid',
                 styles: { fontSize: 8 },
                 columnStyles: { 0: { cellWidth: 80 }, 4: { halign: 'right' } }
@@ -586,6 +742,40 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     };
 
     const [voucherSelectOptions, setVoucherSelectOptions] = useState(null);
+
+    const getVoucherRefCandidates = (record = {}) => {
+        return [
+            record.voucherRefNo,
+            record.stockJournalRefNo,
+            record.purchaseRefNo,
+            record.salesRefNo,
+            record.refNo,
+            record.voucherId,
+            record.stockJournalId,
+            record.purchaseId,
+            record.salesId
+        ]
+            .map(v => (v == null ? '' : String(v).trim()))
+            .filter(Boolean);
+    };
+
+    const countBagsInSameVoucher = (entry = null) => {
+        if (!entry) return 0;
+
+        const hasStrongLink = !!(entry.stockJournalId || entry.purchaseId || entry.salesId);
+        const entryRefs = new Set(getVoucherRefCandidates(entry));
+
+        return bags.filter(b => {
+            if (entry.stockJournalId && b.stockJournalId === entry.stockJournalId) return true;
+            if (entry.purchaseId && b.purchaseId === entry.purchaseId) return true;
+            if (entry.salesId && b.salesId === entry.salesId) return true;
+
+            if (hasStrongLink) return false;
+
+            const bagRefs = getVoucherRefCandidates(b);
+            return bagRefs.some(ref => entryRefs.has(ref));
+        }).length;
+    };
 
     const handleOpenVoucher = (entry = null) => {
         if (!onOpenVoucher) return;
@@ -613,11 +803,17 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     // PERIODIC SUMMARY LOGIC (Calculated from all bags based on selection)
     const stats = useMemo(() => {
         const { from, to } = dateRange;
-        const periodBags = bags.filter(b => b.date >= from && b.date <= to);
-        const periodSold = bags.filter(b => b.status === 'sold' && b.soldDate >= from && b.soldDate <= to);
+        const periodBags = bags.filter(b => {
+            const bDate = b.dateKey || normalizeDateKey(b.date);
+            return bDate >= from && bDate <= to;
+        });
+        const periodSold = bags.filter(b => {
+            const sDate = b.soldDateKey || normalizeDateKey(b.soldDate);
+            return b.status === 'sold' && sDate >= from && sDate <= to;
+        });
 
-        const mfg = periodBags.filter(b => b.stockJournalId);
-        const pur = periodBags.filter(b => !b.stockJournalId);
+        const mfg = periodBags.filter(b => getBagSourceType(b) === 'manufactured');
+        const pur = periodBags.filter(b => getBagSourceType(b) === 'purchased');
 
         return {
             mfgCount: mfg.length,
@@ -634,6 +830,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     if (!isOpen) return null;
 
     const filteredBags = getFilteredBags();
+    const linkedVoucherRefs = [...new Set(bagHistory.map(h => h.voucherId).filter(v => v && v !== 'N/A'))];
+    const latestVoucherRef = linkedVoucherRefs.length > 0 ? linkedVoucherRefs[linkedVoucherRefs.length - 1] : 'N/A';
+    const latestHistoryEntry = bagHistory.length > 0 ? bagHistory[bagHistory.length - 1] : null;
+    const bagsInLatestVoucher = countBagsInSameVoucher(latestHistoryEntry);
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} title="Bag Wise Stock Inventory" maxWidth="max-w-[95vw]" removePadding={true} noContentScroll={true} defaultMaximized={true}>
@@ -718,75 +918,108 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-4 py-1">
-                        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
-                            {['all', 'in_stock', 'sold'].map(m => (
-                                <button
-                                    key={m}
-                                    onClick={() => setViewMode(m)}
-                                    className={`px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${viewMode === m ? 'bg-white text-slate-800 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
-                                >
-                                    {m === 'in_stock' ? 'Available' : m === 'all' ? 'Activity Log' : 'Sales History'}
-                                </button>
-                            ))}
+                    <div className="flex items-center justify-between gap-4 py-2 px-1 bg-gradient-to-r from-blue-600 to-indigo-700 rounded-xl shadow-lg shadow-blue-900/10">
+                        <div className="flex flex-col">
+                            <span className="text-[10px] font-black text-blue-100 uppercase tracking-widest opacity-80">Report Totals</span>
+                            <div className="flex items-center gap-6">
+                                <div className="flex items-baseline gap-1.5">
+                                    <span className="text-xl font-black text-white">{filteredBags.length}</span>
+                                    <span className="text-[11px] font-bold text-blue-200">BAGS</span>
+                                </div>
+                                <div className="h-6 w-px bg-white/20"></div>
+                                <div className="flex items-baseline gap-1.5">
+                                    <span className="text-xl font-black text-white">{filteredBags.reduce((s, b) => s + b.qty, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                    <span className="text-[11px] font-bold text-blue-200 uppercase tracking-tighter">{baseUnitSymbol}</span>
+                                </div>
+                            </div>
                         </div>
-                        <select
-                            className="p-2 border rounded-lg text-sm font-bold text-slate-600 bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 w-1/3"
-                            value={filterProductId}
-                            onChange={(e) => setFilterProductId(e.target.value)}
-                        >
-                            <option value="">All Products</option>
-                            {products.map(p => (
-                                <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                        </select>
-                        <input
-                            type="text"
-                            placeholder="Search Bag # or Item..."
-                            className="flex-1 p-2 border rounded-lg text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500"
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                        />
+
+                        <div className="flex items-center gap-3">
+                            <button 
+                                onClick={() => setShowSearchField(!showSearchField)}
+                                className={`p-2.5 rounded-full transition-all duration-300 flex items-center gap-2 ${showSearchField ? 'bg-white text-blue-700 shadow-xl scale-105' : 'bg-white/10 text-white hover:bg-white/20'}`}
+                                title="Toggle Search"
+                            >
+                                <Search size={20} className={showSearchField ? 'animate-pulse' : ''} />
+                                {showSearchField && <span className="text-xs font-black uppercase">Close Search</span>}
+                            </button>
+                            {!showSearchField && searchTerm && (
+                                <div className="bg-white/10 text-white text-[10px] font-black px-3 py-1.5 rounded-full border border-white/20 flex items-center gap-2">
+                                    SEARCHING: "{searchTerm}"
+                                    <button onClick={() => setSearchTerm('')}><X size={12} /></button>
+                                </div>
+                            )}
+                        </div>
                     </div>
+
+                    {showSearchField && (
+                        <div className="animate-in slide-in-from-top duration-300 flex items-center gap-3 bg-white p-3 rounded-xl border-2 border-blue-100 shadow-inner">
+                            <div className="relative flex-1 group">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 group-focus-within:text-blue-600 transition-colors" size={18} />
+                                <input
+                                    type="text"
+                                    placeholder="Search every aspect (Bag #, Item, Date, Ref)..."
+                                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border-none rounded-lg text-sm font-bold text-slate-700 outline-none ring-2 ring-transparent focus:ring-blue-500/20 transition-all placeholder:text-slate-400"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    autoFocus
+                                />
+                            </div>
+                            <select
+                                className="p-3 border-none bg-slate-50 rounded-lg text-sm font-bold text-slate-600 outline-none ring-2 ring-transparent focus:ring-blue-500/20 transition-all cursor-pointer"
+                                value={filterProductId}
+                                onChange={(e) => setFilterProductId(e.target.value)}
+                            >
+                                <option value="">All Products</option>
+                                {products.map(p => (
+                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                            </select>
+                            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+                                {['all', 'in_stock', 'sold'].map(m => (
+                                    <button
+                                        key={m}
+                                        onClick={() => setViewMode(m)}
+                                        className={`px-4 py-2 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${viewMode === m ? 'bg-white text-blue-600 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
+                                    >
+                                        {m === 'in_stock' ? 'Available' : m === 'all' ? 'All Activity' : 'Sold Only'}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex-1 overflow-auto">
                     <table className="w-full text-left text-sm border-collapse">
                         <thead className="bg-slate-800 text-white text-xs uppercase sticky top-0 z-10">
                             <tr>
-                                {/* RESTORED MISSING CHECKBOX COLUMN HEADER */}
-                                <th className="p-3 w-10 text-center">
-                                    <input type="checkbox" className="rounded" disabled />
-                                </th>
                                 <th className="p-3">Date</th>
-                                <th className="p-3">Bag #</th>
+                                <th className="p-3">
+                                    <div className="text-[9px] text-blue-300 font-black mb-0.5 tracking-tighter">TOTAL: {filteredBags.length}</div>
+                                    Bag #
+                                </th>
+                                <th className="p-3">Ref No</th>
                                 <th className="p-3">Item Name</th>
                                 <th className="p-3 text-right">Percent (%)</th>
-                                <th className="p-3 text-right">Weight ({baseUnitSymbol})</th>
+                                <th className="p-3 text-right">
+                                    <div className="text-[9px] text-blue-300 font-black mb-0.5 tracking-tighter">{filteredBags.reduce((s, b) => s + b.qty, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                    Weight ({baseUnitSymbol})
+                                </th>
                                 <th className="p-3 text-center">Source</th>
-                                <th className="p-3 text-center">Status</th>
-                                <th className="p-3 text-center">Actions</th>
                                 <th className="p-3 text-center">Remove Orphan Bags</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 italic">
-                            {loading ? <tr><td colSpan="9" className="p-10 text-center"><RefreshCw className="animate-spin inline mr-2" /> Loading bags...</td></tr> :
+                            {loading ? <tr><td colSpan="11" className="p-10 text-center"><RefreshCw className="animate-spin inline mr-2" /> Loading bags...</td></tr> :
                                 filteredBags.map((b, i) => (
                                     <tr key={i} className="hover:bg-blue-50 group transition-colors">
-                                        {/* RESTORED MISSING CHECKBOX COLUMN BODY */}
-                                        <td className="p-3 text-center">
-                                            <input
-                                                type="checkbox"
-                                                className="rounded w-4 h-4 cursor-pointer accent-blue-600"
-                                                checked={!!b.allowReuse}
-                                                onChange={(e) => { e.stopPropagation(); toggleBagReuse(b.id, b.allowReuse); }}
-                                                onClick={(e) => e.stopPropagation()}
-                                                title="Check to allow reusing this bag number"
-                                            />
-                                        </td>
                                         <td className="p-3 text-slate-500">{b.date}</td>
                                         <td className="p-3">
                                             <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded font-black border">#{b.bagNo}</span>
+                                        </td>
+                                        <td className="p-3">
+                                            <span className="font-mono text-xs font-bold text-blue-700">{getBagRefNo(b)}</span>
                                         </td>
                                         <td
                                             onClick={() => handleBagClick(b.bagNo)}
@@ -795,31 +1028,16 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                             {getProductName(b.productId)}
                                         </td>
                                         <td className="p-3 text-right font-mono font-bold text-slate-600">
-                                            {b.stockJournalId ? (Number(b.percent || 0).toFixed(2)) : '-'}
+                                            {getBagSourceType(b) === 'manufactured' ? (Number(b.percent || 0).toFixed(2)) : '-'}
                                         </td>
                                         <td className="p-3 text-right font-mono font-bold text-slate-600">{b.qty.toFixed(2)}</td>
                                         <td className="p-3 text-center">
-                                            {b.stockJournalId ?
+                                            {getBagSourceType(b) === 'manufactured' ?
                                                 <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-bold uppercase border border-blue-100 italic">Production</span> :
-                                                <span className="text-[10px] bg-green-50 text-green-600 px-2 py-0.5 rounded-full font-bold uppercase border border-green-100 italic">Purchase</span>
+                                                getBagSourceType(b) === 'purchased' ?
+                                                    <span className="text-[10px] bg-green-50 text-green-600 px-2 py-0.5 rounded-full font-bold uppercase border border-green-100 italic">Purchase</span> :
+                                                    <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold uppercase border border-slate-200 italic">Unknown</span>
                                             }
-                                        </td>
-                                        <td className="p-3 text-center">
-                                            {b.status === 'sold' ?
-                                                <span className="text-[10px] bg-orange-100 text-orange-700 px-3 py-1 rounded-full font-black uppercase shadow-sm">SOLD</span> :
-                                                <span className="text-[10px] bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full font-black uppercase shadow-sm border border-emerald-200">IN STOCK</span>
-                                            }
-                                        </td>
-                                        <td className="p-3 text-center">
-                                            <div className="flex items-center justify-center gap-2">
-                                                <button
-                                                    onClick={() => handleBagClick(b.bagNo)}
-                                                    className="text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 justify-center p-1 hover:bg-blue-50 rounded"
-                                                    title="Bag Analysis"
-                                                >
-                                                    Analysis <History size={14} />
-                                                </button>
-                                            </div>
                                         </td>
                                         <td className="p-3 text-center">
                                             <button
@@ -833,7 +1051,15 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                         </td>
                                     </tr>
                                 ))}
-                            {!loading && filteredBags.length === 0 && <tr><td colSpan="10" className="p-10 text-center text-slate-400">No {viewMode === 'in_stock' ? 'in stock' : 'sold'} bags found.</td></tr>}
+                            {!loading && filteredBags.length === 0 && (
+                                <tr>
+                                    <td colSpan="11" className="p-10 text-center text-slate-400 font-medium italic">
+                                        {viewMode === 'all' ? "No bag activity found in this period." :
+                                         viewMode === 'in_stock' ? "No available bags found." :
+                                         "No sold bags found in this period."}
+                                    </td>
+                                </tr>
+                            )}
                         </tbody>
                     </table>
                 </div>
@@ -1003,11 +1229,13 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                 days.push(d.toISOString().split('T')[0]);
                                             }
 
-                                            const prodBags = bags.filter(b => b.stockJournalId);
+                                            const prodBags = bags.filter(b => getBagSourceType(b) === 'manufactured');
                                             const dateMap = prodBags.reduce((acc, b) => {
-                                                if (!acc[b.date]) acc[b.date] = { weight: 0, count: 0 };
-                                                acc[b.date].weight += b.qty;
-                                                acc[b.date].count += 1;
+                                                const key = b.dateKey || normalizeDateKey(b.date);
+                                                if (!key) return acc;
+                                                if (!acc[key]) acc[key] = { weight: 0, count: 0 };
+                                                acc[key].weight += b.qty;
+                                                acc[key].count += 1;
                                                 return acc;
                                             }, {});
 
@@ -1048,7 +1276,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
-                                            {Object.entries(bags.filter(b => b.date === selectedProdDate && b.stockJournalId).reduce((acc, b) => {
+                                            {Object.entries(bags.filter(b => (b.dateKey || normalizeDateKey(b.date)) === selectedProdDate && getBagSourceType(b) === 'manufactured').reduce((acc, b) => {
                                                 const name = getProductName(b.productId);
                                                 if (!acc[name]) acc[name] = { weight: 0, count: 0 };
                                                 acc[name].weight += b.qty;
@@ -1084,9 +1312,12 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     selectedBagNo && createPortal(
                         <div className="fixed inset-0 z-[10000] bg-white flex flex-col animate-in slide-in-from-right duration-300 w-screen h-screen leading-normal">
                             <div className="bg-slate-900 text-white p-3 flex items-center justify-between">
-                                <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-3 min-w-0">
                                     <button onClick={() => setSelectedBagNo(null)} className="hover:bg-white/20 p-1 rounded"><ArrowLeft size={20} /></button>
-                                    <h3 className="font-bold flex items-center gap-2">Analysis for Bag #{selectedBagNo}</h3>
+                                    <div className="min-w-0">
+                                        <h3 className="font-bold flex items-center gap-2">Analysis for Bag #{selectedBagNo}</h3>
+                                        <p className="text-[11px] text-blue-200 font-bold truncate">Linked Ref No: {latestVoucherRef}</p>
+                                    </div>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <button
@@ -1115,7 +1346,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             ) : (
                                 <div className="flex-1 overflow-auto p-4 space-y-6">
                                     {/* 1. OVERALL SUMMARY */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 shadow-sm">
                                             <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1">Total Weight Filled</p>
                                             <p className="text-2xl font-black text-blue-700">{bagHistory.reduce((s, h) => s + h.qty, 0).toFixed(3)} <span className="text-sm">{baseUnitSymbol}</span></p>
@@ -1124,6 +1355,11 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                             <p className="text-[10px] font-bold text-green-400 uppercase tracking-widest mb-1">Total Estimated Value</p>
                                             <p className="text-2xl font-black text-green-700">AED {bagHistory.reduce((s, h) => s + (Number(h.totalBagValue) || 0), 0).toFixed(2)}</p>
                                         </div>
+                                        <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 shadow-sm">
+                                            <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mb-1">Bags In Same Voucher</p>
+                                            <p className="text-2xl font-black text-amber-700">{bagsInLatestVoucher} <span className="text-sm">Bags</span></p>
+                                            <p className="text-[10px] font-bold text-amber-500 uppercase tracking-wider mt-1">Ref: {latestVoucherRef}</p>
+                                        </div>
                                         <button
                                             type="button"
                                             onClick={() => handleOpenVoucher()}
@@ -1131,8 +1367,18 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                         >
                                             <p className="text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-1">Times Filled</p>
                                             <p className="text-2xl font-black text-purple-700">{bagHistory.length} <span className="text-sm">Vouchers</span></p>
+                                            <p className="text-[10px] font-bold text-purple-500 uppercase tracking-wider mt-1">Refs Linked: {linkedVoucherRefs.length}</p>
                                         </button>
                                     </div>
+
+                                    {linkedVoucherRefs.length > 0 && (
+                                        <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap gap-2">
+                                            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Linked Ref Nos</span>
+                                            {linkedVoucherRefs.map(ref => (
+                                                <span key={ref} className="px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[11px] font-black">#{ref}</span>
+                                            ))}
+                                        </div>
+                                    )}
 
                                     {/* 2. HISTORY LIST */}
                                     <div className="space-y-4">
@@ -1147,9 +1393,9 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                         <div className="flex items-center gap-4">
                                                             <span className="bg-slate-800 text-white text-[10px] font-black px-2 py-1 rounded">FILL #{idx + 1}</span>
                                                             <span className="font-bold text-slate-700">{h.date}</span>
-                                                            <span className="font-bold text-slate-700">{h.date}</span>
-                                                            <span className="text-slate-400 text-sm hidden md:inline">
-                                                                Voucher:
+                                                            <span className="text-[10px] font-black uppercase px-2 py-1 rounded bg-slate-200 text-slate-700">{h.type || 'Unknown'}</span>
+                                                            <span className="text-slate-400 text-sm">
+                                                                Ref No:
                                                                 <button
                                                                     onClick={() => {
                                                                         if (h.stockJournalId) onOpenVoucher(h.stockJournalId, 'manufacturing');

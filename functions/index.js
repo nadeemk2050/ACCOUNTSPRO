@@ -6,6 +6,7 @@ const { onCall, HttpsError, onRequest } = require("firebase-functions/v2/https")
 const crypto = require('crypto');
 
 const admin = require('firebase-admin');
+const cors = require('cors')({ origin: '*' });
 
 // 1. Initialize Admin App
 if (admin.apps.length === 0) {
@@ -743,87 +744,422 @@ exports.getApiKey = onCall({ cors: true }, async (request) => {
 
 exports.accproApi = onRequest({ cors: true }, async (req, res) => {
     const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-    
-    if (!apiKey) {
-        return res.status(401).json({ error: 'API Key missing' });
-    }
-
-    try {
-        const db = admin.firestore();
         
-        // Find the user and company associated with this API Key
-        const keySnap = await db.collection('api_keys').where('apiKey', '==', apiKey).limit(1).get();
-        
-        if (keySnap.empty) {
-            return res.status(403).json({ error: 'Invalid API Key' });
+        if (!apiKey) {
+            return res.status(401).json({ error: 'API Key missing' });
         }
 
-        const keyData = keySnap.docs[0].data();
-        const userId = keyData.userId;
-        const companyId = keyData.companyId;
-
-        const action = req.query.action || 'summary';
-
-        // Helper to query the company's live records
-        const getRecords = (colName) => db.collection('companies_live').doc(companyId).collection('records').where('collectionName', '==', colName);
-
-        if (action === 'summary') {
-            // Get basic summary for widget from live records
-            const [partySnap, accountSnap, invoiceSnap] = await Promise.all([
-                getRecords('parties').get(),
-                getRecords('accounts').get(),
-                getRecords('invoices').orderBy('data.date', 'desc').limit(5).get()
-            ]);
-
-            let totalReceivable = 0;
-            let totalPayable = 0;
-            partySnap.forEach(doc => {
-                const item = doc.data();
-                const bal = item.data?.balance || 0;
-                if (bal > 0) totalReceivable += bal;
-                else totalPayable += Math.abs(bal);
-            });
-
-            let cashBankBalance = 0;
-            accountSnap.forEach(doc => {
-                const item = doc.data();
-                cashBankBalance += (item.data?.balance || 0);
-            });
-
-            const recentInvoices = invoiceSnap.docs.map(doc => {
-                const item = doc.data();
-                return {
-                    id: item.id,
-                    ...item.data
-                };
-            });
-
-            return res.json({
-                companyId,
-                totalReceivable,
-                totalPayable,
-                cashBankBalance,
-                recentInvoices
-            });
-        }
-
-        if (action === 'party_balance') {
-            const partyId = req.query.partyId;
-            if (!partyId) return res.status(400).json({ error: 'partyId required' });
-
-            const doc = await db.collection('companies_live').doc(companyId).collection('records').doc(partyId).get();
-            if (!doc.exists || doc.data().collectionName !== 'parties') {
-                return res.status(404).json({ error: 'Party not found' });
+        try {
+            const db = admin.firestore();
+            
+            // Find the user and company associated with this API Key
+            const keySnap = await db.collection('api_keys').where('apiKey', '==', apiKey).limit(1).get();
+            
+            if (keySnap.empty) {
+                return res.status(403).json({ error: 'Invalid API Key' });
             }
 
-            const item = doc.data();
-            return res.json({
-                name: item.data?.name,
-                balance: item.data?.balance || 0
-            });
-        }
+            const keyData = keySnap.docs[0].data();
+            const userId = keyData.userId;
+            const companyId = keyData.companyId;
 
-        return res.status(400).json({ error: 'Unknown action' });
+            // Fetch company name from the same path as records
+            const companyDoc = await db.collection('companies_live').doc(companyId).get();
+            const companyName = companyDoc.exists ? (companyDoc.data().name || 'AccountsPro Company') : 'AccountsPro Company';
+
+            const action = req.query.action || 'summary';
+
+            if (action === 'validate_key') {
+                return res.json({ success: true, companyName });
+            }
+
+            // Helper to query the company's live records
+            const getRecords = (colName) => db.collection('companies_live').doc(companyId).collection('records').where('collectionName', '==', colName);
+
+            if (action === 'summary') {
+                // Get basic summary for widget from live records
+                const [partySnap, accountSnap, invoiceSnap] = await Promise.all([
+                    getRecords('parties').get(),
+                    getRecords('accounts').get(),
+                    getRecords('invoices').get()
+                ]);
+
+                let totalReceivable = 0;
+                let totalPayable = 0;
+                partySnap.forEach(doc => {
+                    const item = doc.data();
+                    const bal = item.data?.balance || 0;
+                    if (bal > 0) totalReceivable += bal;
+                    else totalPayable += Math.abs(bal);
+                });
+
+                let cashBankBalance = 0;
+                accountSnap.forEach(doc => {
+                    const item = doc.data();
+                    cashBankBalance += (item.data?.balance || 0);
+                });
+
+                const recentInvoices = invoiceSnap.docs.map(doc => {
+                    const item = doc.data();
+                    return { id: item.id, ...item.data };
+                })
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .slice(0, 5);
+
+                return res.json({
+                    companyId,
+                    companyName,
+                    totalReceivable,
+                    totalPayable,
+                    cashBankBalance,
+                    recentInvoices
+                });
+            }
+
+            if (action === 'list_accounts') {
+                const snap = await getRecords('accounts').get();
+                const accounts = snap.docs.map(doc => {
+                    const item = doc.data();
+                    return {
+                        id: item.id,
+                        ...item.data
+                    };
+                });
+                return res.json({ 
+                    companyName,
+                    accounts 
+                });
+            }
+
+            if (action === 'add_contra') {
+                // Support both query and body for flexibility
+                const { fromAccountId, toAccountId, amount, date, narration, refNo } = { ...req.query, ...req.body };
+                if (!fromAccountId || !toAccountId || !amount) {
+                    return res.status(400).json({ error: 'Missing required fields: fromAccountId, toAccountId, amount' });
+                }
+
+                const amt = Number(amount);
+                const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
+
+                try {
+                    await db.runTransaction(async (transaction) => {
+                        const fromSnap = await transaction.get(recordsCol.doc(fromAccountId));
+                        const toSnap = await transaction.get(recordsCol.doc(toAccountId));
+
+                        if (!fromSnap.exists || !toSnap.exists) {
+                            throw new Error('One or both accounts not found');
+                        }
+
+                        // Update balances
+                        transaction.update(recordsCol.doc(fromAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(-amt),
+                            'syncTimestamp': Date.now(),
+                            'timestamp': Date.now()
+                        });
+                        transaction.update(recordsCol.doc(toAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(amt),
+                            'syncTimestamp': Date.now(),
+                            'timestamp': Date.now()
+                        });
+
+                        // Create the payment record
+                        const newId = crypto.randomBytes(12).toString('hex');
+                        transaction.set(recordsCol.doc(newId), {
+                            id: newId,
+                            collectionName: 'payments',
+                            syncTimestamp: Date.now(),
+                            timestamp: Date.now(),
+                            data: {
+                                type: 'contra',
+                                accountId: fromAccountId,
+                                toAccountId: toAccountId,
+                                amount: amt,
+                                date: date || new Date().toISOString().split('T')[0],
+                                description: narration || '', // Main app uses description for payments
+                                refNo: refNo || '',
+                                userId: userId,
+                                status: 'active',
+                                version: 'v2'
+                            }
+                        });
+                    });
+                    return res.json({ success: true });
+                } catch (error) {
+                    return res.status(400).json({ error: error.message });
+                }
+            }
+
+            if (action === 'list_ledgers') {
+                const [partySnap, expSnap, assetSnap] = await Promise.all([
+                    getRecords('parties').get(),
+                    getRecords('expenses').get(),
+                    getRecords('asset_accounts').get()
+                ]);
+                
+                const ledgers = [];
+                partySnap.forEach(d => ledgers.push({ id: d.id, collection: 'parties', name: d.data().data?.name || 'Unknown Party' }));
+                expSnap.forEach(d => ledgers.push({ id: d.id, collection: 'expenses', name: d.data().data?.name || 'Unknown Expense' }));
+                assetSnap.forEach(d => ledgers.push({ id: d.id, collection: 'asset_accounts', name: d.data().data?.name || 'Unknown Asset' }));
+                
+                return res.json({ ledgers });
+            }
+
+            if (action === 'list_party_invoices') {
+                const partyId = req.query.partyId || req.body.partyId;
+                if (!partyId) return res.status(400).json({ error: 'Party ID required' });
+                
+                const invSnap = await getRecords('invoices')
+                    .where('data.partyId', '==', partyId)
+                    .get();
+                
+                const invoices = invSnap.docs.map(doc => {
+                    const d = doc.data().data;
+                    const total = d.totalAmount || 0;
+                    const paid = d.paidAmount || 0;
+                    return {
+                        id: doc.id,
+                        refNo: d.refNo || 'INV',
+                        date: d.date,
+                        totalAmount: total,
+                        paidAmount: paid,
+                        remainingAmount: total - paid,
+                        type: d.type
+                    };
+                });
+                
+                return res.json({ invoices });
+            }
+
+            if (action === 'list_team') {
+                const teamSnap = await db.collection('users').where('ownerId', '==', userId).get();
+                const team = teamSnap.docs.map(doc => ({
+                    id: doc.id,
+                    name: doc.data().name,
+                    email: doc.data().email,
+                    role: doc.data().role
+                }));
+                return res.json({ team, companyName });
+            }
+
+            if (action === 'verify_team_login') {
+                const { username, password } = { ...req.query, ...req.body };
+                if (!username || !password) return res.status(400).json({ error: 'Username and Password required' });
+
+                const db = admin.firestore();
+                
+                // 1. Try finding as a Team Member (ownerId matches)
+                let userSnap = await db.collection('users')
+                    .where('email', '==', username)
+                    .where('ownerId', '==', userId)
+                    .limit(1)
+                    .get();
+
+                // 2. If not found, try finding as the Owner themselves (ID matches)
+                if (userSnap.empty) {
+                    const ownerDoc = await db.collection('users').doc(userId).get();
+                    if (ownerDoc.exists && ownerDoc.data().email === username) {
+                        const userData = ownerDoc.data();
+                        const storedPassword = userData.teamPassword || '123456';
+                        if (password !== storedPassword) return res.status(401).json({ error: 'Invalid password' });
+                        
+                        return res.json({ 
+                            success: true, 
+                            user: { id: userId, name: userData.name, role: 'owner' } 
+                        });
+                    }
+                    return res.status(401).json({ error: 'User not found in this company' });
+                }
+                
+                const userData = userSnap.docs[0].data();
+                const storedPassword = userData.teamPassword || '123456';
+                
+                if (password !== storedPassword) {
+                    return res.status(401).json({ error: 'Invalid password' });
+                }
+
+                return res.json({ 
+                    success: true, 
+                    user: { id: userSnap.docs[0].id, name: userData.name, role: userData.role } 
+                });
+            }
+
+            if (action === 'add_payment') {
+                let { accountId, payments, date, narration, refNo, subUserId } = { ...req.query, ...req.body };
+                
+                if (typeof payments === 'string') {
+                    try { payments = JSON.parse(payments); } catch (e) { }
+                }
+
+                if (!accountId || !payments || !Array.isArray(payments) || payments.length === 0) {
+                    return res.status(400).json({ error: 'Missing required fields: accountId, payments (array)' });
+                }
+
+                const db = admin.firestore();
+                const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
+
+                try {
+                    await db.runTransaction(async (transaction) => {
+                        const accSnap = await transaction.get(recordsCol.doc(accountId));
+                        if (!accSnap.exists) throw new Error('Source account not found');
+
+                        const uniqueLedgerIds = [...new Set(payments.map(p => p.ledgerId))];
+                        const uniqueAgainstIds = [...new Set(payments.filter(p => p.againstId).map(p => p.againstId))];
+                        
+                        // FETCH NESTED (Source of Truth)
+                        const [ledgerSnaps, againstSnaps, sourceAccSnap] = await Promise.all([
+                            Promise.all(uniqueLedgerIds.map(id => transaction.get(recordsCol.doc(id)))),
+                            Promise.all(uniqueAgainstIds.map(id => transaction.get(recordsCol.doc(id)))),
+                            transaction.get(recordsCol.doc(accountId))
+                        ]);
+
+                        if (!sourceAccSnap.exists) throw new Error('Source account not found');
+                        ledgerSnaps.forEach((snap, idx) => { if (!snap.exists) throw new Error(`Ledger ${uniqueLedgerIds[idx]} not found`); });
+
+                        // FETCH TOP-LEVEL MIRRORS (Using queries for better matching)
+                        const topInvoiceIds = {};
+                        for (const p of payments) {
+                            if (p.againstId && p.againstRef) {
+                                const q = await db.collection('invoices')
+                                    .where('userId', '==', userId)
+                                    .where('refNo', '==', p.againstRef)
+                                    .limit(1).get();
+                                if (!q.empty) topInvoiceIds[p.againstId] = q.docs[0].id;
+                            }
+                        }
+
+                        const topPartyIds = {};
+                        for (const p of payments) {
+                            if (p.ledgerId) {
+                                // Try ID match first
+                                const d = await db.collection('parties').doc(p.ledgerId).get();
+                                if (d.exists) { topPartyIds[p.ledgerId] = p.ledgerId; }
+                                else {
+                                    // Try Name match
+                                    const nestedData = ledgerSnaps.find(s => s.id === p.ledgerId)?.data()?.data;
+                                    if (nestedData?.name) {
+                                        const q = await db.collection('parties').where('userId', '==', userId).where('name', '==', nestedData.name).limit(1).get();
+                                        if (!q.empty) topPartyIds[p.ledgerId] = q.docs[0].id;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Source Account Mirror
+                        let topAccountId = null;
+                        const accDoc = await db.collection('accounts').doc(accountId).get();
+                        if (accDoc.exists) { topAccountId = accountId; }
+                        else {
+                            const nestedAcc = sourceAccSnap.data()?.data;
+                            if (nestedAcc?.name) {
+                                const q = await db.collection('accounts').where('userId', '==', userId).where('name', '==', nestedAcc.name).limit(1).get();
+                                if (!q.empty) topAccountId = q.docs[0].id;
+                            }
+                        }
+
+                        let totalVoucherAmount = 0;
+
+                        for (const p of payments) {
+                            const { ledgerId, ledgerCollection, amount, againstId, againstRef, category } = p;
+                            const amt = Number(amount);
+                            totalVoucherAmount += amt;
+
+                            // 1. UPDATE NESTED RECORD
+                            transaction.update(recordsCol.doc(ledgerId), {
+                                'data.balance': admin.firestore.FieldValue.increment(amt),
+                                'syncTimestamp': Date.now(),
+                                'timestamp': Date.now()
+                            });
+
+                            // 2. UPDATE TOP-LEVEL MIRROR
+                            const topId = topPartyIds[ledgerId];
+                            const topLedgerCol = ledgerCollection === 'parties' ? 'parties' : 
+                                               ledgerCollection === 'expenses' ? 'expenses' : 
+                                               ledgerCollection === 'asset_accounts' ? 'accounts' : null;
+                            
+                            if (topLedgerCol && topId) {
+                                transaction.update(db.collection(topLedgerCol).doc(topId), {
+                                    'balance': admin.firestore.FieldValue.increment(amt),
+                                    'timestamp': Date.now()
+                                });
+                            }
+
+                            if (againstId) {
+                                // 3. UPDATE NESTED INVOICE
+                                transaction.update(recordsCol.doc(againstId), {
+                                    'data.paidAmount': admin.firestore.FieldValue.increment(amt),
+                                    'data.remainingAmount': admin.firestore.FieldValue.increment(-amt),
+                                    'syncTimestamp': Date.now(),
+                                    'timestamp': Date.now()
+                                });
+
+                                // 4. UPDATE TOP-LEVEL INVOICE
+                                const tInvId = topInvoiceIds[againstId];
+                                if (tInvId) {
+                                    transaction.update(db.collection('invoices').doc(tInvId), {
+                                        'paidAmount': admin.firestore.FieldValue.increment(amt),
+                                        'remainingAmount': admin.firestore.FieldValue.increment(-amt),
+                                        'timestamp': Date.now()
+                                    });
+                                }
+                            }
+
+                            // Payment Record
+                            const newId = crypto.randomBytes(12).toString('hex');
+                            const targetKey = ledgerCollection === 'parties' ? 'partyId' : ledgerCollection === 'expenses' ? 'expenseId' : 'assetId';
+                            const targetCategory = ledgerCollection === 'parties' ? 'party' : ledgerCollection === 'expenses' ? 'expense' : 'asset';
+
+                            const paymentData = {
+                                type: 'out', 
+                                transactionCategory: targetCategory,
+                                accountId: accountId,
+                                [targetKey]: ledgerId,
+                                amount: amt,
+                                date: date || new Date().toISOString().split('T')[0],
+                                description: narration || '',
+                                refNo: refNo || '',
+                                againstId: againstId || null,
+                                againstRef: againstRef || null,
+                                invoiceId: againstId || null,
+                                invoiceRef: againstRef || null,
+                                billId: againstId || null,
+                                billRef: againstRef || null,
+                                isAgainstRef: !!againstId,
+                                paymentAgainst: againstId ? { id: againstId, ref: againstRef, amount: amt } : null,
+                                paymentCategory: category || 'normal',
+                                isMulti: payments.length > 1,
+                                userId: subUserId || userId,
+                                createdBy: subUserId || userId,
+                                status: 'active',
+                                version: 'v2',
+                                apiSource: 'accpro-multi-pay'
+                            };
+
+                            transaction.set(recordsCol.doc(newId), {
+                                id: newId, collectionName: 'payments', syncTimestamp: Date.now(), timestamp: Date.now(), data: paymentData
+                            });
+
+                            transaction.set(db.collection('payments').doc(newId), { ...paymentData, id: newId, timestamp: Date.now() });
+                        }
+
+                        // Update Bank
+                        transaction.update(recordsCol.doc(accountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(-totalVoucherAmount),
+                            'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                        });
+
+                        if (topAccountId) {
+                            transaction.update(db.collection('accounts').doc(topAccountId), {
+                                'balance': admin.firestore.FieldValue.increment(-totalVoucherAmount), 'timestamp': Date.now()
+                            });
+                        }
+                    });
+                    return res.json({ success: true });
+                } catch (error) {
+                    return res.status(400).json({ error: error.message });
+                }
+            }
+
+            return res.status(400).json({ error: 'Unknown action' });
 
     } catch (error) {
         console.error("API Error:", error);

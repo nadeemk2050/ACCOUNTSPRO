@@ -11,6 +11,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [currencies, setCurrencies] = useState([]);
 
     const [transactions, setTransactions] = useState([]);
+    const [linkedPairsMap, setLinkedPairsMap] = useState(new Map()); // docId → partnerId
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [expandDetails, setExpandDetails] = useState(false);
@@ -59,6 +60,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         });
 
         if (itemsToDelete.length === 0) return;
+
+        // Check for linked pairs in the selection
+        let hasLinkedPair = false;
+        for (const item of itemsToDelete) {
+            const row = fullList.find(t => t.id === item.id);
+            if (getLinkedPartnerId(row)) {
+                hasLinkedPair = true;
+                break;
+            }
+        }
+
+        if (hasLinkedPair) {
+            const confirmed = window.confirm("⚠️ LINKED VOUCHERS SELECTED\n\nYou have selected Manufacturing/Expense Journal vouchers that are linked together.\n\nBOTH vouchers in the linked pairs will be deleted together.\n\nProceed with DELETION?");
+            if (!confirmed) return;
+        }
 
         if (onBulkDelete) {
             const success = await onBulkDelete(itemsToDelete);
@@ -171,7 +187,50 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     }, [isOpen, initialState]);
 
     const toggleSelectAll = (filteredData) => { if (selectedIds.size === filteredData.length) setSelectedIds(new Set()); else setSelectedIds(new Set(filteredData.map(t => t.id))); };
-    const toggleSelectRow = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
+    const getLinkedPartnerId = (row) => {
+        if (!row) return null;
+        const rowRef = String(row.ref || "").trim().toLowerCase();
+        
+        if (row.linkedStockJournalId) {
+            return row.linkedStockJournalId;
+        } else if (row.expenseJournalId) {
+            return row.expenseJournalId;
+        } else {
+            if (row.type === 'journal' && rowRef.endsWith('-exp')) {
+                const baseRef = rowRef.replace('-exp', '');
+                const parentRow = fullList.find(t => 
+                    (t.type === 'manufacturing' || t.type === 'stock_journal') && 
+                    String(t.ref || "").trim().toLowerCase() === baseRef
+                );
+                return parentRow ? parentRow.id : null;
+            } else if (row.type === 'manufacturing' || row.type === 'stock_journal') {
+                const expRef = `${rowRef}-exp`;
+                const childRow = fullList.find(t => 
+                    t.type === 'journal' && 
+                    String(t.ref || "").trim().toLowerCase() === expRef
+                );
+                return childRow ? childRow.id : null;
+            }
+        }
+        return null;
+    };
+
+    const toggleSelectRow = (id) => { 
+        const newSet = new Set(selectedIds); 
+        const isSelected = newSet.has(id);
+        
+        const row = fullList.find(t => t.id === id);
+        const relatedId = getLinkedPartnerId(row);
+
+        if (isSelected) {
+            newSet.delete(id);
+            if (relatedId) newSet.delete(relatedId);
+        } else {
+            newSet.add(id);
+            if (relatedId) newSet.add(relatedId);
+        }
+        setSelectedIds(newSet); 
+    };
 
     const generateReport = async (overrideFilter = null) => {
         const activeFilter = overrideFilter || filter;
@@ -244,6 +303,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     currencyId: d.currencyId || 'BASE',
 
                     type: d.type,
+                    linkedStockJournalId: d.linkedStockJournalId,
+                    expenseJournalId: d.expenseJournalId,
                     subItems: d.items || (d.type === 'manufacturing' ? [...(d.produced || []), ...(d.consumed || [])] : []),
                     subSplits: d.splits || [],
                     taxAmount: d.taxAmount, taxName: d.taxName, invExpenses: d.expenses || [],
@@ -588,6 +649,40 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             processDocs(jvSnap, 'jv');
             processDocs(mfgSnap, 'mfg');
 
+            // BUILD LINKED PAIRS MAP: every MFG→JV and JV→MFG pair
+            const pairsMap = new Map();
+            mfgSnap.docs.forEach(doc => {
+                const d = doc.data();
+                const jvId = d.expenseJournalId;
+                if (jvId) {
+                    pairsMap.set(doc.id, jvId); // MFG → JV
+                    pairsMap.set(jvId, doc.id); // JV → MFG
+                }
+            });
+            // FALLBACK: also match by refNo pattern (for older vouchers without expenseJournalId)
+            const mfgMap = new Map(); // refNo → docId for manufacturing
+            mfgSnap.docs.forEach(doc => {
+                const d = doc.data();
+                if (d.refNo) mfgMap.set(d.refNo.trim(), doc.id);
+            });
+            jvSnap.docs.forEach(doc => {
+                const d = doc.data();
+                if (d.linkedStockJournalId) {
+                    // explicit link on JV side
+                    if (!pairsMap.has(doc.id)) {
+                        pairsMap.set(doc.id, d.linkedStockJournalId);
+                        pairsMap.set(d.linkedStockJournalId, doc.id);
+                    }
+                } else if (d.refNo && d.refNo.trim().endsWith('-Exp')) {
+                    const baseRef = d.refNo.trim().replace('-Exp', '');
+                    const parentId = mfgMap.get(baseRef);
+                    if (parentId && !pairsMap.has(doc.id)) {
+                        pairsMap.set(doc.id, parentId);
+                        pairsMap.set(parentId, doc.id);
+                    }
+                }
+            });
+            setLinkedPairsMap(pairsMap);
             setTransactions(allTx);
         } catch (error) { console.error(error); }
         finally { setLoading(false); }
@@ -728,8 +823,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             detailedList = finalDetailedList;
         }
 
-        let runningTotal = 0; // Initialize 0, Opening Row adds to it
-        let runningQty = 0;
+        let runningTotal = openingBal || 0; // Initialize with opening balance
+        let runningQty = openingQty || 0;
 
         // ✅ Accumulators for Qty/Rate
         let qtyTotal = 0;
@@ -774,7 +869,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     if (matchedItems.length > 0) {
                         const q = matchedItems.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
                         // Inwards (+), Outwards (-)
-                        dQty = (t.amountIn > 0) ? q : -q;
+                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.type);
+                        const baseSign = isInward ? 1 : -1;
+                        let signedFlow = (t.amountIn || t.amountOut || 0) * baseSign;
+                        if (signedFlow === 0) signedFlow = q * baseSign;
+                        
+                        dQty = signedFlow >= 0 ? q : -q;
 
                         // Calculate Effective Rate (RIE)
                         const totalItemVal = matchedItems.reduce((acc, i) => acc + ((Number(i.quantity) || 0) * (Number(i.rate) || 0)), 0);
@@ -1117,7 +1217,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         <button onClick={handleHideSelected} className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-800 border border-blue-200 rounded shadow-sm text-xs md:text-sm font-bold hover:bg-blue-100 transition-all active:scale-95" title="Hide Selected (Alt+R)">
                                             <span>👁️</span> Hide ({selectedIds.size})
                                         </button>
-                                        <button onClick={handleBulkRemove} className="flex items-center gap-1 px-3 py-1.5 bg-red-100 text-red-800 border border-red-300 rounded shadow-sm text-xs md:text-sm font-bold hover:bg-red-200 transition-all active:scale-95 animate-pulse" title="Delete Selected Permanently">
+                                        <button onClick={handleBulkRemove} className="flex items-center gap-1 px-3 py-1.5 bg-red-100 text-red-800 border border-red-300 rounded shadow-sm text-xs md:text-sm font-bold hover:bg-red-200 transition-all active:scale-95 animate-pulse" title="Delete Selected (Linked vouchers will be deleted together)">
                                             <Trash2 size={16} /> Remove ({selectedIds.size})
                                         </button>
                                     </div>
@@ -1220,7 +1320,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                             <td className="p-2 md:p-3 text-center" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(row.id)} onChange={() => toggleSelectRow(row.id)} /></td>
                                             <td className="p-2 md:p-3 text-slate-600 align-top">{formatDate(row.date)}</td>
                                             <td className="p-2 md:p-3 align-top">
-                                                <div className="font-bold text-slate-700 truncate max-w-[150px]">{row.drName}</div>
+                                                <div className="font-bold text-slate-700 truncate max-w-[150px]">
+                                                    {row.drName}
+                                                    {getLinkedPartnerId(row) && (
+                                                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black bg-blue-100 text-blue-700 uppercase" title="Linked voucher - will be processed together">Linked</span>
+                                                    )}
+                                                </div>
                                                 <div className="text-[10px] text-slate-500 truncate max-w-[150px]">{row.crName}</div>
                                             </td>
                                             <td className="p-2 md:p-3 text-blue-600 font-mono align-top">{row.ref}</td>

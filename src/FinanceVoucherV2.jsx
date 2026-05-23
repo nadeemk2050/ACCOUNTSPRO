@@ -244,9 +244,9 @@ const FinanceVoucherV2 = ({
                     ...(!initialData ? { createdBy: user.uid, createdByName: effectiveName, createdAt: serverTimestamp() } : {})
                 };
 
-                if (initialData?.id) transaction.update(docRef, payload);
+                if (initialData?.id) await transaction.update(docRef, payload);
                 else {
-                    transaction.set(docRef, payload);
+                    await transaction.set(docRef, payload);
                     
                     if (type === 'payment' && companyProfile?.rules?.paymentRefMode === 'auto') {
                         const pattern = companyProfile?.rules?.paymentRefPattern || '';
@@ -255,7 +255,7 @@ const FinanceVoucherV2 = ({
                             const startNum = parseInt(match[2], 10);
                             const currentSeq = companyProfile.rules.paymentRefCurrentSeq !== undefined ? companyProfile.rules.paymentRefCurrentSeq : startNum;
                             const profileRef = doc(db, 'company_profiles', companyProfile.id || targetUid);
-                            transaction.update(profileRef, {
+                            await transaction.update(profileRef, {
                                 'rules.paymentRefCurrentSeq': currentSeq + 1
                             });
                         }
@@ -263,7 +263,7 @@ const FinanceVoucherV2 = ({
                 }
 
                 const logRef = doc(collection(db, 'audit_logs'));
-                transaction.set(logRef, {
+                await transaction.set(logRef, {
                     date: serverTimestamp(), ownerId: targetUid, userId: user.uid, userName: effectiveName,
                     action: initialData ? 'UPDATED' : 'CREATED', docType: `${docTitle} Voucher (V2)`,
                     refNo: formData.refNo || 'N/A', amount: payload.totalAmount, voucherDate: formData.date, docId: docRef.id

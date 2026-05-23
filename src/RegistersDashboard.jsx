@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-    X, ArrowRight, ChevronRight
+    X, ArrowRight, ChevronRight, Search
 } from 'lucide-react';
 
 const RegistersDashboard = ({
@@ -15,13 +15,13 @@ const RegistersDashboard = ({
     onShowCreditNoteRegister,
     onShowStockInventory,
     onShowPieceInventory,
-    onShowBagInventory,
     onShowLotDetail,
     onShowCashierRegister,
     onShowCustomerRegister,
     onShowCapitalRegister,
     onShowAssetRegister,
     onShowExpenseRegister,
+    onShowDirectExpenseRegister,
     onShowIncomeRegister,
     onShowManufacturingRegister,
     onShowLoansAdvancesRegister,
@@ -30,6 +30,7 @@ const RegistersDashboard = ({
     effectiveName,
     companyProfile
 }) => {
+    const [searchTerm, setSearchTerm] = useState('');
     const bgGradient = "bg-gradient-to-br from-[#0f172a] via-[#1e293b] to-[#0f172a]";
 
     const modules = [
@@ -43,12 +44,12 @@ const RegistersDashboard = ({
         { id: 'credit_note', name: 'Credit Notes', action: onShowCreditNoteRegister, v2: true, desc: 'Sales returns & adjustments' },
         { id: 'stock_inv', name: 'Stock Inventory', action: onShowStockInventory, v2: true, desc: 'Current warehouse stock levels' },
         { id: 'piece_inv', name: 'Piece Wise Inventory', action: onShowPieceInventory, v2: true, desc: 'Unit-by-unit stock breakdown' },
-        { id: 'bag_inv', name: 'BAG WISE REGISTER', action: onShowBagInventory, v2: true, desc: 'Jumbo bag & packing records' },
         { id: 'lot_inv', name: 'Lot Wise Detail', action: onShowLotDetail, v2: true, desc: 'Batch & batch-wise tracking' },
         { id: 'cashier_reg', name: 'Cashier Register', action: onShowCashierRegister, v2: true, desc: 'Detailed cashier transactions' },
         { id: 'customer_reg', name: 'Customers Register', action: onShowCustomerRegister, v2: true, desc: 'Party-wise ledger summary' },
         { id: 'capital_reg', name: 'Capital Register', action: onShowCapitalRegister, v2: true, desc: 'Owner & equity investments' },
         { id: 'asset_reg', name: 'Assets Register', action: onShowAssetRegister, v2: true, desc: 'Fixed & current asset records' },
+        { id: 'direct_expense_reg', name: 'Direct Expenses Register', action: onShowDirectExpenseRegister, v2: true, desc: 'Manufacturing & COGS direct expense ledgers' },
         { id: 'expense_reg', name: 'Indirect Expenses Register', action: onShowExpenseRegister, v2: true, desc: 'Operating & administrative costs' },
         { id: 'income_reg', name: 'Indirect Incomes Register', action: onShowIncomeRegister, v2: true, desc: 'Non-operating revenue sources' },
         { id: 'manuf_reg', name: 'Manufacturing Register', action: onShowManufacturingRegister, v2: true, desc: 'Production & processing logs' },
@@ -88,15 +89,36 @@ const RegistersDashboard = ({
             {/* MAIN CONTENT AREA */}
             <div className="flex-1 overflow-y-auto flex items-center justify-center p-6">
                 <div className="w-full max-w-lg bg-black/40 backdrop-blur-xl border border-white/10 rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] overflow-hidden animate-in zoom-in-95 duration-500">
-                    <div className="px-8 py-6 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
-                        <div>
-                            <div className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] mb-1">Navigation</div>
-                            <h2 className="text-white font-black text-2xl tracking-tight leading-none">Select a Register</h2>
+                    <div className="px-8 py-6 border-b border-white/5 bg-white/[0.02] flex flex-col gap-4">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <div className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] mb-1">Navigation</div>
+                                <h2 className="text-white font-black text-2xl tracking-tight leading-none">Select a Register</h2>
+                            </div>
+                        </div>
+
+                        {/* SEARCH FIELD */}
+                        <div className="relative group">
+                            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                                <Search size={16} className="text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                            </div>
+                            <input 
+                                type="text"
+                                placeholder="SEARCH FOR A REGISTER (E.G. SALES, TAX, INVENTORY...)"
+                                className="w-full bg-white/[0.05] border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-[10px] font-black text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:bg-white/[0.08] transition-all uppercase tracking-widest"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                            />
                         </div>
                     </div>
 
-                    <div className="p-3 space-y-0.5 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                        {modules.map((mod) => (
+                    <div className="p-3 space-y-0.5 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                        {modules
+                            .filter(mod => {
+                                const search = searchTerm.toLowerCase();
+                                return mod.name.toLowerCase().includes(search) || mod.desc.toLowerCase().includes(search);
+                            })
+                            .map((mod) => (
                             <button
                                 key={mod.id}
                                 onClick={() => {
@@ -130,6 +152,15 @@ const RegistersDashboard = ({
                                 )}
                             </button>
                         ))}
+                        {modules.filter(mod => {
+                            const search = searchTerm.toLowerCase();
+                            return mod.name.toLowerCase().includes(search) || mod.desc.toLowerCase().includes(search);
+                        }).length === 0 && (
+                            <div className="p-12 text-center flex flex-col items-center gap-3 opacity-30">
+                                <Search size={48} className="text-slate-500" />
+                                <div className="text-[10px] font-black uppercase tracking-[0.2em]">No Register Found</div>
+                            </div>
+                        )}
                     </div>
 
                     <div className="px-8 py-4 bg-black/20 border-t border-white/5 flex items-center justify-between">

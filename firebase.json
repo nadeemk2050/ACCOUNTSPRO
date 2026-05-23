@@ -18,6 +18,10 @@
         "function": "accproApi"
       },
       {
+        "source": "/accproApi",
+        "function": "accproApi"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

@@ -5,9 +5,12 @@ import './index.css'
 import App from './App.jsx'
 import LicenseGate from './LicenseGate.jsx'
 
+const extensionAsyncMessageNoise = 'A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received';
+
 // Suppress React internal development warnings
 if (process.env.NODE_ENV === 'development') {
   const originalError = console.error;
+
   console.error = (...args) => {
     const first = args[0];
     const msg = typeof first === 'string' ? first : (first?.message || '');
@@ -17,15 +20,36 @@ if (process.env.NODE_ENV === 'development') {
         msg.includes('Cannot find menu item with id') ||
         msg.includes('RxStorageInstanceDexie is closed') || 
         msg.includes('DM4') ||
-        msg.includes('Could not establish connection. Receiving end does not exist'))
+        msg.includes('Could not establish connection. Receiving end does not exist') ||
+        msg.includes(extensionAsyncMessageNoise))
     ) {
       return; // Suppress this specific error
     }
     originalError.apply(console, args);
   };
+
+  // Some browser extensions emit unhandled promise rejections in page context.
+  // Ignore only the known async message-channel noise so real app errors still surface.
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event?.reason;
+    const text = typeof reason === 'string' ? reason : (reason?.message || '');
+    if (text.includes(extensionAsyncMessageNoise)) {
+      event.preventDefault();
+    }
+  });
 }
 
-const APP_VERSION = '2.6.2'; // Update this string whenever you deploy a breaking change
+// This noise usually comes from browser extensions, not app logic.
+// Keep this global so it does not spam users in non-dev builds either.
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event?.reason;
+  const text = typeof reason === 'string' ? reason : (reason?.message || '');
+  if (text.includes(extensionAsyncMessageNoise)) {
+    event.preventDefault();
+  }
+});
+
+const APP_VERSION = 'V2.6.5'; // Update this string whenever you deploy a breaking change
 console.log(`ACCPRO Running Version: ${APP_VERSION}`);
 
 // 🛡️ SECURITY & CACHE FIX: Unregister any existing service workers that might be serving old code
@@ -50,36 +74,8 @@ const GlobalEffects = () => {
     return () => document.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Soft Version Check Mechanism: Simple json file fetched bypassing cache
-  useEffect(() => {
-    let intervalId;
-
-    const checkVersion = async () => {
-      try {
-        // Fetch a static config file, append a timestamp to bust the cache!
-        const response = await fetch(`version.json?t=${new Date().getTime()}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.version && data.version !== APP_VERSION) {
-            console.warn(`Version mismatch! Detected ${data.version}, but currently running ${APP_VERSION}. Forcing reload...`);
-            // Show a brief alert, so the user isn't totally shocked when the page blinks out
-            alert("A new update for ACCPRO has been released! The page will now refresh to apply the latest changes.");
-            // Hard reload, clearing cache
-            window.location.reload(true);
-          }
-        }
-      } catch (e) {
-        // Silently fail if offline or file missing
-        console.log("Could not check version:", e);
-      }
-    };
-
-    // Check version immediately on load, then every 5 minutes
-    setTimeout(checkVersion, 2000);
-    intervalId = setInterval(checkVersion, 5 * 60 * 1000);
-
-    return () => clearInterval(intervalId);
-  }, []);
+  // Soft Version Check Mechanism has been removed per user request
+  // to prevent infinite reloading loops when version mismatched.
 
   return null;
 };

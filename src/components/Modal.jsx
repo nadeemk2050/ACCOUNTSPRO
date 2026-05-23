@@ -15,6 +15,7 @@ export const Modal = ({
     noContentScroll = false,
     hideHeader = false,
     headerClassName = "",
+    titleClassName = "",
     footer = null,
     footerClassName = ""
 }) => {
@@ -99,36 +100,36 @@ export const Modal = ({
                 {/* Header - Draggable */}
                 {!hideHeader && (
                     <div
-                        className={`relative flex justify-between items-center p-4 border-b border-gray-100 bg-slate-50 select-none ${isMaximized ? '' : 'cursor-move'} ${headerClassName}`}
+                        className={`relative z-30 flex justify-between items-center ${headerClassName.includes('p-') ? '' : 'p-4'} border-b border-gray-100 bg-slate-50 select-none ${isMaximized ? '' : 'cursor-move'} ${headerClassName}`}
                         onMouseDown={handleMouseDown}
                     >
                         <div className="flex items-center gap-2 z-10">
                             {onBack && (
-                                <button
-                                    onClick={(e) => { e.stopPropagation(); onBack(); }}
-                                    className={`p-1.5 rounded transition-colors ${headerClassName ? 'hover:bg-white/10 text-white' : 'hover:bg-slate-100 text-slate-600'}`}
-                                    title="Back (Alt+Left)"
-                                >
-                                    <ArrowRight size={18} className="rotate-180" />
-                                </button>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); onBack(); }}
+                                        className={`rounded transition-colors ${headerClassName.includes('h-[') ? 'p-0.5' : 'p-1.5'} ${headerClassName.includes('bg-') ? 'hover:bg-white/10 text-white' : 'hover:bg-slate-200 text-slate-600'}`}
+                                        title="Back (Alt+Left)"
+                                    >
+                                        <ArrowRight size={headerClassName.includes('h-[') ? 14 : 18} className="rotate-180" />
+                                    </button>
                             )}
 
-                            {!centerTitle && <h3 className={`text-xl font-bold ${headerClassName ? 'text-white' : 'text-blue-900'} text-3d-elegant`}>{title}</h3>}
+                            {!centerTitle && <h3 className={`${titleClassName || 'text-xl'} font-bold ${headerClassName ? 'text-white' : 'text-blue-900'} text-3d-elegant`}>{title}</h3>}
                         </div>
 
                         {centerTitle && (
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                <h3 className={`text-xl font-bold ${headerClassName ? 'text-white' : 'text-blue-900'} text-3d-elegant`}>{title}</h3>
+                                <h3 className={`${titleClassName || 'text-xl'} font-bold ${headerClassName ? 'text-white' : 'text-blue-900'} text-3d-elegant`}>{title}</h3>
                             </div>
                         )}
 
                         <div className="flex items-center gap-2 no-drag z-10">
                             <button
                                 onClick={(e) => { e.stopPropagation(); onClose(); }}
-                                className={`p-1.5 rounded transition-colors ${headerClassName ? 'hover:bg-white/10 text-white/70 hover:text-white' : 'hover:bg-red-100 text-slate-400 hover:text-red-500'}`}
+                                className={`rounded transition-colors ${headerClassName.includes('h-[') ? 'p-0.5' : 'p-1.5'} ${headerClassName.includes('bg-') ? 'hover:bg-white/10 text-white/70 hover:text-white' : 'hover:bg-red-100 text-slate-500 hover:text-red-600'}`}
                                 title="Close (Esc)"
                             >
-                                <X size={20} />
+                                <X size={headerClassName.includes('h-[') ? 16 : 20} />
                             </button>
                         </div>
                     </div>

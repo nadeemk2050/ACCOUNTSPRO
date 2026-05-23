@@ -65,7 +65,7 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
         setTimeout(() => setCopied(false), 2000);
     };
 
-    const baseEndpoint = `https://accproapi-cashshams.web.app/accproApi`; // Standard Firebase Hosting + Cloud Functions alias
+    const baseEndpoint = `https://cashshams.web.app/accproApi`; // Standard Firebase Hosting + Cloud Functions alias
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} title="API & Widget Access" maxWidth="max-w-xl" zIndex={zIndex}>

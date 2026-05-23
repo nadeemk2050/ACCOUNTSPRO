@@ -76,11 +76,11 @@ export const limit = (num) => {
 };
 
 // Generic matcher for queries
-const matches = (docData, constraints) => {
+const matches = (id, docData, constraints) => {
     if (!constraints) return true;
     for (const c of constraints) {
         if (c.type === 'where') {
-            const val = docData[c.field];
+            const val = c.field === '__name__' ? id : docData[c.field];
             if (c.op === '==') { if (val !== c.value) return false; }
             else if (c.op === '>') { if (val <= c.value) return false; }
             else if (c.op === '<=') { if (val > c.value) return false; }
@@ -113,7 +113,7 @@ export const getDocs = async (q) => {
 
     // Map and filter docs
     let results = (docs || []).map(d => d.toJSON())
-        .filter(d => matches(d.data, q.constraints));
+        .filter(d => matches(d.id, d.data, q.constraints));
 
     // sorting
     if (q.constraints) {
@@ -191,7 +191,11 @@ export const onSnapshot = (q, callback) => {
     const targetType = q.type || (q.path && q.path.split('/').length % 2 === 0 ? 'doc' : 'collection');
     const queryPath = q.path || q;
 
+    let subscription = null;
+    let isUnsubscribed = false;
+
     getDB().then(db => {
+        if (isUnsubscribed) return;
         if (!db.offline_records) return;
 
         if (targetType === 'doc') {
@@ -199,14 +203,13 @@ export const onSnapshot = (q, callback) => {
             const id = parts[parts.length - 1];
             const colName = parts.slice(0, -1).join('/');
 
-            const sub = db.offline_records.findOne({ selector: { id, collectionName: colName } }).$.subscribe(rxDoc => {
+            subscription = db.offline_records.findOne({ selector: { id, collectionName: colName } }).$.subscribe(rxDoc => {
                 const snap = {
                     id,
                     ref: { id, path: queryPath },
                     metadata: { fromCache: true },
                     exists: () => false,
                     data: () => undefined,
-                    // Add fake array-like methods
                     forEach: () => { },
                     map: () => [],
                     filter: () => [],
@@ -224,10 +227,11 @@ export const onSnapshot = (q, callback) => {
             });
         } else {
             const rxQuery = db.offline_records.find({ selector: { collectionName: queryPath } });
-            const sub = rxQuery.$.subscribe(rxDocs => {
+            subscription = rxQuery.$.subscribe(rxDocs => {
+                console.log(`[onSnapshot] Collection update for ${queryPath}`);
                 const rxArr = rxDocs || [];
                 const mapped = rxArr.map(d => d.toJSON())
-                    .filter(d => matches(d.data, q.constraints));
+                    .filter(d => matches(d.id, d.data, q.constraints));
 
                 const snapSize = mapped.length;
                 const snap = {
@@ -261,7 +265,10 @@ export const onSnapshot = (q, callback) => {
         }
     });
 
-    return () => { /* Unsubscribe logic */ };
+    return () => {
+        isUnsubscribed = true;
+        if (subscription) subscription.unsubscribe();
+    };
 };
 
 // Helper to ensure data is a plain JSON object (avoids DataCloneError in RxDB/BroadcastChannel)
@@ -429,12 +436,32 @@ export const writeBatch = () => {
 };
 
 export const runTransaction = async (db, callback) => {
+    console.warn(`[runTransaction] START`);
     const transaction = {
-        get: async (ref) => await getDoc(ref),
-        set: (ref, data) => setDoc(ref, data),
-        update: (ref, data) => updateDoc(ref, data),
-        delete: (ref) => deleteDoc(ref)
+        get: async (ref) => {
+            console.log(`[Transaction] GET ${ref.path}`);
+            return await getDoc(ref);
+        },
+        set: async (ref, data, opts) => {
+            console.log(`[Transaction] SET ${ref.path}`);
+            return await setDoc(ref, data, opts);
+        },
+        update: async (ref, data) => {
+            console.log(`[Transaction] UPDATE ${ref.path}`);
+            return await updateDoc(ref, data);
+        },
+        delete: async (ref) => {
+            console.log(`[Transaction] DELETE ${ref.path}`);
+            return await deleteDoc(ref);
+        }
     };
-    return await callback(transaction);
+    try {
+        const result = await callback(transaction);
+        console.warn(`[runTransaction] SUCCESS`);
+        return result;
+    } catch (e) {
+        console.error(`[runTransaction] ERROR:`, e);
+        throw e;
+    }
 };
 

@@ -1,0 +1,2 @@
+"const fs = require('fs');\nconst path = 'c:/app2026/accountspro/src/PackagingSmartReportModal.jsx';\nlet content = fs.readFileSync(path, 'utf8');\n\n// 1. Update remainingBags logic\ncontent = content.replace(\n    /const remainingBags = inBags\\.filter\\
+<truncated 317 bytes>

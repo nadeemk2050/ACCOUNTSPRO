@@ -32,6 +32,7 @@ const ManagementDashboard = ({
     onRecalculateAccounts,
     onRecalculateExpenses,
     onRecalculateCapital,
+    onRecalculateJumboBags,
     onInstall,
     onBackup,
     onRestore,
@@ -645,7 +646,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">v 2.6.2</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.6.5</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -1912,6 +1913,7 @@ const ManagementDashboard = ({
                                     <ActionCard title="Cash/Bank" desc="Re-align Cash/Bank balances." onClick={onRecalculateAccounts} color="purple" disabled={isRecalculating} />
                                     <ActionCard title="Expenses" desc="Sum up all expense journal entries." onClick={onRecalculateExpenses} color="orange" disabled={isRecalculating} />
                                     <ActionCard title="Capital Accounts" desc="Recalculate owner equity and capital." onClick={onRecalculateCapital} color="teal" disabled={isRecalculating} />
+                                    <ActionCard title="Jumbo Bags Stock" desc="Remove deleted/orphaned bags, fix status mismatches, clean up invisible ghost records." onClick={onRecalculateJumboBags} color="pink" disabled={isRecalculating} />
                                 </div>
                             </div>
                         )
@@ -2485,6 +2487,7 @@ const ActionCard = ({ title, desc, onClick, color, disabled }) => {
         orange: 'hover:border-orange-500/50 bg-orange-500/5 hover:bg-orange-500/10',
         teal: 'hover:border-teal-500/50 bg-teal-500/5 hover:bg-teal-500/10',
         red: 'hover:border-red-500/50 bg-red-500/5 hover:bg-red-500/10',
+        pink: 'hover:border-pink-500/50 bg-pink-500/5 hover:bg-pink-500/10',
     };
 
     return (

@@ -15,9 +15,17 @@ import DocumentGeneratorV2 from './DocumentGeneratorV2';
 import DateInput from './DateInput';
 import {
     collection, serverTimestamp, query, where,
-    doc, runTransaction, onSnapshot, getDocs, limit, deleteField
+    doc, runTransaction, onSnapshot, getDocs, limit, deleteField, updateDoc
 } from 'firebase/firestore';
-import { db } from './firebase';
+// Real Firestore SDK — bypasses Vite's rxfs.js alias for duplicate bag checks
+import {
+    collection as realCollection,
+    query as realQuery,
+    where as realWhere,
+    getDocs as realGetDocs
+} from "@firebase/firestore";
+import { db, cloudDb } from './firebase';
+
 
 // ── Minimal Searchable Dropdown ──
 const V2Select = ({ options = [], value, onChange, placeholder = 'Search...', onCreateNew, compact }) => {
@@ -138,6 +146,24 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
     const [nextBagNo, setNextBagNo] = useState('');
     const [selectedItem, setSelectedItem] = useState('');
     const [qty, setQty] = useState('');
+    // Reusable bag toggle
+    const [useReusable, setUseReusable] = useState(false);
+    const [reusableBags, setReusableBags] = useState([]);
+    const [reusableLoading, setReusableLoading] = useState(false);
+    const [selectedReusableBagNo, setSelectedReusableBagNo] = useState('');
+
+    // Load active reusable bags when toggled
+    useEffect(() => {
+        if (!useReusable || !isOpen) return;
+        const targetUid = dataOwnerId || user?.uid;
+        if (!targetUid) return;
+        setReusableLoading(true);
+        const q = query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', targetUid), where('status', '==', 'active'));
+        getDocs(q).then(snap => {
+            setReusableBags(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        }).catch(e => console.warn('Error loading reusable bags:', e))
+          .finally(() => setReusableLoading(false));
+    }, [useReusable, isOpen, dataOwnerId, user?.uid]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -162,17 +188,136 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         return m;
     }, [bags]);
 
+    const [isChecking, setIsChecking] = useState(false);
     const handleAddBag = async () => {
-        if (!selectedItem) return;
+        if (isChecking) return;
+        if (!selectedItem) return showToast({ type: 'error', title: 'Error', message: 'Select an item' });
+
+        const normalizeBagNo = (val) => String(val || '').replace(/^#/, '').trim().toUpperCase();
+        // When reusable mode is active, use the selected reusable bag number
+        const rawBagNo = useReusable ? selectedReusableBagNo : nextBagNo;
+        const cleanNext = normalizeBagNo(rawBagNo);
+        if (!cleanNext) return showToast({ type: 'error', title: 'Error', message: useReusable ? 'Select a reusable bag' : 'Enter Bag Number' });
+
         const q = Number(qty);
-        if (!q || q <= 0) return;
+        if (!q || q <= 0) return showToast({ type: 'error', title: 'Error', message: 'Invalid Quantity' });
+
+        // Quantity check
         const allocated = allocatedMap[selectedItem] || 0;
         const totalProduced = producedQtyMap[selectedItem] || 0;
-        if (allocated + q > totalProduced) return;
-        if (bags.some(b => b.bagNo === nextBagNo)) return;
+        if (allocated + q > totalProduced) {
+            return showToast({ type: 'error', title: 'Limit Exceeded', message: `Remaining: ${totalProduced - allocated}` });
+        }
 
-        setBags([...bags, { id: Date.now() + Math.random(), bagNo: nextBagNo, productId: selectedItem, qty: q }]);
-        setNextBagNo('');
+        // ✅ LOCAL DUPLICATE CHECK (current allocation list) — skip for reusable bags
+        if (!useReusable && bags.some(b => normalizeBagNo(b.bagNo) === cleanNext)) {
+            return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${cleanNext} is already in this allocation list!` });
+        }
+
+        // ✅✅ DATABASE DUPLICATE CHECK — skip for reusable bags (they are intentionally reused)
+        if (!useReusable) {
+        setIsChecking(true);
+        try {
+            const targetUid = dataOwnerId || user?.uid;
+            if (!targetUid) throw new Error("No user");
+
+            const noSpaces = cleanNext.replace(/\s+/g, '');
+            const searchArray = [...new Set([
+                cleanNext, 
+                `#${cleanNext}`, 
+                cleanNext.toLowerCase(), 
+                `#${cleanNext.toLowerCase()}`,
+                noSpaces,
+                `#${noSpaces}`,
+                noSpaces.toLowerCase(),
+                `#${noSpaces.toLowerCase()}`
+            ])];
+
+            // Query the database for any existing bag with this number (any variant)
+            const qDup = query(
+                collection(db, 'jumbo_bags'),
+                where('userId', '==', targetUid),
+                where('bagNo', 'in', searchArray),
+                limit(1)
+            );
+            const snap = await getDocs(qDup);
+
+            if (!snap.empty) {
+                const existing = snap.docs[0].data();
+                // Allow editing the same voucher's bags, block everything else
+                const currentVoucherId = initialBags?.[0]?.stockJournalId 
+                    || initialBags?.[0]?.purchaseId 
+                    || initialBags?.[0]?.voucherId;
+                
+                const isSameVoucher = existing && (
+                    (existing.stockJournalId && existing.stockJournalId === currentVoucherId) ||
+                    (existing.purchaseId && existing.purchaseId === currentVoucherId) ||
+                    (existing.voucherId && existing.voucherId === currentVoucherId)
+                );
+
+                if (!isSameVoucher) {
+                    // Build a clear error message
+                    const status = existing.status || 'used';
+                    const refNo = existing.stockJournalRefNo || existing.voucherRefNo || existing.purchaseId || 'previous voucher';
+                    const dateInfo = existing.date ? ` on ${existing.date}` : '';
+                    
+                    showToast({
+                        type: 'error',
+                        title: '❌ BAG ALREADY USED',
+                        message: `Bag #${cleanNext} was created${dateInfo} (Ref: ${refNo}). Status: ${status}. Reuse is NOT allowed.`
+                    });
+                    
+                    // Also show a native alert for maximum visibility
+                    alert(
+                        `❌ DUPLICATE BAG NUMBER BLOCKED!\n\n` +
+                        `Bag Number: #${cleanNext}\n` +
+                        `Found in: ${refNo}\n` +
+                        `Date: ${existing.date || 'N/A'}\n` +
+                        `Status: ${status}\n\n` +
+                        `⚠️ IMPORTANT: Bag numbers CANNOT be reused once allocated.\n` +
+                        `Please use a unique bag number.`
+                    );
+                    return; // Stop here - don't add the bag
+                }
+            }
+        } catch (e) {
+            console.error('[JUMBO DUP CHECK] Database error:', e);
+            // If the query fails, still allow the add but warn the user
+            alert(
+                `⚠️ WARNING: Could not verify bag number uniqueness due to a database error.\n\n` +
+                `Error: ${e.message}\n\n` +
+                `The bag will be saved, but please verify it's not a duplicate.`
+            );
+        } finally {
+            setIsChecking(false);
+        }
+        } // end !useReusable
+
+        // --- ADD TO LIST ---
+        const bagRow = { 
+            id: Date.now() + Math.random(), 
+            bagNo: cleanNext, 
+            productId: selectedItem, 
+            qty: q,
+            ...(useReusable ? { isReusable: true } : {})
+        };
+        setBags(prev => [...prev, bagRow]);
+
+        // Auto-increment bag number for next entry (only in non-reusable mode)
+        if (!useReusable && mode === 'production') {
+            const prefix = 'A';
+            const num = parseInt(cleanNext.replace(prefix, '')) || 0;
+            // Skip any numbers already in the current list
+            let candidateNum = num + 1;
+            const currentBagNumbers = new Set(bags.map(b => normalizeBagNo(b.bagNo)));
+            while (currentBagNumbers.has(prefix + candidateNum)) {
+                candidateNum++;
+            }
+            setNextBagNo(prefix + candidateNum);
+        } else if (!useReusable) {
+            setNextBagNo('');
+        }
+        // For reusable mode, keep same selection; just clear qty
         setQty('');
     };
 
@@ -183,6 +328,14 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
             if (Math.abs(allocated - total) > 0.001) return alert(`Item ${item.productName} not fully allocated.`);
         }
         onSave(bags);
+        // Update lastDate for any reusable bags used in this allocation
+        const today = new Date().toISOString().split('T')[0];
+        const usedReusableBagNos = new Set(bags.filter(b => b.isReusable).map(b => String(b.bagNo || '').toUpperCase()));
+        reusableBags.forEach(rb => {
+            if (usedReusableBagNos.has(String(rb.bagNo || '').toUpperCase())) {
+                updateDoc(doc(db, 'reusable_jumbo_bags', rb.id), { lastDate: today }).catch(console.warn);
+            }
+        });
     };
 
     if (!isOpen) return null;
@@ -192,19 +345,63 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="p-4 bg-slate-900 text-white flex justify-between items-center shrink-0"><h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> Jumbo Bag Allocation</h2><button onClick={onClose}><X size={20} /></button></div>
-                <div className="p-4 bg-slate-50 border-b shrink-0 space-y-4">
+                <div className="p-4 bg-slate-50 border-b shrink-0 space-y-3">
+                    {/* Reusable bag toggle */}
+                    <div className="flex items-center gap-3 p-2 bg-teal-50 border border-teal-200 rounded-lg">
+                        <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-teal-800">
+                            <input
+                                type="checkbox"
+                                checked={useReusable}
+                                onChange={e => { setUseReusable(e.target.checked); setSelectedReusableBagNo(''); }}
+                                className="w-4 h-4 accent-teal-600 cursor-pointer"
+                            />
+                            Want to select a Reusable Bag?
+                        </label>
+                        {useReusable && (
+                            <span className="text-[10px] text-teal-600 font-bold ml-auto">
+                                {reusableLoading ? 'Loading...' : `${reusableBags.length} active reusable bag(s) available`}
+                            </span>
+                        )}
+                    </div>
                     <div className="flex gap-2 items-end">
-                        <div className="w-32"><FieldLabel>Bag Number</FieldLabel><input type="text" className="w-full p-2 border rounded font-mono font-bold text-center" value={nextBagNo} onChange={e => setNextBagNo(e.target.value)} /></div>
+                        {useReusable ? (
+                            <div className="w-52">
+                                <FieldLabel>Select Reusable Bag</FieldLabel>
+                                <select
+                                    className="w-full p-2 border-2 border-teal-300 rounded font-mono font-bold text-sm bg-white focus:outline-none focus:border-teal-500"
+                                    value={selectedReusableBagNo}
+                                    onChange={e => setSelectedReusableBagNo(e.target.value)}
+                                >
+                                    <option value="">— Choose bag —</option>
+                                    {reusableBags.map(rb => (
+                                        <option key={rb.id} value={rb.bagNo}>#{rb.bagNo}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        ) : (
+                            <div className="w-32"><FieldLabel>Bag Number</FieldLabel><input type="text" className="w-full p-2 border rounded font-mono font-bold text-center" value={nextBagNo} onChange={e => setNextBagNo(e.target.value)} /></div>
+                        )}
                         <div className="flex-1"><FieldLabel>Item</FieldLabel><select className="w-full p-2 border rounded text-xs" value={selectedItem} onChange={e => setSelectedItem(e.target.value)}>{producedItems.map(p => <option key={p.productId} value={p.productId}>{p.productName}</option>)}</select></div>
                         <div className="w-32"><FieldLabel>Qty (Rem: {currentRemaining})</FieldLabel><input type="number" className="w-full p-2 border rounded font-bold text-center" value={qty} onChange={e => setQty(e.target.value)} /></div>
-                        <button onClick={handleAddBag} className="bg-blue-600 text-white px-4 h-10 rounded font-bold">ADD</button>
+                        <button onClick={handleAddBag} disabled={isChecking} className={`${isChecking ? 'bg-slate-400' : useReusable ? 'bg-teal-600' : 'bg-blue-600'} text-white px-4 h-10 rounded font-bold min-w-[80px]`}>
+                            {isChecking ? '...' : 'ADD'}
+                        </button>
                     </div>
                 </div>
                 <div className="flex-1 overflow-auto p-4">
                     <table className="w-full text-xs text-left">
                         <thead className="bg-slate-100 sticky top-0"><tr><th className="p-2">#</th><th className="p-2">Bag No</th><th className="p-2">Item</th><th className="p-2 text-right">Qty</th><th className="p-2"></th></tr></thead>
                         <tbody className="divide-y">{bags.map((b, i) => (
-                            <tr key={b.id}><td className="p-2">{i + 1}</td><td className="p-2 font-mono font-bold">{b.bagNo}</td><td className="p-2">{producedItems.find(p => p.productId === b.productId)?.productName}</td><td className="p-2 text-right">{b.qty}</td><td className="p-2 text-center text-red-400" onClick={() => setBags(bags.filter(x => x.id !== b.id))}><X size={14} /></td></tr>
+                            <tr key={b.id} className={b.isReusable ? 'bg-teal-50' : ''}>
+                                <td className="p-2">{i + 1}</td>
+                                <td className="p-2 font-mono font-bold">
+                                    {b.isReusable && <span className="text-teal-600 mr-1 text-[10px] font-black">♻</span>}
+                                    {b.bagNo}
+                                </td>
+                                <td className="p-2">{producedItems.find(p => p.productId === b.productId)?.productName}</td>
+                                <td className="p-2 text-right">{b.qty}</td>
+                                <td className="p-2 text-center text-red-400" onClick={() => setBags(bags.filter(x => x.id !== b.id))}><X size={14} /></td>
+                            </tr>
                         ))}</tbody>
                     </table>
                 </div>
@@ -235,13 +432,27 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, produc
 
     const totalSelectedQty = availableBags.filter(b => selectedIds.has(b.id)).reduce((s, b) => s + Number(b.qty), 0);
 
+    // Count how many bags of this item are available to select that are NOT already selected
+    const unselectedAvailable = filtered.filter(b => b.status === 'in_stock' && !selectedIds.has(b.id));
+
     return (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
                 <div className="p-4 bg-slate-800 text-white flex justify-between items-center">
-                    <div><h2 className="text-xl font-black uppercase tracking-tight">Select Bags</h2><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Only 'In Stock' bags are shown</p></div>
+                    <div>
+                        <h2 className="text-xl font-black uppercase tracking-tight">Select Bags {targetProductId ? `for ${products.find(p => p.id === targetProductId)?.name}` : ''}</h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Only 'In Stock' bags are shown</p>
+                    </div>
                     <button onClick={onClose}><X size={20} /></button>
                 </div>
+
+                {/* ⚠️ Warning banner when zero bags available to add more */}
+                {unselectedAvailable.length === 0 && (
+                    <div className="mx-4 mt-4 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wide flex items-center gap-2">
+                        <span>⚠️</span>
+                        <span>zero bags available to add more</span>
+                    </div>
+                )}
                 <div className="p-4 bg-slate-100 flex gap-4 items-center">
                     <div className="flex-1 relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} /><input type="text" placeholder="Search available bags..." className="w-full pl-10 pr-4 py-2 border rounded-lg font-bold" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
                     <div className="flex items-center gap-4">
@@ -375,7 +586,63 @@ const InventoryVoucherV2 = ({
 
         setSaving(true);
         try {
+            const targetUid = dataOwnerId || user.uid;
+
+            // --- 🔒 VALIDATION RULE 1: DUPLICATE REF NO CHECK ---
+            if (formData.refNo) {
+                const qRef = query(collection(db, 'invoices'), where('userId', '==', targetUid), where('refNo', '==', formData.refNo));
+                const snapRef = await getDocs(qRef);
+                const isDupRef = snapRef.docs.some(d => d.id !== initialData?.id);
+                if (isDupRef) {
+                    alert(`❌ DUPLICATE VOUCHER: Reference Number "${formData.refNo}" already exists. Please use a unique ID.`);
+                    setSaving(false);
+                    return;
+                }
+            }
+
+            // --- 🔒 VALIDATION RULE 2: DUPLICATE BAG NO CHECK (With Bypass Logic) ---
+            const bagAuthMap = {};
+            if (!isSale && jumboEnabled && jumboBags.length > 0) {
+                const internalBagNos = jumboBags.map(b => b.bagNo).filter(Boolean);
+                if (new Set(internalBagNos).size !== internalBagNos.length) {
+                    alert(`❌ INTERNAL DUPLICATE: You have entered the same Bag Number multiple times in this voucher.`);
+                    setSaving(false);
+                    return;
+                }
+
+                const uidCandidates = [...new Set([targetUid, user?.uid].filter(Boolean))];
+                for (const bNo of [...new Set(internalBagNos)]) {
+                    const promises = uidCandidates.flatMap(uid => {
+                        return ['userId', 'ownerId'].map(field => {
+                            return getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid), where('bagNo', '==', bNo)));
+                        });
+                    });
+                    const snaps = await Promise.all(promises);
+                    const otherDocs = [];
+                    snaps.forEach(snap => {
+                        snap.docs.forEach(d => {
+                            if (d.data().purchaseId !== initialData?.id && d.data().stockJournalId !== initialData?.id) {
+                                if (!otherDocs.some(x => x.id === d.id)) {
+                                    otherDocs.push(d);
+                                }
+                            }
+                        });
+                    });
+                    
+                    if (otherDocs.length > 0) {
+                        const isAuthorized = otherDocs.some(d => d.data().allowMultiFilling === true);
+                        if (!isAuthorized) {
+                            alert(`❌ DUPLICATE BAG: Bag #${bNo} is already allocated and is NOT authorized for multi-filling.`);
+                            setSaving(false);
+                            return;
+                        }
+                        bagAuthMap[bNo] = true;
+                    }
+                }
+            }
+
             await runTransaction(db, async (transaction) => {
+
                 const targetUid = dataOwnerId || user.uid;
                 const invoiceRef = (initialData?.id) ? doc(db, 'invoices', initialData.id) : doc(collection(db, 'invoices'));
                 
@@ -423,53 +690,57 @@ const InventoryVoucherV2 = ({
                     } : {})
                 };
 
-                if (initialData?.id) transaction.update(invoiceRef, payload);
-                else transaction.set(invoiceRef, payload);
+                if (initialData?.id) await transaction.update(invoiceRef, payload);
+                else await transaction.set(invoiceRef, payload);
 
                 // 💾 UPDATE JUMBO BAGS INVENTORY
                 if (!isSale && jumboEnabled) {
                     if (initialData) {
-                        initialBagsRef.current.forEach(b => transaction.delete(doc(db, 'jumbo_bags', b.id)));
+                        for (const b of initialBagsRef.current) {
+                            await transaction.delete(doc(db, 'jumbo_bags', b.id));
+                        }
                     }
                     if (jumboBags.length > 0) {
-                        jumboBags.forEach(b => {
+                        for (const b of jumboBags) {
                             const bRef = doc(collection(db, 'jumbo_bags'));
-                            transaction.set(bRef, {
+                            await transaction.set(bRef, {
                                 bagNo: b.bagNo,
                                 productId: b.productId,
                                 qty: Number(b.qty),
                                 purchaseId: invoiceRef.id,
                                 date: formData.date,
+                                allowMultiFilling: bagAuthMap[b.bagNo] || false,
                                 status: 'in_stock',
                                 userId: targetUid,
+
                                 createdAt: serverTimestamp()
                             });
-                        });
+                        }
                     }
                 } else if (isSale) {
                     if (initialData) {
-                        initialBagsRef.current.forEach(b => {
-                            transaction.update(doc(db, 'jumbo_bags', b.id), {
+                        for (const b of initialBagsRef.current) {
+                            await transaction.update(doc(db, 'jumbo_bags', b.id), {
                                 status: 'in_stock',
                                 salesId: deleteField(),
                                 soldDate: deleteField()
                             });
-                        });
+                        }
                     }
                     const allSelectedBags = items.flatMap(i => i.selectedBags || []);
                     if (allSelectedBags.length > 0) {
-                        allSelectedBags.forEach(b => {
-                            transaction.update(doc(db, 'jumbo_bags', b.id), {
+                        for (const b of allSelectedBags) {
+                            await transaction.update(doc(db, 'jumbo_bags', b.id), {
                                 status: 'sold',
                                 salesId: invoiceRef.id,
                                 soldDate: formData.date
                             });
-                        });
+                        }
                     }
                 }
 
                 const logRef = doc(collection(db, 'audit_logs'));
-                transaction.set(logRef, {
+                await transaction.set(logRef, {
                     date: serverTimestamp(), ownerId: targetUid, userId: user.uid, userName: effectiveName,
                     action: initialData ? 'UPDATED' : 'CREATED',
                     docType: `${docTitle} Invoice (V2)`,
@@ -536,18 +807,31 @@ const InventoryVoucherV2 = ({
     // Fetch In-Stock Bags Count when Sales Voucher is open
     useEffect(() => {
         if (isOpen && isSale) {
-            const targetUid = dataOwnerId || user?.uid;
-            if (!targetUid) return;
-            const q = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'));
-            const unsub = onSnapshot(q, (snap) => {
-                const map = {};
-                snap.forEach(d => {
-                    const pid = d.data().productId;
-                    if (pid) map[pid] = (map[pid] || 0) + 1;
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            if (uidCandidates.length === 0) return;
+
+            const cacheMap = {};
+            const unsubs = uidCandidates.flatMap(uid => {
+                return ['userId', 'ownerId'].map(field => {
+                    const q = query(collection(db, 'jumbo_bags'), where(field, '==', uid), where('status', '==', 'in_stock'));
+                    return onSnapshot(q, (snap) => {
+                        cacheMap[`${uid}-${field}`] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        
+                        const mergedMap = new Map();
+                        Object.values(cacheMap).forEach(list => {
+                            list.forEach(b => mergedMap.set(b.id, b));
+                        });
+                        
+                        const map = {};
+                        mergedMap.forEach(b => {
+                            const pid = b.productId;
+                            if (pid) map[pid] = (map[pid] || 0) + 1;
+                        });
+                        setProductsBagMap(map);
+                    });
                 });
-                setProductsBagMap(map);
             });
-            return () => unsub();
+            return () => unsubs.forEach(unsub => unsub());
         } else {
             setProductsBagMap({});
         }
@@ -556,11 +840,24 @@ const InventoryVoucherV2 = ({
     // Fetch Available Bags for Selection when Modal is Open
     useEffect(() => {
         if (isOpen && showJumboSelection) {
-            const targetUid = dataOwnerId || user?.uid;
-            if (!targetUid) return;
-            const q = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'));
-            getDocs(q).then(snap => {
-                setAvailableBags(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            if (uidCandidates.length === 0) return;
+
+            Promise.all(
+                uidCandidates.flatMap(uid => {
+                    return ['userId', 'ownerId'].map(field => {
+                        const q = query(collection(db, 'jumbo_bags'), where(field, '==', uid), where('status', '==', 'in_stock'));
+                        return getDocs(q);
+                    });
+                })
+            ).then(snaps => {
+                const mergedMap = new Map();
+                snaps.forEach(snap => {
+                    snap.docs.forEach(d => {
+                        mergedMap.set(d.id, { id: d.id, ...d.data() });
+                    });
+                });
+                setAvailableBags(Array.from(mergedMap.values()));
             });
         }
     }, [isOpen, showJumboSelection, dataOwnerId, user]);
@@ -617,13 +914,62 @@ const InventoryVoucherV2 = ({
             
             // Jumbo Load
             if (initialData.jumboEnabled || initialData.packingType === 'bags') {
-                setJumboEnabled(true);
-                const qBags = query(collection(db, 'jumbo_bags'), where(isSale ? 'salesId' : 'purchaseId', '==', initialData.id));
-                getDocs(qBags).then(snap => {
-                    const fetchedBags = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                    setJumboBags(fetchedBags);
-                    initialBagsRef.current = fetchedBags;
-                });
+                            setJumboEnabled(true);
+                            // 1. Instantly load from embedded arrays in initialData to prevent blank states
+                            const embeddedBags = initialData.jumboBags || initialData.items?.flatMap(i => i.selectedBags || []) || [];
+                            if (embeddedBags.length > 0) {
+                                setJumboBags(embeddedBags);
+                                initialBagsRef.current = embeddedBags;
+                                if (isSale) {
+                                    setItems(prevItems => {
+                                        return prevItems.map(item => {
+                                            if (!item.productId) return item;
+                                            const rowBags = embeddedBags.filter(b => b.productId === item.productId);
+                                            return {
+                                                ...item,
+                                                selectedBags: rowBags.length > 0 ? rowBags : (item.selectedBags || [])
+                                            };
+                                        });
+                                    });
+                                }
+                            }
+                            // 2. Query Firestore by both ID and RefNo to support legacy and new records
+                            const filterField = isSale ? 'salesId' : 'purchaseId';
+                            const qBagsId = query(collection(db, 'jumbo_bags'), where(filterField, '==', initialData.id));
+                            const queries = [getDocs(qBagsId)];
+                            if (initialData.refNo) {
+                                queries.push(getDocs(query(collection(db, 'jumbo_bags'), where(filterField, '==', initialData.refNo))));
+                            }
+                            Promise.all(queries).then(snaps => {
+                                const mergedMap = new Map();
+                                embeddedBags.forEach(b => {
+                                    if (b.bagNo) mergedMap.set(b.bagNo, b);
+                                });
+                                snaps.forEach(snap => {
+                                    snap.docs.forEach(d => {
+                                        const data = d.data();
+                                        mergedMap.set(data.bagNo || d.id, { id: d.id, ...data });
+                                    });
+                                });
+                                const fetchedBags = Array.from(mergedMap.values());
+                                if (fetchedBags.length > 0) {
+                                    setJumboBags(fetchedBags);
+                                    initialBagsRef.current = fetchedBags;
+                                    if (isSale) {
+                                        setItems(prevItems => {
+                                            return prevItems.map(item => {
+                                                if (!item.productId) return item; 
+                                                const rowBags = fetchedBags.filter(b => b.productId === item.productId);
+                                                return {
+                                                    ...item,
+                                                    selectedBags: rowBags
+                                                };
+                                            });
+                                        });
+                                    }
+                                }
+                            }).catch(console.error);
+                        }
             } else {
                 setJumboEnabled(false);
                 setJumboBags([]);
@@ -894,17 +1240,57 @@ const InventoryVoucherV2 = ({
                                                     {(item.productId && isSale && formData.packingType === 'bags') && (
                                                         <button
                                                             type="button"
-                                                            onClick={() => {
-                                                                setActiveBagRowIndex(idx);
-                                                                setActiveBagProduct(products.find(p => p.id === item.productId));
-                                                                setShowJumboSelection(true);
+                                                            onClick={async () => {
+                                                                 setActiveBagRowIndex(idx);
+                                                                 setActiveBagProduct(products.find(p => p.id === item.productId) || { id: item.productId, name: 'Unknown' });
+                                                                 
+                                                                 // Fetch and merge bags
+                                                                 const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+                                                                 if (uidCandidates.length > 0) {
+                                                                     const promises = uidCandidates.flatMap(uid => {
+                                                                         return ['userId', 'ownerId'].map(field => {
+                                                                             const q = query(collection(db, 'jumbo_bags'), where(field, '==', uid), where('status', '==', 'in_stock'), where('productId', '==', item.productId));
+                                                                             return getDocs(q);
+                                                                         });
+                                                                     });
+                                                                     const snaps = await Promise.all(promises);
+                                                                     const bagMap = new Map();
+                                                                     snaps.forEach(snap => {
+                                                                         snap.docs.forEach(d => {
+                                                                             bagMap.set(d.id, { id: d.id, ...d.data() });
+                                                                         });
+                                                                     });
+
+                                                                     if (item.selectedBags && Array.isArray(item.selectedBags)) {
+                                                                         item.selectedBags.forEach(b => bagMap.set(b.id, b));
+                                                                     }
+
+                                                                     if (initialData?.id) {
+                                                                         const qSold = query(collection(db, 'jumbo_bags'), where('salesId', '==', initialData.id), where('productId', '==', item.productId));
+                                                                         const snapSold = await getDocs(qSold);
+                                                                         const soldBags = snapSold.docs.map(d => ({ id: d.id, ...d.data() }));
+                                                                         soldBags.forEach(b => bagMap.set(b.id, b));
+                                                                     }
+
+                                                                     setAvailableBags(Array.from(bagMap.values()));
+                                                                 }
+                                                                 setShowJumboSelection(true);
                                                             }}
                                                             className="mt-2.5 flex items-center gap-2 text-[10px] font-bold text-orange-600 bg-orange-50 px-3 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 transition-all w-fit shadow-sm uppercase tracking-wider"
                                                         >
                                                             <Box size={12} />
-                                                            {(item.selectedBags || []).length > 0
-                                                                ? `${item.selectedBags.length} Bags Selected`
-                                                                : 'Link Bags'}
+                                                            {(() => {
+                                                                 const countSelected = (item.selectedBags || []).length;
+                                                                 const availToAdd = productsBagMap[item.productId] || 0;
+                                                                 if (countSelected > 0) {
+                                                                     if (initialData?.id) {
+                                                                         if (availToAdd > 0) return 'addmore ';
+                                                                         return 'zero bags available';
+                                                                     }
+                                                                     return `${countSelected} Bags Selected`;
+                                                                 }
+                                                                 return 'Link Bags';
+                                                            })()}
                                                         </button>
                                                     )}
                                                 </td>
