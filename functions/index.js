@@ -1167,3 +1167,388 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
     }
 });
 
+// ==========================================
+// TELLER APP API (Kotlin Cashier App)
+// ==========================================
+exports.tellerApi = onRequest({ cors: true }, async (req, res) => {
+    const authHeader = req.headers['authorization'] || '';
+    let token = authHeader.replace('Bearer ', '').trim();
+
+    // Also support x-api-key header
+    const apiKey = req.headers['x-api-key'] || req.query.apiKey || req.body?.apiKey || '';
+
+    try {
+        const db = admin.firestore();
+
+        // Step 1: Identify user + company from token or API key
+        let userId = null;
+        let companyId = null;
+        let companyName = 'AccountsPro';
+
+        if (token) {
+            const sessionSnap = await db.collection('api_sessions')
+                .where('token', '==', token)
+                .where('expiresAt', '>', Date.now())
+                .limit(1)
+                .get();
+
+            if (!sessionSnap.empty) {
+                const session = sessionSnap.docs[0].data();
+                userId = session.userId;
+                companyId = session.companyId;
+            } else {
+                const userDoc = await db.collection('users').doc(token).get();
+                if (userDoc.exists) {
+                    userId = userDoc.id;
+                }
+            }
+        }
+
+        // Fallback: if we have API key and no token
+        if (!userId && apiKey) {
+            const keySnap = await db.collection('api_keys')
+                .where('apiKey', '==', apiKey).limit(1).get();
+            if (!keySnap.empty) {
+                const keyData = keySnap.docs[0].data();
+                userId = keyData.userId;
+                companyId = keyData.companyId;
+            }
+        }
+
+        const getRecords = (colName) => db.collection('companies_live').doc(companyId).collection('records').where('collectionName', '==', colName);
+        const action = req.query.action || req.body?.action || '';
+
+        // Validate API key and show company info (used by Teller app setup screen)
+        if (action === 'validate_key') {
+            if (!apiKey) {
+                return res.status(401).json({ success: false, message: 'API key is required.' });
+            }
+
+            const keySnap = await db.collection('api_keys').where('apiKey', '==', apiKey).limit(1).get();
+            if (keySnap.empty) {
+                return res.status(403).json({ success: false, message: 'Invalid API key.' });
+            }
+
+            const keyData = keySnap.docs[0].data();
+            const ownerUserId = keyData.userId;
+            const vCompanyId = keyData.companyId;
+
+            // Fetch company name from multiple possible locations
+            let vCompanyName = 'AccountsPro';
+            if (vCompanyId) {
+                // Try nadtally_live_registry first (main source of live company names)
+                const regDoc = await db.collection('nadtally_live_registry').doc(vCompanyId).get();
+                if (regDoc.exists && regDoc.data().name) {
+                    vCompanyName = regDoc.data().name;
+                } else {
+                    // Fallback to companies collection (profile data)
+                    const coDoc = await db.collection('companies').doc(vCompanyId).get();
+                    if (coDoc.exists && coDoc.data().name) {
+                        vCompanyName = coDoc.data().name;
+                    } else {
+                        // Last resort: companies_live doc itself
+                        const clDoc = await db.collection('companies_live').doc(vCompanyId).get();
+                        vCompanyName = clDoc.exists && clDoc.data().name ? clDoc.data().name : 'AccountsPro';
+                    }
+                }
+            }
+
+            // Fetch team members — ownerId on user docs stores the COMPANY ID, not Auth UID
+            const teamSnap = await db.collection('users')
+                .where('ownerId', '==', vCompanyId)
+                .get();
+
+            const team = teamSnap.docs.map(d => ({
+                id: d.id,
+                name: d.data().name || 'Unknown',
+                email: d.data().email || '',
+                role: d.data().role || 'member'
+            }));
+
+            return res.json({
+                success: true,
+                companyName: vCompanyName,
+                companyId: vCompanyId,
+                team: team,
+                teamCount: team.length
+            });
+        }
+
+        // For login action, we proceed even without userId - we'll use the API key from body
+        if (action === 'login') {
+            if (!apiKey) {
+                return res.status(401).json({ success: false, message: 'API key is required in body or x-api-key header.' });
+            }
+
+            // Find user from API key
+            const keySnap = await db.collection('api_keys').where('apiKey', '==', apiKey).limit(1).get();
+            if (keySnap.empty) {
+                return res.status(403).json({ success: false, message: 'Invalid API key.' });
+            }
+
+            const keyData = keySnap.docs[0].data();
+            const ownerUserId = keyData.userId;
+            companyId = keyData.companyId;
+
+            // Fetch company name
+            if (companyId) {
+                const coDoc = await db.collection('companies_live').doc(companyId).get();
+                companyName = coDoc.exists ? (coDoc.data().name || 'AccountsPro') : 'AccountsPro';
+            }
+
+            const { username, password } = req.body || {};
+            if (!username || !password) {
+                return res.status(400).json({ success: false, message: 'Username and password required.' });
+            }
+
+            // Find team member by email (allow ANY role: accountant, cashier, banker, etc.)
+            let userSnap = await db.collection('users')
+                .where('ownerId', '==', ownerUserId)
+                .where('email', '==', username)
+                .limit(1)
+                .get();
+
+            let userData = null;
+            let teamUserId = null;
+            let isOwnerLogin = false;
+
+            if (!userSnap.empty) {
+                // Team member found
+                userData = userSnap.docs[0].data();
+                teamUserId = userSnap.docs[0].id;
+                const storedPassword = userData.teamPassword || '123456';
+                if (password !== storedPassword) {
+                    return res.status(401).json({ success: false, message: 'Invalid password.' });
+                }
+            } else {
+                // Check if it's the owner/admin themselves logging in
+                const ownerDoc = await db.collection('users').doc(ownerUserId).get();
+                if (ownerDoc.exists && ownerDoc.data().email === username) {
+                    const ownerData = ownerDoc.data();
+                    // Owner password stored in 'password' field, or fallback
+                    const ownerPassword = ownerData.password || ownerData.teamPassword || '';
+                    if (password !== ownerPassword) {
+                        return res.status(401).json({ success: false, message: 'Invalid password.' });
+                    }
+                    userData = ownerData;
+                    teamUserId = ownerUserId;
+                    isOwnerLogin = true;
+                } else {
+                    return res.status(401).json({ success: false, message: 'User not found. Check email or contact admin.' });
+                }
+            }
+
+            // Create session token
+            const sessionToken = crypto.randomBytes(24).toString('hex');
+
+            await db.collection('api_sessions').add({
+                token: sessionToken,
+                userId: teamUserId,
+                ownerId: ownerUserId,
+                companyId: companyId,
+                isOwnerLogin: isOwnerLogin,
+                createdAt: Date.now(),
+                expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000)
+            });
+
+            return res.json({
+                success: true,
+                message: 'Login successful',
+                token: sessionToken,
+                userId: teamUserId,
+                userName: userData.name || 'Team Member',
+                companyId: companyId,
+                companyName: companyName
+            });
+        }
+
+        // All subsequent actions require authentication
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Authentication failed. Provide valid token or API key.' });
+        }
+
+        // Fetch company
+        if (companyId) {
+            const coDoc = await db.collection('companies_live').doc(companyId).get();
+            companyName = coDoc.exists ? (coDoc.data().name || 'AccountsPro') : 'AccountsPro';
+        }
+
+        // --- TELLER CREATE VOUCHER ---
+        if (action === 'create_voucher') {
+            const { type, date, amount, drAccountId, crAccountId, drName, crName, narration, refNo } = req.body || {};
+
+            if (!type || !amount || !drAccountId || !crAccountId) {
+                return res.status(400).json({ success: false, message: 'Missing required fields: type, amount, drAccountId, crAccountId.' });
+            }
+
+            const amt = Number(amount);
+            if (!amt || amt <= 0) {
+                return res.status(400).json({ success: false, message: 'Invalid amount.' });
+            }
+
+            const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
+            const voucherDate = date || new Date().toISOString().split('T')[0];
+            const voucherRefNo = refNo || `TLR-${Date.now().toString(36).toUpperCase()}`;
+            const voucherNarration = narration || `${type.charAt(0).toUpperCase() + type.slice(1)} via Teller App`;
+
+            // Resolve DR name from accounts if not provided
+            let resolvedDrName = drName || '';
+            let resolvedCrName = crName || '';
+
+            try {
+                await db.runTransaction(async (transaction) => {
+                    // Fetch accounts to get names & validate
+                    const drSnap = await transaction.get(recordsCol.doc(drAccountId));
+                    const crSnap = await transaction.get(recordsCol.doc(crAccountId));
+
+                    if (!drSnap.exists) throw new Error(`DR account ${drAccountId} not found`);
+                    if (!crSnap.exists) throw new Error(`CR account ${crAccountId} not found`);
+
+                    const drData = drSnap.data()?.data || {};
+                    const crData = crSnap.data()?.data || {};
+
+                    if (!resolvedDrName) resolvedDrName = drData.name || 'Debit';
+                    if (!resolvedCrName) resolvedCrName = crData.name || 'Credit';
+
+                    // Update balances based on voucher type
+                    if (type === 'payment') {
+                        // Payment: DR = expense/party (increase), CR = cash/bank (decrease)
+                        transaction.update(recordsCol.doc(drAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(amt),
+                            'syncTimestamp': Date.now()
+                        });
+                        transaction.update(recordsCol.doc(crAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(-amt),
+                            'syncTimestamp': Date.now()
+                        });
+                    } else if (type === 'receipt') {
+                        // Receipt: DR = cash/bank (increase), CR = party/income (increase)
+                        transaction.update(recordsCol.doc(drAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(amt),
+                            'syncTimestamp': Date.now()
+                        });
+                        transaction.update(recordsCol.doc(crAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(amt),
+                            'syncTimestamp': Date.now()
+                        });
+                    } else if (type === 'contra') {
+                        // Contra: DR = cash/bank (increase), CR = cash/bank (decrease)
+                        transaction.update(recordsCol.doc(drAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(amt),
+                            'syncTimestamp': Date.now()
+                        });
+                        transaction.update(recordsCol.doc(crAccountId), {
+                            'data.balance': admin.firestore.FieldValue.increment(-amt),
+                            'syncTimestamp': Date.now()
+                        });
+                    }
+
+                    // Create journal voucher record
+                    const newId = crypto.randomBytes(12).toString('hex');
+                    transaction.set(recordsCol.doc(newId), {
+                        id: newId,
+                        collectionName: 'journal_vouchers',
+                        syncTimestamp: Date.now(),
+                        timestamp: Date.now(),
+                        data: {
+                            type: 'journal',
+                            voucherType: type,
+                            date: voucherDate,
+                            amount: amt,
+                            drAccountId: drAccountId,
+                            crAccountId: crAccountId,
+                            drName: resolvedDrName,
+                            crName: resolvedCrName,
+                            narration: voucherNarration,
+                            refNo: voucherRefNo,
+                            userId: userId,
+                            status: 'active',
+                            version: 'v2',
+                            tellerUserId: req.body.userId || null,
+                            tellerUserName: req.body.userName || null
+                        }
+                    });
+
+                    // Also create a payment record for tracking
+                    const payId = crypto.randomBytes(12).toString('hex');
+                    const paymentType = type === 'receipt' ? 'in' : 'out';
+                    transaction.set(recordsCol.doc(payId), {
+                        id: payId,
+                        collectionName: 'payments',
+                        syncTimestamp: Date.now(),
+                        timestamp: Date.now(),
+                        data: {
+                            type: paymentType,
+                            date: voucherDate,
+                            amount: amt,
+                            accountId: type === 'receipt' ? drAccountId : crAccountId,
+                            partyId: type === 'payment' ? drAccountId : (type === 'receipt' ? crAccountId : null),
+                            description: voucherNarration,
+                            refNo: voucherRefNo,
+                            userId: userId,
+                            status: 'active',
+                            version: 'v2',
+                            tellerVoucher: true,
+                            linkedJournalId: newId
+                        }
+                    });
+                });
+
+                return res.json({
+                    success: true,
+                    message: `${type.charAt(0).toUpperCase() + type.slice(1)} voucher created successfully`,
+                    voucherId: null,
+                    refNo: voucherRefNo
+                });
+            } catch (error) {
+                return res.status(400).json({ success: false, message: error.message });
+            }
+        }
+
+        // --- TELLER BALANCES ---
+        if (action === 'balances') {
+            const snap = await getRecords('accounts').get();
+            const balances = snap.docs.map(doc => {
+                const item = doc.data().data || {};
+                return {
+                    accountId: doc.id,
+                    accountName: item.name || 'Unknown',
+                    accountType: (item.type || 'bank').toLowerCase().includes('cash') ? 'cash' : 'bank',
+                    balance: Number(item.balance || 0)
+                };
+            });
+
+            return res.json({
+                success: true,
+                message: null,
+                balances: balances
+            });
+        }
+
+        // --- TELLER ACCOUNTS ---
+        if (action === 'accounts') {
+            const snap = await getRecords('accounts').get();
+            const accounts = snap.docs.map(doc => {
+                const item = doc.data().data || {};
+                return {
+                    id: doc.id,
+                    name: item.name || 'Unknown',
+                    type: (item.type || 'bank').toLowerCase()
+                };
+            });
+
+            return res.json({
+                success: true,
+                message: null,
+                accounts: accounts
+            });
+        }
+
+        return res.status(400).json({ success: false, message: `Unknown action: ${action}` });
+
+    } catch (error) {
+        console.error('Teller API Error:', error);
+        return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+});
+
