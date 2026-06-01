@@ -42,7 +42,6 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
     };
 
     const fetchUsageDetails = async () => {
-        if (usageData) return; // Already loaded
         setUsageLoading(true);
         try {
             const companyId = getActiveCompanyId();
@@ -105,7 +104,9 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
     const handleToggleUsage = () => {
         const newVal = !usageExpanded;
         setUsageExpanded(newVal);
-        if (newVal && !usageData) {
+        if (newVal) {
+            // Always re-fetch to get latest data — set usageData to null to force refresh
+            if (usageData) setUsageData(null);
             fetchUsageDetails();
         }
     };

@@ -761,24 +761,48 @@ exports.getApiUsageDetails = onCall({ cors: true }, async (request) => {
 
         const keyData = keyDoc.data();
 
-        // Get usage logs for this API key
-        const logsSnap = await db.collection('api_usage_logs')
-            .where('apiKey', '==', keyData.apiKey)
-            .orderBy('timestamp', 'desc')
-            .limit(100)
-            .get();
-
-        const usageLogs = logsSnap.docs.map(d => ({
-            id: d.id,
-            deviceInfo: d.data().deviceInfo || 'Unknown',
-            deviceName: d.data().deviceName || null,
-            ipAddress: d.data().ipAddress || null,
-            action: d.data().action || 'query',
-            dataSent: d.data().dataSent || 0,
-            dataReceived: d.data().dataReceived || 0,
-            timestamp: d.data().timestamp?.toMillis?.() || d.data().timestamp || null,
-            userAgent: d.data().userAgent || null
-        }));
+        // Get usage logs for this API key (with index fallback)
+        let usageLogs = [];
+        try {
+            const logsSnap = await db.collection('api_usage_logs')
+                .where('apiKey', '==', keyData.apiKey)
+                .orderBy('timestamp', 'desc')
+                .limit(100)
+                .get();
+            usageLogs = logsSnap.docs.map(d => ({
+                id: d.id,
+                deviceInfo: d.data().deviceInfo || 'Unknown',
+                deviceName: d.data().deviceName || null,
+                ipAddress: d.data().ipAddress || null,
+                action: d.data().action || 'query',
+                dataSent: d.data().dataSent || 0,
+                dataReceived: d.data().dataReceived || 0,
+                timestamp: d.data().timestamp?.toMillis?.() || d.data().timestamp || null,
+                userAgent: d.data().userAgent || null
+            }));
+        } catch (indexErr) {
+            console.error('Index query failed, trying fallback:', indexErr.message);
+            // Fallback: query without ordering
+            try {
+                const fallbackSnap = await db.collection('api_usage_logs')
+                    .where('apiKey', '==', keyData.apiKey)
+                    .limit(20)
+                    .get();
+                usageLogs = fallbackSnap.docs.map(d => ({
+                    id: d.id,
+                    deviceInfo: d.data().deviceInfo || 'Unknown',
+                    deviceName: d.data().deviceName || null,
+                    ipAddress: d.data().ipAddress || null,
+                    action: d.data().action || 'query',
+                    dataSent: d.data().dataSent || 0,
+                    dataReceived: d.data().dataReceived || 0,
+                    timestamp: d.data().timestamp?.toMillis?.() || d.data().timestamp || null,
+                    userAgent: d.data().userAgent || null
+                }));
+            } catch (fallbackErr) {
+                console.error('Fallback query also failed:', fallbackErr.message);
+            }
+        }
 
         // Aggregate stats
         const totalRequests = usageLogs.length;
@@ -1413,6 +1437,51 @@ exports.tellerApi = onRequest({ cors: true }, async (req, res) => {
                 companyId: vCompanyId,
                 team: team,
                 teamCount: team.length
+            });
+        }
+
+        // Register device connection (called by teller app after successful validation)
+        if (action === 'register_device') {
+            if (!apiKey) {
+                return res.status(401).json({ success: false, message: 'API key is required.' });
+            }
+
+            const keySnap = await db.collection('api_keys').where('apiKey', '==', apiKey).limit(1).get();
+            if (keySnap.empty) {
+                return res.status(403).json({ success: false, message: 'Invalid API key.' });
+            }
+
+            const keyData = keySnap.docs[0].data();
+            const deviceName = req.body?.deviceName || req.headers['x-device-name'] || 'Android Teller App';
+            const deviceInfo = req.body?.deviceInfo || req.headers['x-device-info'] || req.headers['user-agent'] || 'TellerApp';
+            const ipAddress = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || null;
+
+            // Log to api_usage_logs with a special "device_registered" action
+            try {
+                await db.collection('api_usage_logs').add({
+                    apiKey: apiKey,
+                    companyId: keyData.companyId,
+                    userId: keyData.userId,
+                    action: 'device_registered',
+                    deviceInfo: deviceInfo,
+                    deviceName: deviceName,
+                    ipAddress: ipAddress,
+                    userAgent: req.headers['user-agent'] || null,
+                    dataSent: JSON.stringify(req.body || {}).length,
+                    dataReceived: 200,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    status: 'connected'
+                });
+            } catch (logErr) {
+                console.error('Failed to log device registration:', logErr);
+            }
+
+            return res.json({
+                success: true,
+                message: 'Device registered successfully',
+                deviceName: deviceName,
+                deviceInfo: deviceInfo,
+                companyId: keyData.companyId
             });
         }
 

@@ -1,0 +1,19 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "api_usage_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "apiKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
