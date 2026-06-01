@@ -739,6 +739,96 @@ exports.getApiKey = onCall({ cors: true }, async (request) => {
 });
 
 // ==========================================
+// 7A. API KEY USAGE DETAILS (for main app monitoring)
+// ==========================================
+
+exports.getApiUsageDetails = onCall({ cors: true }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Login required.');
+
+    const { companyId } = request.data;
+    if (!companyId) throw new HttpsError('invalid-argument', 'Company ID is required.');
+
+    const userId = request.auth.token.ownerId || request.auth.uid;
+    const db = admin.firestore();
+    const keyDocId = `${userId}_${companyId}`;
+
+    try {
+        // Get the API key document
+        const keyDoc = await db.collection('api_keys').doc(keyDocId).get();
+        if (!keyDoc.exists) {
+            return { exists: false, message: 'No API key generated yet.' };
+        }
+
+        const keyData = keyDoc.data();
+
+        // Get usage logs for this API key
+        const logsSnap = await db.collection('api_usage_logs')
+            .where('apiKey', '==', keyData.apiKey)
+            .orderBy('timestamp', 'desc')
+            .limit(100)
+            .get();
+
+        const usageLogs = logsSnap.docs.map(d => ({
+            id: d.id,
+            deviceInfo: d.data().deviceInfo || 'Unknown',
+            deviceName: d.data().deviceName || null,
+            ipAddress: d.data().ipAddress || null,
+            action: d.data().action || 'query',
+            dataSent: d.data().dataSent || 0,
+            dataReceived: d.data().dataReceived || 0,
+            timestamp: d.data().timestamp?.toMillis?.() || d.data().timestamp || null,
+            userAgent: d.data().userAgent || null
+        }));
+
+        // Aggregate stats
+        const totalRequests = usageLogs.length;
+        const totalDataSent = usageLogs.reduce((sum, l) => sum + (l.dataSent || 0), 0);
+        const totalDataReceived = usageLogs.reduce((sum, l) => sum + (l.dataReceived || 0), 0);
+
+        // Unique devices
+        const uniqueDevices = [...new Set(usageLogs.map(l => l.deviceInfo).filter(Boolean))];
+
+        // First connection time
+        const firstConnection = usageLogs.length > 0 ? usageLogs[usageLogs.length - 1].timestamp : null;
+
+        // Latest activity
+        const lastConnection = usageLogs.length > 0 ? usageLogs[0].timestamp : null;
+
+        // Also get team members for the user dropdown
+        const teamSnap = await db.collection('users')
+            .where('ownerId', '==', companyId)
+            .get();
+
+        const teamMembers = teamSnap.docs.map(d => ({
+            id: d.id,
+            name: d.data().name || 'Unknown',
+            email: d.data().email || '',
+            role: d.data().role || 'member'
+        }));
+
+        return {
+            exists: true,
+            apiKey: '*'.repeat(8) + keyData.apiKey.slice(-4), // Masked for display
+            createdAt: keyData.createdAt?.toMillis?.() || null,
+            usageLogs,
+            stats: {
+                totalRequests,
+                totalDataSent,
+                totalDataReceived,
+                uniqueDevices: uniqueDevices.length,
+                firstConnection,
+                lastConnection
+            },
+            teamMembers,
+            companyId
+        };
+    } catch (error) {
+        console.error('getApiUsageDetails error:', error);
+        throw new HttpsError('internal', error.message);
+    }
+});
+
+// ==========================================
 // 7. PUBLIC API FOR WIDGETS
 // ==========================================
 
@@ -762,6 +852,48 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
             const keyData = keySnap.docs[0].data();
             const userId = keyData.userId;
             const companyId = keyData.companyId;
+
+            // Log this API request for usage tracking
+            try {
+                const originalBody = typeof req.body === 'object' ? JSON.stringify(req.body).length : 0;
+                const responseHeadersSize = 0; // Will be calculated on response
+                const logRef = db.collection('api_usage_logs').doc();
+                const logData = {
+                    apiKey: apiKey,
+                    companyId: companyId,
+                    userId: userId,
+                    action: req.query.action || req.body?.action || 'query',
+                    deviceInfo: req.headers['x-device-info'] || req.headers['user-agent'] || 'Unknown',
+                    deviceName: req.headers['x-device-name'] || null,
+                    ipAddress: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || null,
+                    userAgent: req.headers['user-agent'] || null,
+                    dataSent: originalBody,
+                    dataReceived: 0, // Updated after response
+                    timestamp: admin.firestore.FieldValue.serverTimestamp()
+                };
+                await logRef.set(logData);
+                // Store ref so we can update response size later (best effort)
+                req._apiLogRef = logRef;
+                req._apiLogStart = Date.now();
+            } catch (logErr) {
+                console.error('Failed to log API usage:', logErr);
+                // Non-blocking - don't fail the request
+            }
+
+            // Wrap res.json to track response size for usage logging
+            const origJson = res.json.bind(res);
+            res.json = function(body) {
+                const bodyStr = JSON.stringify(body);
+                if (req._apiLogRef) {
+                    const duration = Date.now() - (req._apiLogStart || Date.now());
+                    req._apiLogRef.update({
+                        dataReceived: bodyStr.length,
+                        responseTime: duration,
+                        status: 'success'
+                    }).catch(() => {});
+                }
+                return origJson(body);
+            };
 
             // Fetch company name from the same path as records
             const companyDoc = await db.collection('companies_live').doc(companyId).get();
@@ -1163,6 +1295,16 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
 
     } catch (error) {
         console.error("API Error:", error);
+        try {
+            if (req._apiLogRef) {
+                const duration = Date.now() - (req._apiLogStart || Date.now());
+                req._apiLogRef.update({
+                    dataReceived: JSON.stringify({ error: error.message }).length,
+                    responseTime: duration,
+                    status: 'error'
+                }).catch(() => {});
+            }
+        } catch (_) {}
         return res.status(500).json({ error: 'Internal Server Error' });
     }
 });

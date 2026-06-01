@@ -838,7 +838,7 @@ const ReportsV2 = ({
                 <div className="flex items-center gap-3 opacity-60">
                     <span className="uppercase tracking-[0.2em]">{effectiveName || 'Admin'}</span>
                     <span className="bg-white/20 h-4 w-[1px]"></span>
-                    <span>v 2.5.3</span>
+                    <span>v 2.6.3</span>
                 </div>
             </div>
             </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
     X, ArrowRight, ChevronRight, Search
 } from 'lucide-react';
@@ -33,30 +33,76 @@ const RegistersDashboard = ({
     const [searchTerm, setSearchTerm] = useState('');
     const bgGradient = "bg-gradient-to-br from-[#0f172a] via-[#1e293b] to-[#0f172a]";
 
-    const modules = [
-        { id: 'sales_reg', name: 'Sales Register', action: onShowSalesRegister, v2: true, desc: 'Sales transactions & performance' },
-        { id: 'purchase_reg', name: 'Purchase Register', action: onShowPurchaseRegister, v2: true, desc: 'Procurement & vendor records' },
-        { id: 'payment_reg', name: 'Payments Register', action: onShowPaymentRegister, v2: true, desc: 'Outward cash & bank flows' },
-        { id: 'receipt_reg', name: 'Receipts Register', action: onShowReceiptRegister, v2: true, desc: 'Inward cash & bank flows' },
-        { id: 'contra_reg', name: 'Contra Register', action: onShowContraRegister, v2: true, desc: 'Inter-account fund transfers' },
-        { id: 'journal_reg', name: 'Journal Register', action: onShowJournalRegister, v2: true, desc: 'Adjustment & non-cash entries' },
-        { id: 'debit_note', name: 'Debit Notes', action: onShowDebitNoteRegister, v2: true, desc: 'Purchase returns & adjustments' },
-        { id: 'credit_note', name: 'Credit Notes', action: onShowCreditNoteRegister, v2: true, desc: 'Sales returns & adjustments' },
-        { id: 'stock_inv', name: 'Stock Inventory', action: onShowStockInventory, v2: true, desc: 'Current warehouse stock levels' },
-        { id: 'piece_inv', name: 'Piece Wise Inventory', action: onShowPieceInventory, v2: true, desc: 'Unit-by-unit stock breakdown' },
-        { id: 'lot_inv', name: 'Lot Wise Detail', action: onShowLotDetail, v2: true, desc: 'Batch & batch-wise tracking' },
-        { id: 'cashier_reg', name: 'Cashier Register', action: onShowCashierRegister, v2: true, desc: 'Detailed cashier transactions' },
-        { id: 'customer_reg', name: 'Customers Register', action: onShowCustomerRegister, v2: true, desc: 'Party-wise ledger summary' },
-        { id: 'capital_reg', name: 'Capital Register', action: onShowCapitalRegister, v2: true, desc: 'Owner & equity investments' },
-        { id: 'asset_reg', name: 'Assets Register', action: onShowAssetRegister, v2: true, desc: 'Fixed & current asset records' },
-        { id: 'direct_expense_reg', name: 'Direct Expenses Register', action: onShowDirectExpenseRegister, v2: true, desc: 'Manufacturing & COGS direct expense ledgers' },
-        { id: 'expense_reg', name: 'Indirect Expenses Register', action: onShowExpenseRegister, v2: true, desc: 'Operating & administrative costs' },
-        { id: 'income_reg', name: 'Indirect Incomes Register', action: onShowIncomeRegister, v2: true, desc: 'Non-operating revenue sources' },
-        { id: 'manuf_reg', name: 'Manufacturing Register', action: onShowManufacturingRegister, v2: true, desc: 'Production & processing logs' },
-        { id: 'loans_adv', name: 'Loans & Advances Tracker', action: onShowLoansAdvancesRegister, v2: true, desc: 'OA · TA · OL · TL — Track outstanding balances & due dates' },
-        { id: 'tax_reg', name: 'Tax Registers', action: onShowTaxRegister, v2: true, desc: 'Tax-wise invoice values and running balances' },
-        { id: 'bill_wise', name: 'Bill Wise Details', action: null, comingSoon: true, desc: 'Party-wise outstanding bill tracking' },
-    ];
+    const modules = useMemo(() => [
+        { id: 'sales_reg', name: 'Sales Register', shortcut: 'S', action: onShowSalesRegister, v2: true, desc: 'Sales transactions & performance' },
+        { id: 'purchase_reg', name: 'Purchase Register', shortcut: 'P', action: onShowPurchaseRegister, v2: true, desc: 'Procurement & vendor records' },
+        { id: 'payment_reg', name: 'Payments Register', shortcut: 'Y', action: onShowPaymentRegister, v2: true, desc: 'Outward cash & bank flows' },
+        { id: 'receipt_reg', name: 'Receipts Register', shortcut: 'R', action: onShowReceiptRegister, v2: true, desc: 'Inward cash & bank flows' },
+        { id: 'contra_reg', name: 'Contra Register', shortcut: 'C', action: onShowContraRegister, v2: true, desc: 'Inter-account fund transfers' },
+        { id: 'journal_reg', name: 'Journal Register', shortcut: 'J', action: onShowJournalRegister, v2: true, desc: 'Adjustment & non-cash entries' },
+        { id: 'debit_note', name: 'Debit Notes', shortcut: 'D', action: onShowDebitNoteRegister, v2: true, desc: 'Purchase returns & adjustments' },
+        { id: 'credit_note', name: 'Credit Notes', shortcut: 'E', action: onShowCreditNoteRegister, v2: true, desc: 'Sales returns & adjustments' },
+        { id: 'stock_inv', name: 'Stock Inventory', shortcut: 'K', action: onShowStockInventory, v2: true, desc: 'Current warehouse stock levels' },
+        { id: 'piece_inv', name: 'Piece Wise Inventory', shortcut: 'W', action: onShowPieceInventory, v2: true, desc: 'Unit-by-unit stock breakdown' },
+        { id: 'lot_inv', name: 'Lot Wise Detail', shortcut: 'L', action: onShowLotDetail, v2: true, desc: 'Batch & batch-wise tracking' },
+        { id: 'cashier_reg', name: 'Cashier Register', shortcut: 'H', action: onShowCashierRegister, v2: true, desc: 'Detailed cashier transactions' },
+        { id: 'customer_reg', name: 'Customers Register', shortcut: 'U', action: onShowCustomerRegister, v2: true, desc: 'Party-wise ledger summary' },
+        { id: 'capital_reg', name: 'Capital Register', shortcut: 'I', action: onShowCapitalRegister, v2: true, desc: 'Owner & equity investments' },
+        { id: 'asset_reg', name: 'Assets Register', shortcut: 'A', action: onShowAssetRegister, v2: true, desc: 'Fixed & current asset records' },
+        { id: 'direct_expense_reg', name: 'Direct Expenses Register', shortcut: 'T', action: onShowDirectExpenseRegister, v2: true, desc: 'Manufacturing & COGS direct expense ledgers' },
+        { id: 'expense_reg', name: 'Indirect Expenses Register', shortcut: 'X', action: onShowExpenseRegister, v2: true, desc: 'Operating & administrative costs' },
+        { id: 'income_reg', name: 'Indirect Incomes Register', shortcut: 'N', action: onShowIncomeRegister, v2: true, desc: 'Non-operating revenue sources' },
+        { id: 'manuf_reg', name: 'Manufacturing Register', shortcut: 'M', action: onShowManufacturingRegister, v2: true, desc: 'Production & processing logs' },
+        { id: 'loans_adv', name: 'Loans & Advances Tracker', shortcut: 'V', action: onShowLoansAdvancesRegister, v2: true, desc: 'OA · TA · OL · TL — Track outstanding balances & due dates' },
+        { id: 'tax_reg', name: 'Tax Registers', shortcut: 'G', action: onShowTaxRegister, v2: true, desc: 'Tax-wise invoice values and running balances' },
+        { id: 'bill_wise', name: 'Bill Wise Details', shortcut: 'B', action: null, comingSoon: true, desc: 'Party-wise outstanding bill tracking' },
+    ], [
+        onShowSalesRegister, onShowPurchaseRegister, onShowPaymentRegister, onShowReceiptRegister,
+        onShowContraRegister, onShowJournalRegister, onShowDebitNoteRegister, onShowCreditNoteRegister,
+        onShowStockInventory, onShowPieceInventory, onShowLotDetail, onShowCashierRegister,
+        onShowCustomerRegister, onShowCapitalRegister, onShowAssetRegister, onShowDirectExpenseRegister,
+        onShowExpenseRegister, onShowIncomeRegister, onShowManufacturingRegister, onShowLoansAdvancesRegister,
+        onShowTaxRegister
+    ]);
+
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            const isInputFocused = document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA';
+
+            if (e.altKey) {
+                const key = e.key.toLowerCase();
+                const module = modules.find(m => m.shortcut && m.shortcut.toLowerCase() === key);
+                if (module && !module.comingSoon && module.action) {
+                    e.preventDefault();
+                    module.action();
+                }
+            } else if (!e.ctrlKey && !e.metaKey && e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
+                if (!isInputFocused) {
+                    e.preventDefault();
+                    setSearchTerm(e.key.toUpperCase());
+                    const searchInput = document.getElementById('register-search');
+                    if (searchInput) searchInput.focus();
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [modules]);
+
+    const renderNameWithShortcut = (name, shortcut) => {
+        if (!shortcut) return name;
+        const index = name.toLowerCase().indexOf(shortcut.toLowerCase());
+        if (index === -1) return name;
+
+        return (
+            <>
+                {name.substring(0, index)}
+                <span className="text-red-700 font-extrabold underline decoration-red-700/50 underline-offset-2">{name.charAt(index)}</span>
+                {name.substring(index + 1)}
+            </>
+        );
+    };
 
     return (
         <div className={`fixed inset-0 z-[100] ${bgGradient} text-white font-sans flex flex-col animate-in fade-in duration-300`}>
@@ -103,6 +149,7 @@ const RegistersDashboard = ({
                                 <Search size={16} className="text-slate-500 group-focus-within:text-blue-400 transition-colors" />
                             </div>
                             <input 
+                                id="register-search"
                                 type="text"
                                 placeholder="SEARCH FOR A REGISTER (E.G. SALES, TAX, INVENTORY...)"
                                 className="w-full bg-white/[0.05] border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-[10px] font-black text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:bg-white/[0.08] transition-all uppercase tracking-widest"
@@ -116,6 +163,10 @@ const RegistersDashboard = ({
                         {modules
                             .filter(mod => {
                                 const search = searchTerm.toLowerCase();
+                                if (!search) return true;
+                                if (search.length === 1) {
+                                    return mod.name.toLowerCase().startsWith(search);
+                                }
                                 return mod.name.toLowerCase().includes(search) || mod.desc.toLowerCase().includes(search);
                             })
                             .map((mod) => (
@@ -132,7 +183,7 @@ const RegistersDashboard = ({
                                     <div className="flex flex-col">
                                         <div className="flex items-center gap-3">
                                             <div className="text-white font-black text-base tracking-tight uppercase group-hover:text-blue-400 transition-colors">
-                                                {mod.name}
+                                                {renderNameWithShortcut(mod.name, mod.shortcut)}
                                             </div>
                                             {mod.v2 && !mod.comingSoon && (
                                                 <div className="bg-blue-600/20 text-blue-400 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest border border-blue-500/30">V2</div>
@@ -154,6 +205,10 @@ const RegistersDashboard = ({
                         ))}
                         {modules.filter(mod => {
                             const search = searchTerm.toLowerCase();
+                            if (!search) return true;
+                            if (search.length === 1) {
+                                return mod.name.toLowerCase().startsWith(search);
+                            }
                             return mod.name.toLowerCase().includes(search) || mod.desc.toLowerCase().includes(search);
                         }).length === 0 && (
                             <div className="p-12 text-center flex flex-col items-center gap-3 opacity-30">
@@ -168,7 +223,7 @@ const RegistersDashboard = ({
                             Audit Ready Reports
                         </div>
                         <div className="text-[9px] font-mono bg-white/5 px-2 py-1 rounded text-slate-400">
-                            V 2.5.1
+                            V 2.6.3
                         </div>
                     </div>
                 </div>

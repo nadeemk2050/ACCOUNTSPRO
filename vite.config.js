@@ -96,7 +96,8 @@ export default defineConfig({
         ]
       },
       workbox: {
-        maximumFileSizeToCacheInBytes: 5000000 // 5MB
+        maximumFileSizeToCacheInBytes: 5000000, // 5MB
+        importScripts: ['sw-sync.js']
       },
       devOptions: {
         enabled: true

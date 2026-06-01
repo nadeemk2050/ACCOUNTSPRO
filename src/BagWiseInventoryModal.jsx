@@ -32,6 +32,8 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     const [showDatePopup, setShowDatePopup] = useState(false);
     const [recalcLoading, setRecalcLoading] = useState(false);
     const [showSearchField, setShowSearchField] = useState(false);
+    const [deleteBagPrompt, setDeleteBagPrompt] = useState(null);
+    const [deletePassword, setDeletePassword] = useState('');
     const db = getFirestore();
     const getProductName = (id) => products.find(p => p.id === id)?.name || 'Unknown Item';
     const getBagSourceType = (bag = {}) => {
@@ -52,6 +54,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             bag.salesId ||
             '-'
         );
+    };
+    const isVoucherDeleted = (voucher = {}) => {
+        const status = String(voucher.status || '').trim().toLowerCase();
+        return voucher.isDeleted === true || voucher.deleted === true || voucher.is_deleted === true || status === 'deleted' || status === 'bulk_deleted';
     };
     const normalizeDateKey = (value) => {
         if (!value) return '';
@@ -220,10 +226,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             getDocs(query(collection(db, 'stock_journals'), where('refNo', 'in', chunk)))
                         ]);
                         snapId.forEach(d => {
-                            if (isOwnedByCandidate(d.data())) existingSj.add(d.id);
+                            if (isOwnedByCandidate(d.data()) && !isVoucherDeleted(d.data())) existingSj.add(d.id);
                         });
                         snapRef.forEach(d => {
-                            if (isOwnedByCandidate(d.data())) {
+                            if (isOwnedByCandidate(d.data()) && !isVoucherDeleted(d.data())) {
                                 existingSj.add(d.id);
                                 if (d.data().refNo) existingSj.add(d.data().refNo);
                             }
@@ -234,7 +240,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         if (unresolved.length > 0) {
                             const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'stock_journals', id))));
                             directDocs.forEach((s, idx) => {
-                                if (s.exists() && isOwnedByCandidate(s.data())) existingSj.add(unresolved[idx]);
+                                if (s.exists() && isOwnedByCandidate(s.data()) && !isVoucherDeleted(s.data())) existingSj.add(unresolved[idx]);
                             });
                         }
                     }
@@ -246,10 +252,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             getDocs(query(collection(db, 'invoices'), where('refNo', 'in', chunk)))
                         ]);
                         snapId.forEach(d => {
-                            if (isOwnedByCandidate(d.data())) existingPur.add(d.id);
+                            if (isOwnedByCandidate(d.data()) && !isVoucherDeleted(d.data())) existingPur.add(d.id);
                         });
                         snapRef.forEach(d => {
-                            if (isOwnedByCandidate(d.data())) {
+                            if (isOwnedByCandidate(d.data()) && !isVoucherDeleted(d.data())) {
                                 existingPur.add(d.id);
                                 if (d.data().refNo) existingPur.add(d.data().refNo);
                             }
@@ -259,7 +265,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         if (unresolved.length > 0) {
                             const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'invoices', id))));
                             directDocs.forEach((s, idx) => {
-                                if (s.exists() && isOwnedByCandidate(s.data())) existingPur.add(unresolved[idx]);
+                                if (s.exists() && isOwnedByCandidate(s.data()) && !isVoucherDeleted(s.data())) existingPur.add(unresolved[idx]);
                             });
                         }
                     }
@@ -277,6 +283,12 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     list = list.map(b => ({ ...b, isOrphan: false, orphanReason: '' }));
                 }
 
+                // Never show deleted bag records in intelligence views.
+                list = list.filter(b => {
+                    const st = String(b.status || '').trim().toLowerCase();
+                    return !(b.isDeleted || b.deleted || b.is_deleted || st === 'deleted' || st === 'bulk_deleted');
+                });
+
                 setBags(list);
                 latestSnap = pendingSnapshotRef.current;
             } while (latestSnap);
@@ -293,13 +305,23 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             alert('This bag is linked to a voucher. Delete the voucher first; bag records will auto-sync and be removed/reverted automatically.');
             return;
         }
-        if (!window.confirm('Delete this orphan bag record?')) return;
-        try {
-            await deleteDoc(doc(db, 'jumbo_bags', bag.id));
-            setBags(prev => prev.filter(b => b.id !== bag.id));
-        } catch (e) {
-            console.error(e);
-            alert("Delete failed: " + e.message);
+        setDeleteBagPrompt(bag);
+        setDeletePassword('');
+    };
+
+    const confirmDeleteOrphanBag = async () => {
+        if (deletePassword === "abcd") {
+            try {
+                await deleteDoc(doc(db, 'jumbo_bags', deleteBagPrompt.id));
+                setBags(prev => prev.filter(b => b.id !== deleteBagPrompt.id));
+                setDeleteBagPrompt(null);
+                setDeletePassword('');
+            } catch (err) {
+                console.error("Error deleting orphan bag:", err);
+                alert("❌ Failed to delete orphan bag. See console for details.");
+            }
+        } else {
+            alert("❌ Incorrect password.");
         }
     };
 
@@ -348,10 +370,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const [snap, snapRef] = await Promise.all([getDocs(qExist), getDocs(qExistRef)]);
                 const existIds = new Set();
                 snap.docs.forEach(d => {
-                    if (isOwnedByTarget(d.data())) existIds.add(d.id);
+                    if (isOwnedByTarget(d.data()) && !isVoucherDeleted(d.data())) existIds.add(d.id);
                 });
                 snapRef.docs.forEach(d => {
-                    if (isOwnedByTarget(d.data())) {
+                    if (isOwnedByTarget(d.data()) && !isVoucherDeleted(d.data())) {
                         existIds.add(d.id);
                         if (d.data().refNo) existIds.add(d.data().refNo);
                     }
@@ -361,7 +383,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 if (unresolved.length > 0) {
                     const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'stock_journals', id))));
                     directDocs.forEach((s, idx) => {
-                        if (s.exists() && isOwnedByTarget(s.data())) existIds.add(unresolved[idx]);
+                        if (s.exists() && isOwnedByTarget(s.data()) && !isVoucherDeleted(s.data())) existIds.add(unresolved[idx]);
                     });
                 }
                 chunk.forEach(id => { if (!existIds.has(id)) deadSjIds.add(id); });
@@ -377,10 +399,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const [snap, snapRef] = await Promise.all([getDocs(qExist), getDocs(qExistRef)]);
                 const existIds = new Set();
                 snap.docs.forEach(d => {
-                    if (isOwnedByTarget(d.data())) existIds.add(d.id);
+                    if (isOwnedByTarget(d.data()) && !isVoucherDeleted(d.data())) existIds.add(d.id);
                 });
                 snapRef.docs.forEach(d => {
-                    if (isOwnedByTarget(d.data())) {
+                    if (isOwnedByTarget(d.data()) && !isVoucherDeleted(d.data())) {
                         existIds.add(d.id);
                         if (d.data().refNo) existIds.add(d.data().refNo);
                     }
@@ -390,7 +412,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 if (unresolved.length > 0) {
                     const directDocs = await Promise.all(unresolved.map(id => getDoc(doc(db, 'invoices', id))));
                     directDocs.forEach((s, idx) => {
-                        if (s.exists() && isOwnedByTarget(s.data())) existIds.add(unresolved[idx]);
+                        if (s.exists() && isOwnedByTarget(s.data()) && !isVoucherDeleted(s.data())) existIds.add(unresolved[idx]);
                     });
                 }
                 chunk.forEach(id => { if (!existIds.has(id)) deadPurIds.add(id); });
@@ -962,6 +984,11 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     className="w-full pl-10 pr-4 py-3 bg-slate-50 border-none rounded-lg text-sm font-bold text-slate-700 outline-none ring-2 ring-transparent focus:ring-blue-500/20 transition-all placeholder:text-slate-400"
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
+                                    autoComplete="off"
+                                    autoCorrect="off"
+                                    spellCheck="false"
+                                    data-lpignore="true"
+                                    data-form-type="other"
                                     autoFocus
                                 />
                             </div>
@@ -1566,6 +1593,55 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>,
                         document.body
                     )}
+                {/* Custom Prompt Modal for Orphan Bag Deletion */}
+                {deleteBagPrompt && createPortal(
+                    <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200" style={{ zIndex: 9999 }}>
+                        <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4 border border-slate-200 animate-in zoom-in-95 duration-200">
+                            <div className="flex items-center gap-3 mb-4 text-red-600">
+                                <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                                    <X size={20} />
+                                </div>
+                                <h3 className="font-black text-[14px] uppercase tracking-tight">Delete Orphan Bag</h3>
+                            </div>
+                            <p className="text-[12px] font-bold text-slate-500 mb-2">
+                                Bag No: <span className="text-slate-800">{deleteBagPrompt.bagNo}</span>
+                            </p>
+                            <p className="text-[11px] font-medium text-slate-500 mb-6 leading-relaxed">
+                                This action cannot be undone. Enter password to confirm removal.
+                            </p>
+                            {/* Fake inputs to stop Chrome from autofilling the search bar with email */}
+                            <input type="text" name="fakeusernameremembered" style={{ display: 'none' }} aria-hidden="true" autoComplete="username" />
+                            <input type="password" name="fakepasswordremembered" style={{ display: 'none' }} aria-hidden="true" autoComplete="current-password" />
+                            
+                            <input
+                                type="password"
+                                placeholder="Enter password..."
+                                className="w-full px-4 py-2 border-2 border-slate-200 rounded-xl mb-6 text-[14px] font-bold outline-none focus:border-red-400 focus:ring-4 focus:ring-red-100 transition-all"
+                                value={deletePassword}
+                                onChange={(e) => setDeletePassword(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && confirmDeleteOrphanBag()}
+                                autoComplete="new-password"
+                                data-lpignore="true"
+                                autoFocus
+                            />
+                            <div className="flex items-center gap-3 justify-end">
+                                <button
+                                    onClick={() => { setDeleteBagPrompt(null); setDeletePassword(''); }}
+                                    className="px-5 py-2 rounded-xl text-[11px] font-black uppercase text-slate-500 hover:bg-slate-100 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={confirmDeleteOrphanBag}
+                                    className="px-5 py-2 rounded-xl text-[11px] font-black uppercase bg-red-500 text-white hover:bg-red-600 shadow-lg shadow-red-200 transition-all active:scale-95"
+                                >
+                                    Confirm Delete
+                                </button>
+                            </div>
+                        </div>
+                    </div>,
+                    document.body
+                )}
             </div>
         </Modal>
     );

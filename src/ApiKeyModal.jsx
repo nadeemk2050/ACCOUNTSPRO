@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from './components/Modal';
-import { Key, RefreshCw, Copy, Check, Globe, Shield, ExternalLink, Activity, Info } from 'lucide-react';
+import { Key, RefreshCw, Copy, Check, Globe, Shield, Activity, Info, ChevronDown, ChevronRight, Monitor, Database, Clock, Users, Wifi, WifiOff } from 'lucide-react';
 import { httpsCallable } from '@firebase/functions';
 import { cloudFunctions as functions } from './firebase';
 import { getActiveCompanyId } from './localDB';
@@ -10,10 +10,15 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
     const [loading, setLoading] = useState(false);
     const [copied, setCopied] = useState(false);
     const [error, setError] = useState('');
+    const [usageExpanded, setUsageExpanded] = useState(false);
+    const [usageData, setUsageData] = useState(null);
+    const [usageLoading, setUsageLoading] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
             fetchApiKey();
+            setUsageExpanded(false);
+            setUsageData(null);
         }
     }, [isOpen]);
 
@@ -36,6 +41,21 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
         }
     };
 
+    const fetchUsageDetails = async () => {
+        if (usageData) return; // Already loaded
+        setUsageLoading(true);
+        try {
+            const companyId = getActiveCompanyId();
+            const getUsageFn = httpsCallable(functions, 'getApiUsageDetails');
+            const result = await getUsageFn({ companyId });
+            setUsageData(result.data);
+        } catch (err) {
+            console.error("Error fetching usage details:", err);
+        } finally {
+            setUsageLoading(false);
+        }
+    };
+
     const generateKey = async () => {
         if (apiKey && !window.confirm("Generating a new API key will invalidate the old one. External widgets using the old key will stop working. Continue?")) return;
         
@@ -47,6 +67,7 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
             const result = await genKeyFn({ companyId });
             if (result.data && result.data.apiKey) {
                 setApiKey(result.data.apiKey);
+                setUsageData(null); // Reset usage data
             }
         } catch (err) {
             console.error("Error generating API key:", err);
@@ -65,10 +86,32 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
         setTimeout(() => setCopied(false), 2000);
     };
 
-    const baseEndpoint = `https://cashshams.web.app/accproApi`; // Standard Firebase Hosting + Cloud Functions alias
+    const formatBytes = (bytes) => {
+        if (!bytes || bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'KB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    };
+
+    const formatTimestamp = (ts) => {
+        if (!ts) return 'N/A';
+        const d = new Date(ts);
+        return d.toLocaleString();
+    };
+
+    const baseEndpoint = `https://cashshams.web.app/accproApi`;
+
+    const handleToggleUsage = () => {
+        const newVal = !usageExpanded;
+        setUsageExpanded(newVal);
+        if (newVal && !usageData) {
+            fetchUsageDetails();
+        }
+    };
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} title="API & Widget Access" maxWidth="max-w-xl" zIndex={zIndex}>
+        <Modal isOpen={isOpen} onClose={onClose} title="API & Widget Access" maxWidth="max-w-2xl" zIndex={zIndex}>
             <div className="space-y-6 py-2">
                 {/* Header Info */}
                 <div className="bg-indigo-50 border-l-4 border-indigo-500 p-4 rounded-r-lg">
@@ -156,6 +199,159 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
                         </div>
                     )}
                 </div>
+
+                {/* API Usage Details Section */}
+                {apiKey && (
+                    <div className="bg-slate-50 rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <button
+                            onClick={handleToggleUsage}
+                            className="w-full flex items-center justify-between p-4 hover:bg-slate-100 transition-colors text-left"
+                        >
+                            <div className="flex items-center gap-2 text-slate-800">
+                                <Database size={18} className="text-indigo-600" />
+                                <h4 className="text-xs font-black uppercase tracking-wider">API Usage Details</h4>
+                                {usageData && (
+                                    <span className="text-[9px] font-bold text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded-full">
+                                        {usageData.stats?.totalRequests || 0} requests
+                                    </span>
+                                )}
+                            </div>
+                            {usageExpanded ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
+                        </button>
+
+                        {usageExpanded && (
+                            <div className="px-4 pb-4 space-y-4 border-t border-slate-200 pt-3">
+                                {usageLoading ? (
+                                    <div className="flex items-center justify-center py-6">
+                                        <RefreshCw size={20} className="animate-spin text-indigo-500" />
+                                        <span className="ml-2 text-xs text-slate-500">Loading usage data...</span>
+                                    </div>
+                                ) : !usageData || !usageData.exists ? (
+                                    <div className="text-center py-4">
+                                        <WifiOff size={24} className="text-slate-300 mx-auto mb-2" />
+                                        <p className="text-xs text-slate-500">No usage data available yet.</p>
+                                        <p className="text-[10px] text-slate-400 mt-1">Connect the teller app or widget to start seeing details.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {/* Stats Summary */}
+                                        <div className="grid grid-cols-4 gap-2">
+                                            <div className="bg-white rounded-xl p-3 border border-slate-100 text-center">
+                                                <p className="text-lg font-black text-indigo-600">{usageData.stats?.totalRequests || 0}</p>
+                                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mt-1">Requests</p>
+                                            </div>
+                                            <div className="bg-white rounded-xl p-3 border border-slate-100 text-center">
+                                                <p className="text-lg font-black text-green-600">{usageData.stats?.uniqueDevices || 0}</p>
+                                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mt-1">Devices</p>
+                                            </div>
+                                            <div className="bg-white rounded-xl p-3 border border-slate-100 text-center">
+                                                <p className="text-sm font-black text-slate-700">{formatBytes(usageData.stats?.totalDataSent || 0)}</p>
+                                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mt-1">Sent</p>
+                                            </div>
+                                            <div className="bg-white rounded-xl p-3 border border-slate-100 text-center">
+                                                <p className="text-sm font-black text-slate-700">{formatBytes(usageData.stats?.totalDataReceived || 0)}</p>
+                                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mt-1">Received</p>
+                                            </div>
+                                        </div>
+
+                                        {/* First/Last Connection */}
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="bg-white rounded-xl p-3 border border-slate-100">
+                                                <div className="flex items-center gap-1.5 text-slate-500 mb-1">
+                                                    <Clock size={12} />
+                                                    <span className="text-[9px] font-bold uppercase tracking-wider">First Connected</span>
+                                                </div>
+                                                <p className="text-xs font-semibold text-slate-700">{formatTimestamp(usageData.stats?.firstConnection)}</p>
+                                            </div>
+                                            <div className="bg-white rounded-xl p-3 border border-slate-100">
+                                                <div className="flex items-center gap-1.5 text-slate-500 mb-1">
+                                                    <Activity size={12} />
+                                                    <span className="text-[9px] font-bold uppercase tracking-wider">Last Activity</span>
+                                                </div>
+                                                <p className="text-xs font-semibold text-slate-700">{formatTimestamp(usageData.stats?.lastConnection)}</p>
+                                            </div>
+                                        </div>
+
+                                        {/* Connected Devices */}
+                                        {usageData.usageLogs && usageData.usageLogs.length > 0 && (
+                                            <div>
+                                                <div className="flex items-center gap-1.5 text-slate-500 mb-2">
+                                                    <Monitor size={12} />
+                                                    <span className="text-[9px] font-bold uppercase tracking-wider">Connected Devices</span>
+                                                </div>
+                                                <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                                                    {[...new Map(usageData.usageLogs.map(l => [l.deviceInfo, l])).values()].slice(0, 5).map((log, i) => (
+                                                        <div key={i} className="flex items-center justify-between bg-white rounded-lg p-2.5 border border-slate-100">
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <Wifi size={12} className="text-green-500 shrink-0" />
+                                                                <span className="text-[10px] font-medium text-slate-700 truncate">{log.deviceInfo}</span>
+                                                            </div>
+                                                            <span className="text-[8px] text-slate-400 shrink-0 ml-2">{log.action}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Team Members Dropdown */}
+                                        {usageData.teamMembers && usageData.teamMembers.length > 0 && (
+                                            <div>
+                                                <div className="flex items-center gap-1.5 text-slate-500 mb-2">
+                                                    <Users size={12} />
+                                                    <span className="text-[9px] font-bold uppercase tracking-wider">User Names (Team Members)</span>
+                                                </div>
+                                                <div className="max-h-40 overflow-y-auto space-y-1">
+                                                    {usageData.teamMembers.map(member => (
+                                                        <div key={member.id} className="flex items-center justify-between bg-white rounded-lg p-2.5 border border-slate-100">
+                                                            <div className="flex items-center gap-2">
+                                                                <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-bold">
+                                                                    {(member.name || '?').charAt(0).toUpperCase()}
+                                                                </div>
+                                                                <div>
+                                                                    <p className="text-[11px] font-semibold text-slate-700">{member.name}</p>
+                                                                    <p className="text-[8px] text-slate-400">{member.email}</p>
+                                                                </div>
+                                                            </div>
+                                                            <span className="text-[8px] font-bold uppercase text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                                                                {member.role === 'owner' ? 'Admin/Owner' : member.role}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Recent Activity Log */}
+                                        {usageData.usageLogs && usageData.usageLogs.length > 0 && (
+                                            <div>
+                                                <div className="flex items-center gap-1.5 text-slate-500 mb-2">
+                                                    <Activity size={12} />
+                                                    <span className="text-[9px] font-bold uppercase tracking-wider">Recent Activity</span>
+                                                </div>
+                                                <div className="max-h-32 overflow-y-auto space-y-1">
+                                                    {usageData.usageLogs.slice(0, 10).map((log, i) => (
+                                                        <div key={log.id || i} className="flex items-center justify-between bg-white rounded-lg p-2 border border-slate-100">
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <span className="text-[9px] font-mono text-slate-500">{formatTimestamp(log.timestamp)}</span>
+                                                                <span className="text-[9px] font-bold text-slate-600 uppercase">{log.action}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 shrink-0">
+                                                                <span className="text-[8px] text-slate-400">{formatBytes(log.dataReceived)} recv</span>
+                                                                {log.deviceInfo && (
+                                                                    <span className="text-[8px] text-slate-400 truncate max-w-[80px]">{log.deviceInfo}</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* API Documentation / Integration */}
                 <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200 space-y-4 shadow-sm">

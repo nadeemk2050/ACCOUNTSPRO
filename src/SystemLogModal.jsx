@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FileText, RefreshCcw, Search, X, ChevronLeft, ChevronRight, Calendar, Filter, ArrowUpDown } from 'lucide-react';
+import { FileText, RefreshCcw, Search, X, ChevronLeft, ChevronRight, Calendar, Filter, ArrowUpDown, Trash2 } from 'lucide-react';
 import { collection, getDocs, query, where, limit } from 'firebase/firestore';
 import { db } from './firebase';
 import { Modal } from './components/Modal';
@@ -17,7 +17,7 @@ const parseDate = (d) => {
 };
 
 const SystemLogModal = ({
-  isOpen, onClose, onBack, zIndex, user, dataOwnerId, onScan,
+  isOpen, onClose, onBack, zIndex, user, dataOwnerId, onScan, onPurgeSoftDeleted,
   accounts = [], parties = [], expenses = [], incomeAccounts = [], products = [], subUsers = [], staff = [], locations = []
 }) => {
   const [allLogs, setAllLogs] = useState([]);
@@ -25,6 +25,17 @@ const SystemLogModal = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState(null);
   const [selectedLog, setSelectedLog] = useState(null);
+
+  // Temporary Cleanup for Ghost Invoice
+  useEffect(() => {
+      if (isOpen) {
+          import('firebase/firestore').then(({ doc, deleteDoc }) => {
+              deleteDoc(doc(db, 'invoices', '1a01f4ba-b04e-4fc5-adfb-b4875d699b10')).then(() => {
+                  console.log('Ghost invoice cleaned up.');
+              }).catch(() => {});
+          });
+      }
+  }, [isOpen]);
 
   // Function to resolve ID to Name
   const resolveEntityName = (id) => {
@@ -260,6 +271,15 @@ const SystemLogModal = ({
           </div>
 
           <div className="flex gap-2 ml-auto">
+            {onPurgeSoftDeleted && (
+              <button
+                onClick={onPurgeSoftDeleted}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-black text-[10px] uppercase tracking-widest shadow-sm"
+                title="Permanently remove soft-deleted vouchers and cleanup linked records"
+              >
+                <Trash2 size={12} /> Purge Soft Deleted
+              </button>
+            )}
             <div className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-3 border border-blue-200 shadow-sm mr-2">
               <div className="flex items-center gap-1">
                 <Filter size={12} />

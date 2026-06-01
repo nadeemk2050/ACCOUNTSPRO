@@ -229,7 +229,7 @@ const ManagementDashboard = ({
                     requestedAt: parsed.requestedAt,
                     deviceId: devices[0] || '',
                     deviceIds: devices,
-                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.5.1',
+                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.6.3',
                     liveCompaniesCount: firstNumber(parsed.liveCompaniesCount, parsed.companyCount, parsed.liveDataCount, usage.liveCompaniesCount),
                     usageReads: firstNumber(parsed.reads, parsed.readCount, usage.reads, usage.readCount, usage.firestoreReads),
                     usageWrites: firstNumber(parsed.writes, parsed.writeCount, usage.writes, usage.writeCount, usage.firestoreWrites),
@@ -321,7 +321,7 @@ const ManagementDashboard = ({
                     status: { stringValue: 'inactive' },
                     createdAt: { timestampValue: new Date().toISOString() },
                     createdBy: { stringValue: currentUser.email || 'developer' },
-                    version: { stringValue: '2.5.1' },
+                    version: { stringValue: '2.6.3' },
                     isGenerated: { booleanValue: true },
                 }
             };
@@ -2238,7 +2238,7 @@ const ManagementDashboard = ({
                                                                 <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.5.1'}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.6.3'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/50 font-mono" title={(key.deviceIds || []).join(', ')}>{formatDeviceList(key.deviceIds || [])}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? '—'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
@@ -2355,7 +2355,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">App Version</div>
-                                                                <div className="text-[11px] text-white/50">{key.version || '2.5.1'}</div>
+                                                                <div className="text-[11px] text-white/50">{key.version || '2.6.3'}</div>
                                                             </div>
                                                         </div>
 

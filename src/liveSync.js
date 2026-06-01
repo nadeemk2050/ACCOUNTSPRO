@@ -604,7 +604,13 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
         // --- Step 4: mark isLive in local master DB ---
         try {
             const existingSettings = existing.toJSON().settings || {};
-            await existing.incrementalPatch({ settings: { ...existingSettings, isLive: true } });
+            await existing.incrementalPatch({
+                settings: {
+                    ...existingSettings,
+                    isLive: true,
+                    backgroundSyncEnabled: existingSettings.backgroundSyncEnabled ?? true
+                }
+            });
         } catch (patchErr) {
             try { await setCompanyLiveStatus(companyId, true); } catch (e2) { /* best effort */ }
         }
@@ -904,7 +910,7 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
                 name: companyName,
                 createdAt: Date.now(),
                 createdBy: currentUserEmail,
-                settings: { isLive: true }
+                settings: { isLive: true, backgroundSyncEnabled: true }
             });
             console.log(`[DOWNLOAD] Created local master entry for '${companyName}'.`);
         } else {
@@ -917,7 +923,8 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
                 createdBy: existingEntry.createdBy || currentUserEmail,
                 settings: {
                     ...existingEntry.settings,
-                    isLive: true
+                    isLive: true,
+                    backgroundSyncEnabled: existingEntry.settings?.backgroundSyncEnabled ?? true
                 }
             });
             console.log(`[DOWNLOAD] Updated existing local master entry for '${companyName}'.`);

@@ -7,6 +7,14 @@ import {
     setDoc as fSetDoc, deleteField, // <--- ADD THIS HERE + deleteField
     serverTimestamp, runTransaction as fRunTransaction, getDoc, orderBy, limit, getDocs, Timestamp
 } from "firebase/firestore";
+// Real Firestore SDK — bypasses Vite's rxfs.js alias for duplicate bag checks
+import {
+    collection as realCollection,
+    query as realQuery,
+    where as realWhere,
+    getDocs as realGetDocs
+} from "@firebase/firestore";
+
 import {
     getDatabase, ref, set, push, update, remove, onDisconnect, onValue, serverTimestamp as rtdbTimestamp
 } from "firebase/database";
@@ -87,7 +95,8 @@ async function sha256(text) {
 }
 
 
-import { db, auth, functions, rtdb, cloudRtdb } from './firebase';
+import { db, auth, functions, rtdb, cloudRtdb, cloudDb } from './firebase';
+
 // Real Firebase RTDB functions — imported via @firebase/* to bypass the firebase/database → rxrtdb.js stub alias
 import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
@@ -118,6 +127,9 @@ import ImageStorageModal from "./ImageStorageModal.jsx";
 import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
 import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta } from './liveSync.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
+import ApiKeyModal from './ApiKeyModal';
+import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
+
 
 import { resolveStoredImages } from './storageAsset';
 
@@ -457,7 +469,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.6.2 (April 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.6.3 (April 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -512,7 +524,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.2</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.3</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -536,7 +548,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.2</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.3</div>
                 </div>
             </div>
         </Modal>
@@ -651,7 +663,8 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     }, [isOpen]);
 
     const handleKey = (e) => {
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
+            e.preventDefault();
             const res = parseSmartDate(val, baseDate);
             if (res) {
                 setVal(toDisplayDate(res)); 
@@ -714,25 +727,43 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const handleFromKey = (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            const res = parseSmartDate(fromVal, baseDate); // Suggest from input
+            const res = parseSmartDate(fromVal, baseDate); 
             if (res) {
-                // Keep the input in DD/MM/YYYY format for the user
                 setFromVal(toDisplayDate(res));
                 toRef.current?.focus();
+            } else {
+                fromRef.current?.select();
+            }
+        } else if (e.ctrlKey && e.key.toLowerCase() === 'a') {
+            e.preventDefault();
+            const f = parseSmartDate(fromVal, baseDate);
+            const t = parseSmartDate(toVal, baseDate || f); 
+            if (f && t) {
+                setFromVal(toDisplayDate(f));
+                setToVal(toDisplayDate(t));
+                onSubmit(f, t);
+            } else {
+                if (!f) fromRef.current?.select();
+                else if (!t) toRef.current?.select();
             }
         }
         if (e.key === 'Escape') onClose();
     };
 
     const handleToKey = (e) => {
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
+            e.preventDefault();
             const f = parseSmartDate(fromVal, baseDate);
-            const t = parseSmartDate(toVal, baseDate || f); // Check smarter logic
+            const t = parseSmartDate(toVal, baseDate || f); 
             if (f && t) {
                 setFromVal(toDisplayDate(f));
                 setToVal(toDisplayDate(t));
                 onSubmit(f, t);
-            } else onClose();
+            } else {
+                // If invalid, don't close. Focus the problematic one.
+                if (!f) fromRef.current?.select();
+                else if (!t) toRef.current?.select();
+            }
         }
     };
 
@@ -4742,7 +4773,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.6.2";
+    const SYSTEM_VERSION = "2.6.3";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -4806,10 +4837,13 @@ export default function App() {
     const [onlineUsers, setOnlineUsers] = useState({}); // Store live data of everyone
     const [pendingTaskCount, setPendingTaskCount] = useState(0); // <--- New State for Badge
     const [deferredPrompt, setDeferredPrompt] = useState(null);
+    const [isPwaInstalled, setIsPwaInstalled] = useState(false);
     const [subUser, setSubUser] = useState(null);
     const [isCompanyLocked, setIsCompanyLocked] = useState(false);
     const [cloudSyncStatus, setCloudSyncStatus] = useState({ state: 'offline', progress: 0, total: 0, message: '' });
     const [syncPulse, setSyncPulse] = useState(false);
+    const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+
 
     // Handle Cloud Sync Status updates
     useEffect(() => {
@@ -4923,6 +4957,29 @@ export default function App() {
                 });
             }
 
+            // 🛠️ PWA QUICK SESSION PERSISTENCE: Load cached sub-user login 
+            const cachedSession = localStorage.getItem(`accpro_session_${activeCompanyId}`);
+            if (cachedSession) {
+                try {
+                    const parsed = JSON.parse(cachedSession);
+                    if (parsed.mode === 'admin') {
+                        if (subUser) setSubUser(null);
+                        const license = window.accproLicense;
+                        const email = license?.email || 'offline@accpro.local';
+                        const role = email === 'nadeemalsaham@gmail.com' ? 'developer' : 'owner';
+                        if (currentRole !== role) setCurrentRole(role);
+                        if (dataOwnerId !== activeCompanyId) setDataOwnerId(activeCompanyId);
+                    } else if (parsed.mode === 'user' && parsed.subUser) {
+                        const u = parsed.subUser;
+                        if (!subUser || subUser.id !== u.id) setSubUser(u);
+                        if (currentRole !== u.role) setCurrentRole(u.role);
+                        if (dataOwnerId !== (u.ownerId || activeCompanyId)) setDataOwnerId(u.ownerId || activeCompanyId);
+                    }
+                } catch (e) {
+                    console.error("Failed to restore persistent session:", e);
+                }
+            }
+
             // 1b. ALWAYS Ensure Data Owner and Sync are active for current company
             // Use a ref to prevent double-initialization in the same React lifecycle
             if (!dataOwnerId || (dataOwnerId !== activeCompanyId && !subUser)) {
@@ -4979,6 +5036,7 @@ export default function App() {
     const [savedLedgerFilter, setSavedLedgerFilter] = useState(null);
     const [toast, setToast] = useState(null); // <--- ADD THIS
     const [editData, setEditData] = useState(null);
+    const [masterModalEditRequest, setMasterModalEditRequest] = useState(null);
 
     const [showVersionDetails, setShowVersionDetails] = useState(false);
     const [showFeatureCatalogue, setShowFeatureCatalogue] = useState(false);
@@ -5026,16 +5084,27 @@ export default function App() {
     const menuContainerRef = React.useRef(null);
 
     // GLOBAL SHORTCUT F2 / ALT+F2
+    // Register modals handle F2 themselves via SimpleListModal's local handler
+    const REGISTER_MODAL_IDS = [
+        'customer_register', 'cashier_register', 'payment_register', 'receipt_register',
+        'contra_register', 'manufacturing_register', 'sales_register', 'purchase_register',
+        'journal_register', 'debit_note_register', 'credit_note_register', 'expense_register',
+        'direct_expense_register', 'indirect_income_register', 'capital_register', 'asset_register'
+    ];
     useEffect(() => {
         const handleGlobalKey = (e) => {
-            // Ignore if input focused (except generic body) - Logic: Tally overrides everything?
-            // Usually we want F2 to work even if focused on a field.
+            // If a register modal is open, let SimpleListModal handle F2 with its local date picker
+            if (REGISTER_MODAL_IDS.includes(activeModal)) return;
 
-            if (e.key === 'F2') {
+            const key = (e.key || '').toLowerCase();
+
+            if (key === 'f2') {
                 e.preventDefault();
                 if (e.altKey) {
+                    e.stopPropagation();
                     // Alt+F2 -> Period (Global)
                     setPeriodModalOpen(true);
+                    return;
                 } else {
                     // F2 -> Single Date (Always allowed)
                     setDateModalOpen(true);
@@ -5052,11 +5121,19 @@ export default function App() {
         setGlobalDateCmd({ type: 'single', date: newDate, ts: Date.now() });
         // Also update standard state
         setDashboardDate(newDate);
+        // Also update register date range so all register modals reflect the new date
+        setRegisterDateRange({ from: newDate, to: newDate });
+        // SYNC Dashboard Period
+        setDateRange({ from: newDate, to: newDate });
     };
 
     const handlePeriodChange = (start, end) => {
         setPeriodModalOpen(false);
         setGlobalDateCmd({ type: 'period', startDate: start, endDate: end, ts: Date.now() });
+        // Also update register date range so all register modals reflect the new period
+        setRegisterDateRange({ from: start, to: end });
+        // SYNC Dashboard Period
+        setDateRange({ from: start, to: end });
     };
 
     const handleDateCmdProcessed = () => {
@@ -5114,6 +5191,25 @@ export default function App() {
     }, [activeCompanyId, user, systemInfo]);
 
     // Auth State removed (handled by LicenseGate)
+
+    // 🚀 PWA Quick-Action Shortcuts Handler
+    useEffect(() => {
+        if (activeCompanyId && !loading) {
+            const params = new URLSearchParams(window.location.search);
+            const voucher = params.get('voucher');
+            if (voucher) {
+                setTimeout(() => {
+                    if (['payment', 'receipt', 'contra'].includes(voucher)) {
+                        setActiveModal(voucher);
+                    } else if (voucher === 'journal') {
+                        if (typeof openJournalModal === 'function') openJournalModal();
+                    } else if (['sales', 'purchase'].includes(voucher)) {
+                        if (typeof openInvoiceModal === 'function') openInvoiceModal(voucher);
+                    }
+                }, 1000); 
+            }
+        }
+    }, [activeCompanyId, loading]);
 
     const effectiveName = useMemo(() => {
         const name = subUser?.name || userData?.name || user?.displayName || 'System';
@@ -5183,22 +5279,46 @@ export default function App() {
 
     // --- PWA INSTALL PROMPT LISTENER ---
     useEffect(() => {
-        const handler = (e) => {
-            // Prevent Chrome 67 and earlier from automatically showing the prompt
+        const isStandaloneNow = () => {
+            const standaloneMedia = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+            const iosStandalone = window.navigator && window.navigator.standalone === true;
+            const twa = typeof document.referrer === 'string' && document.referrer.startsWith('android-app://');
+            return !!(standaloneMedia || iosStandalone || twa);
+        };
+
+        setIsPwaInstalled(isStandaloneNow());
+
+        const installPromptHandler = (e) => {
+            // Prevent Chrome from auto-showing prompt and keep it for manual trigger.
             e.preventDefault();
-            // Stash the event so it can be triggered later.
             setDeferredPrompt(e);
         };
 
-        window.addEventListener('beforeinstallprompt', handler);
-
-        // Listen for successful install to hide button
-        window.addEventListener('appinstalled', () => {
+        const appInstalledHandler = () => {
             setDeferredPrompt(null);
+            setIsPwaInstalled(true);
             setToast({ type: 'success', title: 'Installed!', message: 'App added to home screen.' });
-        });
+        };
 
-        return () => window.removeEventListener('beforeinstallprompt', handler);
+        const mediaQuery = window.matchMedia ? window.matchMedia('(display-mode: standalone)') : null;
+        const standaloneChangeHandler = (event) => setIsPwaInstalled(!!event.matches);
+
+        window.addEventListener('beforeinstallprompt', installPromptHandler);
+        window.addEventListener('appinstalled', appInstalledHandler);
+
+        if (mediaQuery) {
+            if (mediaQuery.addEventListener) mediaQuery.addEventListener('change', standaloneChangeHandler);
+            else if (mediaQuery.addListener) mediaQuery.addListener(standaloneChangeHandler);
+        }
+
+        return () => {
+            window.removeEventListener('beforeinstallprompt', installPromptHandler);
+            window.removeEventListener('appinstalled', appInstalledHandler);
+            if (mediaQuery) {
+                if (mediaQuery.removeEventListener) mediaQuery.removeEventListener('change', standaloneChangeHandler);
+                else if (mediaQuery.removeListener) mediaQuery.removeListener(standaloneChangeHandler);
+            }
+        };
     }, []);
 
     const handleInstallClick = async () => {
@@ -5214,6 +5334,28 @@ export default function App() {
             console.log('User accepted the install prompt');
             setDeferredPrompt(null); // Hide button
         }
+    };
+
+    const handleUninstallClick = () => {
+        const standaloneMedia = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+        const iosStandalone = window.navigator && window.navigator.standalone === true;
+        const twa = typeof document.referrer === 'string' && document.referrer.startsWith('android-app://');
+        const installedNow = !!(standaloneMedia || iosStandalone || twa || isPwaInstalled);
+
+        if (!installedNow) {
+            setToast({ type: 'error', title: 'Not Installed', message: 'ACCPRO PWA is not installed on this device.' });
+            return;
+        }
+
+        alert(
+            'To uninstall ACCPRO on mobile Chrome:\n\n' +
+            '1) Go to your phone home screen\n' +
+            '2) Long-press the ACCPRO app icon\n' +
+            '3) Tap Uninstall / Remove\n\n' +
+            'Alternative: Open Chrome menu and manage installed apps from there.'
+        );
+
+        setToast({ type: 'success', title: 'Uninstall Help', message: 'Use your phone uninstall prompt to remove the PWA.' });
     };
 
     // 1. Initial Auth Setup & Menu Logic
@@ -5672,6 +5814,11 @@ export default function App() {
                     await signOut(auth);
                 }
 
+                // 🚀 CLEAR PWA PERSISTENT SESSION
+                if (activeCompanyId) {
+                    localStorage.removeItem(`accpro_session_${activeCompanyId}`);
+                }
+
                 // Clear company context and reload app to the main gate
                 if (getActiveCompanyId()) {
                     setCurrentCompany(null);
@@ -5700,13 +5847,19 @@ export default function App() {
 
     const handleSubUserLogout = useCallback(() => {
         if (!window.confirm("Log out current sub-user and return to admin?")) return;
+        
+        // 🚀 CLEAR PWA PERSISTENT SESSION
+        if (activeCompanyId) {
+            localStorage.removeItem(`accpro_session_${activeCompanyId}`);
+        }
+
         setSubUser(null);
         const license = window.accproLicense;
         const targetEmail = license?.email || '';
         const isDev = targetEmail === 'nadeemalsaham@gmail.com';
         setCurrentRole(isDev ? 'developer' : 'owner');
         setActiveModal(null);
-    }, []);
+    }, [activeCompanyId]);
 
     const handleStayLoggedIn = useCallback(() => {
         const now = Date.now();
@@ -6027,6 +6180,14 @@ export default function App() {
                         setToast({ type: 'info', title: 'Redirecting...', message: 'Opening Original Mfg Journal...' });
                         // Recursive call to open the PARENT Stock Journal
                         return handleViewTransaction(data.linkedStockJournalId, 'stock_journal');
+                    } else if (data.refNo && data.refNo.endsWith('-Exp')) {
+                        const baseRef = data.refNo.replace('-Exp', '');
+                        const qSj = query(collection(db, 'stock_journals'), where('refNo', '==', baseRef));
+                        const snapSj = await getDocs(qSj);
+                        if (!snapSj.empty) {
+                            setToast({ type: 'info', title: 'Redirecting...', message: 'Opening Original Mfg Journal...' });
+                            return handleViewTransaction(snapSj.docs[0].id, 'stock_journal');
+                        }
                     }
                     setActiveModal('journal');
                 }
@@ -6455,6 +6616,34 @@ export default function App() {
     }, [invoices]);
 
 
+    const resolveVoucherCollection = (rawType) => {
+        const type = String(rawType || '').toLowerCase();
+        if (['sales', 'purchase', 'credit_note', 'debit_note'].includes(type)) return 'invoices';
+        if (['payment', 'receipt', 'in', 'out', 'contra'].includes(type)) return 'payments';
+        if (['journal'].includes(type)) return 'journal_vouchers';
+        if (['manufacturing', 'stock_journal'].includes(type)) return 'stock_journals';
+        if (type === 'order') return 'order_vouchers';
+        if (type === 'attendance') return 'attendance_records';
+        return type || 'invoices';
+    };
+
+    const tryFindDocWithFallback = async (id, preferredCollection) => {
+        const candidates = [
+            preferredCollection,
+            'payments',
+            'journal_vouchers',
+            'stock_journals',
+            'invoices',
+            'order_vouchers',
+        ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
+
+        for (const col of candidates) {
+            const snap = await getDoc(doc(db, col, id));
+            if (snap.exists()) return { col, snap };
+        }
+        return { col: preferredCollection, snap: await getDoc(doc(db, preferredCollection, id)) };
+    };
+
     const handleBulkDeleteTransactions = async (items) => {
         if (!items || items.length === 0) return;
 
@@ -6474,29 +6663,36 @@ export default function App() {
 
         try {
             for (const item of items) {
-                const { id, type } = item;
+                let { id, type } = item;
                 try {
                     // Similar logic to handleDeleteTransaction but without the prompt
-                    let col = 'invoices';
-                    if (['payment', 'in', 'out', 'contra'].includes(type)) col = 'payments';
-                    if (type === 'journal') col = 'journal_vouchers';
-                    if (type === 'manufacturing' || type === 'stock_journal') col = 'stock_journals';
+                    let col = resolveVoucherCollection(type);
 
-                    const docSnap = await getDoc(doc(db, col, id));
-                    const docData = docSnap.exists() ? docSnap.data() : {};
+                    let targetId = id;
+                    let { col: foundCol, snap: docSnap } = await tryFindDocWithFallback(targetId, col);
+                    col = foundCol;
+                    let docData = docSnap.exists() ? docSnap.data() : {};
 
-                    const colNameMap = {
-                        'sales': 'invoices',
-                        'purchase': 'invoices',
-                        'payment': 'payments',
-                        'receipt': 'payments',
-                        'journal': 'journal_vouchers',
-                        'contra': 'journal_vouchers',
-                        'stock_journal': 'stock_journals',
-                        'manufacturing': 'stock_journals',
-                        'order': 'order_vouchers'
-                    };
-                    const collectionName = colNameMap[type.toLowerCase()] || type.toLowerCase();
+                    if (col === 'journal_vouchers') {
+                        let parentId = docData.linkedStockJournalId;
+                        if (!parentId && docData.refNo?.endsWith('-Exp')) {
+                            const baseRef = docData.refNo.replace('-Exp', '');
+                            const qSj = query(collection(db, 'stock_journals'), where('refNo', '==', baseRef));
+                            const snapSj = await getDocs(qSj);
+                            if (!snapSj.empty) parentId = snapSj.docs[0].id;
+                        }
+                        
+                        if (parentId) {
+                            targetId = parentId;
+                            col = 'stock_journals';
+                            docSnap = await getDoc(doc(db, col, targetId));
+                            docData = docSnap.exists() ? docSnap.data() : {};
+                            id = targetId; // switch item id to parent
+                            type = 'manufacturing'; // switch type to map correctly below
+                        }
+                    }
+
+                    const collectionName = resolveVoucherCollection(type);
 
                     if (docData.expenseJournalId) {
                         await deleteDoc(doc(db, 'journal_vouchers', docData.expenseJournalId)).catch(e => console.warn("Failed delete linked JV", e));
@@ -6507,23 +6703,46 @@ export default function App() {
                         const bagBatch = writeBatch(db);
                         let bagCount = 0;
                         const docRef = docData.refNo;
-                        const bagQueries = [
-                            getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))),
-                            getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))),
-                            getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))),
-                        ];
-                        if (docRef) {
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', docRef))));
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', docRef))));
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', docRef))));
+                        const isSalesVoucher = type === 'sales' || type === 'sale';
+
+                        const bagQueries = [];
+                        if (isSalesVoucher) {
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
+                            if (docRef) {
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', docRef))));
+                            }
+                        } else {
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
+                            if (docRef) {
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', docRef))));
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', docRef))));
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', docRef))));
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('refNo', '==', docRef))));
+                            }
                         }
+
                         const bagResults = await Promise.all(bagQueries);
-                        bagResults.forEach((sn, idx) => {
+                        const processedBagIds = new Set();
+
+                        bagResults.forEach((sn) => {
                             if (sn.empty) return;
-                            const isSales = idx === 2 || idx === 5;
                             sn.docs.forEach(d => {
-                                if (isSales) bagBatch.update(d.ref, { status: 'in_stock', salesId: deleteField(), soldDate: deleteField() });
-                                else bagBatch.delete(d.ref);
+                                if (processedBagIds.has(d.id)) return;
+                                processedBagIds.add(d.id);
+
+                                if (isSalesVoucher) {
+                                    bagBatch.update(d.ref, { 
+                                        status: 'in_stock', 
+                                        salesId: deleteField(), 
+                                        salesRefNo: deleteField(), 
+                                        soldDate: deleteField(),
+                                        weightVariance: deleteField(),
+                                        varianceNote: deleteField()
+                                    });
+                                } else {
+                                    bagBatch.delete(d.ref);
+                                }
                                 bagCount++;
                             });
                         });
@@ -6575,28 +6794,38 @@ export default function App() {
 
         try {
             // 1. Fetch details BEFORE delete to log them
-            let col = 'invoices';
-            if (['payment', 'in', 'out', 'contra'].includes(type)) col = 'payments';
-            if (type === 'journal') col = 'journal_vouchers';
-            if (type === 'manufacturing' || type === 'stock_journal') col = 'stock_journals';
+            let col = resolveVoucherCollection(type);
 
-            const docSnap = await getDoc(doc(db, col, id));
-            const docData = docSnap.exists() ? docSnap.data() : {};
+            let targetId = id;
+            let { col: foundCol, snap: docSnap } = await tryFindDocWithFallback(targetId, col);
+            col = foundCol;
+            let docData = docSnap.exists() ? docSnap.data() : {};
+
+            if (col === 'journal_vouchers') {
+                let parentId = docData.linkedStockJournalId;
+                if (!parentId && docData.refNo?.endsWith('-Exp')) {
+                    const baseRef = docData.refNo.replace('-Exp', '');
+                    const qSj = query(collection(db, 'stock_journals'), where('refNo', '==', baseRef));
+                    const snapSj = await getDocs(qSj);
+                    if (!snapSj.empty) parentId = snapSj.docs[0].id;
+                }
+                
+                if (parentId) {
+                    if (!window.confirm("This is a linked Expense Voucher.\nDeleting it will ALSO DELETE its parent Manufacturing Voucher and all associated data.\n\nProceed to delete BOTH?")) {
+                        setToast(null);
+                        return false;
+                    }
+                    targetId = parentId;
+                    col = 'stock_journals';
+                    docSnap = await getDoc(doc(db, col, targetId));
+                    docData = docSnap.exists() ? docSnap.data() : {};
+                    id = targetId; // ensure subsequent functions use the parent ID
+                    type = 'manufacturing'; // switch type for correctly mapping collection below
+                }
+            }
 
             // 2. Call Cloud Function
-            const colNameMap = {
-                'sales': 'invoices',
-                'purchase': 'invoices',
-                'payment': 'payments',
-                'receipt': 'payments',
-                'journal': 'journal_vouchers',
-                'contra': 'journal_vouchers',
-                'stock_journal': 'stock_journals',
-                'manufacturing': 'stock_journals',
-                'order': 'order_vouchers',
-                'attendance': 'attendance_records'
-            };
-            const collectionName = colNameMap[type.toLowerCase()] || type.toLowerCase();
+            const collectionName = resolveVoucherCollection(type);
 
             // ✅ AUTO-DELETE LINKED EXPENSE JOURNAL
             if (docData.expenseJournalId) {
@@ -6608,30 +6837,43 @@ export default function App() {
                 const batch = writeBatch(db);
                 let count = 0;
                 const ref = docData.refNo;
+                const isSalesVoucher = type === 'sales' || type === 'sale';
 
-                // 1. Find bags linked by Document ID
-                const qSjId = query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id));
-                const qPurId = query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id));
-                const qSalId = query(collection(db, 'jumbo_bags'), where('salesId', '==', id));
-
-                // 2. Find bags linked by Reference Number (Support for older records)
-                const qSjRef = ref ? query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', ref)) : null;
-                const qPurRef = ref ? query(collection(db, 'jumbo_bags'), where('purchaseId', '==', ref)) : null;
-                const qSalRef = ref ? query(collection(db, 'jumbo_bags'), where('salesId', '==', ref)) : null;
-
-                const queries = [getDocs(qSjId), getDocs(qPurId), getDocs(qSalId)];
-                if (qSjRef) queries.push(getDocs(qSjRef));
-                if (qPurRef) queries.push(getDocs(qPurRef));
-                if (qSalRef) queries.push(getDocs(qSalRef));
+                const queries = [];
+                if (isSalesVoucher) {
+                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
+                    if (ref) {
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', ref))));
+                    }
+                } else {
+                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
+                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
+                    if (ref) {
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', ref))));
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', ref))));
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', ref))));
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('refNo', '==', ref))));
+                    }
+                }
 
                 const results = await Promise.all(queries);
+                const processedBagIds = new Set();
                 
-                results.forEach((sn, idx) => {
+                results.forEach((sn) => {
                     if (sn.empty) return;
-                    const isSales = idx === 2 || idx === 5; // qSalId (idx 2) or qSalRef (idx 5)
                     sn.docs.forEach(d => {
-                        if (isSales) { // Sales Reversal
-                            batch.update(d.ref, { status: 'in_stock', salesId: deleteField(), soldDate: deleteField() });
+                        if (processedBagIds.has(d.id)) return;
+                        processedBagIds.add(d.id);
+                        
+                        if (isSalesVoucher) { // Sales Reversal
+                            batch.update(d.ref, { 
+                                status: 'in_stock', 
+                                salesId: deleteField(), 
+                                salesRefNo: deleteField(), 
+                                soldDate: deleteField(),
+                                weightVariance: deleteField(),
+                                varianceNote: deleteField()
+                            });
                         } else { // Mfg/Pur Deletion
                             batch.delete(d.ref);
                         }
@@ -6685,6 +6927,24 @@ export default function App() {
         setActiveModal(masterModalName);
     };
 
+    const handleMasterMoveSuccess = (targetType, recordId) => {
+        const targetModal = (
+            targetType === 'party' ? 'parties' :
+                targetType === 'expense' ? 'expenses' :
+                    targetType === 'account' ? 'accounts' :
+                        targetType === 'capital' ? 'capital_accounts' :
+                            targetType === 'asset' ? 'asset_accounts' : null
+        );
+        if (!targetModal || !recordId) {
+            handleCloseModal();
+            return;
+        }
+        setMasterModalEditRequest({ collectionName: targetModal, id: recordId });
+        setActiveModal(targetModal);
+    };
+
+    const clearMasterModalEditRequest = () => setMasterModalEditRequest(null);
+
     // --- ADD THIS NEW FUNCTION IN APP.JSX ---
     const handleMasterUpdate = async (collectionName, id, updatedFields) => {
         try {
@@ -6728,7 +6988,7 @@ export default function App() {
                     }
                 }
 
-                transaction.update(ref, finalUpdate);
+                await transaction.update(ref, finalUpdate);
 
                 // --- ADD AUDIT LOG INSIDE TRANSACTION ---
                 try {
@@ -7375,6 +7635,128 @@ export default function App() {
     const handleRecalculateExpenses = (skip = false) => handleRecalculateSystem('expenses', skip);
     const handleRecalculateCapital = (skip = false) => handleRecalculateSystem('capital', skip);
     const handleRecalculateAll = () => handleRecalculateSystem('all');
+
+    // --- JUMBO BAGS RECALCULATE & CLEANUP ---
+    const handleRecalculateJumboBags = async () => {
+        if (!user) return;
+        const ownerUid = dataOwnerId || user.uid;
+        setIsRecalculating(true);
+        setToast({ type: 'info', title: 'Jumbo Bags Cleanup', message: 'Scanning and cleaning Jumbo Bag records...' });
+
+        try {
+            const db = getFirestore();
+            const uidCandidates = [...new Set([dataOwnerId, user.uid].filter(Boolean))];
+
+            // 1. Fetch all stock_journals for this owner
+            const sjSnaps = await Promise.all(
+                uidCandidates.flatMap(uid =>
+                    ['userId', 'ownerId'].map(field =>
+                        getDocs(query(collection(db, 'stock_journals'), where(field, '==', uid)))
+                    )
+                )
+            );
+            const sjMap = new Map();
+            sjSnaps.forEach(snap => snap.docs.forEach(d => sjMap.set(d.id, { id: d.id, ...d.data() })));
+            const activeJournals = [...sjMap.values()].filter(
+                sj => !sj.isDeleted && sj.status !== 'deleted' && sj.status !== 'bulk_deleted'
+            );
+            const activeJournalIds = new Set(activeJournals.map(sj => String(sj.id)));
+            const activeJournalRefs = new Set(activeJournals.map(sj => (sj.refNo || '').toLowerCase()).filter(Boolean));
+
+            // 2. Fetch all bags (all ownership fields)
+            const bagSnaps = await Promise.all(
+                uidCandidates.flatMap(uid =>
+                    ['userId', 'ownerId', 'companyId'].map(field =>
+                        getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid)))
+                    )
+                )
+            );
+            const bagMap = new Map();
+            bagSnaps.forEach(snap => snap.docs.forEach(d => bagMap.set(d.id, { id: d.id, ref: d.ref, ...d.data() })));
+            const allBags = [...bagMap.values()];
+
+            let deletedCount = 0;
+            let fixedStatusCount = 0;
+            const batchOps = [];
+
+            for (const bag of allBags) {
+                // Case A: Bag is explicitly marked deleted — hard delete from Firestore
+                if (bag.isDeleted || bag.status === 'deleted' || bag.status === 'bulk_deleted') {
+                    batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
+                    deletedCount++;
+                    continue;
+                }
+
+                // Case B: Bag is linked to a journal that was deleted — mark bag as deleted
+                const linkedJournalId = String(bag.stockJournalId || bag.linkedStockJournalId || bag.voucherId || bag.originId || '');
+                const linkedJournalRef = (bag.stockJournalRefNo || bag.voucherRefNo || '').toLowerCase();
+
+                const journalExists =
+                    (linkedJournalId && activeJournalIds.has(linkedJournalId)) ||
+                    (linkedJournalRef && activeJournalRefs.has(linkedJournalRef));
+
+                // Only auto-delete if the bag has a journal link but the journal is gone
+                if (linkedJournalId && !journalExists && bag.status !== 'sold') {
+                    batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
+                    deletedCount++;
+                    continue;
+                }
+
+                // Case C: Fix bags that are marked sold but the sale voucher is deleted
+                // (bag.salesId / bag.salesRefNo points to a non-existent voucher)
+                if (bag.status === 'sold') {
+                    const saleId = String(bag.salesId || '');
+                    const saleRef = (bag.salesRefNo || '').toLowerCase();
+                    // Fetch sale vouchers to check existence
+                    // We only reset if we can detect the sale is gone
+                    // This is done via a quick check against known invoice collections
+                    if (saleId) {
+                        try {
+                            const saleDoc = await getDoc(doc(db, 'invoices', saleId));
+                            if (!saleDoc.exists()) {
+                                // Sale voucher gone — reset bag status back to in_stock
+                                batchOps.push({
+                                    type: 'update',
+                                    ref: doc(db, 'jumbo_bags', bag.id),
+                                    data: {
+                                        status: 'in_stock',
+                                        soldDate: null,
+                                        salesId: null,
+                                        salesRefNo: null,
+                                        soldTo: null
+                                    }
+                                });
+                                fixedStatusCount++;
+                            }
+                        } catch (_) { /* ignore permission errors */ }
+                    }
+                }
+            }
+
+            // Execute all batch operations (Firestore has 500 limit per batch)
+            const chunkSize = 400;
+            for (let i = 0; i < batchOps.length; i += chunkSize) {
+                const chunk = batchOps.slice(i, i + chunkSize);
+                const batch = writeBatch(db);
+                chunk.forEach(op => {
+                    if (op.type === 'delete') batch.delete(op.ref);
+                    else if (op.type === 'update') batch.update(op.ref, op.data);
+                });
+                await batch.commit();
+            }
+
+            setToast({
+                type: 'success',
+                title: 'Jumbo Bags Cleanup Complete',
+                message: `Removed ${deletedCount} deleted/orphaned bag(s). Fixed ${fixedStatusCount} status mismatch(es).`
+            });
+        } catch (e) {
+            console.error('Jumbo Bags recalculate error:', e);
+            setToast({ type: 'error', title: 'Cleanup Failed', message: e.message });
+        } finally {
+            setIsRecalculating(false);
+        }
+    };
     const handleRecalculateStockLocal = (skip = false) => handleRecalculateSystem('products', skip);
 
     // --- SYSTEM SCAN LOGIC ---
@@ -7626,18 +8008,21 @@ export default function App() {
                     if (k === 'l') { e.preventDefault(); setActiveModal('system_logs'); }
                 }
 
-                if (e.key === 'F2') {
+                if (e.code === 'F2') {
                     e.preventDefault();
-                    if (periodModalOpen) {
-                        setPeriodModalOpen(false);
-                        setDateModalOpen(true);
-                    } else if (dateModalOpen) {
+                    e.stopPropagation();
+
+                    // Let register screens handle their own F2/Alt+F2 via SimpleListModal
+                    if (REGISTER_MODAL_IDS.includes(activeModal)) return;
+
+                    if (e.altKey) {
                         setDateModalOpen(false);
                         setPeriodModalOpen(true);
                     } else {
-                        // Default: Open Single Date
+                        setPeriodModalOpen(false);
                         setDateModalOpen(true);
                     }
+                    return;
                 }
 
                 // --- GLOBAL SHORTCUTS (Function Keys work everywhere) ---
@@ -7722,7 +8107,7 @@ export default function App() {
         const findEntityNameLocal = (id, cat) => {
             if (cat === 'party') return parties.find(x => x.id === id)?.name;
             if (cat === 'account') return accounts.find(x => x.id === id)?.name;
-            if (cat === 'expense') return expenses.find(x => x.id === id)?.name;
+            if (cat === 'expense') return expenses.find(x => x.id === id)?.name || directExpenseAccounts.find(x => x.id === id)?.name;
             if (cat === 'income') return incomeAccounts.find(x => x.id === id)?.name;
             if (cat === 'capital') return capitalAccounts.find(x => x.id === id)?.name;
             if (cat === 'asset') return assetAccounts.find(x => x.id === id)?.name;
@@ -7901,21 +8286,18 @@ export default function App() {
                 journalVouchers.forEach(jv => {
                     if (inRange(jv.date)) {
                         const amt = Number(jv.amount || 0);
-                        const isMfg = !!jv.linkedStockJournalId;
-
                         if (jv.isMulti && jv.rows) {
                             jv.rows.forEach(r => {
                                 if (r.category === 'expense' && r.id === exp.id) {
-                                    // ⚡ If Mfg JV, Ignore Debit (Capitalized), but Include Credit (Adjustment)
                                     if (r.type === 'dr') {
-                                        if (!isMfg) total += Number(r.amount);
+                                        total += Number(r.amount);
                                     } else {
                                         total -= Number(r.amount);
                                     }
                                 }
                             });
                         } else {
-                            if (jv.drType === 'expense' && jv.drId === exp.id && !isMfg) total += amt;
+                            if (jv.drType === 'expense' && jv.drId === exp.id) total += amt;
                             if (jv.crType === 'expense' && jv.crId === exp.id) total -= amt;
                         }
                     }
@@ -7934,6 +8316,62 @@ export default function App() {
 
                 if (total !== 0) {
                     // For Expenses: Debit is the Total Amount, Credit is 0
+                    list.push({ id: exp.id, label: exp.name, group: exp.group || 'Primary', rawValue: total, value: `${currencySymbol} ${formatCurrency(total)}`, debit: total, credit: 0 });
+                }
+            });
+        }
+
+        // 1.25. DIRECT EXPENSES (Activity Logic: Total Spending IN Period)
+        else if (type === 'direct_expense') {
+            directExpenseAccounts.forEach(exp => {
+                let total = 0;
+                // Payments
+                payments.forEach(p => {
+                    const amt = Number(p.amount || 0);
+                    if (inRange(p.date)) {
+                        if (p.transactionCategory === 'expense' && p.expenseId === exp.id) total += (p.type === 'out' ? amt : -amt);
+                        // Check splits
+                        if (p.isMulti && p.splits) {
+                            p.splits.forEach(s => {
+                                if (s.category === 'expense' && s.targetId === exp.id) total += (p.type === 'out' ? Number(s.amount) : -Number(s.amount));
+                            });
+                        }
+                    }
+                });
+                // JVs
+                journalVouchers.forEach(jv => {
+                    if (inRange(jv.date)) {
+                        const amt = Number(jv.amount || 0);
+                        if (jv.isMulti && jv.rows) {
+                            jv.rows.forEach(r => {
+                                if (r.category === 'expense' && r.id === exp.id) {
+                                    if (r.type === 'dr') {
+                                        total += Number(r.amount);
+                                    } else {
+                                        total -= Number(r.amount);
+                                    }
+                                }
+                            });
+                        } else {
+                            if (jv.drType === 'expense' && jv.drId === exp.id) total += amt;
+                            if (jv.crType === 'expense' && jv.crId === exp.id) total -= amt;
+                        }
+                    }
+                });
+
+                // Invoices (Purchase Paid By Expense)
+                invoices.forEach(inv => {
+                    if (inv.type === 'purchase' && inRange(inv.date)) {
+                        if (inv.addlExpCreditId === exp.id) {
+                            const r = Number(inv.exchangeRate || 1);
+                            const val = Number(inv.addlExpTotal || 0) * r;
+                            total -= val;
+                        }
+                    }
+                });
+
+                if (total !== 0) {
+                    // For Direct Expenses: Debit is the Total Amount, Credit is 0
                     list.push({ id: exp.id, label: exp.name, group: exp.group || 'Primary', rawValue: total, value: `${currencySymbol} ${formatCurrency(total)}`, debit: total, credit: 0 });
                 }
             });
@@ -8331,14 +8769,12 @@ export default function App() {
             const key = bucketForDate(jv.date);
             if (!key) return;
             const slot = expenseMap.get(key);
-            const isMfg = !!jv.linkedStockJournalId;
-
             if (jv.isMulti && Array.isArray(jv.rows)) {
                 jv.rows.forEach((r) => {
                     if (r.category !== 'expense') return;
                     const amount = safeNum(r.amount);
                     if (r.type === 'dr') {
-                        if (!isMfg) slot.value += amount;
+                        slot.value += amount;
                     } else if (r.type === 'cr') {
                         slot.value -= amount;
                     }
@@ -8348,7 +8784,7 @@ export default function App() {
             }
 
             const amt = safeNum(jv.amount || jv.totalAmount);
-            if (jv.drType === 'expense' && jv.drId && !isMfg) {
+            if (jv.drType === 'expense' && jv.drId) {
                 slot.value += amt;
                 slot.qty += 1;
             }
@@ -8514,7 +8950,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.2</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.3</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -8833,6 +9269,12 @@ export default function App() {
                                         label="Order Vouchers"
                                         shortcut="O"
                                         onClick={() => { setActiveModal('order_vouchers'); onMenuClick(); setActiveSubMenu(null); }}
+                                    />
+                                    <MenuButton
+                                        label="Packaging Smart Report"
+                                        shortcut="P"
+                                        onClick={() => { setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
+                                        className="text-[#005994] font-black"
                                     />
                                     <MenuButton
                                         label="Management Hub"
@@ -9216,6 +9658,9 @@ export default function App() {
                     companyId={activeCompanyId}
                     companyName={companyProfile?.name || 'This Company'}
                     onLogin={(u, mode) => {
+                        // 🚀 PERSIST LOGIN SESSION FOR THIS DEVICE
+                        localStorage.setItem(`accpro_session_${activeCompanyId}`, JSON.stringify({ mode, subUser: u }));
+
                         if (mode === 'admin') {
                             setSubUser(null);
                             setIsCompanyLocked(false);
@@ -9529,6 +9974,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("parties", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'parties' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={handlePartyItemClick}
             />
 
@@ -9556,6 +10004,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'accounts' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={handleAccountItemClick}
             />
 
@@ -9574,6 +10025,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("capital_accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'capital_accounts' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -9592,6 +10046,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("asset_accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'asset_accounts' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -9673,6 +10130,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("expenses", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'expenses' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -9703,6 +10163,9 @@ export default function App() {
                 onDelete={(id) => handleDelete("direct_expenses", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                autoEditId={masterModalEditRequest?.collectionName === 'direct_expenses' ? masterModalEditRequest.id : null}
+                onAutoEditHandled={clearMasterModalEditRequest}
+                onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
             />
 
@@ -9804,6 +10267,7 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
+                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -9848,6 +10312,7 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
+                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -9937,6 +10402,8 @@ export default function App() {
                 defaultMaximized={true}
                 currencySymbol={currencySymbol}
                 companyProfile={companyProfile}
+                onUpdateProfile={setCompanyProfile}
+                confirmPassword={confirmPassword}
                 onSwitchVoucher={(newType) => {
                     handleCloseModal();
                     setEditData(null);
@@ -9997,6 +10464,17 @@ export default function App() {
                 onTriggerPeriodModal={() => setPeriodModalOpen(true)}
             />
 
+            <PackagingSmartReportModal
+                isOpen={activeModal === 'packaging_smart_report'}
+                onClose={handleCloseModal}
+                user={user}
+                subUser={subUser}
+                dataOwnerId={dataOwnerId}
+                products={products}
+                units={units}
+                currencySymbol={currencySymbol}
+            />
+
             {/* Simple List Modals - WITH SAFETY CHECKS */}
             {/* Simple List Modals - WITH FIXED TOTALS */}
 
@@ -10033,6 +10511,7 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onItemClick={handlePartyItemClick}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
             />
 
             {/* 3. PAYABLES (Creditors) */}
@@ -10051,6 +10530,7 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onItemClick={handlePartyItemClick}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
             />
 
             {/* --- CUSTOMERS REGISTER (Ledger closing balances by date) --- */}
@@ -10068,6 +10548,8 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onItemClick={handlePartyItemClick}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
+                hideDateTabs={true}
             />
 
             {/* --- CASHIER REGISTER (Cash/Bank by date) --- */}
@@ -10085,6 +10567,8 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onItemClick={handleAccountItemClick}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
+                hideDateTabs={true}
             />
 
             {/* --- PAYMENT VOUCHERS REGISTER --- */}
@@ -10249,6 +10733,27 @@ export default function App() {
                 modalId="credit_note_register"
             />
 
+            <TaxRegisterModal
+                isOpen={activeModal === 'tax_register'}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                dateRange={registerDateRange}
+                onDateChange={setRegisterDateRange}
+                invoices={invoices}
+                payments={payments}
+                journalVouchers={journalVouchers}
+                parties={parties}
+                taxRates={taxRates}
+                currencySymbol={currencySymbol}
+                onOpenLedger={(type, id) => {
+                    setActiveModal(null);
+                    setTimeout(() => {
+                        setLedgerInitialState({ type, id });
+                        setActiveModal('ledgers');
+                    }, 100);
+                }}
+            />
+
             <ManageUsersModal
                 isOpen={activeModal === 'manage_users'}
                 onClose={handleCloseModal}
@@ -10284,6 +10789,7 @@ export default function App() {
                 assetAccounts={assetAccounts}
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
+                taxRates={taxRates}
                 user={user}
                 subUser={subUser}
                 effectiveName={effectiveName}
@@ -10577,6 +11083,36 @@ export default function App() {
                     }, 100);
                 }}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
+                hideDateTabs={true}
+            />
+
+            {/* --- DIRECT EXPENSES REGISTER --- */}
+            <SimpleListModal
+                isOpen={activeModal === 'direct_expense_register'}
+                onClose={() => setActiveModal(null)}
+                onBack={handleModalBack}
+                title="Direct Expenses Register"
+                dateRange={registerDateRange}
+                onDateChange={setRegisterDateRange}
+                {...getRegisterData('direct_expense')}
+                onAddToFavorites={handleAddToFavorites}
+                modalId="direct_expense_register"
+                onItemClick={(item) => {
+                    setActiveModal(null);
+                    setTimeout(() => {
+                        setLedgerInitialState({
+                            type: 'direct_expense',
+                            id: item.id,
+                            startDate: registerDateRange?.from || '',
+                            endDate: registerDateRange?.to || ''
+                        });
+                        setActiveModal('ledgers');
+                    }, 100);
+                }}
+                currencySymbol={currencySymbol}
+                hideF1Detl={true}
+                hideDateTabs={true}
             />
 
             {/* --- INDIRECT INCOMES REGISTER --- */}
@@ -10603,6 +11139,8 @@ export default function App() {
                     }, 100);
                 }}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
+                hideDateTabs={true}
             />
 
             <FinancialReportsModal
@@ -10621,24 +11159,26 @@ export default function App() {
                 accounts={accounts}
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
+                taxRates={taxRates}
                 calculatedCosts={calculatedCosts}
                 locations={locations}
                 expenseGroups={expenseGroups}
-                onDrillDown={(type, id) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
-                        if (type === 'sales') { setLedgerInitialState({ type: 'sales' }); setActiveModal('ledgers'); }
-                        else if (type === 'purchase') { setLedgerInitialState({ type: 'purchase' }); setActiveModal('ledgers'); }
-                        else if (type === 'expense') { setLedgerInitialState({ type: 'expense', id: id }); setActiveModal('ledgers'); }
-                        else if (type === 'income') { setLedgerInitialState({ type: 'income', id: id }); setActiveModal('ledgers'); }
-                        else if (type === 'stock') setActiveModal('stock_inventory');
-                        else if (type === 'receivables') setActiveModal('receivables');
-                        else if (type === 'payables') setActiveModal('payables');
-                        else if (type === 'accounts') setActiveModal('account_balances');
-                        else if (type === 'capital_list') setActiveModal('capital_accounts');
-                        else if (type === 'asset_list') setActiveModal('asset_accounts');
-                        else if (type === 'bag_inventory') setActiveModal('bag_inventory');
-                    }, 200);
+                onDrillDown={(type, id, reportRange) => {
+                    if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
+
+                    if (type === 'sales') { setLedgerInitialState({ type: 'sales', startDate: reportRange?.from || '', endDate: reportRange?.to || '' }); setActiveModal('ledgers'); }
+                    else if (type === 'purchase') { setLedgerInitialState({ type: 'purchase', startDate: reportRange?.from || '', endDate: reportRange?.to || '' }); setActiveModal('ledgers'); }
+                    else if (type === 'expense') { setLedgerInitialState({ type: 'expense', id: id, startDate: reportRange?.from || '', endDate: reportRange?.to || '' }); setActiveModal('ledgers'); }
+                    else if (type === 'direct_expense') { setLedgerInitialState({ type: 'direct_expense', id: id, startDate: reportRange?.from || '', endDate: reportRange?.to || '' }); setActiveModal('ledgers'); }
+                    else if (type === 'income') { setLedgerInitialState({ type: 'income', id: id, startDate: reportRange?.from || '', endDate: reportRange?.to || '' }); setActiveModal('ledgers'); }
+                    else if (type === 'stock') setActiveModal('stock_inventory');
+                    else if (type === 'receivables') setActiveModal('receivables');
+                    else if (type === 'payables') setActiveModal('payables');
+                    else if (type === 'accounts') setActiveModal('account_balances');
+                    else if (type === 'tax_register') setActiveModal('tax_register');
+                    else if (type === 'capital_list') setActiveModal('capital_accounts');
+                    else if (type === 'asset_list') setActiveModal('asset_accounts');
+                    else if (type === 'bag_inventory') setActiveModal('bag_inventory');
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -10713,9 +11253,11 @@ export default function App() {
                     onShowCapitalRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('capital_register'); }}
                     onShowAssetRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('asset_register'); }}
                     onShowExpenseRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('expense_register'); }}
+                    onShowDirectExpenseRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('direct_expense_register'); }}
                     onShowIncomeRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('indirect_income_register'); }}
                     onShowManufacturingRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('manufacturing_register'); }}
                     onShowLoansAdvancesRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('loans_advances_register'); }}
+                    onShowTaxRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('tax_register'); }}
                     user={user}
                     effectiveName={effectiveName}
                     companyProfile={companyProfile}
@@ -10732,6 +11274,7 @@ export default function App() {
                     onRecalculateAccounts={handleRecalculateAccounts}
                     onRecalculateExpenses={handleRecalculateExpenses}
                     onRecalculateCapital={handleRecalculateCapital}
+                    onRecalculateJumboBags={handleRecalculateJumboBags}
                     onInstall={handleInstallClick}
                     onBackup={handleBackup}
                     onRestore={handleRestore}
@@ -10748,7 +11291,9 @@ export default function App() {
                     onManageStaff={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_staff'); }}
                     onManageImageStorage={() => { setModalStack(s => [...s, 'management']); setActiveModal('image_storage'); }}
                     onShowInvoiceSettings={() => { setModalStack(s => [...s, 'management']); setActiveModal('invoice_settings'); }}
+                    onShowApiKey={() => { setModalStack(s => [...s, 'management']); setIsApiKeyModalOpen(true); }}
                     onShowLotProfit={() => { setModalStack(s => [...s, 'management']); setActiveModal('lot_report'); }}
+
                     onShowFinancials={() => { setModalStack(s => [...s, 'management']); setActiveModal('financial_reports'); }}
                     onShowPaymentRegister={() => { setModalStack(s => [...s, 'management']); setLedgerInitialState({ type: 'daybook', voucherType: 'out' }); setActiveModal('ledgers'); }}
                     onShowReceiptRegister={() => { setModalStack(s => [...s, 'management']); setLedgerInitialState({ type: 'daybook', voucherType: 'in' }); setActiveModal('ledgers'); }}
@@ -10778,6 +11323,12 @@ export default function App() {
                     vehicles={vehicles}
                 />
             )}
+
+            <ApiKeyModal 
+                isOpen={isApiKeyModalOpen} 
+                onClose={() => setIsApiKeyModalOpen(false)} 
+            />
+
 
             <SystemLogModal
                 isOpen={activeModal === 'system_logs'}
@@ -10905,11 +11456,14 @@ export default function App() {
                 userRole={currentRole}
                 subUsers={subUsers}
                 parties={parties}
+                partiesRef={partiesRef}
                 products={products}
+                productsRef={productsRef}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts} // <--- PASS PROP
                 incomeAccounts={incomeAccounts} // <--- PASS PROP (for LedgerModal)
                 accounts={accounts}
+                accountsRef={accountsRef}
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
                 taxRates={taxRates}
@@ -10970,6 +11524,10 @@ export default function App() {
                     onLogout={handleLogout}
                     onSubUserLogout={handleSubUserLogout}
                     onChangePassword={handleChangePassword}
+                    onInstallPwa={handleInstallClick}
+                    onUninstallPwa={handleUninstallClick}
+                    isInstallable={!!deferredPrompt}
+                    isPwaInstalled={isPwaInstalled}
                 />
             )}
 
@@ -10997,7 +11555,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.2</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.3</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -12134,7 +12692,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
     );
 };
 
-const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, data, userId, fields, onDelete, onUpdate, listColumns = [], groupConfig, onItemClick, hideTotals = false, showViewToggle = false, logAuditActivity }) => {
+const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, data, userId, fields, onDelete, onUpdate, listColumns = [], groupConfig, onItemClick, hideTotals = false, showViewToggle = false, logAuditActivity, autoEditId = null, onAutoEditHandled, onMoveSuccess }) => {
     const [formData, setFormData] = useState({});
     const [editingId, setEditingId] = useState(null);
     const [showForm, setShowForm] = useState(false); // Toggle add/edit form visibility
@@ -12144,7 +12702,34 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
     const [viewMode, setViewMode] = useState(groupConfig ? 'grouped' : 'flat');
     const [verifyingEditId, setVerifyingEditId] = useState(null); // &lt;--- NEW: Track which item is being verified
     const [adminPass, setAdminPass] = useState(''); // &lt;--- NEW: Password input state
+    const [movePassPrompt, setMovePassPrompt] = useState({ isOpen: false, title: '', resolve: null });
     const searchNameRef = useRef(`search_${Math.random().toString(36).substring(7)}`); // &lt;--- FIXED: Stable name to prevent re-renders
+
+    const requestMovePassword = (promptTitle) => {
+        return new Promise((resolve) => {
+            setMovePassPrompt({
+                isOpen: true,
+                title: promptTitle || 'Enter Password',
+                resolve,
+            });
+        });
+    };
+
+    const openItemForEdit = (item) => {
+        if (!item) return;
+        setEditingId(item.id);
+        const newForm = {};
+        fields.forEach(f => { newForm[f.name] = item[f.name] !== undefined ? item[f.name] : ''; });
+        if (item.banks && item.banks.length > 0) {
+            newForm.banks = item.banks;
+            setShowBankDetails(true);
+        } else {
+            newForm.banks = [];
+            setShowBankDetails(false);
+        }
+        setFormData(newForm);
+        setShowForm(true);
+    };
 
     useEffect(() => {
         if (groupConfig) setViewMode('grouped');
@@ -12172,6 +12757,14 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
             setExpandedGroups(new Set()); // Reset on open
         }
     }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen || !autoEditId) return;
+        const item = data.find((entry) => entry.id === autoEditId);
+        if (!item) return;
+        openItemForEdit(item);
+        if (onAutoEditHandled) onAutoEditHandled();
+    }, [isOpen, autoEditId, data]);
 
     // Auto expand form when editing
     useEffect(() => {
@@ -12204,18 +12797,7 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
         if (adminPass.toLowerCase() === 'abcd') {
             const item = data.find(i => i.id === verifyingEditId);
             if (item) {
-                setEditingId(item.id);
-                const newForm = {};
-                fields.forEach(f => { newForm[f.name] = item[f.name] !== undefined ? item[f.name] : ''; });
-                if (item.banks && item.banks.length > 0) {
-                    newForm.banks = item.banks;
-                    setShowBankDetails(true);
-                } else {
-                    newForm.banks = [];
-                    setShowBankDetails(false);
-                }
-                setFormData(newForm);
-                setShowForm(true); // <--- FIXED: Now correctly opens the edit form
+                openItemForEdit(item);
             }
             setVerifyingEditId(null);
             setAdminPass('');
@@ -12310,6 +12892,18 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={title} zIndex={zIndex}>
+            <PasswordPromptModal
+                isOpen={movePassPrompt.isOpen}
+                title={movePassPrompt.title}
+                onConfirm={(password) => {
+                    setMovePassPrompt((prev) => ({ ...prev, isOpen: false }));
+                    if (movePassPrompt.resolve) movePassPrompt.resolve(password);
+                }}
+                onCancel={() => {
+                    setMovePassPrompt((prev) => ({ ...prev, isOpen: false }));
+                    if (movePassPrompt.resolve) movePassPrompt.resolve(null);
+                }}
+            />
             <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">
                     <button
@@ -12544,22 +13138,24 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                     </select>
                                     <button type="button" onClick={async () => {
                                         const targetType = document.getElementById('migrateType').value;
-                                        if (!targetType) return alert("Select a type");
-                                        if (targetType === (
+                                        const currentType = (
                                             collectionName === 'parties' ? 'party' :
                                                 collectionName === 'expenses' ? 'expense' :
-                                                    collectionName === 'accounts' ? 'account' :
-                                                        collectionName === 'capital_accounts' ? 'capital' :
-                                                            collectionName === 'asset_accounts' ? 'asset' : ''
-                                        )) return alert("Is already this type.");
+                                                    collectionName === 'direct_expenses' ? 'direct_expense' :
+                                                        collectionName === 'accounts' ? 'account' :
+                                                            collectionName === 'capital_accounts' ? 'capital' :
+                                                                collectionName === 'asset_accounts' ? 'asset' : ''
+                                        );
+                                        if (!targetType) return alert("Select a type");
+                                        if (targetType === currentType) return alert("Is already this type.");
 
-                                        const pwd = prompt("⚠️ DANGER: Moving Ledger Type.\n\nThis will MOVE this record and UPDATE all its transactions.\n\nEnter Password to Confirm:");
-                                        if (!pwd || pwd.toLowerCase() !== 'abcd') return alert("❌ Wrong Password");
+                                        const pwd = await requestMovePassword("⚠️ DANGER: Moving Ledger Type\n\nThis will MOVE this record and UPDATE all its transactions.\n\nEnter Password to Confirm");
+                                        if (!pwd || String(pwd).trim().toLowerCase() !== 'abcd') return alert("❌ Wrong Password");
 
                                         try {
                                             // MAPPING
                                             const TYPE_TO_COL = { 'party': 'parties', 'expense': 'expenses', 'account': 'accounts', 'capital': 'capital_accounts', 'asset': 'asset_accounts' };
-                                            const TYPE_TO_FIELD = { 'party': 'partyId', 'expense': 'expenseId', 'account': 'accountId', 'capital': 'capitalId', 'asset': 'assetId' };
+                                            const TYPE_TO_FIELD = { 'party': 'partyId', 'expense': 'expenseId', 'account': 'toAccountId', 'capital': 'capitalId', 'asset': 'assetId' };
 
                                             const srcCol = collectionName;
                                             const tgtCol = TYPE_TO_COL[targetType];
@@ -12569,9 +13165,14 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                             let srcType = ''; let srcField = '';
                                             if (srcCol === 'parties') { srcType = 'party'; srcField = 'partyId'; }
                                             else if (srcCol === 'expenses') { srcType = 'expense'; srcField = 'expenseId'; }
+                                            else if (srcCol === 'direct_expenses') { srcType = 'direct_expense'; srcField = 'expenseId'; }
                                             else if (srcCol === 'accounts') { srcType = 'account'; srcField = 'accountId'; }
                                             else if (srcCol === 'capital_accounts') { srcType = 'capital'; srcField = 'capitalId'; }
                                             else if (srcCol === 'asset_accounts') { srcType = 'asset'; srcField = 'assetId'; }
+
+                                            if (!srcType || !srcField || !tgtCol || !tgtField) {
+                                                throw new Error("This ledger type cannot be moved with current mapping.");
+                                            }
 
                                             // 1. Move Doc
                                             const srcRef = doc(db, srcCol, editingId);
@@ -12581,8 +13182,15 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
                                             const batch = writeBatch(db);
                                             const data = snap.data();
-                                            // Clean specific fields if needed
-                                            batch.set(tgtRef, { ...data, userId });
+                                            const movedData = {
+                                                ...data,
+                                                ...formData,
+                                                userId,
+                                            };
+                                            if (movedData.name) movedData.name_lowercase = String(movedData.name).toLowerCase();
+
+                                            // Adapter handles same-id cross-collection move during set.
+                                            batch.set(tgtRef, movedData);
                                             batch.delete(srcRef);
 
                                             // 2. Update Transactions
@@ -12599,6 +13207,13 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                                     update[tgtField] = editingId;
                                                     if (p.transactionCategory === srcType) update.transactionCategory = targetType;
                                                     // Special case: Accounts can be 'toAccountId' in Contra
+                                                }
+                                                if (srcType === 'account' && p.toAccountId === editingId) {
+                                                    update.toAccountId = deleteField();
+                                                    update[tgtField] = editingId;
+                                                    if (p.transactionCategory === srcType || p.type === 'contra') {
+                                                        update.transactionCategory = targetType;
+                                                    }
                                                 }
                                                 // Splits
                                                 if (p.isMulti && p.splits) {
@@ -12623,10 +13238,23 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                             });
 
                                             await batch.commit();
-                                            alert("✅ Ledger Moved & History Updated!");
+
+                                            // Verify target exists and source is actually removed.
+                                            const tgtAfter = await getDoc(tgtRef);
+                                            if (!tgtAfter.exists()) {
+                                                throw new Error("Move failed: target ledger was not created.");
+                                            }
+
+                                            const srcAfter = await getDoc(srcRef);
+                                            if (srcAfter.exists()) {
+                                                throw new Error("Move partially completed: source ledger still exists in old type.");
+                                            }
+
+                                            alert("✅ Ledger Moved & History Updated!\n\nNow press Update Record once in the new ledger type to finalize your edits.");
                                             setEditingId(null);
                                             setFormData({});
-                                            onClose(); // Close to refresh/avoid stale state
+                                            if (onMoveSuccess) onMoveSuccess(targetType, editingId);
+                                            else onClose();
 
                                         } catch (e) {
                                             console.error(e);
@@ -13262,7 +13890,7 @@ const AttendanceModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, s
 
 // --- UPDATED INVOICE MODAL (With Container/Seal/Other Ref) ---
 const InvoiceModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances } = props;
+    const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances, stockJournals } = props;
     const companyBanks = companyProfile?.banks || [];
     const headerScrollRef = useRef(null);
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
@@ -13382,6 +14010,7 @@ const InvoiceModal = (props) => {
 
     // ✅ Store bag counts per product for UI Display
     const [productsBagMap, setProductsBagMap] = useState({});
+    const [allRemainingBagsMemo, setAllRemainingBagsMemo] = useState([]);
 
     // Fetch Company Images for Printing
     useEffect(() => {
@@ -13422,21 +14051,79 @@ const InvoiceModal = (props) => {
         }
     }, [isOpen, showInvoiceOptions, dataOwnerId, user]);
 
-    // Fetch In-Stock Bags Count when Sales Voucher is open
+    // Fetch remaining (unsold) bag counts when Sales Voucher is open
     useEffect(() => {
         if (isOpen && voucherType === 'sales') {
-            const targetUid = dataOwnerId || user.uid;
-            // Fetch ALL in_stock bags to aggregate counts
-            const q = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'));
-            const unsub = onSnapshot(q, (snap) => {
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            const bagCache = {};
+
+            const recomputeBagMap = () => {
+                const merged = new Map();
+                Object.values(bagCache).forEach((list) => {
+                    list.forEach((b) => merged.set(b.id, b));
+                });
+
+                const globalBags = [...merged.values()];
+                const soldBagNos = new Set(globalBags.filter(b => b.status === 'sold').map(b => String(b.bagNo || '').toLowerCase()));
+                const seenIds = new Set(globalBags.map(b => String(b.id)));
+                const seenBagNos = new Set(globalBags.map(b => String(b.bagNo || '').toLowerCase()));
+                
+                const uniqueEmbedded = [];
+                (stockJournals || []).forEach(vch => {
+                    const vchId = String(vch.id);
+                    const embedded = [
+                        ...(Array.isArray(vch.jumboBags) ? vch.jumboBags : []),
+                        ...(Array.isArray(vch.jumbo_bags) ? vch.jumbo_bags : []),
+                        ...(Array.isArray(vch.producedBags) ? vch.producedBags : []),
+                        ...(Array.isArray(vch.produced) ? vch.produced.flatMap(p => (Array.isArray(p.jumboBags) ? p.jumboBags : Array.isArray(p.jumbo_bags) ? p.jumbo_bags : [])) : [])
+                    ].filter(jb => jb && typeof jb === 'object');
+                    
+                    embedded.forEach((eb, idx) => {
+                        const ebId = eb.id || `embedded-${vchId}-${idx}`;
+                        const ebBagNo = String(eb.bagNo || '').toLowerCase();
+                        if (!seenIds.has(ebId) && (!ebBagNo || !seenBagNos.has(ebBagNo))) {
+                            seenIds.add(ebId);
+                            if (ebBagNo) seenBagNos.add(ebBagNo);
+                            uniqueEmbedded.push({
+                                ...eb,
+                                id: ebId,
+                                date: eb.date || vch.date,
+                                voucherRefNo: eb.voucherRefNo || vch.refNo,
+                                stockJournalRefNo: vch.refNo,
+                                stockJournalId: vchId
+                            });
+                        }
+                    });
+                });
+                
+                const combined = [...globalBags, ...uniqueEmbedded];
+                const finalRemaining = combined.filter(b => b.status !== 'sold' && !soldBagNos.has(String(b.bagNo || '').toLowerCase()));
+                
+                setAllRemainingBagsMemo(finalRemaining);
+
                 const map = {};
-                snap.forEach(d => {
-                    const pid = d.data().productId;
-                    if (pid) map[pid] = (map[pid] || 0) + 1; // Count bags
+                finalRemaining.forEach((b) => {
+                    const pid = b.productId;
+                    if (pid) map[pid] = (map[pid] || 0) + 1;
                 });
                 setProductsBagMap(map);
+            };
+
+            const unsubs = uidCandidates.flatMap((uid) => {
+                return ['userId', 'ownerId', 'companyId'].map((field) => {
+                    const q = query(collection(db, 'jumbo_bags'), where(field, '==', uid));
+                    return onSnapshot(q, (snap) => {
+                        bagCache[`${uid}-${field}`] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                        recomputeBagMap();
+                    }, (err) => {
+                        console.warn(`Sales bag count sync error (${field}):`, err);
+                    });
+                });
             });
-            return () => unsub();
+
+            return () => {
+                unsubs.forEach((unsub) => unsub());
+            };
         } else {
             setProductsBagMap({});
         }
@@ -13530,6 +14217,11 @@ const InvoiceModal = (props) => {
                     setSelectedTaxId(initialData.taxId);
                     setEnableTax(true);
                     setTaxPercent(Number(initialData.taxPercent) || ''); // Load saved percent
+                } else {
+                    // Prevent stale tax state from previous voucher edits.
+                    setEnableTax(false);
+                    setSelectedTaxId('');
+                    setTaxPercent('');
                 }
                 // Restore Payment Terms
                 if (initialData.paymentTerms && initialData.paymentTerms !== initialData.date) {
@@ -13665,11 +14357,23 @@ const InvoiceModal = (props) => {
 
         if (field === 'productId') {
             const prod = products.find(p => p.id === value);
-            if (prod) {
-                // Initial Rates - Check precedence (Standard vs Last) - For now standard
-                let baseRate = voucherType === 'sales' ? (prod.salePrice || '') : (prod.purchasePrice || '');
+
+            // Preserve existing financial values on item replacement.
+            // Only auto-fill a default rate for genuinely empty rows.
+            const hasExistingRate = Number(newItems[index].rate) > 0;
+            const hasExistingTotal = Number(newItems[index].total) > 0;
+            const hasExistingQty = Number(newItems[index].quantity) > 0;
+
+            if (!hasExistingRate && !hasExistingTotal && prod) {
+                const baseRate = voucherType === 'sales' ? (prod.salePrice || '') : (prod.purchasePrice || '');
                 newItems[index].rate = baseRate ? Number(baseRate).toFixed(3) : '';
                 newItems[index].originalRate = newItems[index].rate;
+            } else if (!hasExistingRate && hasExistingQty && hasExistingTotal) {
+                const derivedRate = Number(newItems[index].total) / Number(newItems[index].quantity);
+                if (Number.isFinite(derivedRate) && derivedRate > 0) {
+                    newItems[index].rate = round3(derivedRate);
+                    newItems[index].originalRate = round3(derivedRate);
+                }
             }
         }
 
@@ -13700,17 +14404,12 @@ const InvoiceModal = (props) => {
             newItems[index].pieces = '';
             newItems[index].total = '';
 
-            // Trigger Fetch & Open Modal
-            const targetUid = dataOwnerId || user.uid;
-            const qAvail = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'), where('productId', '==', value));
-            getDocs(qAvail).then(snap => {
-                const avail = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                // If editing, merge old bags if any (though usually we start fresh or load existing)
-                setAvailableBags(avail);
-                setActiveBagRowIndex(index);
-                setActiveBagProduct({ id: value, name: products.find(p => p.id === value)?.name });
-                setShowJumboSelection(true);
-            });
+            // Use the in-memory bags to avoid a slow refetch and ensure embedded bags are included
+            const avail = allRemainingBagsMemo.filter(b => b.productId === value);
+            setAvailableBags(avail);
+            setActiveBagRowIndex(index);
+            setActiveBagProduct({ id: value, name: products.find(p => p.id === value)?.name });
+            setShowJumboSelection(true);
         }
 
         setItems(newItems);
@@ -13926,13 +14625,15 @@ const InvoiceModal = (props) => {
         // For Purchase: always increase rates (capitalize expenses)
         const shouldAdjustRates = voucherType === 'purchase' || (voucherType === 'sales' && salesExpenseMode === 'include');
 
-        if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && totals.itemsTotal > 0 && shouldAdjustRates) {
+        if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0)) && shouldAdjustRates) {
             finalItems = items.map(i => {
                 const iTot = Number(i.total) || 0;
                 const iQty = Number(i.quantity) || 0;
                 if (iQty === 0) return i;
 
-                const ratio = iTot / totals.itemsTotal;
+                const ratio = voucherType === 'purchase'
+                    ? (iQty / totals.totalQty)
+                    : (iTot / totals.itemsTotal);
                 const allocated = ratio * totals.addlExpTotal;
 
                 // Purchase: Increase Cost
@@ -14041,19 +14742,21 @@ const InvoiceModal = (props) => {
                     adjustedAdvanceType: paymentTerms === 'advance' ? (adjustAdvRef?.type || null) : null,
                     adjustedAdvanceAmount: paymentTerms === 'advance' ? (Number(adjustAdvAmount) || null) : null,
                 };
-                if (initialData && initialData.id) transaction.update(invoiceRef, payload);
-                else transaction.set(invoiceRef, payload);
+                if (initialData && initialData.id) await transaction.update(invoiceRef, payload);
+                else await transaction.set(invoiceRef, payload);
 
                 // 💾 SAVE/UPDATE JUMBO BAGS
                 if (voucherType === 'purchase') {
                     // Cleanup old ones first (redundant if transaction handles it but safe)
-                    bagsToDelete.forEach(bid => transaction.delete(doc(db, 'jumbo_bags', bid)));
+                    for (const bid of bagsToDelete) {
+                        await transaction.delete(doc(db, 'jumbo_bags', bid));
+                    }
 
                     if (finalJumboBags.length > 0) {
                         let currentUniSeed = freshUniSeed;
-                        finalJumboBags.forEach(b => {
+                        for (const b of finalJumboBags) {
                             const bRef = doc(collection(db, 'jumbo_bags'));
-                            transaction.set(bRef, {
+                            await transaction.set(bRef, {
                                 bagNo: b.bagNo,
                                 universalBagNo: b.universalBagNo || (++currentUniSeed),
                                 productId: b.productId,
@@ -14064,17 +14767,17 @@ const InvoiceModal = (props) => {
                                 userId: targetUid,
                                 createdAt: serverTimestamp()
                             });
-                        });
+                        }
                     }
                 } else if (voucherType === 'sales') {
                     // 1. Revert Old Bags to In Stock
-                    bagsToRevert.forEach(bid => {
-                        transaction.update(doc(db, 'jumbo_bags', bid), {
+                    for (const bid of bagsToRevert) {
+                        await transaction.update(doc(db, 'jumbo_bags', bid), {
                             status: 'in_stock',
                             salesId: deleteField(),
                             soldDate: deleteField()
                         });
-                    });
+                    }
 
                     // 2. Mark New Selection as Sold & Handle Weight Variance
                     if (finalJumboBags.length > 0) {
@@ -14085,7 +14788,7 @@ const InvoiceModal = (props) => {
                             return acc;
                         }, {});
 
-                        Object.entries(bagsByProduct).forEach(([pGuid, pBags]) => {
+                        for (const [pGuid, pBags] of Object.entries(bagsByProduct)) {
                             // Find corresponding item in invoice to get the quantity entered by user
                             const invoiceItem = cleanItems.find(it => it.productId === pGuid);
                             const invoiceQty = invoiceItem ? Number(invoiceItem.quantity) : pBags.reduce((s, b) => s + Number(b.qty), 0);
@@ -14093,11 +14796,13 @@ const InvoiceModal = (props) => {
                             const totalPhysicalWeight = pBags.reduce((s, b) => s + Number(b.qty), 0);
                             const variance = invoiceQty - totalPhysicalWeight;
 
-                            pBags.forEach((b, idx) => {
+                            for (let idx = 0; idx < pBags.length; idx++) {
+                                const b = pBags[idx];
                                 const bRef = doc(db, 'jumbo_bags', b.id);
                                 const updatePayload = {
                                     status: 'sold',
                                     salesId: invoiceRef.id,
+                                    salesRefNo: formData.refNo || '',
                                     soldDate: formData.date
                                 };
 
@@ -14107,14 +14812,14 @@ const InvoiceModal = (props) => {
                                     updatePayload.varianceNote = `Weight adjustment of ${variance.toFixed(2)}kg added during sale #${formData.refNo}`;
                                 }
 
-                                transaction.update(bRef, updatePayload);
-                            });
-                        });
+                                await transaction.update(bRef, updatePayload);
+                            }
+                        }
                     }
                 }
 
                 const logRef = doc(collection(db, 'audit_logs'));
-                transaction.set(logRef, {
+                await transaction.set(logRef, {
                     date: serverTimestamp(), ownerId: targetUid, userId: user.uid, userName: effectiveName,
                     action: initialData ? 'UPDATED' : 'CREATED', docType: voucherType === 'purchase' ? 'Purchase Invoice' : 'Sales Invoice',
                     refNo: formData.refNo || 'N/A', amount: totals.grandTotalBase,
@@ -14293,6 +14998,16 @@ const InvoiceModal = (props) => {
                                 placeholder="REF NO"
                             />
                         </div>
+
+                        {/* 1.5 PACKING TYPE TOGGLE */}
+                        <button 
+                            type="button" 
+                            onClick={() => setFormData({ ...formData, packingType: formData.packingType === 'loose' ? 'bags' : 'loose' })} 
+                            className={`h-7 px-3 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm ${formData.packingType === 'bags' ? 'bg-orange-600 text-white border-orange-400 animate-pulse' : 'bg-white/5 text-white border-white/20 hover:bg-white/10'}`}
+                            title="Switch between Loose items and Bag-wise inventory"
+                        >
+                            <Box size={10} /> {formData.packingType === 'bags' ? 'BAG-WISE' : 'LOOSE MODE'}
+                        </button>
 
                         {/* 2. LOT PICKER */}
                         <div className="relative h-7">
@@ -14867,10 +15582,12 @@ const InvoiceModal = (props) => {
                                     // 🧮 Calculate RIE (Rate Inc Exp) & AIE (Amt Inc Exp)
                                     let rieDisplay = null;
                                     let aieDisplay = null;
-                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && totals.itemsTotal > 0) {
+                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
                                         const iTot = Number(item.total) || 0;
                                         const iQty = Number(item.quantity) || 0;
-                                        const ratio = iTot / totals.itemsTotal;
+                                        const ratio = voucherType === 'purchase'
+                                            ? (iQty / totals.totalQty)
+                                            : (iTot / totals.itemsTotal);
                                         const allocated = ratio * totals.addlExpTotal;
 
                                         // Purchase: Cost Increased
@@ -14911,6 +15628,8 @@ const InvoiceModal = (props) => {
                                                         onClick={() => {
                                                             setActiveBagRowIndex(index);
                                                             setActiveBagProduct(item.productId);
+                                                            const avail = allRemainingBagsMemo.filter(b => b.productId === item.productId);
+                                                            setAvailableBags(avail);
                                                             setShowJumboSelection(true);
                                                         }}
                                                         className="mt-2 relative z-10 flex items-center gap-1 text-[9px] font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200 hover:bg-orange-100 transition-colors w-fit shadow-sm"
@@ -15249,9 +15968,12 @@ const InvoiceModal = (props) => {
                     initialBags={jumboBags}
                     user={user}
                     dataOwnerId={dataOwnerId}
+                    cloudDb={cloudDb}
                     showToast={showToast}
                     mode="purchase"
+                    voucherRefNo={formData.refNo}
                 />
+
 
                 <JumboBagSelectionModal
                     isOpen={showJumboSelection}
@@ -15991,7 +16713,8 @@ const InvoiceModal = (props) => {
 // --- UPDATED STOCK JOURNAL MODAL (3-Digit Precision Inputs & Display) ---
 // --- JUMBO BAG ALLOCATION MODAL ---
 // --- JUMBO BAG ALLOCATION MODAL ---
-const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, producedQtyMap, showToast, lastBagNoSeed, initialBags, user, dataOwnerId, mode = 'production' }) => {
+const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, producedQtyMap, showToast, lastBagNoSeed, initialBags, user, dataOwnerId, cloudDb, mode = 'production', voucherRefNo = '' }) => {
+
     const [bags, setBags] = useState([]);
     const [nextBagNo, setNextBagNo] = useState('');
     const [selectedItem, setSelectedItem] = useState('');
@@ -16068,77 +16791,170 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         return m;
     }, [bags]);
 
+    const [isChecking, setIsChecking] = useState(false);
+
     const handleAddBag = async () => {
+        if (isChecking) return;
         if (!selectedItem) return showToast({ type: 'error', title: 'Error', message: 'Select an item' });
+
+        const normalizeBagNo = (val) => String(val || '').replace(/^#/, '').trim().toUpperCase();
+        const cleanNext = normalizeBagNo(nextBagNo);
+        if (!cleanNext) return showToast({ type: 'error', title: 'Error', message: 'Enter Bag Number' });
+
         const q = Number(qty);
         if (!q || q <= 0) return showToast({ type: 'error', title: 'Error', message: 'Invalid Quantity' });
 
-        // Validation: Cannot exceed total produced for this item
+        // Quantity check
         const allocated = allocatedMap[selectedItem] || 0;
         const totalProduced = producedQtyMap[selectedItem] || 0;
-
         if (allocated + q > totalProduced) {
-            return showToast({ type: 'error', title: 'Limit Exceeded', message: `Cannot allocate ${q}. Remaining: ${totalProduced - allocated}` });
+            return showToast({ type: 'error', title: 'Limit Exceeded', message: `Remaining: ${totalProduced - allocated}` });
         }
 
-        // DUPLICATE CHECK (Local)
-        if (bags.some(b => b.bagNo === nextBagNo)) {
-            return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${nextBagNo} is already in this list!` });
+        // ✅ LOCAL DUPLICATE CHECK (current allocation list)
+        if (bags.some(b => normalizeBagNo(b.bagNo) === cleanNext)) {
+            return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${cleanNext} is already in this allocation list!` });
         }
 
-
-        // DUPLICATE DB CHECK (Respect "Allow Reuse")
+        // ✅✅ STRICT DATABASE DUPLICATE CHECK with FALLBACK SCAN
+        setIsChecking(true);
+        let blocked = false;
         try {
             const targetUid = dataOwnerId || user?.uid;
-            const qDup = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('bagNo', '==', nextBagNo));
-            const snapDup = await getDocs(qDup);
-            if (!snapDup.empty) {
-                // Check if any instance of this bag number allows filling more
-                const canReuse = snapDup.docs.some(d => d.data().allowReuse === true);
-                if (!canReuse) {
-                    return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${nextBagNo} is full/closed and cannot be reused!` });
+            if (!targetUid) throw new Error("No user");
+
+            // Build all possible formatting variants
+            const searchArray = [...new Set([
+                cleanNext,                           // A73
+                `#${cleanNext}`,                     // #A73
+                cleanNext.toLowerCase(),             // a73
+                `#${cleanNext.toLowerCase()}`,       // #a73
+                cleanNext.replace(/^0+/, ''),        // Leading zeros stripped
+                `#${cleanNext.replace(/^0+/, '')}`   // #A073 → #A73
+            ])].filter(Boolean).slice(0, 10);
+
+            // PHASE 1: Try indexed query (fastest)
+            let matchedBags = [];
+            try {
+                const qDup = query(
+                    collection(db, 'jumbo_bags'),
+                    where('userId', '==', targetUid),
+                    where('bagNo', 'in', searchArray)
+                );
+                const snap = await getDocs(qDup);
+                matchedBags = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                console.log(`[DUP CHECK] Indexed query found ${matchedBags.length} bags`);
+            } catch (indexErr) {
+                console.warn('[DUP CHECK] Indexed query failed, falling back to scan:', indexErr);
+                // Fallback to full scan (happens when composite index doesn't exist)
+                matchedBags = [];
+            }
+
+            // PHASE 2: If indexed query failed, do a full scan fallback
+            if (matchedBags.length === 0) {
+                try {
+                    const qFallback = query(
+                        collection(db, 'jumbo_bags'),
+                        where('userId', '==', targetUid),
+                        limit(10000)
+                    );
+                    const snap = await getDocs(qFallback);
+                    // Manually filter by bag number (since we can't do WHERE IN on indexed query)
+                    matchedBags = snap.docs
+                        .map(d => ({ id: d.id, ...d.data() }))
+                        .filter(d => {
+                            const dbBagNo = normalizeBagNo(d.bagNo);
+                            return dbBagNo === cleanNext;
+                        });
+                    console.log(`[DUP CHECK] Fallback scan found ${matchedBags.length} bags`);
+                } catch (fallbackErr) {
+                    console.error('[DUP CHECK] Fallback scan also failed:', fallbackErr);
+                    // Fail-safe: block the add if we can't verify
+                    alert(
+                        `❌ CRITICAL: Cannot verify bag uniqueness!\n\n` +
+                        `Database error: ${fallbackErr.message}\n\n` +
+                        `To prevent duplicates, this bag has been BLOCKED.\n\n` +
+                        `Please:\n` +
+                        `1. Refresh the page\n` +
+                        `2. Try again\n\n` +
+                        `If the problem persists, contact support.`
+                    );
+                    blocked = true;
+                }
+            }
+
+            // PHASE 3: Check if any matched bags should block this add
+            if (matchedBags.length > 0) {
+                const currentVoucherId = initialBags?.[0]?.stockJournalId 
+                    || initialBags?.[0]?.purchaseId 
+                    || initialBags?.[0]?.voucherId;
+                
+                // Filter out bags from the current voucher (if editing)
+                const otherVoucherBags = matchedBags.filter(existing => {
+                    if (!currentVoucherId) return true; // Creating new voucher - block ALL matches
+                    
+                    return !(
+                        (existing.stockJournalId && existing.stockJournalId === currentVoucherId) ||
+                        (existing.purchaseId && existing.purchaseId === currentVoucherId) ||
+                        (existing.voucherId && existing.voucherId === currentVoucherId)
+                    );
+                });
+
+                if (otherVoucherBags.length > 0) {
+                    const existing = otherVoucherBags[0];
+                    const status = existing.status || 'used';
+                    const refNo = existing.stockJournalRefNo || existing.voucherRefNo || existing.purchaseRefNo || 'previous voucher';
+                    const dateInfo = existing.date ? ` on ${existing.date}` : '';
+                    
+                    showToast({
+                        type: 'error',
+                        title: '❌ BAG ALREADY USED',
+                        message: `#${cleanNext} was used${dateInfo} (Ref: ${refNo}). Reuse NOT allowed.`
+                    });
+                    
+                    alert(
+                        `❌ DUPLICATE BAG NUMBER BLOCKED!\n\n` +
+                        `Bag: #${cleanNext}\n` +
+                        `Found in: ${refNo}\n` +
+                        `Date: ${existing.date || 'N/A'}\n` +
+                        `Status: ${status}\n\n` +
+                        `Bag numbers CANNOT be reused.\n` +
+                        `Use a different bag number.`
+                    );
+                    blocked = true;
                 }
             }
         } catch (e) {
-            console.error("Dup check failed", e);
+            console.error('[DUP CHECK] Unexpected error:', e);
+            alert(
+                `❌ CRITICAL DATABASE ERROR!\n\n` +
+                `Could not verify bag number: ${e.message}\n\n` +
+                `To prevent duplicates, the bag has been BLOCKED.`
+            );
+            blocked = true;
+        } finally {
+            setIsChecking(false);
         }
 
-        // Check if user entered a numeric bag No
-        const enteredInt = parseInt(nextBagNo);
-        const isNumeric = !isNaN(enteredInt) && nextBagNo.trim() === enteredInt.toString();
+        // Stop here if blocked
+        if (blocked) return;
 
-        const bagRow = {
-            id: Date.now() + Math.random(),
-            bagNo: nextBagNo,
-            productId: selectedItem,
-            qty: q
-        };
-
-        const newBags = [...bags, bagRow];
+        // --- ADD TO LIST (only reaches here if no duplicate found) ---
+        const bagRow = { id: Date.now() + Math.random(), bagNo: cleanNext, productId: selectedItem, qty: q };
         setBags(prev => [...prev, bagRow]);
 
-        // INTELLIGENT INCREMENT & SKIP DUPLICATES
+        // Auto-increment bag number for next entry
         if (mode === 'production') {
-            let prefix = 'A';
-            let enteredNum = parseInt(nextBagNo.startsWith(prefix) ? nextBagNo.substring(prefix.length) : nextBagNo);
-            let candidateNum = isNaN(enteredNum) ? 0 : enteredNum + 1;
-
-            if (isNaN(enteredNum)) {
-                // Fallback to list max
-                const listMax = newBags.reduce((max, b) => {
-                    const n = b.bagNo.startsWith(prefix) ? parseInt(b.bagNo.substring(prefix.length)) : parseInt(b.bagNo);
-                    return (!isNaN(n) && n > max) ? n : max;
-                }, parseInt(lastBagNoSeed) || 0);
-                candidateNum = listMax + 1;
-            }
-
-            // Avoid local duplicates in suggestion
-            while (newBags.some(b => b.bagNo === prefix + candidateNum)) {
+            const prefix = 'A';
+            const num = parseInt(cleanNext.replace(prefix, '')) || 0;
+            let candidateNum = num + 1;
+            const currentBagNumbers = new Set(bags.map(b => normalizeBagNo(b.bagNo)));
+            while (currentBagNumbers.has(prefix + candidateNum)) {
                 candidateNum++;
             }
             setNextBagNo(prefix + candidateNum);
         } else {
-            setNextBagNo(''); // Reset for manual purchase entry
+            setNextBagNo('');
         }
         setQty('');
     };
@@ -16173,7 +16989,12 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
                 <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
-                    <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> Jumbo Bag Allocation</h2>
+                    <div className="flex items-center gap-3">
+                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> Jumbo Bag Allocation</h2>
+                        <span className="px-2 py-1 rounded bg-blue-500/20 border border-blue-300/30 text-[10px] font-black uppercase tracking-wider text-blue-100">
+                            Ref No: {voucherRefNo?.trim() || 'N/A'}
+                        </span>
+                    </div>
                     <button onClick={onClose} className="hover:bg-white/20 p-1 rounded"><X size={20} /></button>
                 </div>
 
@@ -16203,7 +17024,10 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                                 setQty(val);
                             }} onKeyDown={e => e.key === 'Enter' && handleAddBag()} autoFocus />
                         </div>
-                        <button onClick={handleAddBag} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded px-4 h-10 font-bold shadow-sm">ADD</button>
+                        <button onClick={handleAddBag} disabled={isChecking} className={`${isChecking ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'} text-white p-2 rounded px-4 h-10 font-bold shadow-sm transition-all min-w-[80px]`}>
+                            {isChecking ? '...' : 'ADD'}
+                        </button>
+
                     </div>
                 </div>
 
@@ -16345,6 +17169,7 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                                 {!targetProductId && <th className="p-3">Product</th>}
                                 <th className="p-3 text-right">Quantity</th>
                                 <th className="p-3">Date</th>
+                                <th className="p-3">Mfg Vch Ref</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -16363,6 +17188,7 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                                     </td>}
                                     <td className="p-3 text-right font-black text-slate-900 text-lg">{bag.qty} <span className="text-xs text-slate-400 font-normal">kg</span></td>
                                     <td className="p-3 text-[10px] text-slate-400 font-bold">{bag.date}</td>
+                                    <td className="p-3 text-xs font-bold text-indigo-600 bg-indigo-50/30 rounded border border-indigo-100/50">{bag.stockJournalRefNo || bag.voucherRefNo || '-'}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -16745,6 +17571,7 @@ const StockJournalModal = (props) => {
 
         const expenseRows = (selectedRecord.expenseItems || []).map(item => ({
             expenseId: item.expenseId,
+            creditAccountId: '',
             amount: round3((batchBaseQty / 1000) * Number(item.ratePerTon || 0))
         })).filter(item => item.expenseId && item.amount > 0);
 
@@ -16786,7 +17613,7 @@ const StockJournalModal = (props) => {
             producedRows,
             totalBatchAmount,
             totalOutputQty,
-            creditAccountMissing: expenseRows.length > 0 && !creditAccountId
+            creditAccountMissing: expenseRows.length > 0 && expenseRows.some(e => !e.creditAccountId)
         });
     };
 
@@ -16989,11 +17816,13 @@ const StockJournalModal = (props) => {
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
         if (!refNo || !refNo.trim()) return alert("⚠️ Reference Number is Mandatory!");
 
-        // 🛑 DUPLICATE CHECK
+        // 🛑 DUPLICATE CHECK (Allowing duplicates as requested for manufacturing/bag tracking)
         const targetUid = dataOwnerId || user.uid;
+        /*
         if (await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id)) {
             return alert("❌ Duplicate Reference Number! This Ref No exists in another transaction.");
         }
+        */
 
         if (consumed.some(i => !i.productId) || produced.some(i => !i.productId)) return alert("Please select items");
         const hasAbsentStaff = productionStaffIds.some(id => attendanceMap[id] === 'Absent');
@@ -17099,8 +17928,14 @@ const StockJournalModal = (props) => {
             }));
 
             const cleanExpenses = journalExpenses.filter(e => e.expenseId && Number(e.amount) > 0).map(e => ({
-                expenseId: e.expenseId, amount: round3(e.amount)
+                expenseId: e.expenseId, creditAccountId: e.creditAccountId, amount: round3(e.amount)
             }));
+
+            if (cleanExpenses.some(e => !e.creditAccountId)) {
+                alert("Please select Payable To / CR Ledger for all expenses.");
+                setSaving(false);
+                return;
+            }
 
             if (cleanConsumed.length === 0 || cleanProduced.length === 0) {
                 alert("Please add at least one consumed and one produced item.");
@@ -17109,14 +17944,99 @@ const StockJournalModal = (props) => {
             }
 
             const expensesAmountTotal = round3(cleanExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0));
+            const targetUid = dataOwnerId || user.uid;
+
+            // --- 🔒 VALIDATION RULE 1: DUPLICATE REF NO CHECK ---
+            if (refNo) {
+                const qRef = query(collection(db, 'stock_journals'), where('userId', '==', targetUid), where('refNo', '==', refNo));
+                const snapRef = await getDocs(qRef);
+                const isDupRef = snapRef.docs.some(d => d.id !== initialData?.id);
+                if (isDupRef) {
+                    alert(`❌ DUPLICATE VOUCHER: Reference Number "${refNo}" already exists in Manufacturing logs. Please use a unique ID.`);
+                    setSaving(false);
+                    return;
+                }
+            }
+
+            // --- 🔒 VALIDATION RULE 2: DUPLICATE BAG NO CHECK (Strict - No Reuse) ---
+            if (finalJumboBags.length > 0) {
+                const normalizeBagNo = (val) => String(val || '').replace(/^#/, '').trim().toUpperCase();
+                const internalBagNos = finalJumboBags.map(b => normalizeBagNo(b.bagNo)).filter(Boolean);
+                if (new Set(internalBagNos).size !== internalBagNos.length) {
+                    alert(`❌ INTERNAL DUPLICATE: You have entered the same Bag Number multiple times in this voucher. Please ensure each bag has a unique number.`);
+                    setSaving(false);
+                    return;
+                }
+
+                const bagNumbers = [...new Set(internalBagNos)];
+                for (const bNo of bagNumbers) {
+                    const bLower = bNo.toLowerCase();
+                    const searchArray = [bNo, `#${bNo}`, bLower, `#${bLower}`];
+                    const belongsToTarget = (data) => {
+                        const uid = data?.userId || null;
+                        const oid = data?.ownerId || null;
+                        return uid === targetUid || oid === targetUid;
+                    };
+
+                    let matchedDocs = [];
+                    try {
+                        const qBag = query(collection(db, 'jumbo_bags'), where('bagNo', 'in', searchArray));
+                        const snapBag = await getDocs(qBag);
+                        matchedDocs = snapBag.docs.filter(d => belongsToTarget(d.data()));
+                    } catch (e) {
+                        console.warn('Exact duplicate query failed', e);
+                    }
+
+                    // Fallback scan to catch trailing spaces or inconsistent historical formatting.
+                    if (matchedDocs.length === 0) {
+                        try {
+                            const fallbackQ = query(collection(db, 'jumbo_bags'), limit(8000));
+                            const fallbackSnap = await getDocs(fallbackQ);
+                            matchedDocs = fallbackSnap.docs.filter(d => belongsToTarget(d.data()) && normalizeBagNo(d.data()?.bagNo) === bNo);
+                        } catch (e) {
+                            console.warn('Fallback duplicate scan failed', e);
+                        }
+                    }
+
+                    const otherDocs = matchedDocs.filter(d => d.data().stockJournalId !== initialData?.id);
+                    
+                    if (otherDocs.length > 0) {
+                        alert(`❌ DUPLICATE BAG: Bag #${bNo} is already used in another voucher.\n\nRefill is NOT allowed for this bag number.`);
+                        setSaving(false);
+                        return;
+                    }
+                }
+            }
+
 
             // CRITICAL: Robust cleanup logic for old bags
             let bagsToDelete = [];
-            if (initialData?.id || refNo) {
-                const searchIds = [initialData?.id, refNo, initialData?.refNo].filter(Boolean);
-                const qOld = query(collection(db, 'jumbo_bags'), where('stockJournalId', 'in', searchIds));
+            let statusPreservationMap = {}; // Map of bagNo -> current status/sales data
+
+            let orphanedJvId = null;
+            if (initialData?.id) {
+                const qOld = query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', initialData.id));
                 const snapOld = await getDocs(qOld);
                 bagsToDelete = snapOld.docs.map(d => d.id);
+                
+                // Preserve status for bags that might have been sold
+                snapOld.forEach(docSnap => {
+                    const d = docSnap.data();
+                    if (d.bagNo) {
+                        statusPreservationMap[d.bagNo] = {
+                            status: d.status || 'in_stock',
+                            salesId: d.salesId || null,
+                            soldDate: d.soldDate || null
+                        };
+                    }
+                });
+
+                // CHECK FOR ORPHANED JV (from older saves)
+                if (initialData?.id && !initialData.expenseJournalId) {
+                    const qJvRef = query(collection(db, 'journal_vouchers'), where('refNo', '==', `${initialData.refNo || refNo}-Exp`));
+                    const snapJvRef = await getDocs(qJvRef);
+                    if (!snapJvRef.empty) orphanedJvId = snapJvRef.docs[0].id;
+                }
             }
 
             await runTransaction(db, async (transaction) => {
@@ -17127,28 +18047,41 @@ const StockJournalModal = (props) => {
                     await transaction.get(journalRef); 
                 }
 
-                bagsToDelete.forEach(bid => transaction.delete(doc(db, 'jumbo_bags', bid)));
+                for (const bid of bagsToDelete) {
+                    await transaction.delete(doc(db, 'jumbo_bags', bid));
+                }
 
-                let jvId = initialData?.expenseJournalId || null;
+                let jvId = initialData?.expenseJournalId || orphanedJvId || null;
                 let jvRef = null;
 
                 if (cleanExpenses.length > 0) {
                     jvRef = jvId ? doc(db, 'journal_vouchers', jvId) : doc(collection(db, 'journal_vouchers'));
                     jvId = jvRef.id;
                     const drRows = cleanExpenses.map(e => ({ type: 'dr', category: 'expense', id: e.expenseId, amount: e.amount }));
-                    const isParty = parties.find(p => p.id === creditAccountId);
-                    const isExpense = accounts.find(e => e.id === creditAccountId) || expenses.find(e => e.id === creditAccountId);
-                    const crRow = { type: 'cr', category: isParty ? 'party' : (isExpense ? 'expense' : 'account'), id: creditAccountId, amount: expensesAmountTotal };
+                    const crRows = cleanExpenses.map(e => {
+                        const isParty = parties.find(p => p.id === e.creditAccountId);
+                        const isAccount = accounts.find(a => a.id === e.creditAccountId);
+                        const isExpense = expenses.find(ex => ex.id === e.creditAccountId) || directExpenseAccounts.find(d => d.id === e.creditAccountId);
+                        const crCat = isParty ? 'party' : isAccount ? 'account' : isExpense ? 'expense' : 'account';
+                        return { type: 'cr', category: crCat, id: e.creditAccountId, amount: e.amount };
+                    });
                     
+                    const uniqueDrIds = [...new Set(drRows.map(r => r.id))];
+                    const uniqueCrIds = [...new Set(crRows.map(r => r.id))];
+                    const mainExpenseName = uniqueDrIds.length > 1 ? 'Multiple Expenses' : (expenses.find(e => e.id === uniqueDrIds[0])?.name || 'Direct Expense');
+                    const mainCrName = uniqueCrIds.length > 1 ? 'Multiple Ledgers' : (parties.find(p => p.id === uniqueCrIds[0])?.name || accounts.find(a => a.id === uniqueCrIds[0])?.name || expenses.find(e => e.id === uniqueCrIds[0])?.name || 'Unknown');
+                    const isMulti = uniqueDrIds.length > 1 || uniqueCrIds.length > 1 || drRows.length > 1;
+
                     const jvPayload = {
                         date, refNo: `${refNo || 'AUTO'}-Exp`, narration: `Expenses for Mfg ${refNo || ''}`,
-                        type: 'journal', userId: targetUid, rows: [...drRows, crRow], amount: expensesAmountTotal,
+                        type: 'journal', userId: targetUid, rows: [...drRows, ...crRows], amount: expensesAmountTotal,
+                        drName: mainExpenseName, crName: mainCrName, isMulti: isMulti,
                         linkedStockJournalId: journalRef.id, updatedAt: serverTimestamp(),
                         createdAt: initialData?.createdAt || serverTimestamp()
                     };
-                    transaction.set(jvRef, jvPayload, { merge: true });
+                    await transaction.set(jvRef, jvPayload, { merge: true });
                 } else if (jvId) {
-                    transaction.delete(doc(db, 'journal_vouchers', jvId));
+                    await transaction.delete(doc(db, 'journal_vouchers', jvId));
                     jvId = null;
                 }
 
@@ -17168,35 +18101,44 @@ const StockJournalModal = (props) => {
                     updatedAt: serverTimestamp(),
                     createdAt: initialData?.createdAt || serverTimestamp()
                 };
-                transaction.set(journalRef, payload, { merge: true });
+                await transaction.set(journalRef, payload, { merge: true });
 
                 // DETERMINISTIC BAG IDs TO PREVENT DUPLICATES
                 if (finalJumboBags.length > 0) {
                     let currentUniSeed = freshUniSeed || 0;
-                    finalJumboBags.forEach(b => {
+                    for (const b of finalJumboBags) {
                         // Use deterministic ID: journalId + bagNo
                         const bDocId = `${journalRef.id}_${b.bagNo}`.replace(/[^a-zA-Z0-9]/g, '_');
                         const bRef = doc(db, 'jumbo_bags', bDocId);
-                        
-                        transaction.set(bRef, {
-                            bagNo: b.bagNo,
+                        const normalizedBagNo = String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                        const preserved = statusPreservationMap[normalizedBagNo] || {};
+
+                        await transaction.set(bRef, {
+                            bagNo: normalizedBagNo,
                             universalBagNo: b.universalBagNo || (++currentUniSeed),
                             productId: b.productId,
                             qty: round3(b.qty),
                             percent: consumedQuantTotal > 0 ? (Number(b.qty) / consumedQuantTotal) * 100 : 0,
                             stockJournalId: journalRef.id,
+                            stockJournalRefNo: refNo || '',
+                            voucherRefNo: refNo || '',
                             sourceId: journalRef.id, // For general source tracking
                             source: 'production',    // Forces BLUE tag in reports
                             date: date,
-                            status: 'in_stock',
+                            allowMultiFilling: false,
+                            status: preserved.status || 'in_stock',
+                            salesId: preserved.salesId || null,
+                            soldDate: preserved.soldDate || null,
                             userId: targetUid,
+                            ownerId: targetUid,
+
                             createdAt: serverTimestamp()
                         });
-                    });
+                    }
                 }
 
                 const logRef = doc(collection(db, 'audit_logs'));
-                transaction.set(logRef, {
+                await transaction.set(logRef, {
                     date: serverTimestamp(), ownerId: targetUid, userId: user.uid, userName: effectiveName,
                     action: initialData ? 'UPDATED' : 'CREATED', docType: 'Stock Journal', refNo: refNo || 'N/A',
                     description: `Mfg Journal ${refNo || journalRef.id}`, docId: journalRef.id
@@ -17331,7 +18273,7 @@ const StockJournalModal = (props) => {
                         <div className="flex gap-2">
                              {!showExpList ? (
                                 journalExpenses.length === 0 ? (
-                                    <button type="button" onClick={() => { setShowExpList(true); setJournalExpenses([{ expenseId: '', amount: '' }]); }} className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors">
+                                    <button type="button" onClick={() => { setShowExpList(true); setJournalExpenses([{ expenseId: '', creditAccountId: '', amount: '' }]); }} className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors">
                                         <PlusCircle size={12} /> ADD EXPENSES
                                     </button>
                                 ) : (
@@ -17368,7 +18310,7 @@ const StockJournalModal = (props) => {
             {/* EXPENSES POPUP (Portal-like logic inside Red Table only) */}
             {color === 'red' && showExpList && (
                 <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px] z-20 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
                         <div className="bg-slate-900 text-white p-3 px-4 flex justify-between items-center shrink-0">
                             <h3 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                                 <DollarSign size={14} className="text-orange-400" /> Additional Manufacturing Expenses
@@ -17376,18 +18318,37 @@ const StockJournalModal = (props) => {
                             <button onClick={() => setShowExpList(false)} className="hover:bg-white/10 p-1.5 rounded-lg transition-colors"><X size={16} /></button>
                         </div>
                         <div className="p-4 max-h-[350px] overflow-y-auto space-y-2 bg-slate-50">
+                            <div className="mb-4 bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                                <label className="block text-[10px] font-black uppercase text-slate-500 mb-1">Main Direct Expense (Debit)</label>
+                                <SearchableSelect
+                                    options={directExpenseAccounts.map(e => ({ value: e.id, text: e.name }))}
+                                    value={journalExpenses[0]?.expenseId || ''}
+                                    onChange={v => {
+                                        let n = [...journalExpenses];
+                                        if (n.length === 0) n.push({ expenseId: v, creditAccountId: '', amount: '' });
+                                        else n = n.map(e => ({ ...e, expenseId: v }));
+                                        setJournalExpenses(n);
+                                    }}
+                                    placeholder="Select Main Expense Ledger..."
+                                />
+                            </div>
+                            <label className="block text-[10px] font-black uppercase text-slate-500 mb-1">Payable To / Credit Ledgers</label>
                             {journalExpenses.map((exp, i) => (
                                 <div key={i} className="flex gap-2 items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
                                     <div className="flex-1">
                                         <SearchableSelect
-                                            options={directExpenseAccounts.map(e => ({ value: e.id, text: e.name }))}
-                                            value={exp.expenseId}
+                                            options={[
+                                                ...parties.map(p => ({ value: p.id, text: p.name + ' (Party)' })),
+                                                ...accounts.map(a => ({ value: a.id, text: a.name + ' (Account)' })),
+                                                ...expenses.map(e => ({ value: e.id, text: e.name + ' (Expense)' }))
+                                            ].sort((a, b) => a.text.localeCompare(b.text))}
+                                            value={exp.creditAccountId || ''}
                                             onChange={v => {
                                                 const n = [...journalExpenses];
-                                                n[i].expenseId = v;
+                                                n[i].creditAccountId = v;
                                                 setJournalExpenses(n);
                                             }}
-                                            placeholder="Expense Ledger..."
+                                            placeholder="Payable To / CR Ledger..."
                                             compact={true}
                                         />
                                     </div>
@@ -17417,7 +18378,7 @@ const StockJournalModal = (props) => {
                                     }} className="p-2 text-red-400 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
                                 </div>
                             ))}
-                            <button onClick={() => setJournalExpenses([...journalExpenses, { expenseId: '', amount: '' }])} className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:text-blue-500 hover:border-blue-300 transition-all text-[10px] font-black uppercase flex items-center justify-center gap-2 mt-2">
+                            <button onClick={() => setJournalExpenses([...journalExpenses, { expenseId: journalExpenses[0]?.expenseId || '', creditAccountId: '', amount: '' }])} className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:text-blue-500 hover:border-blue-300 transition-all text-[10px] font-black uppercase flex items-center justify-center gap-2 mt-2">
                                 <Plus size={14} /> Add Another Expense Entry
                             </button>
                         </div>
@@ -18029,7 +18990,10 @@ const StockJournalModal = (props) => {
                     <ChangeDateModal 
                         isOpen={showDateModal} 
                         onClose={() => setShowDateModal(false)} 
-                        onSubmit={(d) => setDate(d)} 
+                        onSubmit={(d) => {
+                            setDate(d);
+                            setShowDateModal(false);
+                        }} 
                         baseDate={date} 
                     />
                 </div>
@@ -18119,6 +19083,7 @@ const StockJournalModal = (props) => {
                 producedQtyMap={producedQtyMap}
                 onSave={handleJumboFinish}
                 db={db}
+                cloudDb={cloudDb}
                 showToast={showToast}
                 lastBagNoSeed={lastBagNoSeed}
                 initialBags={jumboBags}
@@ -18127,7 +19092,9 @@ const StockJournalModal = (props) => {
                 effectiveName={effectiveName}
                 dataOwnerId={dataOwnerId}
                 mode="production"
+                voucherRefNo={refNo}
             />
+
 
         </>
     );
@@ -18148,7 +19115,7 @@ const HideCol = ({ name, id, onHide, color = 'inherit' }) => (
 );
 
 // --- UPDATED LEDGER MODAL (With Collapsible Tools & Persistent Header) ---
-const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, products, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
+const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
 
     // Filters
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
@@ -18251,23 +19218,55 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const handleBulkRemove = async () => {
         if (selectedIds.size === 0) return alert("No transactions selected for removal.");
         
-        const itemsToDelete = [];
+        // Build the initial set, skipping summary/opening rows
+        const rawItems = [];
         selectedIds.forEach(id => {
+            const item = fullList.find(t => t.id === id);
+            if (item && !item.isOpening && !item.isSummary) {
+                rawItems.push(item);
+            }
+        });
+
+        if (rawItems.length === 0) return alert("No removable transactions selected.");
+
+        // ✅ ENFORCE LINKED PAIR RULE: for every selected item that has a linked partner,
+        // auto-include the partner so both are always deleted together.
+        const idsToDelete = new Set(rawItems.map(i => i.id));
+        let hasLinkedPair = false;
+        rawItems.forEach(item => {
+            const partnerId = getLinkedPartnerId(item);
+            if (partnerId) {
+                hasLinkedPair = true;
+                idsToDelete.add(partnerId); // force-include partner
+            }
+        });
+
+        // Also check partners that were added above and include their links
+        idsToDelete.forEach(id => {
+            const item = fullList.find(t => t.id === id);
+            if (item) {
+                const partnerId = getLinkedPartnerId(item);
+                if (partnerId) idsToDelete.add(partnerId);
+            }
+        });
+
+        const itemsToDelete = [];
+        idsToDelete.forEach(id => {
             const item = fullList.find(t => t.id === id);
             if (item && !item.isOpening && !item.isSummary) {
                 itemsToDelete.push({ id: item.id, type: item.type });
             }
         });
 
-        if (itemsToDelete.length === 0) return alert("No removable transactions selected.");
+        if (hasLinkedPair) {
+            const linkedCount = itemsToDelete.length - rawItems.filter(i => !getLinkedPartnerId(i)).length;
+            if (!window.confirm(`⚠️ LINKED VOUCHERS\n\nSome of the selected vouchers are Manufacturing/Expense Journal pairs that were created together.\n\nBoth vouchers in each pair will be deleted together — you cannot delete one without the other.\n\nTotal vouchers to be deleted: ${itemsToDelete.length}\n\nProceed?`)) return;
+        }
 
         if (onBulkDelete) {
             const success = await onBulkDelete(itemsToDelete);
             if (success) {
                 setSelectedIds(new Set());
-                // The list should update automatically if App.jsx state changes, 
-                // but usually we need to trigger a data reload if it doesn't.
-                // However, since handleBulkDelete uses Firestore deleteDoc, and App.jsx has snapshots (onSnapshot), it should auto-update.
             }
         }
     };
@@ -18334,11 +19333,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 e.stopPropagation();
                 setShowRegisterPicker(true);
             }
-            if (e.altKey && e.key === 'F2') {
+            if (e.altKey && key === 'f2') {
                 e.preventDefault();
+                e.stopPropagation();
                 setShowPeriodModal(true);
+                return;
             }
-            if (!e.altKey && e.key === 'F2') {
+            if (!e.altKey && key === 'f2') {
                 e.preventDefault();
                 setShowDateModal(true);
             }
@@ -18450,13 +19451,56 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     }, [isOpen, initialState]);
 
     const toggleSelectAll = (filteredData) => { if (selectedIds.size === filteredData.length) setSelectedIds(new Set()); else setSelectedIds(new Set(filteredData.map(t => t.id))); };
-    const toggleSelectRow = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
+
+    // Returns the linked partner's ID for MFG<->ExpenseJournal pairs
+    const getLinkedPartnerId = (row) => {
+        if (!row) return null;
+        // Direct field link (modern records)
+        if (row.expenseJournalId) return row.expenseJournalId;
+        if (row.linkedStockJournalId) return row.linkedStockJournalId;
+        // Fallback: ref-based matching for older records
+        const rowRef = String(row.ref || '').trim().toLowerCase();
+        if ((row.type === 'journal') && rowRef.endsWith('-exp')) {
+            const baseRef = rowRef.replace(/-exp$/i, '');
+            const parent = fullList.find(t =>
+                (t.type === 'manufacturing' || t.type === 'stock_journal') &&
+                String(t.ref || '').trim().toLowerCase() === baseRef
+            );
+            return parent ? parent.id : null;
+        }
+        if (row.type === 'manufacturing' || row.type === 'stock_journal') {
+            const expRef = `${rowRef}-exp`;
+            const child = fullList.find(t =>
+                t.type === 'journal' &&
+                String(t.ref || '').trim().toLowerCase() === expRef
+            );
+            return child ? child.id : null;
+        }
+        return null;
+    };
+
+    // When selecting/deselecting a row, always include its linked partner
+    const toggleSelectRow = (id) => {
+        const newSet = new Set(selectedIds);
+        const isSelected = newSet.has(id);
+        const row = fullList.find(t => t.id === id);
+        const relatedId = getLinkedPartnerId(row);
+
+        if (isSelected) {
+            newSet.delete(id);
+            if (relatedId) newSet.delete(relatedId);
+        } else {
+            newSet.add(id);
+            if (relatedId) newSet.add(relatedId);
+        }
+        setSelectedIds(newSet);
+    };
 
 
     // ✅ CALCULATE OPENING BALANCE for Period Ledgers
     useEffect(() => {
         // Only calculate for specific entity ledgers
-        if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income'].includes(filter.type)) {
+        if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income', 'tax'].includes(filter.type)) {
             setOpeningBalance(0);
             setOpeningQty(0);
             return;
@@ -18467,13 +19511,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         // ✅ FIX: Get entity list early to access master opening values
         let entityList = [];
         switch (filter.type) {
-            case 'party': entityList = parties; break;
-            case 'account': entityList = accounts; break;
+            case 'party': entityList = (partiesRef?.current?.length > 0) ? partiesRef.current : parties; break;
+            case 'account': entityList = (accountsRef?.current?.length > 0) ? accountsRef.current : accounts; break;
             case 'expense': entityList = expenses; break;
+            case 'direct_expense': entityList = directExpenseAccounts; break;
             case 'capital': entityList = capitalAccounts; break;
             case 'asset': entityList = assetAccounts; break;
-            case 'item': entityList = products; break;
+            case 'item': entityList = (productsRef?.current?.length > 0) ? productsRef.current : products; break;
             case 'income': entityList = incomeAccounts; break;
+            case 'tax': entityList = taxRates; break;
         }
 
         const found = entityList.find(e => e.id === filter.id);
@@ -18560,7 +19606,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     amtOut += addlExpBase;
                                 }
                             }
-                            else if (filter.type === 'expense') {
+                            else if (filter.type === 'expense' || filter.type === 'direct_expense') {
                                 const checkExpense = (list) => {
                                     if (!list) return 0;
                                     let sum = 0;
@@ -18580,6 +19626,22 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 }
                             } else if (filter.type === 'account' && hasAddlSplit && d.addlExpCreditId === filter.id) {
                                 amtOut += addlExpBase;
+                            } else if (filter.type === 'tax') {
+                                const taxAmt = safeNum(d.taxAmount || 0);
+                                if (!taxAmt) return;
+
+                                const taxNameNorm = String(d.taxName || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                                const filterNameNorm = String((taxRates.find(t => t.id === filter.id)?.name) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                                const filterIdNorm = String(filter.id || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                                const matchesTax = (d.taxId && d.taxId === filter.id)
+                                    || (!!taxNameNorm && !!filterNameNorm && taxNameNorm === filterNameNorm)
+                                    || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
+                                if (!matchesTax) return;
+
+                                const isInputTax = d.type === 'purchase' || d.type === 'credit_note';
+                                const isOutputTax = d.type === 'sales' || d.type === 'debit_note';
+                                if (isInputTax) amtIn += taxAmt;
+                                if (isOutputTax) amtOut += taxAmt;
                             }
                         } else if (docType === 'pay') {
                             const amt = baseVal;
@@ -18590,7 +19652,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     if (d.type === 'in') amtOut += amt; else amtIn += amt;
                                 } else if (filter.type === 'party' && d.partyId === filter.id) {
                                     amtIn += d.type === 'out' ? amt : 0; amtOut += d.type === 'in' ? amt : 0;
-                                } else if (filter.type === 'expense' && d.transactionCategory === 'expense' && d.expenseId === filter.id) {
+                                } else if ((filter.type === 'expense' || filter.type === 'direct_expense') && d.transactionCategory === 'expense' && d.expenseId === filter.id) {
                                     amtIn += d.type === 'out' ? amt : 0;
                                 } else if (filter.type === 'capital' && d.transactionCategory === 'capital' && d.capitalId === filter.id) {
                                     amtIn += d.type !== 'in' ? amt : 0; amtOut += d.type === 'in' ? amt : 0;
@@ -18610,9 +19672,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 }
                             }
                         } else if (docType === 'jv') {
-                            if (d.isMulti && d.rows) {
+                            const matchesJvCategory = (rCat, rId) => {
+                                if (rId !== filter.id) return false;
+                                if (rCat === filter.type) return true;
+                                // Manufacturing JV DR rows are saved with category 'expense' even for direct expenses
+                                if (filter.type === 'direct_expense' && rCat === 'expense') return true;
+                                return false;
+                            };
+                            if (d.rows && d.rows.length > 0) {
                                 d.rows.forEach(r => {
-                                    if (r.category === filter.type && r.id === filter.id) {
+                                    if (matchesJvCategory(r.category, r.id)) {
                                         const qty = safeNum(r.amount);
                                         const rowRate = safeNum(r.rate);
                                         const val = filter.type === 'item' ? (qty * rowRate) : (qty * exRate);
@@ -18626,11 +19695,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     }
                                 });
                             } else {
-                                if (d.drType === filter.type && d.drId === filter.id) {
+                                const drMatch = (d.drType === filter.type || (filter.type === 'direct_expense' && d.drType === 'expense')) && d.drId === filter.id;
+                                const crMatch = (d.crType === filter.type || (filter.type === 'direct_expense' && d.crType === 'expense')) && d.crId === filter.id;
+                                if (drMatch) {
                                     amtIn = baseVal;
-                                    if (filter.type === 'item') qIn = safeNum(d.amount); // amount is qty for items in simple JVs
+                                    if (filter.type === 'item') qIn = safeNum(d.amount);
                                 }
-                                if (d.crType === filter.type && d.crId === filter.id) {
+                                if (crMatch) {
                                     amtOut = baseVal;
                                     if (filter.type === 'item') qOut = safeNum(d.amount);
                                 }
@@ -18687,11 +19758,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
 
         calculateOpening();
-    }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, capitalAccounts, assetAccounts, products, incomeAccounts]);
+    }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, directExpenseAccounts, capitalAccounts, assetAccounts, products, incomeAccounts, taxRates]);
 
     // ✅ REALTIME REPORT GENERATION (Replaces generateReport)
     useEffect(() => {
-        if (['party', 'account', 'item', 'expense', 'capital', 'asset', 'tax', 'user'].includes(filter.type) && !filter.id) {
+        if (['party', 'account', 'item', 'expense', 'direct_expense', 'capital', 'asset', 'tax', 'user'].includes(filter.type) && !filter.id) {
             setTransactions([]);
             return;
         }
@@ -18708,7 +19779,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         if (activeFilter.startDate) dateConstraints.push(where('date', '>=', activeFilter.startDate));
         if (activeFilter.endDate) dateConstraints.push(where('date', '<=', activeFilter.endDate));
 
-        const baseConstraints = [...dateConstraints];
+        const baseConstraints = [where('userId', '==', targetUid), ...dateConstraints];
 
         // Recalculate Logic (Runs when any snapshot fires)
         const recalculate = () => {
@@ -18829,7 +19900,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     bagCount: extra.bagCount || 0,
                     paymentTerms: d.paymentTerms || null,
                     invoiceTotal: safeNum(d.totalAmount || d.amount || 0),
-                    searchStr: `${d.refNo} ${drName} ${crName} ${extra.amtIn} ${extra.amtOut} ${d.description || ''} ${d.narration || ''} ${findUserName(d.createdBy)} ${productNamesStr}`.toLowerCase()
+                    searchStr: `${d.refNo} ${drName} ${crName} ${extra.amtIn} ${extra.amtOut} ${d.description || ''} ${d.narration || ''} ${findUserName(d.createdBy)} ${productNamesStr}`.toLowerCase(),
+                    expenseJournalId: d.expenseJournalId || null,
+                    linkedStockJournalId: d.linkedStockJournalId || null,
                 };
             };
 
@@ -18905,9 +19978,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 let finalRateOut = 0;
 
                                 if (activeFilter.type === 'sales') {
-                                    finalAmtIn = 0; finalAmtOut = amt;
+                                    // Sales Register shows subtotal (net of tax) — tax is not our revenue
+                                    const salesNetAmt = amt - safeNum(d.taxAmount || 0);
+                                    const salesNetRate = totalQty > 0 ? salesNetAmt / totalQty : 0;
+                                    finalAmtIn = 0; finalAmtOut = salesNetAmt;
                                     finalQtyIn = 0; finalQtyOut = totalQty;
-                                    finalRateIn = 0; finalRateOut = avgRate;
+                                    finalRateIn = 0; finalRateOut = salesNetRate;
                                 } else if (activeFilter.type === 'purchase') {
                                     finalAmtIn = amt; finalAmtOut = 0;
                                     finalQtyIn = totalQty; finalQtyOut = 0;
@@ -18934,7 +20010,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 else row = expRow;
                             }
                         }
-                        else if (activeFilter.type === 'expense') {
+                        else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
                             const processExpList = (list) => {
                                 if (!list) return;
                                 list.forEach(exp => {
@@ -18958,6 +20034,29 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             if (d.type !== 'purchase') {
                                 processExpList(d.addlExpenses);
                             }
+                        }
+                        else if (activeFilter.type === 'tax') {
+                            const taxAmt = safeNum(d.taxAmount || 0);
+                            if (!taxAmt) return;
+
+                            const taxNameNorm = String(d.taxName || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                            const filterNameNorm = String((taxRates.find(t => t.id === activeFilter.id)?.name) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                            const filterIdNorm = String(activeFilter.id || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                            const matchesTax = (d.taxId && d.taxId === activeFilter.id)
+                                || (!!taxNameNorm && !!filterNameNorm && taxNameNorm === filterNameNorm)
+                                || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
+                            if (!matchesTax) return;
+
+                            const isInputTax = d.type === 'purchase' || d.type === 'credit_note';
+                            const isOutputTax = d.type === 'sales' || d.type === 'debit_note';
+                            if (!isInputTax && !isOutputTax) return;
+
+                            row = buildRow(doc, d, {
+                                amtIn: isInputTax ? taxAmt : 0,
+                                amtOut: isOutputTax ? taxAmt : 0,
+                                foreignIn: 0,
+                                foreignOut: 0
+                            });
                         }
 
                         // ➕ Add separate ledger row for additional expenses paid via another ledger
@@ -19023,7 +20122,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
                         }
-                        else if (activeFilter.type === 'expense') {
+                        else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
                             if (d.transactionCategory === 'expense' && d.expenseId === activeFilter.id) {
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
@@ -19078,7 +20177,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const amt = baseVal;
                         const fAmt = foreignVal;
 
-                        if (d.isMulti && d.rows) {
+                        if (d.rows && d.rows.length > 0) {
                             if (['daybook', 'user'].includes(activeFilter.type)) {
                                 row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: fAmt, foreignOut: fAmt });
                             } else {
@@ -19087,8 +20186,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 let myDrForeign = 0; let myCrForeign = 0;
 
                                 d.rows.forEach(r => {
-                                    if (activeFilter.type === 'expense' && d.linkedStockJournalId && r.type === 'dr') return;
-                                    if (r.category === activeFilter.type && r.id === activeFilter.id) {
+                                    const jvRowMatches = (r.id === activeFilter.id) && (
+                                        r.category === activeFilter.type ||
+                                        // Manufacturing JV expense rows are saved with category 'expense' even for direct_expense
+                                        (activeFilter.type === 'direct_expense' && r.category === 'expense')
+                                    );
+                                    if (jvRowMatches) {
                                         const qty = safeNum(r.amount);
                                         const rowRate = safeNum(r.rate);
                                         const val = activeFilter.type === 'item' ? (qty * rowRate) : (qty * rate);
@@ -19119,8 +20222,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: fAmt, foreignOut: fAmt }); 
                             }
                             else {
-                                let isDr = (d.drType === activeFilter.type && d.drId === activeFilter.id);
-                                let isCr = (d.crType === activeFilter.type && d.crId === activeFilter.id);
+                                const drTypeMatch = d.drType === activeFilter.type || (activeFilter.type === 'direct_expense' && d.drType === 'expense');
+                                const crTypeMatch = d.crType === activeFilter.type || (activeFilter.type === 'direct_expense' && d.crType === 'expense');
+                                let isDr = (drTypeMatch && d.drId === activeFilter.id);
+                                let isCr = (crTypeMatch && d.crId === activeFilter.id);
                                 if (isDr || isCr) row = buildRow(doc, d, { amtIn: isDr ? amt : 0, amtOut: isCr ? amt : 0, foreignIn: isDr ? fAmt : 0, foreignOut: isCr ? fAmt : 0 });
                             }
                         }
@@ -19153,8 +20258,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 });
                             }
                         }
-                        else if (activeFilter.type === 'expense') {
-                            // Expense details handling for Mfg is hidden/removed as it is capitalized
+                        else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
+                            // Expense/DirectExpense details from manufacturing are handled via JV (expenseJournalId)
+                            // The linked JV rows (category 'expense') will be matched in the jv processList above
                         }
                         else if (['daybook', 'user'].includes(activeFilter.type)) {
                             row = buildRow(doc, d, { amtIn: mfgValue, amtOut: mfgValue, foreignIn: 0, foreignOut: 0 });
@@ -19192,13 +20298,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         return () => clearSubs();
 
-    }, [filter, dataOwnerId, user]); // Dependencies trigger re-subscription
+    }, [filter, dataOwnerId, user, taxRates]); // Dependencies trigger re-subscription
 
     const getFilterOptions = () => {
         switch (filter.type) {
             case 'party': return parties;
             case 'account': return accounts;
             case 'expense': return expenses;
+            case 'direct_expense': return directExpenseAccounts;
             case 'capital': return capitalAccounts;
             case 'asset': return assetAccounts;
             case 'income': return incomeAccounts; // <--- NEW INCOME
@@ -19411,13 +20518,19 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const r = q > 0 ? (totalItemVal / q) : 0;
 
                         // Check Invoice Type consistency
-                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.vchType);
-                        if (t.amountIn > 0) {
-                            dQtyIn = q; dRateIn = r;
-                            qtyInTotal += q;
+                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.type);
+                        const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(t.type);
+                        
+                        const baseSign = isInward ? 1 : -1;
+                        let signedFlow = (t.amountIn || t.amountOut || 0) * baseSign;
+                        if (signedFlow === 0) signedFlow = q * baseSign;
+
+                        if (signedFlow >= 0) {
+                            dQtyIn = Math.abs(q); dRateIn = r;
+                            qtyInTotal += Math.abs(q);
                         } else {
-                            dQtyOut = q; dRateOut = r;
-                            qtyOutTotal += q;
+                            dQtyOut = Math.abs(q); dRateOut = r;
+                            qtyOutTotal += Math.abs(q);
                         }
                     }
                 }
@@ -20033,9 +21146,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             purchase: "Purchase Register",
             account: "Cash/Bank",
             expense: "Expense Report",
+            direct_expense: "Direct Expense Report",
             capital: "Capital Ledger",
             asset: "Asset Ledger",
             item: "Item Ledger",
+            tax: "Tax Ledger",
             user: "User / Staff Report"
         };
         let title = typeMap[filter.type] || filter.type.toUpperCase();
@@ -20045,7 +21160,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         else if (summaryMode === 'quarterly') title = `${title} Quarterly Summary`;
         else if (summaryMode === 'annually') title = `${title} Annual Summary`;
 
-        if (filter.id && ['party', 'account', 'expense', 'capital', 'asset', 'item', 'user'].includes(filter.type)) {
+        if (filter.id && ['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'user', 'tax'].includes(filter.type)) {
             const options = getFilterOptions();
             const found = options.find(o => o.id === filter.id);
             if (found) title += ` : ${found.name}`;
@@ -21874,9 +22989,18 @@ const PaymentModal = (props) => {
                 baseData.splits = splits;
                 baseData.transactionCategory = 'multi';
 
-                if (initialData) transaction.update(docRef, baseData);
+                // ✅ ALWAYS re-derive partyId from current splits so ledger queries stay accurate.
+                // If no party split exists (e.g. payment changed to a cashier/account), set null so
+                // the old party's ledger stops showing this voucher.
+                const primaryPartySplit = splits.find(s => s.category === 'party' && s.targetId);
+                baseData.partyId = primaryPartySplit?.targetId || null;
+                baseData.partyName = primaryPartySplit
+                    ? (parties.find(p => p.id === primaryPartySplit.targetId)?.name || primaryPartySplit.targetId)
+                    : null;
+
+                if (initialData) await transaction.update(docRef, baseData);
                 else {
-                    transaction.set(docRef, baseData);
+                    await transaction.set(docRef, baseData);
                     let modeToUse = '';
                     let patternToUse = '';
                     let currentSeqToUse = undefined;
@@ -21907,13 +23031,13 @@ const PaymentModal = (props) => {
                             const expectedRefNo = `${match[1]}${currentSeq}`;
                             
                             if (refNo === expectedRefNo) {
-                                const nextSeqToSave = currentSeq + 1;
+                                nextSeqToSave = currentSeq + 1;
                                 const profileRef = doc(db, 'nadtally_live_registry', companyProfile.id || targetUid);
                                 const companiesRef = doc(db, 'companies', companyProfile.id || targetUid);
-                                transaction.update(profileRef, {
+                                await transaction.update(profileRef, {
                                     [seqKey]: nextSeqToSave
                                 });
-                                transaction.update(companiesRef, {
+                                await transaction.update(companiesRef, {
                                     [seqKey]: nextSeqToSave
                                 });
                             }
@@ -21951,16 +23075,25 @@ const PaymentModal = (props) => {
             } else {
                 let freshRef = '';
                 if (nextSeqToSave !== null) {
-                    const pattern = companyProfile?.rules?.paymentRefPattern || '';
+                    let pattern = '';
+                    if (type === 'out') pattern = companyProfile?.rules?.paymentRefPattern || '';
+                    else if (type === 'in') pattern = companyProfile?.rules?.receiptRefPattern || '';
+                    else if (type === 'contra') pattern = companyProfile?.rules?.contraRefPattern || '';
+                    
                     const match = pattern.match(/^(.*?)(\d+)$/);
                     if (match) freshRef = `${match[1]}${nextSeqToSave}`;
                     
-                    if (onUpdateProfile) {
+                    let seqKey = '';
+                    if (type === 'out') seqKey = 'paymentRefCurrentSeq';
+                    else if (type === 'in') seqKey = 'receiptRefCurrentSeq';
+                    else if (type === 'contra') seqKey = 'contraRefCurrentSeq';
+
+                    if (onUpdateProfile && seqKey) {
                         onUpdateProfile({
                             ...companyProfile,
                             rules: {
                                 ...(companyProfile.rules || {}),
-                                paymentRefCurrentSeq: nextSeqToSave
+                                [seqKey]: nextSeqToSave
                             }
                         });
                     }
@@ -22185,7 +23318,8 @@ const PaymentModal = (props) => {
         >
             <div className="flex flex-col h-screen max-h-screen bg-slate-50 font-sans select-none overflow-hidden">
                 {/* --- PROFESSIONAL TOP OPTIONS TOOLBAR --- */}
-                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-10 shrink-0">
+                <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-10 shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="flex flex-nowrap items-center gap-3 shrink-0">
                     <div className="flex items-center gap-2">
                         <button onClick={onBack} className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-white hover:text-white" title="Go Back"><ArrowLeft size={16} /></button>
                         <div className="w-px h-5 bg-white/10 mx-1"></div>
@@ -22333,6 +23467,7 @@ const PaymentModal = (props) => {
                             />
                         </div>
                     </div>
+                    </div>
                 </div>
 
                 {/* --- SECONDARY BAR: PAID FROM / RECEIVED INTO ACCOUNT --- */}
@@ -22442,7 +23577,8 @@ const PaymentModal = (props) => {
                     </div>
 
                     {/* ✅ DOCKED BOTTOM BAR (FULL REDESIGN) */}
-                    <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center h-14 shrink-0 px-4 md:px-10 gap-6 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative">
+                    <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center h-14 shrink-0 px-4 md:px-10 gap-6 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                        <div className="flex flex-nowrap items-center gap-6 shrink-0 min-w-full">
                         {/* Subtle Audit Labels (Floating) */}
                         {initialData && (
                             <div className="absolute -top-6 right-10 text-[7px] font-black uppercase text-slate-400 bg-white/80 px-2 py-0.5 rounded-t-lg border-t border-x border-slate-100 flex gap-4 transition-opacity opacity-0 hover:opacity-100 cursor-default">
@@ -22569,6 +23705,7 @@ const PaymentModal = (props) => {
                                 {saving ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />}
                             </button>
                         </div>
+                    </div>
                     </div>
                 </div>
 
@@ -22962,7 +24099,7 @@ const PaymentModal = (props) => {
 
 // --- UPDATED JOURNAL VOUCHER MODAL (Saves 'createdBy') ---
 const JournalVoucherModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher } = props;
+    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher, onUpdateProfile, confirmPassword } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
     // FIX 1: Safety check to ensure date is never undefined
@@ -23181,6 +24318,7 @@ const JournalVoucherModal = (props) => {
 
         setSaving(true);
         try {
+            let nextSeqToSave = null;
             await runTransaction(db, async (transaction) => {
                 const targetUid = dataOwnerId || user.uid;
 
@@ -23239,22 +24377,18 @@ const JournalVoucherModal = (props) => {
                 // --- 2. EXECUTE UPDATES ---
                 const diffEntries = Array.from(balanceDiffs.values()).filter(d => d.type !== 'tax' && Math.abs(d.netChange) > 0.0001);
 
-                // Read all involved docs first
-                const snapshots = await Promise.all(diffEntries.map(d => transaction.get(d.ref)));
-
-                diffEntries.forEach((d, i) => {
-                    const snap = snapshots[i];
-                    if (!snap.exists()) return; // Ghost account
+                for (const d of diffEntries) {
+                    const snap = await transaction.get(d.ref);
+                    if (!snap.exists()) continue; // Ghost account
 
                     const data = snap.data();
                     const currentBal = data.balance || 0;
 
-                    // Permission Safety: If userId is missing, try to set it to fix permission trap
                     const updatePayload = { balance: currentBal + d.netChange };
                     if (!data.userId) updatePayload.userId = targetUid;
 
-                    transaction.update(d.ref, updatePayload);
-                });
+                    await transaction.update(d.ref, updatePayload);
+                }
 
                 // --- 3. SAVE THE VOUCHER ---
                 const logAction = initialData ? 'UPDATED' : 'CREATED';
@@ -23287,9 +24421,9 @@ const JournalVoucherModal = (props) => {
                 payload.exchangeRate = currentRate;
                 payload.currencySymbol = currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || '');
 
-                if (initialData) transaction.update(jvRef, payload);
+                if (initialData) await transaction.update(jvRef, payload);
                 else {
-                    transaction.set(jvRef, payload);
+                    await transaction.set(jvRef, payload);
                     if (companyProfile?.rules?.journalRefMode === 'auto') {
                         const pattern = companyProfile?.rules?.journalRefPattern || '';
                         const match = pattern.match(/^(.*?)(\d+)$/);
@@ -23299,13 +24433,13 @@ const JournalVoucherModal = (props) => {
                             const expectedRefNo = `${match[1]}${currentSeq}`;
                             
                             if (refNo === expectedRefNo) {
-                                const nextSeqToSave = currentSeq + 1;
+                                nextSeqToSave = currentSeq + 1;
                                 const profileRef = doc(db, 'nadtally_live_registry', companyProfile.id || targetUid);
                                 const companiesRef = doc(db, 'companies', companyProfile.id || targetUid);
-                                transaction.update(profileRef, {
+                                await transaction.update(profileRef, {
                                     'rules.journalRefCurrentSeq': nextSeqToSave
                                 });
-                                transaction.update(companiesRef, {
+                                await transaction.update(companiesRef, {
                                     'rules.journalRefCurrentSeq': nextSeqToSave
                                 });
                             }
@@ -23334,7 +24468,24 @@ const JournalVoucherModal = (props) => {
             if (initialData) {
                 onClose();
             } else {
-                setRefNo(''); setAmount(''); setDescription('');
+                let freshRef = '';
+                if (nextSeqToSave !== null) {
+                    const pattern = companyProfile?.rules?.journalRefPattern || '';
+                    const match = pattern.match(/^(.*?)(\d+)$/);
+                    if (match) freshRef = `${match[1]}${nextSeqToSave}`;
+                    
+                    if (onUpdateProfile) {
+                        onUpdateProfile({
+                            ...companyProfile,
+                            rules: {
+                                ...(companyProfile.rules || {}),
+                                journalRefCurrentSeq: nextSeqToSave
+                            }
+                        });
+                    }
+                }
+                setRefNo(freshRef);
+                setAmount(''); setDescription('');
                 setDrId(''); setCrId('');
                 setRows([{ id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
             }
@@ -23826,9 +24977,11 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             const itemMap = {};
             products.forEach(p => {
                 const basePurchaseRate = Number(p.purchasePrice || 0);
-                const openingQty = Number(p.openingStock || 0);
-                const openingVal = Number(p.openingBalance || 0);
-                const openingRate = openingQty !== 0 ? Math.abs(openingVal / openingQty) : basePurchaseRate;
+                // Keep Stock Summary aligned with Item Ledger totals by deriving opening
+                // from transaction history (date < from) instead of master opening stock.
+                const openingQty = 0;
+                const openingVal = 0;
+                const openingRate = basePurchaseRate;
 
                 itemMap[p.id] = {
                     id: p.id, name: p.name,
@@ -23944,10 +25097,25 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 if (!isInward && !isOutward) return;
 
                 (d.items || []).forEach(item => {
-                    const qty = Number(item.quantity || 0);
-                    const rate = Number(item.rate || 0);
-                    if (!item.productId || qty <= 0) return;
-                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate, type: isInward ? 'in' : 'out' });
+                    const qtyRaw = Number(item.quantity || 0);
+                    const rateRaw = Number(item.rate || 0);
+                    const rate = Math.abs(rateRaw);
+                    if (!item.productId || qtyRaw === 0) return;
+
+                    // Keep behavior consistent with Item Ledger:
+                    // negative line amounts (qty*rate) reverse voucher direction,
+                    // and if amount is zero, signed qty decides.
+                    const baseSign = isInward ? 1 : -1;
+                    let signedFlow = qtyRaw * rateRaw * baseSign;
+                    if (signedFlow === 0) signedFlow = qtyRaw * baseSign;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate,
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
             });
 
@@ -23955,14 +25123,34 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 const d = doc.data();
                 if (selectedLoc && d.locationId !== selectedLoc) return;
                 (d.produced || []).forEach(item => {
-                    const qty = Number(item.quantity || 0);
-                    if (!item.productId || qty <= 0) return;
-                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate: Number(item.rate || 0), type: 'in' });
+                    const qtyRaw = Number(item.quantity || 0);
+                    if (!item.productId || qtyRaw === 0) return;
+                    const rateRaw = Number(item.rate || 0);
+                    let signedFlow = qtyRaw * rateRaw;
+                    if (signedFlow === 0) signedFlow = qtyRaw;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate: Math.abs(rateRaw),
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
                 (d.consumed || []).forEach(item => {
-                    const qty = Number(item.quantity || 0);
-                    if (!item.productId || qty <= 0) return;
-                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate: Number(item.rate || 0), type: 'out' });
+                    const qtyRaw = Number(item.quantity || 0);
+                    if (!item.productId || qtyRaw === 0) return;
+                    const rateRaw = Number(item.rate || 0);
+                    let signedFlow = -(qtyRaw * rateRaw);
+                    if (signedFlow === 0) signedFlow = -qtyRaw;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate: Math.abs(rateRaw),
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
             });
 
@@ -24179,12 +25367,14 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             .map(g => g.name);
         rootGroupNames.forEach(name => consolidate(name));
 
-        return { groupsMap, activeItems, rootGroupNames };
+        const grandTotalBags = activeItems.reduce((sum, item) => sum + (item.bagCount || 0), 0);
+
+        return { groupsMap, activeItems, rootGroupNames, grandTotalBags };
     }, [reportData, stockGroups, showZeroBalance]);
 
     // --- 2. VIEW LOGIC (Tree Filter vs Search Flatten) ---
     const finalFilteredData = useMemo(() => {
-        const { groupsMap, activeItems, rootGroupNames } = calculatedStockData;
+        const { groupsMap, activeItems, rootGroupNames, grandTotalBags } = calculatedStockData;
         const result = [];
 
         // === SEARCH MODE: FLATTEN & FILTER ===
@@ -24425,7 +25615,19 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} title={`${currentGroupFilter || "Stock Summary"} [${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}]`} centerTitle={true} maxWidth="max-w-[98vw]" defaultMaximized={true}>
+        <Modal
+            isOpen={isOpen}
+            onClose={onClose}
+            onBack={onBack}
+            zIndex={zIndex}
+            title={`${currentGroupFilter || "Stock Summary"} [${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}]`}
+            centerTitle={true}
+            maxWidth="max-w-[98vw]"
+            defaultMaximized={true}
+            noContentScroll={true}
+            headerClassName="!h-[22px] !p-0 px-2 flex items-center"
+            titleClassName="!text-[13px] !leading-none"
+        >
             <div className="space-y-0 h-[88vh] flex flex-col bg-[#fcf6ea]"> {/* ✅ Tally Tan Background */}
 
                 {/* 1. TOOLBAR */}
@@ -24578,7 +25780,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 )}
 
                 {/* 2 & 3: UNIFIED SCROLL CONTAINER (For Mobile Views) */}
-                <div className="flex-1 overflow-auto relative z-10 no-scrollbar">
+                <div className="flex-1 overflow-auto relative z-10 stock-summary-scrollbar">
                     {/* The "Zoomable & Unified Scroll" Wrapper */}
                     <div
                         style={{
@@ -24687,7 +25889,24 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                         {showOpn && !hiddenCols.has('opn') && <><td className="p-1 pr-2 border border-slate-900">{formatQty(totals.openingQty)}</td>{!isRestricted && <>{!hiddenCols.has('opn_rate') && <td className="p-1 border border-slate-900">-</td>}{!hiddenCols.has('opn_val') && <td className="p-1 pr-2 border border-slate-900">{formatCurrency(totals.openingVal)}</td>}</>}</>}
                                         {showIn && !hiddenCols.has('in') && <><td className="p-1 pr-2 border border-slate-900 text-green-900">{formatQty(totals.inQty)}</td>{!isRestricted && <>{!hiddenCols.has('in_rate') && <td className="p-1 border border-slate-900">-</td>}{!hiddenCols.has('in_val') && <td className="p-1 pr-2 border border-slate-900 text-green-900">{formatCurrency(totals.inVal)}</td>}</>}</>}
                                         {showOut && !hiddenCols.has('out') && <><td className="p-1 pr-2 border border-slate-900 text-red-900">{formatQty(totals.outQty)}</td>{!isRestricted && <>{!hiddenCols.has('out_rate') && <td className="p-1 border border-slate-900">-</td>}{!hiddenCols.has('out_val') && <td className="p-1 pr-2 border border-slate-900 text-red-900">{formatCurrency(totals.outVal)}</td>}</>}</>}
-                                        {showCls && !hiddenCols.has('cls') && <><td className="p-1 pr-2 border border-slate-900 text-blue-900">{formatQty(totals.closingQty)}</td>{!isRestricted && <>{!hiddenCols.has('cls_rate') && <td className="p-1 border border-slate-900">-</td>}{!hiddenCols.has('cls_val') && <td className="p-1 pr-2 border border-slate-900 text-blue-900 bg-blue-50/20 text-base">{formatCurrency(totals.closingVal)}</td>}</>}</>}
+                                        {showCls && !hiddenCols.has('cls') && (
+                                            <>
+                                                <td className="p-1 pr-2 border border-slate-900 text-blue-900">
+                                                    <div className="flex flex-col items-end">
+                                                        <span>{formatQty(totals.closingQty)}</span>
+                                                        {calculatedStockData.grandTotalBags > 0 && (
+                                                            <span className="text-[9px] text-orange-600 font-black">{calculatedStockData.grandTotalBags} TOTAL BAGS</span>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                {!isRestricted && (
+                                                    <>
+                                                        {!hiddenCols.has('cls_rate') && <td className="p-1 border border-slate-900">-</td>}
+                                                        {!hiddenCols.has('cls_val') && <td className="p-1 pr-2 border border-slate-900 text-blue-900 bg-blue-50/20 text-base">{formatCurrency(totals.closingVal)}</td>}
+                                                    </>
+                                                )}
+                                            </>
+                                        )}
                                     </tr>
                                 </tfoot>
                             </table>
@@ -24702,7 +25921,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
 // --- UPDATED SIMPLE LIST MODAL (With PDF & Excel) ---
 // --- UPDATED SIMPLE LIST MODAL (Compact & Clean Summary) ---
-const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, summary, dateRange, onDateChange, showDateFilter = true, currencySymbol, registerType = 'default', ledgerSource, user, dataOwnerId, defaultFilter = 'all', invoices, parties, products, onAddToFavorites, modalId }) => {
+const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, summary, dateRange, onDateChange, showDateFilter = true, currencySymbol, registerType = 'default', ledgerSource, user, dataOwnerId, defaultFilter = 'all', invoices, parties, products, onAddToFavorites, modalId, hideF1Detl = false, hideDateTabs = false }) => {
     const [filter, setFilter] = useState(defaultFilter);
     const [searchTerm, setSearchTerm] = useState('');
     const [asyncData, setAsyncData] = useState(null);
@@ -24717,11 +25936,14 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     const [isSearchVisible, setIsSearchVisible] = useState(false);
     const [focusedRowIdx, setFocusedRowIdx] = useState(-1);
     const focusedRowRef = useRef(null);
-    const itemsPerPage = 20;
+    const itemsPerPage = 50;
 
     const [showDateMenu, setShowDateMenu] = useState(false);
     const [isDateOpen, setIsDateOpen] = useState(false);
     const [isPeriodOpen, setIsPeriodOpen] = useState(false);
+    const dateMenuBtnRef = useRef(null);
+    const dateMenuRef = useRef(null);
+    const [dateMenuPos, setDateMenuPos] = useState({ top: 0, left: 0, width: 208 });
 
     const toggleGroup = (groupName) => {
         setExpandedGroups(prev => {
@@ -24732,27 +25954,78 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         });
     };
 
+    const openDatePicker = useCallback(() => {
+        setIsPeriodOpen(false);
+        setShowDateMenu(false);
+        setTimeout(() => setIsDateOpen(true), 0);
+    }, []);
+
+    const openPeriodPicker = useCallback(() => {
+        setIsDateOpen(false);
+        setShowDateMenu(false);
+        setTimeout(() => setIsPeriodOpen(true), 0);
+    }, []);
+
     const isInvRegister = ['sales', 'purchase'].includes(registerType);
     const isQtyAmountRegister = ['sales', 'purchase'].includes(registerType);
 
     useEffect(() => {
         const handleKey = (e) => {
-            if (e.key === 'F1') {
+            const key = (e.key || '').toLowerCase();
+
+            if (e.altKey && key === 'f2') {
+                e.preventDefault();
+                e.stopPropagation();
+                openPeriodPicker();
+                return;
+            }
+
+            if (key === 'f1') {
                 e.preventDefault();
                 setDetailView(prev => !prev);
             }
-            if (e.key === 'F2' && !e.altKey) {
+            if (key === 'f2' && !e.altKey) {
                 e.preventDefault();
-                setIsDateOpen(true);
-            }
-            if (e.altKey && e.key === 'F2') {
-                e.preventDefault();
-                setIsPeriodOpen(true);
+                openDatePicker();
             }
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [registerType, dateRange?.to]);
+    }, [registerType, dateRange?.to, openDatePicker, openPeriodPicker]);
+
+    useEffect(() => {
+        if (!showDateMenu) return;
+
+        const updateMenuPosition = () => {
+            const btn = dateMenuBtnRef.current;
+            if (!btn) return;
+            const rect = btn.getBoundingClientRect();
+            setDateMenuPos({
+                top: rect.bottom + 8,
+                left: rect.left,
+                width: Math.max(rect.width, 208)
+            });
+        };
+
+        const handleOutsideClick = (e) => {
+            const btn = dateMenuBtnRef.current;
+            const menu = dateMenuRef.current;
+            if (btn && btn.contains(e.target)) return;
+            if (menu && menu.contains(e.target)) return;
+            setShowDateMenu(false);
+        };
+
+        updateMenuPosition();
+        window.addEventListener('resize', updateMenuPosition);
+        window.addEventListener('scroll', updateMenuPosition, true);
+        document.addEventListener('click', handleOutsideClick);
+
+        return () => {
+            window.removeEventListener('resize', updateMenuPosition);
+            window.removeEventListener('scroll', updateMenuPosition, true);
+            document.removeEventListener('click', handleOutsideClick);
+        };
+    }, [showDateMenu]);
 
     const formatCurrencyLocal = (val) => Number(val).toLocaleString(undefined, { minimumFractionDigits: 2 });
 
@@ -24762,8 +26035,8 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             setSearchTerm('');
             // Set defaults based on type
             const isRegister = ['payment', 'receipt', 'contra', 'manufacturing'].includes(registerType);
-            setSortBy(isRegister ? 'date' : 'label');
-            setSortOrder(isRegister ? 'desc' : 'asc');
+            setSortBy(isRegister ? 'date' : 'amount');
+            setSortOrder('desc');
             setExpandedGroups(new Set()); // Reset on open
             setSummaryMode('detailed');
             setCurrentPage(1);
@@ -25102,6 +26375,12 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     valA = Math.abs(a.rawValue || 0);
                     valB = Math.abs(b.rawValue || 0);
                 }
+            } else if (sortBy === 'qty') {
+                valA = Number(a.qty || 0);
+                valB = Number(b.qty || 0);
+            } else if (sortBy === 'bagCount') {
+                valA = Number(a.bagCount || 0);
+                valB = Number(b.bagCount || 0);
             } else {
                 valA = 0; valB = 0;
             }
@@ -25222,8 +26501,10 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         credit: filteredData.reduce((sum, item) => sum + (item.credit || 0), 0),
         balance: filteredData.reduce((sum, item) => sum + (item.rawValue || 0), 0),
         totalVchAmt: filteredData.reduce((sum, item) => sum + (item.totalAmt || 0), 0),
-        totalQty: filteredData.reduce((sum, item) => sum + (item.qty || 0), 0)
+        totalQty: filteredData.reduce((sum, item) => sum + (item.qty || 0), 0),
+        totalBags: filteredData.reduce((sum, item) => sum + (Number(item.bagCount) || 0), 0)
     };
+    const shouldStretchListToBottom = title === 'Payables Breakdown' || title === 'Receivables Breakdown';
 
     const downloadExcel = async () => {
         try {
@@ -25402,45 +26683,62 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             </div>
 
             {/* DATE / PERIOD FILTER */}
-            {showDateFilter && dateRange && onDateChange && (
-                <div className="relative pointer-events-auto shrink-0 hidden sm:block">
+            {showDateFilter && !hideDateTabs && dateRange && onDateChange && (
+                <div className="relative z-[120] pointer-events-auto shrink-0 hidden sm:flex items-center gap-2">
                     <button
+                        ref={dateMenuBtnRef}
                         onClick={(e) => { e.stopPropagation(); setShowDateMenu(!showDateMenu); }}
                         className={`px-3 py-1 lg:py-1.5 rounded-md text-[10px] lg:text-[11px] font-black border transition-all flex items-center gap-2 ${showDateMenu ? 'bg-indigo-600 text-white border-indigo-700 shadow-md' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
+                        title="Open date options"
                     >
                         <span className="text-slate-400 hidden lg:inline">F2:</span>
                         <span className="tracking-tight uppercase">{dateRange.from === dateRange.to ? formatDate(dateRange.from) : `${formatDate(dateRange.from)} - ${formatDate(dateRange.to)}`}</span>
                         <ChevronDown size={12} className={showDateMenu ? 'rotate-180' : ''} />
                     </button>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); openPeriodPicker(); }}
+                        className="px-3 py-1 lg:py-1.5 rounded-md text-[10px] lg:text-[11px] font-black border bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 transition-all"
+                        title="Change period (Alt+F2)"
+                    >
+                        Alt+F2: Period
+                    </button>
                     {showDateMenu && (
-                        <div className="absolute top-full left-0 mt-2 w-52 bg-white border border-slate-200 shadow-2xl rounded-xl py-2 z-[1000] animate-in fade-in zoom-in-95 ring-1 ring-black/5 no-drag">
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    const t = new Date().toISOString().split('T')[0];
-                                    onDateChange({ from: t, to: t });
-                                    setShowDateMenu(false);
-                                }}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-blue-50 text-slate-700 flex items-center justify-between"
+                        createPortal(
+                            <div
+                                ref={dateMenuRef}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ position: 'fixed', top: `${dateMenuPos.top}px`, left: `${dateMenuPos.left}px`, width: `${dateMenuPos.width}px` }}
+                                className="bg-white border border-slate-200 shadow-2xl rounded-xl py-2 z-[99999] animate-in fade-in zoom-in-95 ring-1 ring-black/5 no-drag"
                             >
-                                <span>Today</span>
-                                <span className="text-[10px] bg-slate-100 px-1 rounded font-bold text-slate-400">CUR</span>
-                            </button>
-                            <button
-                                onClick={(e) => { e.stopPropagation(); setShowDateMenu(false); setIsDateOpen(true); }}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-blue-50 text-slate-700 flex items-center justify-between"
-                            >
-                                <span>Date Change (F2)</span>
-                                <span className="text-[10px] bg-slate-100 px-1 rounded font-bold text-slate-400">1 DAY</span>
-                            </button>
-                            <button
-                                onClick={(e) => { e.stopPropagation(); setShowDateMenu(false); setIsPeriodOpen(true); }}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-blue-50 text-slate-700 flex items-center justify-between"
-                            >
-                                <span>Period (Alt+F2)</span>
-                                <span className="text-[10px] bg-slate-100 px-1 rounded font-bold text-slate-400">RANGE</span>
-                            </button>
-                        </div>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        const t = new Date().toISOString().split('T')[0];
+                                        onDateChange({ from: t, to: t });
+                                        setShowDateMenu(false);
+                                    }}
+                                    className="w-full text-left px-4 py-2 text-sm hover:bg-blue-50 text-slate-700 flex items-center justify-between"
+                                >
+                                    <span>Today</span>
+                                    <span className="text-[10px] bg-slate-100 px-1 rounded font-bold text-slate-400">CUR</span>
+                                </button>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); openDatePicker(); }}
+                                    className="w-full text-left px-4 py-2 text-sm hover:bg-blue-50 text-slate-700 flex items-center justify-between"
+                                >
+                                    <span>Date Change (F2)</span>
+                                    <span className="text-[10px] bg-slate-100 px-1 rounded font-bold text-slate-400">1 DAY</span>
+                                </button>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); openPeriodPicker(); }}
+                                    className="w-full text-left px-4 py-2 text-sm hover:bg-blue-50 text-slate-700 flex items-center justify-between"
+                                >
+                                    <span>Period (Alt+F2)</span>
+                                    <span className="text-[10px] bg-slate-100 px-1 rounded font-bold text-slate-400">RANGE</span>
+                                </button>
+                            </div>,
+                            document.body
+                        )
                     )}
                 </div>
             )}
@@ -25507,14 +26805,29 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
             {/* ACTION BUTTONS (ONE LINE) */}
             <div className="flex items-center gap-1.5 lg:gap-3 shrink-0 pointer-events-auto">
-                <button
-                    onClick={() => setDetailView(!detailView)}
-                    className={`hidden md:flex items-center gap-2 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border transition-all ${detailView ? 'bg-amber-500 text-white border-amber-600 shadow-inner' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}
-                    title="Detailed View (F1)"
-                >
-                    <span className="text-slate-400 opacity-60">F1:</span>
-                    {detailView ? 'COND' : 'DETL'}
-                </button>
+                {hideDateTabs && dateRange && (
+                    <div className="hidden md:flex items-center gap-3 bg-white/80 border border-slate-200 px-3 py-1.5 rounded-xl shadow-sm mr-2">
+                        <div className="flex flex-col items-end cursor-pointer hover:bg-blue-50 transition-colors px-1 rounded-md group" onClick={openDatePicker} title="Click to change As of Date (F2)">
+                             <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none group-hover:text-blue-500">As of Date</span>
+                             <span className="text-[10px] font-black text-blue-700 leading-none mt-1">{formatDate(dateRange.to)}</span>
+                        </div>
+                        <div className="h-5 w-px bg-slate-200"></div>
+                        <div className="flex flex-col items-end cursor-pointer hover:bg-emerald-50 transition-colors px-1 rounded-md group" onClick={openPeriodPicker} title="Click to change Period (Alt+F2)">
+                             <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none group-hover:text-emerald-500">Period (Range)</span>
+                             <span className="text-[10px] font-black text-slate-700 leading-none mt-1 uppercase">{formatDate(dateRange.from)} - {formatDate(dateRange.to)}</span>
+                        </div>
+                    </div>
+                )}
+                {!hideF1Detl && (
+                    <button
+                        onClick={() => setDetailView(!detailView)}
+                        className={`hidden md:flex items-center gap-2 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border transition-all ${detailView ? 'bg-amber-500 text-white border-amber-600 shadow-inner' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}
+                        title="Detailed View (F1)"
+                    >
+                        <span className="text-slate-400 opacity-60">F1:</span>
+                        {detailView ? 'COND' : 'DETL'}
+                    </button>
+                )}
 
                 <div className="h-4 w-px bg-slate-200 mx-1 hidden lg:block"></div>
 
@@ -25528,7 +26841,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     onClick={downloadPDF}
                     className="flex items-center gap-2 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 transition-all"
                 >
-                    PRINT
+                    PDF
                 </button>
 
                 <div className="h-4 w-px bg-slate-200 mx-1"></div>
@@ -25567,6 +26880,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={HeaderTitle} maxWidth={registerType === 'manufacturing' ? "max-w-6xl" : "max-w-4xl"} defaultMaximized={true}>
+            <div className={`flex min-h-0 flex-col ${shouldStretchListToBottom ? 'h-full' : ''}`}>
 
             {/* --- SUMMARY STRIP REMOVED - MOVED TO HEADER --- */}
 
@@ -25628,7 +26942,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             )}
 
             {/* --- THEMED TABLE HEADER --- */}
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-white mb-2">
+            <div className={`border border-slate-200 rounded-xl overflow-y-auto shadow-inner bg-white ${shouldStretchListToBottom ? 'flex-1 min-h-0 mb-0' : 'max-h-[65vh] mb-2'}`}>
                 <table className="w-full text-left text-sm border-collapse">
                     <thead className="bg-[#1e293b] text-white font-bold uppercase text-[10px] sticky top-0 z-20 shadow-md">
                         {registerType === 'manufacturing' ? (
@@ -25636,8 +26950,20 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                 <Th col="date" label="Date" className="border-r border-white/5" />
                                 <Th col="ref" label="Vch No." className="border-r border-white/5" />
                                 <Th col="label" label="Item Details" className="border-r border-white/5" />
-                                <Th col="bagCount" label="Bags" align="center" className="border-r border-white/5" />
-                                <Th col="qty" label="Weight" align="right" className="border-r border-white/5" />
+                                <Th col="bagCount" label={
+                                    <div className="flex flex-col items-center">
+                                        <span className="text-[23px] text-white font-bold tracking-tighter leading-none mb-1">{displaySummary.totalBags}</span>
+                                        <span className="text-[9px]">Bags</span>
+                                    </div>
+                                } align="center" className="border-r border-white/5" />
+                                <Th col="qty" label={
+                                    <div className="flex flex-col items-end">
+                                        <span className="text-[23px] text-white font-bold tracking-tighter leading-none mb-1">
+                                            {Number(displaySummary.totalQty).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                        </span>
+                                        <span className="text-[9px]">Weight</span>
+                                    </div>
+                                } align="right" className="border-r border-white/5" />
                                 <Th col="amount" label="Value" align="right" />
                             </tr>
                         ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
@@ -25677,7 +27003,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                 return (<React.Fragment key={item.id}>
                                     <tr
                                         ref={isFocused ? focusedRowRef : null}
-                                        className={`transition-all border-b border-slate-100 ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : item.isSummary ? 'bg-indigo-50/50 hover:bg-indigo-100 font-bold' : detailView ? 'bg-amber-50/20 hover:bg-amber-50' : 'hover:bg-slate-50'} ${onItemClick || item.isSummary ? 'cursor-pointer' : ''} group`}
+                                        className={`h-[21px] transition-all border-b border-slate-100 ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : item.isSummary ? 'bg-indigo-50/50 hover:bg-indigo-100 font-bold' : detailView ? 'bg-amber-50/20 hover:bg-amber-50' : 'hover:bg-slate-50'} ${onItemClick || item.isSummary ? 'cursor-pointer' : ''} group`}
                                         onClick={() => { setFocusedRowIdx(rowIdx); item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item)); }}
                                         title={item.isSummary ? "Click to Drill Down" : onItemClick ? "Click to View/Edit Transaction" : ""}
                                     >
@@ -26014,6 +27340,25 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     </div>
                 </div>
             )}
+            </div>
+            {createPortal(
+                <ChangeDateModal
+                    isOpen={isDateOpen}
+                    onClose={() => setIsDateOpen(false)}
+                    onSubmit={(d) => { if (onDateChange) onDateChange({ ...dateRange, from: d, to: d }); setIsDateOpen(false); }}
+                    baseDate={dateRange?.to}
+                />,
+                document.body
+            )}
+            {createPortal(
+                <ChangePeriodModal
+                    isOpen={isPeriodOpen}
+                    onClose={() => setIsPeriodOpen(false)}
+                    onSubmit={(f, t) => { if (onDateChange) onDateChange({ from: f, to: t }); setIsPeriodOpen(false); }}
+                    baseDate={dateRange?.to}
+                />,
+                document.body
+            )}
         </Modal>
     );
 };
@@ -26191,11 +27536,11 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
 };
 
 // --- UPDATED FINANCIAL REPORTS MODAL (With Consistent Stock Valuation) ---
-const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, parties, products, expenses, expenseGroups = [], directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, calculatedCosts, locations, onDrillDown, currencySymbol }) => {
+const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, parties, products, expenses, expenseGroups = [], directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates = [], calculatedCosts, locations, onDrillDown: onParentDrillDown, currencySymbol }) => {
     const [reportType, setReportType] = useState('pnl');
 
-    // ✅ NEW: Valuation Method State
-    const [valuationMethod, setValuationMethod] = useState('avg'); // 'avg', 'last_purchase', 'last_sale'
+    // Stock valuation for balance sheet / COGS
+    const [valuationMethod, setValuationMethod] = useState('fifo'); // 'fifo' | 'last_purchase' | 'last_sale'
 
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -26208,6 +27553,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     const [isDateOpen, setIsDateOpen] = useState(false);
     const [isPeriodOpen, setIsPeriodOpen] = useState(false);
+
+    // Always drill down with the exact report period selected in Financial Statements
+    const onDrillDown = (type, id) => onParentDrillDown(type, id, dateRange);
 
     // ✅ NEW: Expanded Groups State for Indirect Expenses
     const [expandedGroups, setExpandedGroups] = useState({});
@@ -26236,7 +27584,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     useEffect(() => {
         if (isOpen) generateReport();
-    }, [isOpen, valuationMethod]);
+    }, [isOpen, valuationMethod, dateRange, selectedLocs]);
 
     const safeNum = (val) => isNaN(Number(val)) ? 0 : Number(val);
     const formatCurrency = (val) => Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -26307,9 +27655,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const qInv = query(collection(db, 'invoices'), where('userId', '==', targetUid));
             const qMfg = query(collection(db, 'stock_journals'), where('userId', '==', targetUid));
 
-            // B. Payments & JVs: Only needed for the selected period for P&L (Expenses)
-            const qPay = query(collection(db, 'payments'), where('date', '>=', range.from), where('date', '<=', range.to));
-            const qJv = query(collection(db, 'journal_vouchers'), where('date', '>=', range.from), where('date', '<=', range.to));
+            // B. Payments & JVs: Fetch all docs up to report date for exact as-of balances
+            const qPay = query(collection(db, 'payments'), where('userId', '==', targetUid), where('date', '<=', range.to));
+            const qJv = query(collection(db, 'journal_vouchers'), where('userId', '==', targetUid), where('date', '<=', range.to));
 
             const [invSnap, mfgSnap, paySnap, jvSnap] = await Promise.all([
                 getDocs(qInv), getDocs(qMfg), getDocs(qPay), getDocs(qJv)
@@ -26331,7 +27679,8 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const name = expObj?.name || (id.length > 20 ? getExpenseName(id) : id) || 'Uncategorized Expense';
                 
                 if (isDirect) {
-                    directExpensesMap[name] = (directExpensesMap[name] || 0) + val;
+                    if (!directExpensesMap[id]) directExpensesMap[id] = { id, name, amount: 0 };
+                    directExpensesMap[id].amount += val;
                 } else {
                     const gName = expObj?.group || 'Other Indirect Expenses';
                     if (!indirectExpensesGroups[gName]) indirectExpensesGroups[gName] = { name: gName, total: 0, items: {} };
@@ -26341,7 +27690,17 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     indirectExpensesMap[name] = (indirectExpensesMap[name] || 0) + val;
                 }
             };
+
+            const addIncomeToMap = (id, amt, type = 'in') => {
+                if (!id) return;
+                const sign = type === 'in' ? 1 : -1;
+                const val = safeNum(amt) * sign;
+                const name = getIncomeName(id);
+                if (!indirectIncomeMap[id]) indirectIncomeMap[id] = { id, name, amount: 0 };
+                indirectIncomeMap[id].amount += val;
+            };
             const itemMap = {};
+            const stockMovements = [];
             products.forEach(p => {
                 itemMap[p.id] = {
                     openingQty: Number(p.openingStock || 0), // Base Master Opening
@@ -26353,7 +27712,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     lastSaleRate: Number(p.salePrice || 0),
                     lastSaleDate: '1970-01-01',
 
-                    inQty: 0, inVal: 0, // For Period Avg Cost
+                    inQty: 0, inVal: 0,
                     outQty: 0, outVal: 0
                 };
             });
@@ -26432,7 +27791,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
                 // 2. P&L Processing (In Date Range ONLY)
                 if (d.date >= range.from && d.date <= range.to) {
-                    const grandTotal = safeNum(d.totalAmount);
+                    const grandTotal = safeNum(d.totalAmount || d.amount || 0);
                     const tax = safeNum(d.taxAmount);
                     let docDirectExp = 0;
 
@@ -26442,6 +27801,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         });
                     }
 
+                    // Sales Account (Net) = subtotal only, excluding tax (same as Sales Register)
                     if (d.type === 'sales') totalSales += (grandTotal - tax);
                     if (d.type === 'purchase') {
                         const purePurchase = grandTotal - tax - docDirectExp;
@@ -26486,18 +27846,18 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 }
             });
 
-            // C. PAYMENTS (Filtered by Date in Query)
+            // C. PAYMENTS (Fetched as-of report date; period filters applied below)
             paySnap.forEach(doc => {
                 const d = doc.data();
                 const amt = safeNum(d.amount);
+
+                if (!(d.date >= range.from && d.date <= range.to)) return;
 
                 if (d.transactionCategory === 'expense' && d.expenseId) {
                     addExpenseToMaps(d.expenseId, amt, d.type);
                 }
                 if (d.transactionCategory === 'income' && d.incomeId) {
-                    const name = getIncomeName(d.incomeId);
-                    if (d.type === 'in') indirectIncomeMap[name] = (indirectIncomeMap[name] || 0) + amt;
-                    else if (d.type === 'out') indirectIncomeMap[name] = (indirectIncomeMap[name] || 0) - amt;
+                    addIncomeToMap(d.incomeId, amt, d.type);
                 }
                 if (d.isMulti && d.splits) {
                     d.splits.forEach(s => {
@@ -26506,19 +27866,19 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         }
                         if (s.category === 'income' && s.targetId) {
                             const splitAmt = safeNum(s.amount);
-                            const name = getIncomeName(s.targetId);
-                            if (d.type === 'in') indirectIncomeMap[name] = (indirectIncomeMap[name] || 0) + splitAmt;
-                            else indirectIncomeMap[name] = (indirectIncomeMap[name] || 0) - splitAmt;
+                            addIncomeToMap(s.targetId, splitAmt, d.type);
                         }
                     });
                 }
             });
 
-            // D. JVs (Filtered by Date in Query)
+            // D. JVs (Fetched as-of report date; period filters applied below)
             jvSnap.forEach(doc => {
                 const d = doc.data();
                 const amt = safeNum(d.amount);
-                const isMfg = !!d.linkedStockJournalId;
+                const isMfg = !!d.linkedStockJournalId || String(d.narration || '').startsWith('Expenses for Mfg');
+
+                if (!(d.date >= range.from && d.date <= range.to)) return;
 
                 const processLine = (type, id, rowAmt, isDr) => {
                     const safeA = safeNum(rowAmt);
@@ -26526,14 +27886,14 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         addExpenseToMaps(id, rowAmt, isDr ? 'out' : 'in');
                     }
                     if (type === 'income' && id) {
-                        const name = getIncomeName(id);
-                        if (isDr) indirectIncomeMap[name] = (indirectIncomeMap[name] || 0) - safeA;
-                        else indirectIncomeMap[name] = (indirectIncomeMap[name] || 0) + safeA;
+                        addIncomeToMap(id, safeA, isDr ? 'out' : 'in');
                     }
                 };
 
-                if (d.isMulti && d.rows) {
+                if (d.rows && d.rows.length > 0) {
                     d.rows.forEach(r => {
+                        // For Mfg JVs, the debit side is typically absorbed into production, so we skip adding it to normal P&L expenses.
+                        // However, the credit side (e.g., allocating from an indirect expense) must be processed to reduce the expense balance.
                         if (isMfg && r.type === 'dr' && r.category === 'expense') return;
                         processLine(r.category, r.aid || r.id, r.amount, r.type === 'dr');
                     });
@@ -26544,43 +27904,127 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             });
 
             // --- 4. CALCULATE FINAL STOCK VALUES ---
-            let totalClosingStockValue = 0;
-            let totalOpeningStockValue = 0;
-
-            Object.values(itemMap).forEach(i => {
-                // Valuation Rate selection based on chosen method
-                const periodAvgCost = i.inQty > 0 ? (i.inVal / i.inQty) : 0;
-                // All-time weighted avg from pre-calculated app-level costs (more accurate than period-only)
-                const globalAvgCost = calculatedCosts[i.id]?.avg || 0;
-
-                let valRate = 0;
-                if (valuationMethod === 'last_purchase') {
-                    valRate = i.lastPurchaseRate;
-                } else if (valuationMethod === 'last_sale') {
-                    valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
-                } else {
-                    // Avg: prefer period avg → global pre-calculated avg → last purchase rate
-                    valRate = periodAvgCost > 0 ? periodAvgCost : (globalAvgCost > 0 ? globalAvgCost : i.lastPurchaseRate);
-                }
-
-                // Final fallback: product master price
-                if (!valRate || valRate === 0) {
-                    const prod = products.find(p => p.id === i.id);
-                    valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
-                }
-
-
-                totalOpeningStockValue += (i.openingQty * valRate); // Valuation at constant rate for P&L simplicity or should we use Opening Rate? 
-                // Tally P&L typically values Opening and Closing stock. 
-                // Here we use the selected rate for both to avoid weird swings, or strictly speaking Opening should use Opening Rate.
-                // But simplified: Use same rate strategy.
-
-                totalClosingStockValue += (i.closingQty * valRate);
+            // Build movement ledger for FIFO and quantity tracking
+            invSnap.forEach(doc => {
+                const d = doc.data();
+                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
+                if (!isLocMatch || !Array.isArray(d.items)) return;
+                d.items.forEach(i => {
+                    const qty = safeNum(i.quantity);
+                    if (!qty || !d.date || d.date > range.to) return;
+                    const rate = safeNum(i.rate);
+                    if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') {
+                        stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate });
+                    }
+                    if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') {
+                        stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate });
+                    }
+                });
             });
+
+            mfgSnap.forEach(doc => {
+                const d = doc.data();
+                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
+                if (!isLocMatch || !d.date || d.date > range.to) return;
+                (d.produced || []).forEach(i => {
+                    const qty = safeNum(i.quantity);
+                    if (!qty) return;
+                    stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate: safeNum(i.rate) });
+                });
+                (d.consumed || []).forEach(i => {
+                    const qty = safeNum(i.quantity);
+                    if (!qty) return;
+                    stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate: safeNum(i.rate) });
+                });
+            });
+
+            const sortedMovements = stockMovements.sort((a, b) => {
+                const da = new Date(a.date).getTime();
+                const db = new Date(b.date).getTime();
+                if (da !== db) return da - db;
+                if (a.type === b.type) return 0;
+                return a.type === 'in' ? -1 : 1;
+            });
+
+            const initFifoLayers = () => {
+                const layers = {};
+                products.forEach(p => {
+                    const q = safeNum(p.openingStock || 0);
+                    if (q <= 0) return;
+                    const r = safeNum(p.purchasePrice || p.salePrice || 0);
+                    layers[p.id] = [{ qty: q, rate: r }];
+                });
+                return layers;
+            };
+
+            const applyMoveToLayers = (layers, move) => {
+                if (!move?.productId || !itemMap[move.productId]) return;
+                if (!layers[move.productId]) layers[move.productId] = [];
+
+                if (move.type === 'in') {
+                    const inRate = safeNum(move.rate || itemMap[move.productId].lastPurchaseRate || 0);
+                    layers[move.productId].push({ qty: safeNum(move.qty), rate: inRate });
+                    return;
+                }
+
+                let rem = safeNum(move.qty);
+                const q = layers[move.productId];
+                while (rem > 0 && q.length > 0) {
+                    const head = q[0];
+                    const take = Math.min(rem, safeNum(head.qty));
+                    head.qty -= take;
+                    rem -= take;
+                    if (head.qty <= 0) q.shift();
+                }
+            };
+
+            const layersValue = (layers) => {
+                return Object.values(layers).reduce((sum, q) => {
+                    const itemTotal = (q || []).reduce((s, layer) => s + (safeNum(layer.qty) * safeNum(layer.rate)), 0);
+                    return sum + itemTotal;
+                }, 0);
+            };
+
+            const fifoLayersForOpening = initFifoLayers();
+            sortedMovements.forEach((m) => {
+                if (m.date < range.from) applyMoveToLayers(fifoLayersForOpening, m);
+            });
+            const fifoOpeningValue = layersValue(fifoLayersForOpening);
+
+            const fifoLayersForClosing = initFifoLayers();
+            sortedMovements.forEach((m) => {
+                if (m.date <= range.to) applyMoveToLayers(fifoLayersForClosing, m);
+            });
+            const fifoClosingValue = layersValue(fifoLayersForClosing);
+
+            let totalOpeningStockValue = 0;
+            let totalClosingStockValue = 0;
+
+            if (valuationMethod === 'fifo') {
+                totalOpeningStockValue = fifoOpeningValue;
+                totalClosingStockValue = fifoClosingValue;
+            } else {
+                Object.values(itemMap).forEach(i => {
+                    let valRate = 0;
+                    if (valuationMethod === 'last_purchase') {
+                        valRate = i.lastPurchaseRate;
+                    } else {
+                        valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
+                    }
+
+                    if (!valRate || valRate === 0) {
+                        const prod = products.find(p => p.id === i.id);
+                        valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
+                    }
+
+                    totalOpeningStockValue += (i.openingQty * valRate);
+                    totalClosingStockValue += (i.closingQty * valRate);
+                });
+            }
 
 
             // E. SUMMARIZE DATA
-            const directExpensesList = Object.entries(directExpensesMap).map(([name, amount]) => ({ name, amount }));
+            const directExpensesList = Object.values(directExpensesMap).map(({ id, name, amount }) => ({ id, name, amount }));
             const totalDirectExpenses = directExpensesList.reduce((sum, i) => sum + i.amount, 0);
 
             const indirectExpensesList = Object.entries(indirectExpensesMap).map(([name, amount]) => ({ name, amount }));
@@ -26591,30 +28035,180 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
             const totalIndirectExpenses = indirectExpensesList.reduce((sum, i) => sum + i.amount, 0);
 
-            const indirectIncomeList = Object.entries(indirectIncomeMap).map(([name, amount]) => ({ name, amount }));
+            const indirectIncomeList = Object.values(indirectIncomeMap).map(({ id, name, amount }) => ({ id, name, amount }));
             const totalIndirectIncome = indirectIncomeList.reduce((sum, i) => sum + i.amount, 0);
 
             const cogs = totalOpeningStockValue + totalPurchases + totalDirectExpenses - totalClosingStockValue;
             const grossProfit = totalSales - cogs;
             const netProfit = grossProfit - totalIndirectExpenses + totalIndirectIncome;
 
-            // Balance Sheet Items (Calculated simply)
-            const debtors = parties.filter(p => p.balance > 0).reduce((sum, p) => sum + p.balance, 0);
-            const creditors = parties.filter(p => p.balance < 0).reduce((sum, p) => sum + Math.abs(p.balance), 0);
-            const cashBank = accounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+            // Balance Sheet Items (Exact as-of balances from ledger movements)
+            const invoicesAsOf = invSnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
+            const paymentsAsOf = paySnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
+            const jvsAsOf = jvSnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
+
+            const calculateBalancesAsOf = (entities, ledgerType) => {
+                const map = {};
+                (entities || []).forEach(ent => {
+                    map[ent.id] = Number(ent.openingBalance || 0);
+                });
+
+                invoicesAsOf.forEach((d) => {
+                    const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
+                    const rate = Number(d.exchangeRate || 1);
+                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
+                        : baseVal;
+
+                    if (ledgerType === 'party' && d.partyId && map[d.partyId] !== undefined) {
+                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
+                        if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') map[d.partyId] += amt;
+                        else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') map[d.partyId] -= amt;
+                    }
+
+                    if (ledgerType === 'account' && d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && map[d.addlExpCreditId] !== undefined) {
+                        map[d.addlExpCreditId] -= addlExpBase;
+                    }
+                });
+
+                paymentsAsOf.forEach((v) => {
+                    const rate = Number(v.exchangeRate || 1);
+                    const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
+
+                    if (ledgerType === 'account' && v.accountId && map[v.accountId] !== undefined) {
+                        if (v.type === 'in') map[v.accountId] += amtBase;
+                        else map[v.accountId] -= amtBase;
+                    }
+
+                    const applyTarget = (tid, tcat, tval) => {
+                        if (ledgerType === tcat && map[tid] !== undefined) {
+                            if (v.type === 'in') map[tid] -= tval;
+                            else map[tid] += tval;
+                        }
+                    };
+
+                    if (v.isMulti && Array.isArray(v.splits)) {
+                        v.splits.forEach((s) => applyTarget(s.targetId, s.category, Number(s.amount || 0) * rate));
+                    } else {
+                        let cat = v.transactionCategory;
+                        let tid = null;
+                        if (cat === 'party') tid = v.partyId;
+                        else if (cat === 'expense') tid = v.expenseId;
+                        else if (cat === 'account' || v.type === 'contra') { cat = 'account'; tid = v.toAccountId; }
+                        else if (cat === 'capital') tid = v.capitalId;
+                        else if (cat === 'asset') tid = v.assetId;
+                        else if (cat === 'income') tid = v.incomeId;
+                        if (tid) applyTarget(tid, cat, amtBase);
+                    }
+                });
+
+                jvsAsOf.forEach((v) => {
+                    const amt = Number(v.amount || 0);
+                    if (v.isMulti && Array.isArray(v.rows)) {
+                        v.rows.forEach((r) => {
+                            if (ledgerType === r.category && map[r.id] !== undefined) {
+                                if (r.type === 'dr') map[r.id] += Number(r.amount || 0);
+                                else map[r.id] -= Number(r.amount || 0);
+                            }
+                        });
+                    } else {
+                        if (ledgerType === v.drType && v.drId && map[v.drId] !== undefined) map[v.drId] += amt;
+                        if (ledgerType === v.crType && v.crId && map[v.crId] !== undefined) map[v.crId] -= amt;
+                    }
+                });
+
+                return map;
+            };
+
+            const partyBalances = calculateBalancesAsOf(parties, 'party');
+            const accountBalances = calculateBalancesAsOf(accounts, 'account');
+
+            const debtors = Object.values(partyBalances).reduce((sum, bal) => sum + (bal > 0 ? bal : 0), 0);
+            const creditors = Object.values(partyBalances).reduce((sum, bal) => sum + (bal < 0 ? Math.abs(bal) : 0), 0);
+            const cashBank = Object.values(accountBalances).reduce((sum, bal) => sum + Number(bal || 0), 0);
+
+            // Tax balance (Input - Output) aligned with All Taxes Register logic
+            const normalizeTax = (v) => String(v || '').trim().toLowerCase();
+            const taxBalance = (taxRates || []).reduce((sum, taxRate) => {
+                const taxId = String(taxRate?.id || '').trim();
+                if (!taxId) return sum;
+
+                const taxNameNorm = normalizeTax(taxRate?.name);
+                let drAmount = 0;
+                let crAmount = 0;
+
+                // Invoices
+                invoicesAsOf.forEach((inv) => {
+                    if (!['sales', 'debit_note', 'purchase', 'credit_note'].includes(inv?.type)) return;
+
+                    const invTaxId = String(inv?.taxId || '').trim();
+                    const matchesTax = (invTaxId === taxId) || (normalizeTax(inv?.taxName) === taxNameNorm);
+                    if (!matchesTax) return;
+
+                    const taxAmt = Number(inv?.taxAmount || 0);
+                    if (taxAmt <= 0) return;
+
+                    const isInputTax = inv.type === 'purchase' || inv.type === 'credit_note';
+                    if (isInputTax) drAmount += taxAmt;
+                    else crAmount += taxAmt;
+                });
+
+                // Journal vouchers (simple + multi-row)
+                jvsAsOf.forEach((jv) => {
+                    if (!jv?.isMulti) {
+                        const drTypeNorm = normalizeTax(jv?.drType);
+                        const crTypeNorm = normalizeTax(jv?.crType);
+                        const drIdNorm = normalizeTax(jv?.drId);
+                        const crIdNorm = normalizeTax(jv?.crId);
+
+                        const drMatch =
+                            (jv?.drType === 'tax' && String(jv?.drId || '').trim() === taxId) ||
+                            (drTypeNorm === 'tax' && drIdNorm === taxNameNorm) ||
+                            (drIdNorm === taxNameNorm);
+                        if (drMatch) drAmount += Number(jv?.amount || 0);
+
+                        const crMatch =
+                            (jv?.crType === 'tax' && String(jv?.crId || '').trim() === taxId) ||
+                            (crTypeNorm === 'tax' && crIdNorm === taxNameNorm) ||
+                            (crIdNorm === taxNameNorm);
+                        if (crMatch) crAmount += Number(jv?.amount || 0);
+                    }
+
+                    if (jv?.isMulti && Array.isArray(jv?.rows)) {
+                        jv.rows.forEach((row) => {
+                            const rowCatNorm = normalizeTax(row?.category);
+                            const rowIdNorm = normalizeTax(row?.id);
+                            const rowMatches =
+                                (row?.category === 'tax' && String(row?.id || '').trim() === taxId) ||
+                                (rowCatNorm === 'tax' && rowIdNorm === taxNameNorm) ||
+                                (rowIdNorm === taxNameNorm);
+                            if (!rowMatches) return;
+
+                            const amt = Number(row?.amount || 0);
+                            if (row?.type === 'dr') drAmount += amt;
+                            else crAmount += amt;
+                        });
+                    }
+                });
+
+                return sum + (drAmount - crAmount);
+            }, 0);
+
             const totalCapital = capitalAccounts.reduce((sum, c) => sum + (c.balance || 0), 0);
             const totalAssetAccountsValue = assetAccounts.reduce((s, a) => s + (Number(a.balance || 0)), 0);
 
             // Valuation Label
-            let valLabel = "Avg Cost";
+            let valLabel = "FIFO";
             if (valuationMethod === 'last_purchase') valLabel = "Last Purch. Rate";
-            if (valuationMethod === 'last_sale') valLabel = "Last Sale Rate";
+            if (valuationMethod === 'last_sale') valLabel = "Last Sold Rate";
 
             const assets = [
                 { name: `Closing Stock (${valLabel})`, amount: totalClosingStockValue, type: 'stock' },
                 { name: "Fixed & Other Assets", amount: totalAssetAccountsValue, type: 'asset_list' },
                 { name: "Receivables (Debtors)", amount: debtors, type: 'receivables' },
-                { name: "Cash/Bank Balances", amount: cashBank, type: 'accounts' }
+                { name: "Cash/Bank Balances", amount: cashBank, type: 'accounts' },
+                { name: "Tax Balance (Input - Output)", amount: taxBalance, type: 'tax_register' }
             ];
             const liabilities = [
                 { name: "Payables (Creditors)", amount: creditors, type: 'payables' }
@@ -26672,7 +28266,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>
 
                         <div className="flex bg-black/20 p-1 rounded-md border border-white/10">
-                            <button onClick={() => setValuationMethod('avg')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'avg' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>AVG COST</button>
+                            <button onClick={() => setValuationMethod('fifo')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'fifo' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>FIFO</button>
                             <button onClick={() => setValuationMethod('last_purchase')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_purchase' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST PURCH. RATE</button>
                             <button onClick={() => setValuationMethod('last_sale')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_sale' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST SOLD RATE</button>
                         </div>
@@ -26704,17 +28298,20 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>
 
                         <div className="h-4 w-[1px] bg-white/10 hidden md:block"></div>
-
-                        <div className="flex items-center gap-1">
-                            <span className="text-[9px] font-black text-white/40 uppercase mr-1 hidden sm:block">From</span>
-                            <input type="date" className="bg-white px-2 py-1 border-0 rounded text-[10px] font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none w-28" value={dateRange.from} onChange={e => setDateRange({ ...dateRange, from: e.target.value })} />
-                            <span className="text-[9px] font-black text-white/40 uppercase mx-1 hidden sm:block">To</span>
-                            <input type="date" className="bg-white px-2 py-1 border-0 rounded text-[10px] font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none w-28" value={dateRange.to} onChange={e => setDateRange({ ...dateRange, to: e.target.value })} />
+                        
+                        {/* CLICKABLE PERIOD DISPLAY */}
+                        <div 
+                            className="flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/10 px-3 py-1.5 rounded-lg cursor-pointer transition-all group shrink-0" 
+                            onClick={() => setIsPeriodOpen(true)}
+                            title="Click to change Period (Alt+F2)"
+                        >
+                            <Calendar size={12} className="text-white/40 group-hover:text-white" />
+                            <span className="text-[10px] font-black text-white/70 uppercase group-hover:text-white hidden sm:inline">Period:</span>
+                            <span className="text-[10px] font-mono font-bold text-white tracking-tight uppercase">
+                                {dateRange.from} — {dateRange.to}
+                            </span>
+                            <ChevronDown size={12} className="text-white/40 group-hover:text-white" />
                         </div>
-
-                        <button onClick={generateReport} className="bg-[#3b82f6] text-white px-4 py-1.5 rounded text-[10px] font-black uppercase tracking-wider hover:bg-blue-500 shadow-lg flex items-center gap-2 transition-all active:scale-95">
-                            {loading ? <RefreshCw className="animate-spin" size={12} /> : <><TrendingUp size={12} /> GENERATE</>}
-                        </button>
                     </div>
                 </div>
 
@@ -26777,7 +28374,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                     <div
                                                         key={i}
                                                         className="flex justify-between text-[11px] py-1 border-b border-slate-50 pl-4 cursor-pointer hover:bg-slate-50 px-1 rounded italic"
-                                                        onClick={() => onDrillDown('expense', exp.id)}
+                                                        onClick={() => onDrillDown('direct_expense', exp.id)}
                                                         title={`Click to view ${exp.name} ledger`}
                                                     >
                                                         <span className="text-slate-500">(+) {exp.name}</span>
@@ -26976,17 +28573,353 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 </div>
             </div>
 
+            {createPortal(
+                <ChangeDateModal
+                    isOpen={isDateOpen}
+                    onClose={() => setIsDateOpen(false)}
+                    onSubmit={(d) => { onDateChange({ from: d, to: d }); setIsDateOpen(false); }}
+                    baseDate={dateRange?.to}
+                />,
+                document.body
+            )}
+            {createPortal(
+                <ChangePeriodModal
+                    isOpen={isPeriodOpen}
+                    onClose={() => setIsPeriodOpen(false)}
+                    onSubmit={(f, t) => { onDateChange({ from: f, to: t }); setIsPeriodOpen(false); }}
+                    baseDate={dateRange?.to}
+                />,
+                document.body
+            )}
+        </Modal>
+    );
+};
+
+const TaxRegisterModal = ({ isOpen, onClose, onBack, dateRange, onDateChange, invoices = [], payments = [], journalVouchers = [], parties = [], taxRates = [], currencySymbol, onOpenLedger }) => {
+    const [closingDate, setClosingDate] = useState(dateRange?.to || new Date().toISOString().split('T')[0]);
+    const [isDateOpen, setIsDateOpen] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+
+    useEffect(() => {
+        if (isOpen && dateRange?.to) {
+            setClosingDate(dateRange.to);
+        }
+    }, [isOpen, dateRange?.to]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleKeys = (e) => {
+            if ((e.key === 'F2' || e.key === 'f2') && !e.altKey) {
+                e.preventDefault();
+                setIsDateOpen(true);
+            }
+        };
+        window.addEventListener('keydown', handleKeys);
+        return () => window.removeEventListener('keydown', handleKeys);
+    }, [isOpen]);
+
+    // Aggregate tax balances as-of closingDate using complete transaction history
+    const taxLedgers = useMemo(() => {
+        const map = new Map();
+        const safeNum = (n) => Number(n || 0);
+
+        // Helper: normalize string for comparison (lowercase, trim spaces)
+        const normalize = (str) => String(str || '').trim().toLowerCase();
+
+        // Initialize only from actual taxRates (no fallbacks/duplicates)
+        (taxRates || []).forEach((taxRate) => {
+            const taxId = String(taxRate.id || '').trim();
+            if (!taxId) return;
+            map.set(taxId, {
+                id: taxId,
+                name: String(taxRate.name || '').trim() || `Tax ${taxRate.percentage || 0}%`,
+                balance: 0,
+                percentage: Number(taxRate.percentage || 0),
+                nameNorm: normalize(taxRate.name) // normalized name for matching
+            });
+        });
+
+        // Calculate balance for each tax using complete transaction history
+        (taxRates || []).forEach((taxRate) => {
+            const taxId = String(taxRate.id || '').trim();
+            if (!taxId || !map.has(taxId)) return;
+
+            let drAmount = 0;
+            let crAmount = 0;
+            const taxEntry = map.get(taxId);
+            const taxNameNorm = taxEntry.nameNorm;
+
+            // Process invoices - classify by tax type
+            (invoices || []).forEach((inv) => {
+                if ((inv?.date || '') > closingDate) return;
+                if (!['sales', 'debit_note', 'purchase', 'credit_note'].includes(inv?.type)) return;
+
+                const invTaxId = String(inv?.taxId || '').trim();
+                // Match by exact ID or by normalized name
+                const matchesTax = (invTaxId === taxId) || (normalize(inv?.taxName) === taxNameNorm);
+                if (!matchesTax) return;
+
+                const taxAmt = safeNum(inv?.taxAmount);
+                if (taxAmt <= 0) return;
+
+                // Input Tax (Purchase/Credit Note) = DR
+                // Output Tax (Sales/Debit Note) = CR
+                const isInputTax = ['purchase', 'credit_note'].includes(inv?.type);
+                if (isInputTax) {
+                    drAmount += taxAmt;
+                } else {
+                    crAmount += taxAmt;
+                }
+            });
+
+            // Process journal vouchers for tax adjustments - ENHANCED MATCHING
+            (journalVouchers || []).forEach((jv) => {
+                if ((jv?.date || '') > closingDate) return;
+
+                // Simple JV (non-multi)
+                if (!jv.isMulti) {
+                    const drTypeNorm = normalize(jv.drType);
+                    const crTypeNorm = normalize(jv.crType);
+                    const drIdNorm = normalize(jv.drId);
+                    const crIdNorm = normalize(jv.crId);
+
+                    // Check debit side - match by ID, type=='tax', or by name
+                    if ((jv.drType === 'tax' && String(jv.drId || '').trim() === taxId) ||
+                        (drTypeNorm === 'tax' && drIdNorm === taxNameNorm) ||
+                        (normalize(jv.drId) === taxNameNorm)) {
+                        drAmount += safeNum(jv.amount);
+                    }
+
+                    // Check credit side - match by ID, type=='tax', or by name
+                    if ((jv.crType === 'tax' && String(jv.crId || '').trim() === taxId) ||
+                        (crTypeNorm === 'tax' && crIdNorm === taxNameNorm) ||
+                        (normalize(jv.crId) === taxNameNorm)) {
+                        crAmount += safeNum(jv.amount);
+                    }
+                }
+
+                // Multi-row JV: check rows for tax entries
+                if (jv.isMulti && jv.rows) {
+                    jv.rows.forEach((row) => {
+                        const rowCatNorm = normalize(row.category);
+                        const rowIdNorm = normalize(row.id);
+
+                        if ((row.category === 'tax' && String(row.id || '').trim() === taxId) ||
+                            (rowCatNorm === 'tax' && rowIdNorm === taxNameNorm) ||
+                            (rowIdNorm === taxNameNorm)) {
+                            const amt = safeNum(row.amount);
+                            if (row.type === 'dr') {
+                                drAmount += amt;
+                            } else {
+                                crAmount += amt;
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Calculate net balance: DR - CR
+            map.get(taxId).balance = drAmount - crAmount;
+        });
+
+        // Convert to array and filter
+        let list = Array.from(map.values());
+
+        // Filter by search
+        if (searchTerm.trim()) {
+            const q = searchTerm.trim().toLowerCase();
+            list = list.filter((t) => t.name.toLowerCase().includes(q));
+        }
+
+        return list.sort((a, b) => a.name.localeCompare(b.name));
+    }, [invoices, journalVouchers, closingDate, searchTerm, taxRates]);
+
+    const totalBalance = useMemo(() => {
+        return taxLedgers.reduce((sum, t) => sum + t.balance, 0);
+    }, [taxLedgers]);
+
+    const downloadPDF = () => {
+        const doc = new jsPDF();
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = 10;
+
+        // Header with blue background
+        doc.setFillColor(30, 58, 138); // Dark blue
+        doc.rect(0, 0, pageWidth, 25, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(16);
+        doc.setFont(undefined, 'bold');
+        doc.text('All Taxes Register', margin, 15);
+        doc.setFontSize(10);
+        doc.setFont(undefined, 'normal');
+        doc.text(`As on: ${closingDate}`, pageWidth - margin - 40, 15);
+
+        // Table
+        const tableData = [
+            ['Ledger Name', 'Present Balance'],
+            ...taxLedgers.map((t) => [
+                t.name,
+                `${currencySymbol || ''} ${t.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            ])
+        ];
+
+        doc.autoTable({
+            head: [tableData[0]],
+            body: tableData.slice(1),
+            startY: 30,
+            margin: margin,
+            headerStyles: { fillColor: [66, 139, 202], textColor: [255, 255, 255], fontStyle: 'bold' },
+            bodyStyles: { textColor: [40, 40, 40] },
+            alternateRowStyles: { fillColor: [245, 247, 250] },
+            columnStyles: { 0: { halign: 'left' }, 1: { halign: 'right' } }
+        });
+
+        // Footer with total
+        const finalY = doc.lastAutoTable.finalY || 30;
+        doc.setFillColor(200, 220, 240); // Light blue
+        doc.rect(margin, finalY + 5, pageWidth - 2 * margin, 10, 'F');
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(30, 58, 138);
+        doc.text('Total Balance', margin + 5, finalY + 10);
+        doc.text(
+            `${currencySymbol || ''} ${totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            pageWidth - margin - 30,
+            finalY + 10
+        );
+
+        doc.save(`AllTaxesRegister_${closingDate}.pdf`);
+    };
+
+    const downloadExcel = () => {
+        const data = [
+            ['All Taxes Register', `As on: ${closingDate}`],
+            [],
+            ['Ledger Name', 'Present Balance'],
+            ...taxLedgers.map((t) => [
+                t.name,
+                t.balance
+            ]),
+            [],
+            ['Total Balance', totalBalance]
+        ];
+
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        ws['!cols'] = [{ wch: 30 }, { wch: 18 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Tax Register');
+        XLSX.writeFile(wb, `AllTaxesRegister_${closingDate}.xlsx`);
+    };
+
+    if (!isOpen) return null;
+
+    const formatAmt = (n) => `${currencySymbol || ''} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="All Taxes Register" centerTitle={true} maxWidth="max-w-4xl" defaultMaximized={true}>
+            <div className="space-y-4 bg-blue-50 p-4 rounded-lg">
+                {/* TOOLBAR */}
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white border border-blue-200 rounded-lg p-3 shadow-sm">
+                    <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Closing Date</span>
+                        <button
+                            onClick={() => setIsDateOpen(true)}
+                            className="px-3 py-1.5 border-2 border-blue-400 rounded-md text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-500 transition-all flex items-center gap-2"
+                            title="F2"
+                        >
+                            <Calendar size={16} /> {closingDate}
+                        </button>
+                    </div>
+
+                    <input
+                        type="text"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder="Search ledger name..."
+                        className="px-3 py-1.5 border border-blue-200 rounded-md text-xs font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={downloadPDF}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-bold transition-all"
+                            title="Download PDF"
+                        >
+                            <FileText size={14} /> PDF
+                        </button>
+                        <button
+                            onClick={downloadExcel}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-bold transition-all"
+                            title="Download Excel"
+                        >
+                            <Download size={14} /> Excel
+                        </button>
+                    </div>
+                </div>
+
+                {/* SUMMARY CARDS */}
+                <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-white border-l-4 border-blue-600 rounded-lg p-3 shadow-sm">
+                        <div className="text-[9px] font-black text-blue-600 uppercase">Total Ledgers</div>
+                        <div className="text-lg font-black text-blue-800">{taxLedgers.length}</div>
+                    </div>
+                    <div className="bg-white border-l-4 border-blue-600 rounded-lg p-3 shadow-sm">
+                        <div className="text-[9px] font-black text-blue-600 uppercase">Total Balance</div>
+                        <div className={`text-lg font-black ${totalBalance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                            {formatAmt(totalBalance)}
+                        </div>
+                    </div>
+                </div>
+
+                {/* TABLE */}
+                <div className="border-2 border-blue-200 rounded-lg overflow-hidden bg-white shadow-md">
+                    <div className="overflow-auto max-h-[60vh]">
+                        <table className="w-full text-xs">
+                            <thead className="bg-blue-600 text-white uppercase tracking-widest text-[9px] font-black sticky top-0">
+                                <tr>
+                                    <th className="p-3 text-left">Ledger Name</th>
+                                    <th className="p-3 text-right">Present Balance</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {taxLedgers.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={2} className="p-6 text-center text-slate-500 font-semibold">
+                                            No tax ledgers found.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    taxLedgers.map((ledger) => (
+                                        <tr key={ledger.id} className="border-t border-blue-100 hover:bg-blue-50 transition-colors cursor-pointer" onClick={() => onOpenLedger?.('tax', ledger.id)} title="Click to view ledger">
+                                            <td className="p-3 font-semibold text-blue-600 hover:text-blue-800 underline cursor-pointer">{ledger.name}</td>
+                                            <td className={`p-3 text-right font-mono font-bold ${ledger.balance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                                {formatAmt(ledger.balance)}
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                            {taxLedgers.length > 0 && (
+                                <tfoot className="bg-blue-700 text-white text-[10px] font-black uppercase sticky bottom-0">
+                                    <tr>
+                                        <td className="p-3">Total</td>
+                                        <td className="p-3 text-right font-mono">{formatAmt(totalBalance)}</td>
+                                    </tr>
+                                </tfoot>
+                            )}
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <ChangeDateModal
                 isOpen={isDateOpen}
                 onClose={() => setIsDateOpen(false)}
-                onSubmit={(d) => { onDateChange({ from: d, to: d }); setIsDateOpen(false); }}
-                baseDate={dateRange?.to}
-            />
-            <ChangePeriodModal
-                isOpen={isPeriodOpen}
-                onClose={() => setIsPeriodOpen(false)}
-                onSubmit={(f, t) => { onDateChange({ from: f, to: t }); setIsPeriodOpen(false); }}
-                baseDate={dateRange?.to}
+                onSubmit={(d) => {
+                    setClosingDate(d);
+                    setIsDateOpen(false);
+                }}
+                baseDate={closingDate}
             />
         </Modal>
     );
@@ -27825,9 +29758,9 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
 };
 
 // --- GLOBAL SEARCH MODAL (F4) ---
-const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directExpenseAccounts = [], incomeAccounts, assetAccounts, accounts, capitalAccounts, onSelect, user, dataOwnerId, userRole }) => {
+const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directExpenseAccounts = [], incomeAccounts, assetAccounts, accounts, capitalAccounts, taxRates = [], onSelect, user, dataOwnerId, userRole }) => {
     const [searchTerm, setSearchTerm] = useState('');
-    const [activeTab, setActiveTab] = useState('all'); // all, party, expense, income, asset, capital, bank
+    const [activeTab, setActiveTab] = useState('all'); // all, party, expense, direct_expense, income, tax, asset, capital, bank
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 12;
     const inputRef = useRef(null);
@@ -27848,6 +29781,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
         if (expenses) expenses.forEach(e => list.push({ ...e, type: 'expense', typeLabel: 'Indirect Exp' }));
         if (directExpenseAccounts) directExpenseAccounts.forEach(e => list.push({ ...e, type: 'direct_expense', typeLabel: 'Direct Exp' }));
         if (incomeAccounts) incomeAccounts.forEach(i => list.push({ ...i, type: 'income', typeLabel: 'Income' }));
+        if (taxRates) taxRates.forEach(t => list.push({ ...t, type: 'tax', typeLabel: 'Tax' }));
         if (assetAccounts) assetAccounts.forEach(a => list.push({ ...a, type: 'asset', typeLabel: 'Asset' }));
         if (accounts) accounts.forEach(a => list.push({ ...a, type: 'account', typeLabel: 'Cash/Bank' }));
         // Add Static Reports
@@ -27855,7 +29789,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
 
         if (capitalAccounts) capitalAccounts.forEach(c => list.push({ ...c, type: 'capital', typeLabel: 'Capital' }));
         return list;
-    }, [parties, expenses, directExpenseAccounts, incomeAccounts, assetAccounts, accounts, capitalAccounts]);
+    }, [parties, expenses, directExpenseAccounts, incomeAccounts, taxRates, assetAccounts, accounts, capitalAccounts]);
 
     const filtered = allData.filter(item => {
         if (activeTab === 'all') { /* show all */ }
@@ -28041,6 +29975,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                         { key: 'expense', label: 'INDIRECT EXP' },
                         { key: 'direct_expense', label: 'DIRECT EXP' },
                         { key: 'income', label: 'INCOME' },
+                        { key: 'tax', label: 'TAX' },
                         { key: 'asset', label: 'ASSET' },
                         { key: 'capital', label: 'CAPITAL' },
                         { key: 'bank', label: 'BANK / CASH' },
@@ -28086,6 +30021,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                                                     item.type === 'expense' ? 'bg-orange-100 text-orange-700' :
                                                         item.type === 'direct_expense' ? 'bg-red-100 text-red-700' :
                                                             item.type === 'income' ? 'bg-green-100 text-green-700' :
+                                                                item.type === 'tax' ? 'bg-amber-100 text-amber-700' :
                                                                 item.type === 'account' ? 'bg-purple-100 text-purple-700' :
                                                                     'bg-gray-100 text-gray-700'}`}>
                                                 {item.typeLabel}
@@ -28159,7 +30095,7 @@ const Toast = ({ toast, onClose }) => {
     );
 };
 
-const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyProfile, onLogout, onSubUserLogout, onChangePassword, currentRole }) => {
+const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyProfile, onLogout, onSubUserLogout, onChangePassword, currentRole, onInstallPwa, onUninstallPwa, isInstallable, isPwaInstalled }) => {
     const [formData, setFormData] = useState({ name: '', mobile: '' });
     const [loading, setLoading] = useState(false);
 
@@ -28183,6 +30119,20 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
     };
 
     const days = getDaysLeft(license?.expiresAt);
+
+    const handlePwaButtonClick = () => {
+        if (isPwaInstalled) {
+            onUninstallPwa && onUninstallPwa();
+            return;
+        }
+
+        if (isInstallable && onInstallPwa) {
+            onInstallPwa();
+            return;
+        }
+
+        alert('Install prompt is not ready right now.\n\nIn mobile Chrome, open menu (⋮) and tap "Add to Home screen" or "Install app".');
+    };
 
     useEffect(() => {
         if (isOpen) {
@@ -28431,6 +30381,20 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                                 style={{ border: '1px solid #b3d4f5', background: '#f0f8ff', color: '#005994' }}
                             >
                                 <Key size={13} /> Change Password
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handlePwaButtonClick}
+                                className="w-full flex items-center gap-2 px-3 py-2 rounded transition-all text-xs font-black uppercase tracking-wider"
+                                style={
+                                    isPwaInstalled
+                                        ? { border: '1px solid #fecaca', background: '#fff5f5', color: '#b91c1c' }
+                                        : { border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8' }
+                                }
+                            >
+                                {isPwaInstalled ? <Trash2 size={13} /> : <Download size={13} />}
+                                {isPwaInstalled ? 'Uninstall PWA' : 'Install PWA'}
                             </button>
                         </div>
                     </div>

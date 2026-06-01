@@ -1,7 +1,16 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-// --- HELPERS (Module Level) ---
+const formatDate = (dateStr) => {
+    if (!dateStr || !dateStr.includes('-')) return dateStr || "-";
+    const parts = dateStr.split('-');
+    if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    return dateStr;
+};
+
+const toUpper = (str) => str ? String(str).toUpperCase() : "";
+const toLower = (str) => str ? String(str).toLowerCase() : "";
+
 const drawCheckbox = (doc, x, y, size = 3, isChecked = false) => {
     doc.setLineWidth(0.2);
     doc.rect(x, y, size, size);
@@ -147,7 +156,8 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         const isPurchase = data.type === 'purchase';
 
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(14);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(16);
         doc.setTextColor(0);
         doc.text(printOptions.selectedHeading || (isPurchase ? "PURCHASE VOUCHER" : "TAX INVOICE"), centerX, titleY, { align: "center" });
 
@@ -160,11 +170,11 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         let y = startY;
         const compH = 30;
 
-        let sNameFontSize = 10;
+        let sNameFontSize = 11;
         doc.setFont("helvetica", "bold");
         doc.setFontSize(sNameFontSize);
         const seller = data.seller || {};
-        const sellerName = (seller.name || "AL SAHAM AL AHMAR METALS SCRAP TR.").toUpperCase();
+        const sellerName = toUpper(seller.name || "");
         while (doc.getTextWidth(sellerName) > (midX - margin - 5) && sNameFontSize > 6) {
             sNameFontSize -= 0.5;
             doc.setFontSize(sNameFontSize);
@@ -172,20 +182,20 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         doc.text(sellerName, margin + 2, y + 5);
 
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(8);
-        const sellerAddress = seller.address || "SAJJA INDUSTRIAL AREA\nSHARJAH, U.A.E\nEmirate: Sharjah";
+        doc.setFontSize(10);
+        const sellerAddress = toLower(seller.address || "");
         const addrLines = sellerAddress.split('\n');
-        let addrY = y + 9;
+        let addrY = y + 10;
         addrLines.forEach((line, idx) => {
             if (idx < 3) {
                 const wrappedAddr = doc.splitTextToSize(line, midX - margin - 7);
                 doc.text(wrappedAddr, margin + 5, addrY);
-                addrY += 4 * (Array.isArray(wrappedAddr) ? wrappedAddr.length : 1);
+                addrY += 5 * (Array.isArray(wrappedAddr) ? wrappedAddr.length : 1);
             }
         });
 
         doc.text(`TRN: ${seller.trn || "100350623300003"}`, margin + 5, y + 21);
-        doc.text(`E-Mail: ${seller.email || "info@asamplast.com"}`, margin + 5, y + 25);
+        doc.text(`E-Mail: ${seller.email || "info@asamplast.com"}`, margin + 5, y + 26);
 
         y += compH;
         doc.line(margin, y, midX, y);
@@ -220,15 +230,15 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         const rowH = 12;
 
         drawFieldBox(doc, rX1, ry, halfRW, rowH, isPurchase ? "Voucher No." : "Invoice No.", data.invoiceNo || "-");
-        drawFieldBox(doc, rX2, ry, halfRW, rowH, "Date", data.date || "-");
+        drawFieldBox(doc, rX2, ry, halfRW, rowH, "Date", formatDate(data.date));
         ry += rowH;
 
         drawFieldBox(doc, rX1, ry, halfRW, rowH, "Delivery Note", data.otherRef || "-");
-        drawFieldBox(doc, rX2, ry, halfRW, rowH, "Delivery Note Date", data.date || "-");
+        drawFieldBox(doc, rX2, ry, halfRW, rowH, "Delivery Note Date", formatDate(data.date));
         ry += rowH;
 
         drawFieldBox(doc, rX1, ry, halfRW, rowH, "Vehicle No.", data.vehicleNo || "-");
-        drawFieldBox(doc, rX2, ry, halfRW, rowH, isPurchase ? "Voucher Date" : "Dated", data.date || "-");
+        drawFieldBox(doc, rX2, ry, halfRW, rowH, isPurchase ? "Voucher Date" : "Dated", formatDate(data.date));
         ry += rowH;
 
         if (isPurchase && data.supplierInvoiceNo) {
@@ -341,7 +351,7 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         }
 
         const declY = Math.max(finalY + 45, 240);
-        const bank = data.companyBank || data.bankDetails;
+        const bank = data.companyBank || data.bankDetails || {};
         if (bank) {
             const bankY = declY - 25;
             doc.setFontSize(8);
@@ -374,7 +384,9 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         const sigBoxW = rightW - 10;
         const sigBoxH = 35;
         doc.rect(sigBoxX, declY - 2, sigBoxW, sigBoxH);
-        doc.text(`for ${sellerName}`, sigBoxX + 2, declY + 2);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.text(`FOR ${sellerName}`, sigBoxX + 2, declY + 3);
 
         if (printOptions.signatureImage) {
             try {
@@ -438,8 +450,8 @@ export const generatePackingListPDF = async (data, action = 'download', existing
         }
 
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(16);
-        doc.text("PACKING LIST", centerX, titleY, { align: "center" });
+        doc.setFontSize(18);
+        doc.text(printOptions.selectedHeading || "PACKING LIST", centerX, titleY, { align: "center" });
 
         // --- Layout Constants ---
         const col1X = margin;
@@ -452,36 +464,31 @@ export const generatePackingListPDF = async (data, action = 'download', existing
         // Seller Box
         doc.setFontSize(8);
         doc.rect(col1X, y, colW, row1H);
-        doc.setFillColor(240, 240, 240);
-        doc.rect(col1X, y, colW, 5, 'F');
-        doc.rect(col1X, y, colW, 5);
         doc.text("SELLER :", col1X + 2, y + 3.5);
 
         const seller = data.seller || {};
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(10);
-        doc.text(seller.name || "COMPANY NAME", col1X + 2, y + 10);
+        doc.setFontSize(11);
+        doc.text(toUpper(seller.name || ""), col1X + 2, y + 10);
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(7);
-        doc.text("COMPANY ADDRESS:", col1X + 2, y + 14);
-        doc.text(seller.address || "", col1X + 2, y + 18, { maxWidth: colW - 4 });
-        doc.text(`TRN : ${seller.trn || "-"}`, col1X + 2, y + 35);
-        doc.text(`Email : ${seller.email || "-"}`, col1X + 2, y + 39);
-        doc.text(`MOBILE : ${seller.phone || "-"}`, col1X + 2, y + 43);
+        doc.setFontSize(10);
+        doc.text("COMPANY ADDRESS:", col1X + 2, y + 15);
+        doc.text(toLower(seller.address || ""), col1X + 2, y + 20, { maxWidth: colW - 4 });
+        doc.text(`TRN : ${seller.trn || "-"}`, col1X + 2, y + 36);
+        doc.text(`Email : ${toLower(seller.email || "-")}`, col1X + 2, y + 40);
+        doc.text(`MOBILE : ${seller.phone || "-"}`, col1X + 2, y + 44);
 
         // Details Box
         doc.rect(col2X, y, colW, row1H);
-        doc.rect(col2X, y, colW, 5, 'F');
-        doc.rect(col2X, y, colW, 5);
         doc.setFont("helvetica", "bold");
         doc.setFontSize(8);
         doc.text("DETAILS :", col2X + 2, y + 3.5);
 
         const detailsData = [
             ["INVOICE NO", data.invoiceNo],
-            ["INVOICE DATE", data.date],
+            ["INVOICE DATE", formatDate(data.date)],
             ["PI NO AND DATE", data.otherRef],
-            ["BUYERS ORDER DATE", data.date],
+            ["BUYERS ORDER DATE", formatDate(data.date)],
             ["BUYERS ORDER NO", data.refNo],
             ["QUOTE NO", ""],
             ["OTHER REFERENCE", ""]
@@ -499,25 +506,21 @@ export const generatePackingListPDF = async (data, action = 'download', existing
         const row2H = 45;
         // Consignee
         doc.rect(col1X, y, colW, row2H);
-        doc.rect(col1X, y, colW, 5, 'F');
-        doc.rect(col1X, y, colW, 5);
         doc.setFont("helvetica", "bold");
         doc.text("CONSIGNEE :", col1X + 2, y + 3.5);
-        doc.text(data.consigneeName || data.partyName || "", col1X + 2, y + 10);
+        doc.text(toUpper(data.consigneeName || data.partyName || ""), col1X + 2, y + 10);
         doc.setFont("helvetica", "normal");
         doc.text("COMPANY ADDRESS:", col1X + 2, y + 14);
-        doc.text(data.consigneeAddress || data.partyAddress || "", col1X + 2, y + 18, { maxWidth: colW - 4 });
+        doc.text(toLower(data.consigneeAddress || data.partyAddress || ""), col1X + 2, y + 18, { maxWidth: colW - 4 });
 
         // Buyer
         doc.rect(col2X, y, colW, row2H);
-        doc.rect(col2X, y, colW, 5, 'F');
-        doc.rect(col2X, y, colW, 5);
         doc.setFont("helvetica", "bold");
         doc.text("BUYER :", col2X + 2, y + 3.5);
-        doc.text(data.buyerName || data.partyName || "", col2X + 2, y + 10);
+        doc.text(toUpper(data.buyerName || data.partyName || ""), col2X + 2, y + 10);
         doc.setFont("helvetica", "normal");
         doc.text("COMPANY ADDRESS:", col2X + 2, y + 14);
-        doc.text(data.buyerAddress || data.partyAddress || "", col2X + 2, y + 18, { maxWidth: colW - 4 });
+        doc.text(toLower(data.buyerAddress || data.partyAddress || ""), col2X + 2, y + 18, { maxWidth: colW - 4 });
 
         y += row2H + 2;
 
@@ -525,8 +528,6 @@ export const generatePackingListPDF = async (data, action = 'download', existing
         const shipH = 8;
         const drawShipBox = (x, y, label, value) => {
             doc.rect(x, y, colW, shipH);
-            doc.rect(x, y, colW, 4, 'F');
-            doc.rect(x, y, colW, 4);
             doc.setFont("helvetica", "bold");
             doc.setFontSize(7);
             doc.text(label, x + 2, y + 3);
@@ -534,14 +535,14 @@ export const generatePackingListPDF = async (data, action = 'download', existing
             doc.text(String(value || "-"), x + 2, y + 7);
         };
 
-        drawShipBox(col1X, y, "COUNTRY OF ORIGIN (GOODS)", data.countryOfOrigin);
-        drawShipBox(col2X, y, "COUNTRY OF FINAL DESTINATION", data.finalDestination);
+        drawShipBox(col1X, y, "COUNTRY OF ORIGIN (GOODS)", toUpper(data.countryOfOrigin));
+        drawShipBox(col2X, y, "COUNTRY OF FINAL DESTINATION", toUpper(data.finalDestination));
         y += shipH + 2;
-        drawShipBox(col1X, y, "PORT OF LOADING", data.portOfLoading);
-        drawShipBox(col2X, y, "PORT OF DISCHARGE", data.portOfDischarge);
+        drawShipBox(col1X, y, "PORT OF LOADING", toUpper(data.portOfLoading));
+        drawShipBox(col2X, y, "PORT OF DISCHARGE", toUpper(data.portOfDischarge));
         y += shipH + 2;
-        drawShipBox(col1X, y, "VESSEL NAME", data.vesselName);
-        drawShipBox(col2X, y, "VOYAGE NO.", data.voyageNo);
+        drawShipBox(col1X, y, "VESSEL NAME", toUpper(data.vesselName));
+        drawShipBox(col2X, y, "VOYAGE NO.", toUpper(data.voyageNo));
         y += shipH + 4;
 
         // --- ITEMS TABLE ---
@@ -578,7 +579,9 @@ export const generatePackingListPDF = async (data, action = 'download', existing
         if (finalY > 260) { doc.addPage(); finalY = 20; }
 
         doc.setFont("helvetica", "bold");
-        doc.text(`for ${seller.name || "COMPANY NAME"}`, pageWidth - margin - 2, finalY, { align: 'right' });
+        doc.setFontSize(11);
+        const sName = seller.name ? seller.name.toUpperCase() : "COMPANY NAME";
+        doc.text(`FOR ${sName}`, pageWidth - margin - 2, finalY, { align: 'right' });
 
         if (printOptions.stampImage) {
             try {
@@ -621,7 +624,7 @@ export const generateBillOfExchangePDF = async (data, action = 'download', exist
 
     try {
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(14);
+        doc.setFontSize(16);
         doc.text("BILL OF EXCHANGE", centerX, 30, { align: "center" });
         doc.setLineWidth(0.5);
         doc.line(centerX - 25, 31, centerX + 25, 31);
@@ -649,7 +652,13 @@ export const generateBillOfExchangePDF = async (data, action = 'download', exist
         doc.text(mainText, margin, y, { maxWidth: pageWidth - (margin * 2), lineHeightFactor: 1.5 });
         y += 25;
 
-        doc.text(`Drawn Under ${seller.name || 'COMPANY NAME'}`, margin, y);
+        doc.text("Drawn Under ", margin, y);
+        const duWidth = doc.getTextWidth("Drawn Under ");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.text(toUpper(seller.name || ''), margin + duWidth, y);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
         y += 15;
 
         doc.setFont("helvetica", "bold");
@@ -697,9 +706,9 @@ export const generateBankApplicationPDF = async (data, action = 'download', exis
         doc.text("Date", margin, y + 4);
 
         const dateParts = (data.date || '').split('-'); // YYYY-MM-DD
-        const d_val = dateParts[2] || '02';
-        const m_val = dateParts[1] || '02';
-        const y_val = dateParts[0] || '2026';
+        const d_val = dateParts[2] || '';
+        const m_val = dateParts[1] || '';
+        const y_val = dateParts[0] || '';
 
         // Draw date boxes with labels
         const dateDigitW = 7;
@@ -726,7 +735,7 @@ export const generateBankApplicationPDF = async (data, action = 'download', exis
         // 2. BRANCH SECTION
         doc.setFont("helvetica", "bold");
         doc.setFontSize(10);
-        const branchName = data.bankBranch || 'AL QUSAIS';
+        const branchName = data.bankBranch || '';
         doc.text(branchName, margin, y);
         const branchW = doc.getTextWidth(branchName);
         doc.line(margin, y + 0.5, margin + 45, y + 0.5);
@@ -768,7 +777,7 @@ export const generateBankApplicationPDF = async (data, action = 'download', exis
         doc.setFontSize(10);
         const bankAddr = (data.companyBank)
             ? `${data.companyBank.bankName}\n${data.companyBank.branch || ''} ${data.companyBank.city || ''} ${data.companyBank.country || ''}`.trim()
-            : (data.boeBank || data.bankMailTo || "Habib Metropolitan Bank Ltd.\nShahrah-e-Liaquat Branch, Karachi, Pakistan");
+            : (data.boeBank || data.bankMailTo || "");
         doc.text(bankAddr, margin + 45, sy, { maxWidth: contentWidth - 48 });
         doc.line(margin + 45, sy + 1, margin + contentWidth - 2, sy + 1);
         doc.line(margin + 45, sy + 6, margin + contentWidth - 2, sy + 6);
@@ -781,7 +790,7 @@ export const generateBankApplicationPDF = async (data, action = 'download', exis
         doc.text("(LC applicant)/Drawn on", margin + 13, sy);
         doc.setFont("helvetica", "bold");
         doc.setFontSize(10);
-        const drawee = data.buyerName || data.partyName || "SAQI INDUSTRIES (SMC) PRIVET LTD";
+        const drawee = data.buyerName || data.partyName || "";
         doc.text(drawee, margin + 45, sy);
         doc.line(margin + 45, sy + 1, margin + contentWidth - 2, sy + 1);
 
@@ -795,7 +804,7 @@ export const generateBankApplicationPDF = async (data, action = 'download', exis
         doc.setFontSize(10);
         const drawer = (data.companyBank && data.companyBank.accTitle)
             ? data.companyBank.accTitle
-            : (seller.name || "AL SAHAM AL AHMAR METALS SCRAP TR");
+            : (seller.name || "");
         doc.text(drawer, margin + 45, sy);
         doc.line(margin + 45, sy + 1, margin + contentWidth - 2, sy + 1);
 
@@ -968,7 +977,6 @@ export const generateBankApplicationPDF = async (data, action = 'download', exis
         doc.text(hbz.attachmentsSummary || data.bankAttachments || "BL ORIGINAL 3,COPY 3,INVOICE 3, PAKISNG LIST 3", margin + 72, y);
 
         y += 8;
-        doc.setFont("helvetica", "normal");
         doc.text("Draft at", margin, y);
         drawCheckbox(doc, margin + 14, y - 2.5, 3, hbz.draftSight || false); doc.text("Sight", margin + 18, y);
         drawCheckbox(doc, margin + 28, y - 2.5, 3, hbz.draftUsance || false); doc.text("Usance", margin + 32, y);
@@ -1150,7 +1158,7 @@ export const generateSelectedDocsPDF = async (data, action = 'download') => {
 export const downloadInvoiceExcel = (data) => {
     const rows = [
         ['INVOICE'],
-        ['Invoice No', data.invoiceNo, 'Date', data.date],
+        ['Invoice No', data.invoiceNo, 'Date', formatDate(data.date)],
         ['Customer', data.partyName],
         ['Description', `Qty (${data.baseUnitSymbol || 'KGS'})`, 'Rate', 'Amount'],
         ...data.items.map(i => [i.productName, i.quantity, i.rate, i.total]),
@@ -1200,7 +1208,7 @@ export const generateAccountingVoucherPDF = async (data, action = 'download', ex
         const title = printOptions.selectedHeading || (vType === 'in' ? "RECEIPT VOUCHER" : vType === 'out' ? "PAYMENT VOUCHER" : vType === 'journal' ? "JOURNAL VOUCHER" : "CONTRA VOUCHER");
 
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(16);
+        doc.setFontSize(18);
         doc.text(title, centerX, titleY, { align: "center" });
 
         doc.setLineWidth(0.1);
@@ -1208,7 +1216,7 @@ export const generateAccountingVoucherPDF = async (data, action = 'download', ex
 
         doc.setFontSize(9);
         doc.text(`Voucher No: ${data.refNo || '-'}`, margin + 2, startY + 8);
-        doc.text(`Date: ${data.date || '-'}`, pageWidth - margin - 2, startY + 8, { align: 'right' });
+        doc.text(`Date: ${formatDate(data.date)}`, pageWidth - margin - 2, startY + 8, { align: 'right' });
 
         doc.text(`Source (Account): ${data.sourceName || '-'}`, margin + 2, startY + 18);
         doc.text(`Currency: ${data.currencySymbol || 'AED'} ${data.exchangeRate !== 1 ? `(Rate: ${data.exchangeRate})` : ''}`, margin + 2, startY + 25);
@@ -1273,6 +1281,233 @@ export const generateAccountingVoucherPDF = async (data, action = 'download', ex
         }
     } catch (err) {
         console.error("Voucher PDF Error:", err);
+        alert("Error: " + err.message);
+    }
+};
+
+export const generateExportInvoicePDF = async (data, action = 'download', existingDoc = null) => {
+    const doc = existingDoc || new jsPDF();
+    if (existingDoc) doc.addPage();
+    const pageWidth = 210;
+    const pageHeight = 297;
+    const margin = 10;
+    const contentWidth = pageWidth - (margin * 2);
+    const centerX = pageWidth / 2;
+    const printOptions = data.printOptions || {};
+
+    try {
+        let titleY = 12;
+        let startY = 20;
+
+        if (printOptions.headerImage) {
+            try {
+                const img = await loadImage(printOptions.headerImage);
+                const headerH = 30;
+                doc.addImage(img, 'JPEG', margin, 5, contentWidth, headerH);
+                titleY = 5 + headerH + 10;
+                startY = titleY + 8;
+            } catch (err) { console.warn("Header Error:", err); }
+        }
+
+        doc.setFont("helvetica", "bolditalic");
+        doc.setFontSize(18);
+        doc.text(printOptions.selectedHeading || "COMMERCIAL INVOICE", centerX, titleY, { align: "center" });
+
+        // --- Layout Constants ---
+        const col1X = margin;
+        const col2X = 105;
+        const colW = (pageWidth / 2) - margin;
+        let y = startY;
+
+        const rowH = 7; // Height of each sub-row
+        
+        doc.setLineWidth(0.3);
+        doc.rect(col1X, y, contentWidth, 120); // Main Box
+        doc.line(col2X, y, col2X, y + 120); // Center vertical line
+
+        // --- LEFT COLUMN ---
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.text("SHIPPER", col1X + 2, y + 5);
+        doc.line(col1X, y + rowH, col2X, y + rowH);
+        
+        const seller = data.seller || {};
+        let leftY = y + rowH + 5;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        const shipperName = seller.name ? seller.name.toUpperCase() : "AL SAHAM AL AHMAR METALS SCRAP TR";
+        doc.text(shipperName, col1X + 2, leftY);
+        
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        leftY += rowH;
+        doc.text(seller.address ? `P.O BOX ${toLower(seller.address.split('\n').join(' '))}` : '', col1X + 2, leftY, { maxWidth: colW - 4 });
+        leftY += rowH;
+        doc.text(seller.phone ? `MOBILE NO ${seller.phone}` : '', col1X + 2, leftY);
+        leftY += rowH;
+        doc.text(seller.trn ? `TRN NO ${seller.trn}` : '', col1X + 2, leftY);
+        leftY += rowH;
+        doc.text(seller.email ? `EMAIL ADDRESS :${toLower(seller.email)}` : '', col1X + 2, leftY, { maxWidth: colW - 4 });
+        
+        // Buyer Section
+        const buyerY = y + 50;
+        doc.line(col1X, buyerY, col2X, buyerY);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.text("BUYER", col1X + 2, buyerY + 5);
+        doc.line(col1X, buyerY + rowH, col2X, buyerY + rowH);
+        
+        leftY = buyerY + rowH + 5;
+        doc.text(toUpper(data.buyerName || data.partyName || ""), col1X + 2, leftY);
+        doc.setFont("helvetica", "normal");
+        leftY += rowH;
+        const buyerAddr = data.buyerAddress || data.partyAddress || "";
+        doc.text(toLower(buyerAddr), col1X + 2, leftY, { maxWidth: colW - 4 });
+        
+        // --- RIGHT COLUMN ---
+        let ry = y;
+        
+        const drawRightRow = (label, value, h = rowH) => {
+            doc.setFont("helvetica", "bold");
+            let labelFontSize = 10;
+            doc.setFontSize(labelFontSize);
+            while (doc.getTextWidth(label) > 31 && labelFontSize > 5) {
+                labelFontSize -= 0.5;
+                doc.setFontSize(labelFontSize);
+            }
+            doc.text(label, col2X + 2, ry + 5);
+            doc.line(col2X + 35, ry, col2X + 35, ry + h); // Vertical separator for label/value
+            
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(10);
+            doc.text(String(value || ""), col2X + 37, ry + 5, { maxWidth: colW - 39 });
+            ry += h;
+            doc.line(col2X, ry, col1X + contentWidth, ry);
+        };
+
+        drawRightRow("INVOICE NO", data.invoiceNo || "");
+        drawRightRow("INVOICE DATE", formatDate(data.date) === "-" ? "" : formatDate(data.date));
+        drawRightRow("CONTRACT NO", toUpper(data.contractNo || ""));
+        drawRightRow("COUNTRY OF ORIGIN", toUpper(data.countryOfOrigin || ""));
+        drawRightRow("PORT OF LOADING", toUpper(data.portOfLoading || ""));
+        drawRightRow("PLACE OF DELIVERY", toUpper(data.placeOfDelivery || ""));
+        drawRightRow("MODE OF TRANSPORT", toUpper(data.modeOfTransport || ""));
+        drawRightRow("PAYMENT TERMS", toUpper(data.paymentTerms || ""));
+
+        // Bank Details
+        doc.setFont("helvetica", "bold");
+        let bankLabelFontSize = 10;
+        doc.setFontSize(bankLabelFontSize);
+        while (doc.getTextWidth("BANK DETAILS") > 31 && bankLabelFontSize > 5) {
+            bankLabelFontSize -= 0.5;
+            doc.setFontSize(bankLabelFontSize);
+        }
+        doc.text("BANK DETAILS", col2X + 2, ry + 5);
+        doc.line(col2X + 35, ry, col2X + 35, ry + 64);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        
+        let bankText = "";
+        if (data.bankDetailsOverride) {
+            bankText = data.bankDetailsOverride;
+        } else if (data.companyBank) {
+            const b = data.companyBank;
+            bankText = `${b.bankName || ''}\n${b.accTitle || b.bankTitle || ''}\nACC NO: ${b.accNumber || ''}\nIBAN NO: ${b.iban || ''}\nSWIFT: ${b.swift || b.swiftCode || ''}`;
+        } else {
+            bankText = "";
+        }
+        doc.text(bankText, col2X + 37, ry + 5, { maxWidth: colW - 39 });
+        ry += 64; // Remainder of the 120 height
+
+        y += 120; // Move y past the header block
+
+        // --- ITEMS TABLE ---
+        const uSym = data.baseUnitSymbol || "KGS";
+        const tableHeaders = [["SR.NO", "CONTAINER No.\nSEAL No.", "DESCRIPTION", `PRICE\n(PER ${uSym})`, `NET WEIGHT\n(${uSym})`, `AMOUNT IN ${data.currencySymbol || 'AED'} (C&F)`]];
+        const tableBody = data.items.map((item, i) => {
+            const containersText = (data.containers && data.containers.length > 0)
+                ? data.containers.map(c => `${c.containerNo || ''}\n${c.sealNo || ''}`).join('\n')
+                : `${data.containerNo || ''}\n${data.sealNo || ''}`;
+
+            return [
+                i + 1,
+                containersText,
+                `${item.productName || ''} ${item.description ? '(' + item.description + ')' : ''}\n${data.hsCode || ''}`,
+                `${data.currencySymbol || 'AED'} ${Number(item.rate).toFixed(3)}`,
+                Number(item.quantity).toFixed(2),
+                `${data.currencySymbol || 'AED'} ${Number(item.total).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+            ];
+        });
+
+        const totalQty = data.items.reduce((s, i) => s + Number(i.quantity || 0), 0);
+        const grandTotal = Number(data.grandTotalForeign || 0);
+
+        tableBody.push(["", "", "GROSS WEIGHT: " + totalQty.toFixed(2), "", totalQty.toFixed(2), `${data.currencySymbol || 'AED'} ${grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}`]);
+
+        autoTable(doc, {
+            startY: y,
+            head: tableHeaders,
+            body: tableBody,
+            theme: 'grid',
+            tableWidth: contentWidth,
+            margin: { left: margin },
+            styles: { fontSize: 8, cellPadding: 3, lineColor: 0, lineWidth: 0.3, valign: 'middle', font: "helvetica", textColor: 0 },
+            headStyles: { fillColor: [255, 255, 255], fontStyle: 'bold', halign: 'center', lineWidth: 0.3, lineColor: 0 },
+            columnStyles: { 0: { cellWidth: 12, halign: 'center' }, 1: { cellWidth: 35, halign: 'center' }, 2: { cellWidth: 60 }, 3: { cellWidth: 25, halign: 'center' }, 4: { cellWidth: 25, halign: 'center' }, 5: { cellWidth: 33, halign: 'right' } },
+            didParseCell: (data) => {
+                if (data.row.index === tableBody.length - 1) {
+                    data.cell.styles.fontStyle = 'bold';
+                    data.cell.styles.halign = 'right';
+                    if (data.column.index === 4) data.cell.styles.halign = 'center';
+                }
+            }
+        });
+
+        let finalY = doc.lastAutoTable.finalY;
+
+        doc.setLineWidth(0.3);
+        doc.rect(margin, finalY, contentWidth, 8);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.text(`TOTAL AMOUNT IN WORDS: ${convertNumberToWords(grandTotal).toUpperCase()} ONLY`, margin + 2, finalY + 5);
+        finalY += 8;
+
+        doc.rect(margin, finalY, contentWidth, 10);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        const forName = seller.name ? seller.name.toUpperCase() : "AL SAHAM AL AHMAR METALS SCRAP TR";
+        doc.text(`FOR ${forName}`, margin + 2, finalY + 6.5);
+        finalY += 10;
+
+        if (finalY > 260) {
+            doc.addPage();
+            finalY = 20;
+        }
+
+        if (printOptions.stampImage) {
+            try {
+                const img = await loadImage(printOptions.stampImage);
+                const scale = Number(printOptions.stampScale) || 1.0;
+                doc.addImage(img, 'PNG', pageWidth - margin - 50, finalY + 5, 25 * scale, 20 * scale);
+            } catch (e) { }
+        }
+        if (printOptions.signatureImage) {
+            try {
+                const img = await loadImage(printOptions.signatureImage);
+                doc.addImage(img, 'PNG', pageWidth - margin - 40, finalY + 5, 30, 15);
+            } catch (e) { }
+        }
+
+        if (action === 'preview') {
+            window.open(doc.output('bloburl'), '_blank');
+        } else if (action === 'return') {
+            return doc;
+        } else {
+            doc.save(`Export_Invoice_${data.invoiceNo || 'Draft'}.pdf`);
+        }
+
+    } catch (err) {
+        console.error("Export Invoice PDF Error:", err);
         alert("Error: " + err.message);
     }
 };

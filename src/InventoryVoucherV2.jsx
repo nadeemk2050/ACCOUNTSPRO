@@ -708,10 +708,15 @@ const InventoryVoucherV2 = ({
                                 productId: b.productId,
                                 qty: Number(b.qty),
                                 purchaseId: invoiceRef.id,
+                                purchaseRefNo: formData.refNo || '',
+                                voucherRefNo: formData.refNo || '',
+                                source: 'purchase',
                                 date: formData.date,
                                 allowMultiFilling: bagAuthMap[b.bagNo] || false,
                                 status: 'in_stock',
                                 userId: targetUid,
+                                ownerId: targetUid,
+                                companyId: targetUid,
 
                                 createdAt: serverTimestamp()
                             });
@@ -723,16 +728,46 @@ const InventoryVoucherV2 = ({
                             await transaction.update(doc(db, 'jumbo_bags', b.id), {
                                 status: 'in_stock',
                                 salesId: deleteField(),
+                                salesRefNo: deleteField(),
                                 soldDate: deleteField()
                             });
                         }
                     }
                     const allSelectedBags = items.flatMap(i => i.selectedBags || []);
                     if (allSelectedBags.length > 0) {
+                        const selectedBagIds = new Set();
+                        for (const b of allSelectedBags) {
+                            if (!b?.id) {
+                                throw new Error('Invalid bag selection detected. Please re-open bag picker and try again.');
+                            }
+                            if (selectedBagIds.has(b.id)) {
+                                throw new Error(`Duplicate bag selected in voucher: ${b.bagNo || b.id}`);
+                            }
+                            selectedBagIds.add(b.id);
+
+                            const bagRef = doc(db, 'jumbo_bags', b.id);
+                            const bagSnap = await transaction.get(bagRef);
+                            if (!bagSnap.exists()) {
+                                console.warn(`Selected bag not found: ${b.bagNo || b.id}. Skipping.`);
+                                continue;
+                            }
+
+                            const bagData = bagSnap.data() || {};
+                            const soldElsewhere = bagData.status === 'sold' && bagData.salesId && bagData.salesId !== invoiceRef.id;
+                            if (soldElsewhere) {
+                                throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} is already sold in another voucher.`);
+                            }
+
+                            if (bagData.productId && b.productId && bagData.productId !== b.productId) {
+                                throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} does not belong to selected item.`);
+                            }
+                        }
+
                         for (const b of allSelectedBags) {
                             await transaction.update(doc(db, 'jumbo_bags', b.id), {
                                 status: 'sold',
                                 salesId: invoiceRef.id,
+                                salesRefNo: formData.refNo || '',
                                 soldDate: formData.date
                             });
                         }
@@ -1281,11 +1316,9 @@ const InventoryVoucherV2 = ({
                                                             <Box size={12} />
                                                             {(() => {
                                                                  const countSelected = (item.selectedBags || []).length;
-                                                                 const availToAdd = productsBagMap[item.productId] || 0;
                                                                  if (countSelected > 0) {
                                                                      if (initialData?.id) {
-                                                                         if (availToAdd > 0) return 'addmore ';
-                                                                         return 'zero bags available';
+                                                                         return `${countSelected} Bags Selected (Edit)`;
                                                                      }
                                                                      return `${countSelected} Bags Selected`;
                                                                  }

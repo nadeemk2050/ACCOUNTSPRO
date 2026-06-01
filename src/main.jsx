@@ -52,15 +52,7 @@ window.addEventListener('unhandledrejection', (event) => {
 const APP_VERSION = 'V2.6.5'; // Update this string whenever you deploy a breaking change
 console.log(`ACCPRO Running Version: ${APP_VERSION}`);
 
-// 🛡️ SECURITY & CACHE FIX: Unregister any existing service workers that might be serving old code
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then(registrations => {
-    for (let registration of registrations) {
-      registration.unregister();
-      console.log('Service Worker unregistered');
-    }
-  });
-}
+// Keep service worker active so periodic/background sync can run in supported browsers.
 
 const GlobalEffects = () => {
   useEffect(() => {

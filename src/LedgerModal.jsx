@@ -564,7 +564,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         // ⚡ Item Balance should NOT be affected by accounting JVs in this system
                         if (activeFilter.type === 'item') return;
                         const amt = baseVal;
-                        if (d.isMulti && d.rows) {
+                        if (d.rows && d.rows.length > 0) {
                             // ✅ Multi-Line JV Logic
                             if (['daybook', 'user'].includes(activeFilter.type)) {
                                 row = buildRow(doc, d, { amtIn: amt, amtOut: amt, foreignIn: 0, foreignOut: 0 });
