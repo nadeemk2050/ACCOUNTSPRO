@@ -90,9 +90,13 @@ const handleRecalculateSystem = async (scope = 'all') => {
             }
 
             // Party Balance
-            const addlExpBase = Number(v.addlExpTotal || 0) * rate;
-            const supplierBase = (v.type === 'purchase' && v.addlExpCreditId && v.addlExpCreditId !== v.partyId)
-                ? Math.max(0, grandTotalBase - addlExpBase)
+            const expForeign = (v.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0);
+            const expBase = expForeign * rate;
+            const addlExpForeign = (v.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(v.addlExpTotal || 0);
+            const addlExpBase = addlExpForeign * rate;
+
+            const supplierBase = (v.type === 'purchase')
+                ? Math.max(0, grandTotalBase - expBase - addlExpBase)
                 : grandTotalBase;
 
             if (v.partyId) {
@@ -101,11 +105,20 @@ const handleRecalculateSystem = async (scope = 'all') => {
                 else if (v.type === 'purchase' || v.type === 'credit_note' || v.type === 'sales_return') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) - amt; // Cr (-)
             }
 
-            // Expenses paid by Account or Party (Purchase Invoice context)
-            if (v.addlExpCreditId && v.addlExpTotal && v.addlExpCreditId !== v.partyId) {
-                if (bal.accounts[v.addlExpCreditId] !== undefined) bal.accounts[v.addlExpCreditId] -= addlExpBase;
-                else if (bal.parties[v.addlExpCreditId] !== undefined) bal.parties[v.addlExpCreditId] -= addlExpBase;
+            // Expenses go to their ledgers (Purchase Invoice context)
+            if (v.type === 'purchase') {
+                (v.expenses || []).forEach(e => {
+                    if (e.expenseId) {
+                        bal.expenses[e.expenseId] = (bal.expenses[e.expenseId] || 0) + (Number(e.amount || 0) * rate);
+                    }
+                });
+                (v.addlExpenses || []).forEach(e => {
+                    if (e.expenseId) {
+                        bal.expenses[e.expenseId] = (bal.expenses[e.expenseId] || 0) - (Number(e.amount || 0) * rate);
+                    }
+                });
             }
+
         });
 
         // --- PAYMENTS (Base Amount Aware) ---

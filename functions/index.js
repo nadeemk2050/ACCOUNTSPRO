@@ -818,17 +818,25 @@ exports.getApiUsageDetails = onCall({ cors: true }, async (request) => {
         // Latest activity
         const lastConnection = usageLogs.length > 0 ? usageLogs[0].timestamp : null;
 
-        // Also get team members for the user dropdown
-        const teamSnap = await db.collection('users')
-            .where('ownerId', '==', companyId)
-            .get();
-
-        const teamMembers = teamSnap.docs.map(d => ({
-            id: d.id,
-            name: d.data().name || 'Unknown',
-            email: d.data().email || '',
-            role: d.data().role || 'member'
-        }));
+        // Get team members for the user dropdown — scan all users (no ownerId field in docs)
+        let teamMembers = [];
+        try {
+            const allUsersSnap = await db.collection('users').limit(50).get();
+            allUsersSnap.forEach(d => {
+                const data = d.data();
+                const role = data.role || data.roleName || null;
+                const userName = data.name || data.fullName || data.displayName || null;
+                const userEmail = data.email || data.mail || null;
+                if (role || userName) {
+                    teamMembers.push({
+                        id: d.id,
+                        name: userName || 'Team Member',
+                        email: userEmail || '',
+                        role: role || 'member'
+                    });
+                }
+            });
+        } catch (e) { /* ignore */ }
 
         return {
             exists: true,
@@ -926,7 +934,67 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
             const action = req.query.action || 'summary';
 
             if (action === 'validate_key') {
-                return res.json({ success: true, companyName });
+                // Try to fetch license info for the company
+                let licenseInfo = null;
+                try {
+                    // Find the owner user document to check for license key
+                    const ownerDoc = await db.collection('users').doc(userId).get();
+                    if (ownerDoc.exists) {
+                        const ownerData = ownerDoc.data();
+                        const serialKey = ownerData.serialKey || null;
+                        if (serialKey) {
+                            const licDoc = await db.collection('nadtally_licenses').doc(serialKey).get();
+                            if (licDoc.exists) {
+                                const l = licDoc.data();
+                                licenseInfo = {
+                                    serialKey: serialKey,
+                                    userName: l.userName || ownerData.name || '',
+                                    email: l.email || ownerData.email || '',
+                                    status: l.status || 'active',
+                                    expiresAt: l.expiresAt?.toMillis?.() || l.expiresAt || null
+                                };
+                            }
+                        }
+                    }
+                    // Also try companies collection for serialKey
+                    if (!licenseInfo) {
+                        const coDoc = await db.collection('companies').doc(companyId).get();
+                        if (coDoc.exists) {
+                            const settings = coDoc.data().settings || {};
+                            const serialKey = settings.licenseKey || null;
+                            if (serialKey) {
+                                const licDoc = await db.collection('nadtally_licenses').doc(serialKey).get();
+                                if (licDoc.exists) {
+                                    const l = licDoc.data();
+                                    licenseInfo = {
+                                        serialKey: serialKey,
+                                        userName: l.userName || '',
+                                        email: l.email || '',
+                                        status: l.status || 'active',
+                                        expiresAt: l.expiresAt?.toMillis?.() || l.expiresAt || null
+                                    };
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('License lookup error:', e.message);
+                }
+
+                // Fetch team members count
+                let teamCount = 0;
+                try {
+                    const teamSnap = await db.collection('users').where('ownerId', '==', userId).limit(100).get();
+                    teamCount = teamSnap.size;
+                } catch (e) { /* ignore */ }
+
+                return res.json({ 
+                    success: true, 
+                    companyName,
+                    companyId,
+                    license: licenseInfo,
+                    teamCount
+                });
             }
 
             // Helper to query the company's live records
@@ -934,11 +1002,37 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
 
             if (action === 'summary') {
                 // Get basic summary for widget from live records
-                const [partySnap, accountSnap, invoiceSnap] = await Promise.all([
+                const [partySnap, accountSnap, paySnap, jvSnap, invoiceSnap] = await Promise.all([
                     getRecords('parties').get(),
                     getRecords('accounts').get(),
+                    getRecords('payments').get(),
+                    getRecords('journal_vouchers').get(),
                     getRecords('invoices').get()
                 ]);
+
+                // Pre-compute account balance adjustments from payments and JVs
+                const payAdj = {};
+                paySnap.forEach(doc => {
+                    const item = doc.data();
+                    const d = item.data || {};
+                    const amt = Number(d.amount || 0);
+                    const acctId = d.accountId;
+                    const toAcctId = d.toAccountId;
+                    const type = d.type || d.subType || '';
+                    if (acctId) {
+                        if (type === 'in' || type === 'receipt') payAdj[acctId] = (payAdj[acctId] || 0) + amt;
+                        else if (type === 'out' || type === 'payment') payAdj[acctId] = (payAdj[acctId] || 0) - amt;
+                        else if (type === 'contra') payAdj[acctId] = (payAdj[acctId] || 0) - amt;
+                    }
+                    if (type === 'contra' && toAcctId) payAdj[toAcctId] = (payAdj[toAcctId] || 0) + amt;
+                });
+                jvSnap.forEach(doc => {
+                    const item = doc.data();
+                    const d = item.data || {};
+                    const amt = Number(d.amount || 0);
+                    if (d.drType === 'account' && d.drId) payAdj[d.drId] = (payAdj[d.drId] || 0) + amt;
+                    if (d.crType === 'account' && d.crId) payAdj[d.crId] = (payAdj[d.crId] || 0) - amt;
+                });
 
                 let totalReceivable = 0;
                 let totalPayable = 0;
@@ -952,7 +1046,11 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                 let cashBankBalance = 0;
                 accountSnap.forEach(doc => {
                     const item = doc.data();
-                    cashBankBalance += (item.data?.balance || 0);
+                    const accData = item.data || {};
+                    const accId = item.id;
+                    const openingBal = Number(accData.openingBalance || 0);
+                    const adj = payAdj[accId] || 0;
+                    cashBankBalance += (openingBal + adj);
                 });
 
                 const recentInvoices = invoiceSnap.docs.map(doc => {
@@ -974,11 +1072,141 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
 
             if (action === 'list_accounts') {
                 const snap = await getRecords('accounts').get();
+                
+                // Fetch transactions to compute dynamic balances, debits, and credits
+                const [paySnap, jvSnap, invSnap] = await Promise.all([
+                    getRecords('payments').get(),
+                    getRecords('journal_vouchers').get(),
+                    getRecords('invoices').get()
+                ]);
+
+                // Build balance adjustments from transactions
+                const stats = {};
+                const getStats = (id) => {
+                    if (!stats[id]) {
+                        stats[id] = { debit: 0, credit: 0 };
+                    }
+                    return stats[id];
+                };
+
+                // 1. Process Invoices (partyId, addlExpCreditId)
+                invSnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.deleted === true) return;
+                    const d = item.data || {};
+                    if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                    const rate = Number(d.exchangeRate || 1);
+                    const amt = Number(d.grandTotal || d.totalAmount || 0) * rate;
+
+                    if (d.partyId) {
+                        const pStats = getStats(d.partyId);
+                        if (['sales', 'debit_note', 'purchase_return', 'sales_inv'].includes(d.type)) {
+                            pStats.debit += amt;
+                        } else if (['purchase', 'credit_note', 'sales_return', 'purchase_inv'].includes(d.type)) {
+                            pStats.credit += amt;
+                        }
+                    }
+                    if (d.addlExpCreditId && d.addlExpTotal) {
+                        const expAmt = Number(d.addlExpTotal) * rate;
+                        getStats(d.addlExpCreditId).credit += expAmt;
+                    }
+                });
+
+                // 2. Process Payments (accountId, splits, targetId)
+                paySnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.deleted === true) return;
+                    const d = item.data || {};
+                    if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                    const rate = Number(d.exchangeRate || 1);
+                    const amtBase = Number(d.baseAmount || (d.amount * rate));
+
+                    const srcId = d.accountId || d.sourceId;
+                    if (srcId) {
+                        const sStats = getStats(srcId);
+                        if (d.type === 'in' || d.type === 'receipt') {
+                            sStats.debit += amtBase;
+                        } else {
+                            sStats.credit += amtBase;
+                        }
+                    }
+
+                    const applyTarget = (id, val, type) => {
+                        if (!id) return;
+                        const tStats = getStats(id);
+                        if (type === 'in' || type === 'receipt') {
+                            tStats.credit += val;
+                        } else {
+                            tStats.debit += val;
+                        }
+                    };
+
+                    if (d.isMulti && d.splits) {
+                        d.splits.forEach(s => {
+                            applyTarget(s.targetId, Number(s.amount || 0) * rate, d.type);
+                        });
+                    } else {
+                        let cat = d.transactionCategory;
+                        let tid = null;
+                        if (cat === 'party') tid = d.partyId;
+                        else if (cat === 'expense') tid = d.expenseId;
+                        else if (cat === 'account' || d.type === 'contra') { cat = 'account'; tid = d.toAccountId; }
+                        else if (cat === 'capital') tid = d.capitalId;
+                        else if (cat === 'asset') tid = d.assetId;
+                        else if (cat === 'income') tid = d.incomeId;
+
+                        if (tid) applyTarget(tid, amtBase, d.type);
+                    }
+                });
+
+                // 3. Process Journal Vouchers (drId, crId, rows)
+                jvSnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.deleted === true) return;
+                    const d = item.data || {};
+                    if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                    const amt = Number(d.amount || 0);
+
+                    const applyJV = (id, val, mode) => {
+                        if (!id) return;
+                        const tStats = getStats(id);
+                        if (mode === 'dr') {
+                            tStats.debit += val;
+                        } else {
+                            tStats.credit += val;
+                        }
+                    };
+
+                    if (d.isMulti && d.rows && Array.isArray(d.rows)) {
+                        d.rows.forEach(r => {
+                            applyJV(r.id, Number(r.amount || 0), r.type);
+                        });
+                    } else {
+                        if (d.drId) applyJV(d.drId, amt, 'dr');
+                        if (d.crId) applyJV(d.crId, amt, 'cr');
+                    }
+                });
+
                 const accounts = snap.docs.map(doc => {
                     const item = doc.data();
+                    const accData = item.data || {};
+                    const accId = item.id;
+                    
+                    const openingBal = Number(accData.openingBalance || 0);
+                    const s = stats[accId] || { debit: 0, credit: 0 };
+                    const dynamicBalance = openingBal + s.debit - s.credit;
+                    
                     return {
-                        id: item.id,
-                        ...item.data
+                        id: accId,
+                        ...accData,
+                        openingBalance: openingBal,
+                        debit: s.debit,
+                        credit: s.credit,
+                        balance: dynamicBalance,
+                        storedBalance: Number(accData.balance || 0)
                     };
                 });
                 return res.json({ 
@@ -987,25 +1215,147 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                 });
             }
 
+            if (action === 'check_ref_no') {
+                const checkRef = req.query.refNo || req.body?.refNo;
+                if (!checkRef) return res.status(400).json({ error: 'refNo required' });
+                
+                try {
+                    const refSnap = await db.collection('payments')
+                        .where('userId', '==', companyId)
+                        .where('refNo', '==', checkRef)
+                        .limit(1)
+                        .get();
+                    return res.json({ exists: !refSnap.empty });
+                } catch (e) {
+                    return res.json({ exists: false });
+                }
+            }
+
+            if (action === 'run_migration') {
+                const results = {
+                    nestedUpdated: 0,
+                    topUpdated: 0,
+                    errors: []
+                };
+
+                try {
+                    // 1. Update nested records in companies_live/{companyId}/records
+                    const recordsColl = db.collection('companies_live').doc(companyId).collection('records');
+                    const recordsSnap = await recordsColl
+                        .where('collectionName', '==', 'payments')
+                        .where('data.userId', '==', userId)
+                        .get();
+                    
+                    for (const dDoc of recordsSnap.docs) {
+                        try {
+                            const docRef = recordsColl.doc(dDoc.id);
+                            await docRef.update({
+                                'data.userId': companyId,
+                                'timestamp': Date.now(),
+                                'syncTimestamp': Date.now()
+                            });
+                            results.nestedUpdated++;
+                        } catch (err) {
+                            results.errors.push(`Nested doc ${dDoc.id} error: ${err.message}`);
+                        }
+                    }
+
+                    // 2. Update top-level payments collection
+                    const topColl = db.collection('payments');
+                    const topSnap = await topColl
+                        .where('userId', '==', userId)
+                        .get();
+                    
+                    for (const dDoc of topSnap.docs) {
+                        try {
+                            const docRef = topColl.doc(dDoc.id);
+                            const nestedDoc = await recordsColl.doc(dDoc.id).get();
+                            if (nestedDoc.exists) {
+                                await docRef.update({
+                                    'userId': companyId,
+                                    'timestamp': Date.now()
+                                });
+                                results.topUpdated++;
+                            }
+                        } catch (err) {
+                            results.errors.push(`Top-level doc ${dDoc.id} error: ${err.message}`);
+                        }
+                    }
+
+                    return res.json({ success: true, results });
+                } catch (error) {
+                    return res.status(500).json({ error: error.message });
+                }
+            }
+
             if (action === 'add_contra') {
                 // Support both query and body for flexibility
-                const { fromAccountId, toAccountId, amount, date, narration, refNo } = { ...req.query, ...req.body };
+                const { fromAccountId, toAccountId, amount, date, narration, refNo, subUserId } = { ...req.query, ...req.body };
                 if (!fromAccountId || !toAccountId || !amount) {
                     return res.status(400).json({ error: 'Missing required fields: fromAccountId, toAccountId, amount' });
+                }
+
+                const db = admin.firestore();
+
+                // Duplicate refNo check
+                if (refNo) {
+                    const dupSnap = await db.collection('payments')
+                        .where('userId', '==', companyId)
+                        .where('refNo', '==', refNo)
+                        .limit(1)
+                        .get();
+                    if (!dupSnap.empty) {
+                        return res.status(409).json({ error: `Reference number "${refNo}" already exists.` });
+                    }
                 }
 
                 const amt = Number(amount);
                 const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
 
                 try {
-                    await db.runTransaction(async (transaction) => {
-                        const fromSnap = await transaction.get(recordsCol.doc(fromAccountId));
-                        const toSnap = await transaction.get(recordsCol.doc(toAccountId));
+                    const [fromSnap, toSnap] = await Promise.all([
+                        recordsCol.doc(fromAccountId).get(),
+                        recordsCol.doc(toAccountId).get()
+                    ]);
 
-                        if (!fromSnap.exists || !toSnap.exists) {
-                            throw new Error('One or both accounts not found');
+                    if (!fromSnap.exists || !toSnap.exists) {
+                        throw new Error('One or both accounts not found');
+                    }
+
+                    // Find top-level account IDs
+                    let topFromAccountId = null;
+                    const fromAccDoc = await db.collection('accounts').doc(fromAccountId).get();
+                    if (fromAccDoc.exists) {
+                        topFromAccountId = fromAccountId;
+                    } else {
+                        const nestedFromAcc = fromSnap.data()?.data;
+                        if (nestedFromAcc?.name) {
+                            const q = await db.collection('accounts')
+                                .where('userId', '==', companyId)
+                                .where('name', '==', nestedFromAcc.name)
+                                .limit(1)
+                                .get();
+                            if (!q.empty) topFromAccountId = q.docs[0].id;
                         }
+                    }
 
+                    let topToAccountId = null;
+                    const toAccDoc = await db.collection('accounts').doc(toAccountId).get();
+                    if (toAccDoc.exists) {
+                        topToAccountId = toAccountId;
+                    } else {
+                        const nestedToAcc = toSnap.data()?.data;
+                        if (nestedToAcc?.name) {
+                            const q = await db.collection('accounts')
+                                .where('userId', '==', companyId)
+                                .where('name', '==', nestedToAcc.name)
+                                .limit(1)
+                                .get();
+                            if (!q.empty) topToAccountId = q.docs[0].id;
+                        }
+                    }
+
+                    await db.runTransaction(async (transaction) => {
                         // Update balances
                         transaction.update(recordsCol.doc(fromAccountId), {
                             'data.balance': admin.firestore.FieldValue.increment(-amt),
@@ -1018,27 +1368,81 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                             'timestamp': Date.now()
                         });
 
+                        if (topFromAccountId) {
+                            transaction.update(db.collection('accounts').doc(topFromAccountId), {
+                                'balance': admin.firestore.FieldValue.increment(-amt),
+                                'timestamp': Date.now()
+                            });
+                        }
+                        if (topToAccountId) {
+                            transaction.update(db.collection('accounts').doc(topToAccountId), {
+                                'balance': admin.firestore.FieldValue.increment(amt),
+                                'timestamp': Date.now()
+                            });
+                        }
+
                         // Create the payment record
                         const newId = crypto.randomBytes(12).toString('hex');
+                        const contraData = {
+                            type: 'contra',
+                            accountId: fromAccountId,
+                            toAccountId: toAccountId,
+                            amount: amt,
+                            date: date || new Date().toISOString().split('T')[0],
+                            description: narration || '',
+                            refNo: refNo || '',
+                            userId: companyId,
+                            createdBy: subUserId || userId,
+                            status: 'active',
+                            version: 'v2'
+                        };
+
                         transaction.set(recordsCol.doc(newId), {
                             id: newId,
                             collectionName: 'payments',
                             syncTimestamp: Date.now(),
                             timestamp: Date.now(),
-                            data: {
-                                type: 'contra',
-                                accountId: fromAccountId,
-                                toAccountId: toAccountId,
-                                amount: amt,
-                                date: date || new Date().toISOString().split('T')[0],
-                                description: narration || '', // Main app uses description for payments
-                                refNo: refNo || '',
-                                userId: userId,
-                                status: 'active',
-                                version: 'v2'
-                            }
+                            data: contraData
+                        });
+
+                        transaction.set(db.collection('payments').doc(newId), {
+                            ...contraData,
+                            id: newId,
+                            timestamp: Date.now()
                         });
                     });
+
+                    // Create audit log for contra (best-effort)
+                    try {
+                        const rawName = req.body?.userName || 'QuickAccPro User';
+                        const subName = rawName.includes('(QAP)') ? rawName : `${rawName} (QAP)`;
+                        const snapshot = {
+                            date: date || new Date().toISOString().split('T')[0],
+                            type: 'contra',
+                            refNo: refNo || 'N/A',
+                            amount: amt,
+                            accountId: fromAccountId,
+                            toAccountId: toAccountId,
+                            narration: narration || ''
+                        };
+                        await db.collection('audit_logs').add({
+                            date: admin.firestore.FieldValue.serverTimestamp(),
+                            ownerId: userId, // ✅ FIX: Use userId (owner UID) so it matches SystemLogModal query filter
+                            userId: subUserId || userId,
+                            userName: subName,
+                            action: 'CREATED',
+                            docType: 'Contra Voucher',
+                            refNo: refNo || 'N/A',
+                            amount: amt,
+                            voucherDate: date || new Date().toISOString().split('T')[0],
+                            docId: newId, // ✅ FIX: Match the actual voucher document ID
+                            description: `CREATED Contra Voucher: transfer of ${amt} via QuickAccPro`,
+                            snapshotData: JSON.stringify(snapshot)
+                        });
+                    } catch (logErr) {
+                        console.error('Audit log error:', logErr.message);
+                    }
+
                     return res.json({ success: true });
                 } catch (error) {
                     return res.status(400).json({ error: error.message });
@@ -1046,17 +1450,151 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
             }
 
             if (action === 'list_ledgers') {
-                const [partySnap, expSnap, assetSnap] = await Promise.all([
+                const [partySnap, expSnap, assetSnap, paySnap, jvSnap, invSnap] = await Promise.all([
                     getRecords('parties').get(),
                     getRecords('expenses').get(),
-                    getRecords('asset_accounts').get()
+                    getRecords('asset_accounts').get(),
+                    getRecords('payments').get(),
+                    getRecords('journal_vouchers').get(),
+                    getRecords('invoices').get()
                 ]);
-                
+
+                // Build balance adjustments from transactions
+                const stats = {};
+                const getStats = (id) => {
+                    if (!stats[id]) {
+                        stats[id] = { debit: 0, credit: 0 };
+                    }
+                    return stats[id];
+                };
+
+                // 1. Process Invoices (partyId, addlExpCreditId)
+                invSnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.deleted === true) return;
+                    const d = item.data || {};
+                    if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                    const rate = Number(d.exchangeRate || 1);
+                    const amt = Number(d.grandTotal || d.totalAmount || 0) * rate;
+
+                    if (d.partyId) {
+                        const pStats = getStats(d.partyId);
+                        if (['sales', 'debit_note', 'purchase_return', 'sales_inv'].includes(d.type)) {
+                            pStats.debit += amt;
+                        } else if (['purchase', 'credit_note', 'sales_return', 'purchase_inv'].includes(d.type)) {
+                            pStats.credit += amt;
+                        }
+                    }
+                    if (d.addlExpCreditId && d.addlExpTotal) {
+                        const expAmt = Number(d.addlExpTotal) * rate;
+                        getStats(d.addlExpCreditId).credit += expAmt;
+                    }
+                });
+
+                // 2. Process Payments (accountId, splits, targetId)
+                paySnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.deleted === true) return;
+                    const d = item.data || {};
+                    if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                    const rate = Number(d.exchangeRate || 1);
+                    const amtBase = Number(d.baseAmount || (d.amount * rate));
+
+                    const srcId = d.accountId || d.sourceId;
+                    if (srcId) {
+                        const sStats = getStats(srcId);
+                        if (d.type === 'in' || d.type === 'receipt') {
+                            sStats.debit += amtBase;
+                        } else {
+                            sStats.credit += amtBase;
+                        }
+                    }
+
+                    const applyTarget = (id, val, type) => {
+                        if (!id) return;
+                        const tStats = getStats(id);
+                        if (type === 'in' || type === 'receipt') {
+                            tStats.credit += val;
+                        } else {
+                            tStats.debit += val;
+                        }
+                    };
+
+                    if (d.isMulti && d.splits) {
+                        d.splits.forEach(s => {
+                            applyTarget(s.targetId, Number(s.amount || 0) * rate, d.type);
+                        });
+                    } else {
+                        let cat = d.transactionCategory;
+                        let tid = null;
+                        if (cat === 'party') tid = d.partyId;
+                        else if (cat === 'expense') tid = d.expenseId;
+                        else if (cat === 'account' || d.type === 'contra') { cat = 'account'; tid = d.toAccountId; }
+                        else if (cat === 'capital') tid = d.capitalId;
+                        else if (cat === 'asset') tid = d.assetId;
+                        else if (cat === 'income') tid = d.incomeId;
+
+                        if (tid) applyTarget(tid, amtBase, d.type);
+                    }
+                });
+
+                // 3. Process Journal Vouchers (drId, crId, rows)
+                jvSnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.deleted === true) return;
+                    const d = item.data || {};
+                    if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                    const amt = Number(d.amount || 0);
+
+                    const applyJV = (id, val, mode) => {
+                        if (!id) return;
+                        const tStats = getStats(id);
+                        if (mode === 'dr') {
+                            tStats.debit += val;
+                        } else {
+                            tStats.credit += val;
+                        }
+                    };
+
+                    if (d.isMulti && d.rows && Array.isArray(d.rows)) {
+                        d.rows.forEach(r => {
+                            applyJV(r.id, Number(r.amount || 0), r.type);
+                        });
+                    } else {
+                        if (d.drId) applyJV(d.drId, amt, 'dr');
+                        if (d.crId) applyJV(d.crId, amt, 'cr');
+                    }
+                });
+
                 const ledgers = [];
-                partySnap.forEach(d => ledgers.push({ id: d.id, collection: 'parties', name: d.data().data?.name || 'Unknown Party' }));
-                expSnap.forEach(d => ledgers.push({ id: d.id, collection: 'expenses', name: d.data().data?.name || 'Unknown Expense' }));
-                assetSnap.forEach(d => ledgers.push({ id: d.id, collection: 'asset_accounts', name: d.data().data?.name || 'Unknown Asset' }));
-                
+                const addLedger = (doc, collectionName) => {
+                    const item = doc.data();
+                    const dData = item.data || {};
+                    const id = item.id || doc.id;
+                    const openingBal = Number(dData.openingBalance || 0);
+                    const s = stats[id] || { debit: 0, credit: 0 };
+                    const dynamicBalance = openingBal + s.debit - s.credit;
+
+                    ledgers.push({
+                        id: id,
+                        collection: collectionName,
+                        name: dData.name || 'Unknown',
+                        openingBalance: openingBal,
+                        debit: s.debit,
+                        credit: s.credit,
+                        balance: dynamicBalance,
+                        storedBalance: Number(dData.balance || 0),
+                        group: dData.group || 'Primary'
+                    });
+                };
+
+                partySnap.forEach(d => addLedger(d, 'parties'));
+                expSnap.forEach(d => addLedger(d, 'expenses'));
+                assetSnap.forEach(d => addLedger(d, 'asset_accounts'));
+
                 return res.json({ ledgers });
             }
 
@@ -1086,14 +1624,193 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                 return res.json({ invoices });
             }
 
+            if (action === 'list_daybook') {
+                // Fetch all transaction types from live records
+                const limitParam = req.query.limit || req.body?.limit || '50';
+                const limit = limitParam === 'all' ? 100000 : Math.min(parseInt(limitParam), 100000);
+                const types = ['invoices', 'payments', 'journal_vouchers'];
+                
+                const allSnaps = await Promise.all(
+                    types.map(col => getRecords(col).get())
+                );
+
+                const transactions = [];
+                const nameMap = new Map();
+
+                // Build name map from parties, accounts, expenses, asset_accounts, capital_accounts
+                const [partySnap, accSnap, expSnap, assetSnap, capSnap] = await Promise.all([
+                    getRecords('parties').get(),
+                    getRecords('accounts').get(),
+                    getRecords('expenses').get(),
+                    getRecords('asset_accounts').get(),
+                    getRecords('capital_accounts').get()
+                ]);
+                partySnap.forEach(d => nameMap.set(d.id, d.data().data?.name || 'Party'));
+                accSnap.forEach(d => nameMap.set(d.id, d.data().data?.name || 'Account'));
+                expSnap.forEach(d => nameMap.set(d.id, d.data().data?.name || 'Expense'));
+                assetSnap.forEach(d => nameMap.set(d.id, d.data().data?.name || 'Asset'));
+                capSnap.forEach(d => nameMap.set(d.id, d.data().data?.name || 'Capital'));
+
+                allSnaps.forEach((snap, idx) => {
+                    snap.forEach(doc => {
+                        const item = doc.data();
+                        if (item.deleted === true) return;
+                        const d = item.data || {};
+                        if (d.status === 'deleted' || d.status === 'bulk_deleted' || d.isDeleted === true) return;
+
+                        let drName = nameMap.get(d.drAccountId || d.drId) || d.drName || '';
+                        let crName = nameMap.get(d.crAccountId || d.crId) || d.crName || '';
+
+                        if (types[idx] === 'payments') {
+                            const bankName = nameMap.get(d.accountId) || d.accountName || '';
+                            let otherName = 'Party';
+                            
+                            const toAccId = d.toAccountId || (d.splits && d.splits[0] && d.splits[0].targetId) || '';
+                            
+                            if (d.transactionCategory === 'expense') otherName = nameMap.get(d.expenseId) || 'Expense';
+                            else if (d.transactionCategory === 'capital') otherName = 'Capital A/c';
+                            else if (d.transactionCategory === 'asset') otherName = nameMap.get(d.assetId) || 'Asset';
+                            else if (d.transactionCategory === 'income') otherName = nameMap.get(d.incomeId) || 'Income';
+                            else if (d.partyId) otherName = nameMap.get(d.partyId) || 'Party';
+                            else if (toAccId) otherName = nameMap.get(toAccId) || 'Bank';
+
+                            if (d.isMulti && d.splits && d.splits.length > 0) {
+                                const targetNames = d.splits.map(s => nameMap.get(s.targetId)).filter(Boolean);
+                                if (targetNames.length > 0) {
+                                    otherName = targetNames.join(', ');
+                                }
+                            }
+
+                            if (d.type === 'in' || d.type === 'receipt') {
+                                drName = bankName;
+                                crName = otherName;
+                            } else {
+                                drName = otherName;
+                                crName = bankName;
+                            }
+                        } else if (types[idx] === 'journal_vouchers' && d.isMulti && Array.isArray(d.rows)) {
+                            const drNames = d.rows.filter(r => r.type === 'dr').map(r => nameMap.get(r.id)).filter(Boolean);
+                            const crNames = d.rows.filter(r => r.type === 'cr').map(r => nameMap.get(r.id)).filter(Boolean);
+                            drName = drNames.join(', ');
+                            crName = crNames.join(', ');
+                        }
+
+                        let amount = 0;
+                        const rate = Number(d.exchangeRate || 1);
+                        if (types[idx] === 'invoices') {
+                            amount = Number(d.grandTotal || d.totalAmount || 0) * rate;
+                        } else if (types[idx] === 'payments') {
+                            amount = Number(d.baseAmount || (d.amount * rate));
+                        } else if (types[idx] === 'journal_vouchers') {
+                            amount = Number(d.amount || 0);
+                        }
+
+                        let splits = null;
+                        if (types[idx] === 'payments' && d.isMulti && d.splits) {
+                            splits = d.splits.map(s => ({
+                                targetId: s.targetId,
+                                targetName: nameMap.get(s.targetId) || '',
+                                amount: Number(s.amount || 0) * rate
+                            }));
+                        } else if (types[idx] === 'journal_vouchers' && d.isMulti && Array.isArray(d.rows)) {
+                            splits = d.rows.map(r => ({
+                                targetId: r.id,
+                                targetName: nameMap.get(r.id) || '',
+                                amount: Number(r.amount || 0),
+                                type: r.type
+                            }));
+                        }
+
+                        transactions.push({
+                            id: item.id || doc.id,
+                            type: types[idx],
+                            date: d.date || '',
+                            refNo: d.refNo || d.invoiceNo || '',
+                            amount: amount,
+                            description: d.description || d.narration || d.particulars || '',
+                            accountName: nameMap.get(d.accountId || d.partyId) || d.accountName || '',
+                            partyName: nameMap.get(d.partyId || d.ledgerId) || d.partyName || '',
+                            drName,
+                            crName,
+                            subType: d.type || d.voucherType || '',
+                            status: d.status || 'active',
+                            syncTimestamp: item.syncTimestamp || 0,
+                            isMulti: d.isMulti || false,
+                            splits: splits
+                        });
+                    });
+                });
+
+                // Sort by date descending, then by syncTimestamp
+                transactions.sort((a, b) => {
+                    const dateCmp = (b.date || '').localeCompare(a.date || '');
+                    if (dateCmp !== 0) return dateCmp;
+                    return (b.syncTimestamp || 0) - (a.syncTimestamp || 0);
+                });
+
+                return res.json({
+                    companyName,
+                    transactions: transactions.slice(0, limit),
+                    total: transactions.length
+                });
+            }
+
             if (action === 'list_team') {
-                const teamSnap = await db.collection('users').where('ownerId', '==', userId).get();
-                const team = teamSnap.docs.map(doc => ({
-                    id: doc.id,
-                    name: doc.data().name,
-                    email: doc.data().email,
-                    role: doc.data().role
-                }));
+                let team = [];
+                const seen = new Set();
+                
+                // Strategy 1: Get users where ownerId matches userId or companyId
+                const searchIds = [...new Set([userId, companyId].filter(Boolean))];
+                for (const sid of searchIds) {
+                    try {
+                        const snap = await db.collection('users').where('ownerId', '==', sid).get();
+                        snap.forEach(d => {
+                            if (!seen.has(d.id)) {
+                                seen.add(d.id);
+                                team.push({ id: d.id, name: d.data().name, email: d.data().email, role: d.data().role });
+                            }
+                        });
+                    } catch (e) { /* ignore */ }
+                }
+
+                // Strategy 2: Include the owner's own doc
+                for (const sid of searchIds) {
+                    try {
+                        const ownerDoc = await db.collection('users').doc(sid).get();
+                        if (ownerDoc.exists && !seen.has(sid)) {
+                            const d = ownerDoc.data();
+                            seen.add(sid);
+                            team.unshift({ id: sid, name: d.name || 'Owner', email: d.email, role: 'owner' });
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+
+                // Strategy 3: Get offline-created team members synced under companies_live/{companyId}/records
+                if (companyId) {
+                    try {
+                        const localUsersSnap = await db.collection('companies_live')
+                            .doc(companyId)
+                            .collection('records')
+                            .where('collectionName', '==', 'users')
+                            .get();
+                        
+                        localUsersSnap.forEach(d => {
+                            const docData = d.data();
+                            const userData = docData.data || {};
+                            const memberId = docData.id || d.id;
+                            if (!seen.has(memberId)) {
+                                seen.add(memberId);
+                                team.push({
+                                    id: memberId,
+                                    name: userData.name,
+                                    email: userData.email || userData.name,
+                                    role: userData.role || 'member'
+                                });
+                            }
+                        });
+                    } catch (e) { /* ignore */ }
+                }
+
                 return res.json({ team, companyName });
             }
 
@@ -1102,32 +1819,92 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                 if (!username || !password) return res.status(400).json({ error: 'Username and Password required' });
 
                 const db = admin.firestore();
+                const inputName = username.trim();
                 
-                // 1. Try finding as a Team Member (ownerId matches)
+                // Strategy 1: Find user by name directly (no ownerId filter first)
+                // Then validate they belong to this company
                 let userSnap = await db.collection('users')
-                    .where('email', '==', username)
-                    .where('ownerId', '==', userId)
-                    .limit(1)
+                    .where('name', '==', inputName)
+                    .limit(5)
                     .get();
-
-                // 2. If not found, try finding as the Owner themselves (ID matches)
+                
                 if (userSnap.empty) {
-                    const ownerDoc = await db.collection('users').doc(userId).get();
-                    if (ownerDoc.exists && ownerDoc.data().email === username) {
-                        const userData = ownerDoc.data();
-                        const storedPassword = userData.teamPassword || '123456';
-                        if (password !== storedPassword) return res.status(401).json({ error: 'Invalid password' });
-                        
-                        return res.json({ 
-                            success: true, 
-                            user: { id: userId, name: userData.name, role: 'owner' } 
-                        });
-                    }
-                    return res.status(401).json({ error: 'User not found in this company' });
+                    // Try lowercase match (Firestore is case-sensitive)
+                    userSnap = await db.collection('users')
+                        .where('name', '==', inputName.toLowerCase())
+                        .limit(5)
+                        .get();
                 }
                 
-                const userData = userSnap.docs[0].data();
-                const storedPassword = userData.teamPassword || '123456';
+                if (userSnap.empty) {
+                    // Try email match
+                    userSnap = await db.collection('users')
+                        .where('email', '==', inputName)
+                        .limit(5)
+                        .get();
+                }
+
+                let foundUserData = null;
+                let foundUserId = null;
+
+                // Check each result — does it belong to this company?
+                for (const doc of userSnap.docs) {
+                    const data = doc.data();
+                    // Belongs if: ownerId matches userId OR ownerId matches companyId OR doc id matches userId
+                    if (data.ownerId === userId || data.ownerId === companyId || doc.id === userId || doc.id === companyId) {
+                        foundUserData = data;
+                        foundUserId = doc.id;
+                        break;
+                    }
+                }
+
+                // Strategy 3: Check in companies_live/{companyId}/records where collectionName == 'users'
+                if (!foundUserData && companyId) {
+                    try {
+                        const localUsersSnap = await db.collection('companies_live')
+                            .doc(companyId)
+                            .collection('records')
+                            .where('collectionName', '==', 'users')
+                            .get();
+                        
+                        for (const doc of localUsersSnap.docs) {
+                            const docData = doc.data();
+                            const userData = docData.data || {};
+                            const name = userData.name || '';
+                            const email = userData.email || '';
+                            if (name.toLowerCase() === inputName.toLowerCase() || email.toLowerCase() === inputName.toLowerCase()) {
+                                foundUserData = userData;
+                                foundUserId = docData.id || doc.id;
+                                break;
+                            }
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+
+                // Strategy 2: Check if the user IS the owner (by userId or companyId direct doc lookup)
+                if (!foundUserData) {
+                    const potentialIds = [...new Set([userId, companyId].filter(Boolean))];
+                    for (const pid of potentialIds) {
+                        const ownerDoc = await db.collection('users').doc(pid).get();
+                        if (ownerDoc.exists) {
+                            const d = ownerDoc.data();
+                            if (d.name === inputName || d.email === inputName || d.name?.toLowerCase() === inputName.toLowerCase()) {
+                                const storedPassword = d.password || d.teamPassword || '';
+                                if (password === storedPassword) {
+                                    return res.json({ 
+                                        success: true, 
+                                        user: { id: pid, name: d.name || 'Owner', role: 'owner' } 
+                                    });
+                                } else {
+                                    return res.status(401).json({ error: 'Invalid password' });
+                                }
+                            }
+                        }
+                    }
+                    return res.status(401).json({ error: `User "${inputName}" not found. Check the name in Manage Team and ensure they belong to this company.` });
+                }
+                
+                const storedPassword = foundUserData.password || foundUserData.teamPassword || '';
                 
                 if (password !== storedPassword) {
                     return res.status(401).json({ error: 'Invalid password' });
@@ -1135,12 +1912,14 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
 
                 return res.json({ 
                     success: true, 
-                    user: { id: userSnap.docs[0].id, name: userData.name, role: userData.role } 
+                    user: { id: foundUserId, name: foundUserData.name, role: foundUserData.role || 'member' } 
                 });
             }
 
             if (action === 'add_payment') {
-                let { accountId, payments, date, narration, refNo, subUserId } = { ...req.query, ...req.body };
+                let { accountId, payments, date, narration, refNo, subUserId, type, userName } = { ...req.query, ...req.body };
+                // type: 'in' for receipt (bank +, ledgers -), 'out' for payment (bank -, ledgers +), default 'out'
+                const vtype = (type || 'out').toLowerCase();
                 
                 if (typeof payments === 'string') {
                     try { payments = JSON.parse(payments); } catch (e) { }
@@ -1151,77 +1930,93 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                 }
 
                 const db = admin.firestore();
+
+                // Duplicate refNo check
+                if (refNo) {
+                    const dupSnap = await db.collection('payments')
+                        .where('userId', '==', companyId)
+                        .where('refNo', '==', refNo)
+                        .limit(1)
+                        .get();
+                    if (!dupSnap.empty) {
+                        return res.status(409).json({ error: `Reference number "${refNo}" already exists.` });
+                    }
+                }
+
                 const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
 
                 try {
-                    await db.runTransaction(async (transaction) => {
-                        const accSnap = await transaction.get(recordsCol.doc(accountId));
-                        if (!accSnap.exists) throw new Error('Source account not found');
+                    // FETCH NESTED (Source of Truth)
+                    const uniqueLedgerIds = [...new Set(payments.map(p => p.ledgerId))];
+                    const uniqueAgainstIds = [...new Set(payments.filter(p => p.againstId).map(p => p.againstId))];
 
-                        const uniqueLedgerIds = [...new Set(payments.map(p => p.ledgerId))];
-                        const uniqueAgainstIds = [...new Set(payments.filter(p => p.againstId).map(p => p.againstId))];
-                        
-                        // FETCH NESTED (Source of Truth)
-                        const [ledgerSnaps, againstSnaps, sourceAccSnap] = await Promise.all([
-                            Promise.all(uniqueLedgerIds.map(id => transaction.get(recordsCol.doc(id)))),
-                            Promise.all(uniqueAgainstIds.map(id => transaction.get(recordsCol.doc(id)))),
-                            transaction.get(recordsCol.doc(accountId))
-                        ]);
+                    const [ledgerSnaps, againstSnaps, sourceAccSnap] = await Promise.all([
+                        Promise.all(uniqueLedgerIds.map(id => recordsCol.doc(id).get())),
+                        Promise.all(uniqueAgainstIds.map(id => recordsCol.doc(id).get())),
+                        recordsCol.doc(accountId).get()
+                    ]);
 
-                        if (!sourceAccSnap.exists) throw new Error('Source account not found');
-                        ledgerSnaps.forEach((snap, idx) => { if (!snap.exists) throw new Error(`Ledger ${uniqueLedgerIds[idx]} not found`); });
+                    if (!sourceAccSnap.exists) throw new Error('Source account not found');
+                    ledgerSnaps.forEach((snap, idx) => { if (!snap.exists) throw new Error(`Ledger ${uniqueLedgerIds[idx]} not found`); });
 
-                        // FETCH TOP-LEVEL MIRRORS (Using queries for better matching)
-                        const topInvoiceIds = {};
-                        for (const p of payments) {
-                            if (p.againstId && p.againstRef) {
-                                const q = await db.collection('invoices')
-                                    .where('userId', '==', userId)
-                                    .where('refNo', '==', p.againstRef)
-                                    .limit(1).get();
-                                if (!q.empty) topInvoiceIds[p.againstId] = q.docs[0].id;
-                            }
+                    // FETCH TOP-LEVEL MIRRORS (Using queries for better matching)
+                    const topInvoiceIds = {};
+                    for (const p of payments) {
+                        if (p.againstId && p.againstRef) {
+                            const q = await db.collection('invoices')
+                                .where('userId', '==', companyId)
+                                .where('refNo', '==', p.againstRef)
+                                .limit(1).get();
+                            if (!q.empty) topInvoiceIds[p.againstId] = q.docs[0].id;
                         }
+                    }
 
-                        const topPartyIds = {};
-                        for (const p of payments) {
-                            if (p.ledgerId) {
-                                // Try ID match first
-                                const d = await db.collection('parties').doc(p.ledgerId).get();
-                                if (d.exists) { topPartyIds[p.ledgerId] = p.ledgerId; }
-                                else {
-                                    // Try Name match
-                                    const nestedData = ledgerSnaps.find(s => s.id === p.ledgerId)?.data()?.data;
-                                    if (nestedData?.name) {
-                                        const q = await db.collection('parties').where('userId', '==', userId).where('name', '==', nestedData.name).limit(1).get();
-                                        if (!q.empty) topPartyIds[p.ledgerId] = q.docs[0].id;
-                                    }
+                    const topPartyIds = {};
+                    for (const p of payments) {
+                        if (p.ledgerId) {
+                            // Try ID match first
+                            const d = await db.collection('parties').doc(p.ledgerId).get();
+                            if (d.exists) { topPartyIds[p.ledgerId] = p.ledgerId; }
+                            else {
+                                // Try Name match
+                                const nestedData = ledgerSnaps.find(s => s.id === p.ledgerId)?.data()?.data;
+                                if (nestedData?.name) {
+                                    const q = await db.collection('parties').where('userId', '==', companyId).where('name', '==', nestedData.name).limit(1).get();
+                                    if (!q.empty) topPartyIds[p.ledgerId] = q.docs[0].id;
                                 }
                             }
                         }
+                    }
 
-                        // Source Account Mirror
-                        let topAccountId = null;
-                        const accDoc = await db.collection('accounts').doc(accountId).get();
-                        if (accDoc.exists) { topAccountId = accountId; }
-                        else {
-                            const nestedAcc = sourceAccSnap.data()?.data;
-                            if (nestedAcc?.name) {
-                                const q = await db.collection('accounts').where('userId', '==', userId).where('name', '==', nestedAcc.name).limit(1).get();
-                                if (!q.empty) topAccountId = q.docs[0].id;
-                            }
+                    // Source Account Mirror
+                    let topAccountId = null;
+                    const accDoc = await db.collection('accounts').doc(accountId).get();
+                    if (accDoc.exists) { topAccountId = accountId; }
+                    else {
+                        const nestedAcc = sourceAccSnap.data()?.data;
+                        if (nestedAcc?.name) {
+                            const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', nestedAcc.name).limit(1).get();
+                            if (!q.empty) topAccountId = q.docs[0].id;
                         }
+                    }
 
-                        let totalVoucherAmount = 0;
+                    let totalVoucherAmount = 0;
+                    const createdIds = [];
+                    await db.runTransaction(async (transaction) => {
+                        // Determine balance direction based on voucher type
+                        // 'out' (payment): bank -, ledgers +
+                        // 'in' (receipt): bank +, ledgers -
+                        const ledgerMultiplier = vtype === 'in' ? -1 : 1;
+                        const bankMultiplier = vtype === 'in' ? 1 : -1;
 
                         for (const p of payments) {
                             const { ledgerId, ledgerCollection, amount, againstId, againstRef, category } = p;
                             const amt = Number(amount);
                             totalVoucherAmount += amt;
 
-                            // 1. UPDATE NESTED RECORD
+                            // 1. UPDATE NESTED RECORD (ledger balance)
                             transaction.update(recordsCol.doc(ledgerId), {
-                                'data.balance': admin.firestore.FieldValue.increment(amt),
+                                'data.balance': admin.firestore.FieldValue.increment(amt * ledgerMultiplier),
                                 'syncTimestamp': Date.now(),
                                 'timestamp': Date.now()
                             });
@@ -1234,7 +2029,7 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                             
                             if (topLedgerCol && topId) {
                                 transaction.update(db.collection(topLedgerCol).doc(topId), {
-                                    'balance': admin.firestore.FieldValue.increment(amt),
+                                    'balance': admin.firestore.FieldValue.increment(amt * ledgerMultiplier),
                                     'timestamp': Date.now()
                                 });
                             }
@@ -1261,11 +2056,12 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
 
                             // Payment Record
                             const newId = crypto.randomBytes(12).toString('hex');
+                            createdIds.push(newId);
                             const targetKey = ledgerCollection === 'parties' ? 'partyId' : ledgerCollection === 'expenses' ? 'expenseId' : 'assetId';
                             const targetCategory = ledgerCollection === 'parties' ? 'party' : ledgerCollection === 'expenses' ? 'expense' : 'asset';
 
                             const paymentData = {
-                                type: 'out', 
+                                type: vtype === 'in' ? 'in' : 'out', 
                                 transactionCategory: targetCategory,
                                 accountId: accountId,
                                 [targetKey]: ledgerId,
@@ -1283,7 +2079,7 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                                 paymentAgainst: againstId ? { id: againstId, ref: againstRef, amount: amt } : null,
                                 paymentCategory: category || 'normal',
                                 isMulti: payments.length > 1,
-                                userId: subUserId || userId,
+                                userId: companyId,
                                 createdBy: subUserId || userId,
                                 status: 'active',
                                 version: 'v2',
@@ -1297,18 +2093,64 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                             transaction.set(db.collection('payments').doc(newId), { ...paymentData, id: newId, timestamp: Date.now() });
                         }
 
-                        // Update Bank
+                        // Update Bank (use bankMultiplier for direction)
                         transaction.update(recordsCol.doc(accountId), {
-                            'data.balance': admin.firestore.FieldValue.increment(-totalVoucherAmount),
+                            'data.balance': admin.firestore.FieldValue.increment(totalVoucherAmount * bankMultiplier),
                             'syncTimestamp': Date.now(), 'timestamp': Date.now()
                         });
 
                         if (topAccountId) {
                             transaction.update(db.collection('accounts').doc(topAccountId), {
-                                'balance': admin.firestore.FieldValue.increment(-totalVoucherAmount), 'timestamp': Date.now()
+                                'balance': admin.firestore.FieldValue.increment(totalVoucherAmount * bankMultiplier), 'timestamp': Date.now()
                             });
                         }
                     });
+
+                    // Create audit log (best-effort, outside transaction)
+                    try {
+                        const rawName = userName || 'QuickAccPro User';
+                        const subName = rawName.includes('(QAP)') ? rawName : `${rawName} (QAP)`;
+                        
+                        const firstPayment = payments[0] || {};
+                        const snapshot = {
+                            date: date || new Date().toISOString().split('T')[0],
+                            type: vtype === 'in' ? 'receipt' : 'payment',
+                            refNo: refNo || 'N/A',
+                            amount: totalVoucherAmount,
+                            accountId: accountId,
+                            narration: narration || '',
+                            splits: payments.map(p => ({
+                                category: p.ledgerCollection === 'parties' ? 'party' : p.ledgerCollection === 'expenses' ? 'expense' : 'asset',
+                                targetId: p.ledgerId,
+                                amount: p.amount
+                            }))
+                        };
+                        if (payments.length === 1) {
+                            if (firstPayment.ledgerCollection === 'parties') {
+                                snapshot.partyId = firstPayment.ledgerId;
+                            } else if (firstPayment.ledgerCollection === 'expenses') {
+                                snapshot.expenseId = firstPayment.ledgerId;
+                            }
+                        }
+
+                        await db.collection('audit_logs').add({
+                            date: admin.firestore.FieldValue.serverTimestamp(),
+                            ownerId: userId, // ✅ FIX: Use userId (owner UID) so it matches SystemLogModal query filter
+                            userId: subUserId || userId,
+                            userName: subName,
+                            action: 'CREATED',
+                            docType: vtype === 'in' ? 'Receipt Voucher' : 'Payment Voucher',
+                            refNo: refNo || 'N/A',
+                            amount: totalVoucherAmount,
+                            voucherDate: date || new Date().toISOString().split('T')[0],
+                            docId: createdIds[0] || `quickaccpro-${refNo || Date.now()}`, // ✅ FIX: Match the first voucher's document ID
+                            description: `CREATED ${vtype === 'in' ? 'Receipt' : 'Payment'} Voucher: total of ${totalVoucherAmount} via QuickAccPro`,
+                            snapshotData: JSON.stringify(snapshot)
+                        });
+                    } catch (logErr) {
+                        console.error('Audit log error:', logErr.message);
+                    }
+
                     return res.json({ success: true });
                 } catch (error) {
                     return res.status(400).json({ error: error.message });
@@ -1419,17 +2261,63 @@ exports.tellerApi = onRequest({ cors: true }, async (req, res) => {
                 }
             }
 
-            // Fetch team members — ownerId on user docs stores the COMPANY ID, not Auth UID
-            const teamSnap = await db.collection('users')
-                .where('ownerId', '==', vCompanyId)
-                .get();
+            // Fetch team members — try companyId first, then Auth UID
+            let team = [];
+            
+            // Try 1: Query by companyId
+            try {
+                const teamSnap = await db.collection('users')
+                    .where('ownerId', '==', vCompanyId)
+                    .get();
+                team = teamSnap.docs.map(d => ({
+                    id: d.id,
+                    name: d.data().name || 'Unknown',
+                    email: d.data().email || '',
+                    role: d.data().role || 'member'
+                }));
+            } catch (e) { /* ignore */ }
 
-            const team = teamSnap.docs.map(d => ({
-                id: d.id,
-                name: d.data().name || 'Unknown',
-                email: d.data().email || '',
-                role: d.data().role || 'member'
-            }));
+            // Try 2: Query by Auth UID if no results
+            if (team.length === 0 && ownerUserId) {
+                try {
+                    const teamSnap2 = await db.collection('users')
+                        .where('ownerId', '==', ownerUserId)
+                        .get();
+                    team = teamSnap2.docs.map(d => ({
+                        id: d.id,
+                        name: d.data().name || 'Unknown',
+                        email: d.data().email || '',
+                        role: d.data().role || 'member'
+                    }));
+                } catch (e) { /* ignore */ }
+            }
+
+            // Try 3: Scan all users — team members are stored locally but some may be in Firestore
+            if (team.length === 0) {
+                try {
+                    const allUsersSnap = await db.collection('users').limit(50).get();
+                    allUsersSnap.forEach(d => {
+                        const data = d.data();
+                        // Accept any user with a role field or a name field (they belong to this company via API key association)
+                        const role = data.role || data.roleName || null;
+                        const userName = data.name || data.fullName || data.displayName || null;
+                        const userEmail = data.email || data.mail || null;
+                        if (role || userName) {
+                            // Check if user might belong to this company (same email domain as owner, or just include all)
+                            if (!team.find(m => m.id === d.id)) {
+                                team.push({
+                                    id: d.id,
+                                    name: userName || 'Team Member',
+                                    email: userEmail || '',
+                                    role: role || 'member'
+                                });
+                            }
+                        }
+                    });
+                } catch (e) {
+                    console.error(`TELLER_DEBUG scan error:`, e.message);
+                }
+            }
 
             return res.json({
                 success: true,

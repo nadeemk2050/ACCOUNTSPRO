@@ -969,15 +969,24 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
         for (let i = 0; i < allDocs.length; i += BATCH_SIZE) {
             const batch = allDocs.slice(i, i + BATCH_SIZE);
             const toInsert = [];
+            const seenIds = new Set(); // Track IDs within this batch to avoid COL22 duplicates
             
             for (const fsDoc of batch) {
                 // Skip soft-deleted records — they were deleted on the originating PC
                 if (fsDoc.deleted === true) continue;
 
-                // Check if already exists
+                // Skip if the same ID was already queued in this batch (RxDB bulkInsert
+                // throws COL22 when multiple docs share the same primary key)
+                if (seenIds.has(fsDoc.id)) {
+                    console.warn(`[DOWNLOAD] Skipping duplicate id '${fsDoc.id}' (${fsDoc.collectionName || 'unknown'}) within batch.`);
+                    continue;
+                }
+
+                // Check if already exists in the DB
                 const existing = await companyDb.offline_records
                     .findOne({ selector: { id: fsDoc.id } }).exec();
                 if (!existing) {
+                    seenIds.add(fsDoc.id);
                     toInsert.push({
                         id: fsDoc.id,
                         collectionName: fsDoc.collectionName || 'unknown',
@@ -989,7 +998,20 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
             }
 
             if (toInsert.length > 0) {
-                await companyDb.offline_records.bulkInsert(toInsert);
+                // Fallback: if bulkInsert fails (e.g. unexpected duplicate), insert one by one
+                try {
+                    await companyDb.offline_records.bulkInsert(toInsert);
+                } catch (bulkErr) {
+                    console.warn('[DOWNLOAD] bulkInsert failed, falling back to individual inserts:', bulkErr.message);
+                    for (const doc of toInsert) {
+                        try {
+                            await companyDb.offline_records.insert(doc);
+                        } catch (insErr) {
+                            // Likely a race / already-inserted; log and continue
+                            console.warn(`[DOWNLOAD] Skipping individual insert for '${doc.id}':`, insErr.message);
+                        }
+                    }
+                }
             }
             downloadedCount += batch.length;
             if (onProgress) onProgress(downloadedCount, totalCount);

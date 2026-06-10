@@ -508,17 +508,39 @@ export const importJSONBackup = async (jsonData, isEncrypted = false, password =
 
         const db = await getDB();
         const bulkDocs = [];
+        const seenIds = new Set();
         for (const [colName, docs] of Object.entries(parsedData)) {
             for (const doc of docs) {
+                const docId = doc.id || (Math.random() + 1).toString(36).substring(7);
+                // Skip duplicates with the same ID to avoid RxDB COL22 error
+                if (seenIds.has(docId)) {
+                    console.warn(`[importJSONBackup] Skipping duplicate id '${docId}' in collection '${colName}'`);
+                    continue;
+                }
+                seenIds.add(docId);
                 bulkDocs.push({
-                    id: doc.id || (Math.random() + 1).toString(36).substring(7),
+                    id: docId,
                     collectionName: colName,
                     data: doc,
                     timestamp: Date.now()
                 });
             }
         }
-        await db.offline_records.bulkInsert(bulkDocs);
+
+        // Fallback: if bulkInsert fails (e.g. unexpected duplicate), insert one by one
+        try {
+            await db.offline_records.bulkInsert(bulkDocs);
+        } catch (bulkErr) {
+            console.warn('[importJSONBackup] bulkInsert failed, falling back to individual inserts:', bulkErr.message);
+            for (const doc of bulkDocs) {
+                try {
+                    await db.offline_records.insert(doc);
+                } catch (insErr) {
+                    console.warn(`[importJSONBackup] Skipping insert for '${doc.id}':`, insErr.message);
+                }
+            }
+        }
+
         console.log("Offline backup imported successfully!");
         return true;
     } catch (err) {

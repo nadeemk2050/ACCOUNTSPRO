@@ -111,7 +111,7 @@ import {
     FileText, CreditCard, ChevronDown, ChevronRight, ChevronLeft, Save, ArrowRight, AlertTriangle,
     TrendingUp, TrendingDown, Wallet, Printer, Download, Zap, Briefcase, LayoutDashboard,
     Users, History, Archive, Layers,
-    UploadCloud, DownloadCloud, Maximize, Minimize2, FileSpreadsheet, Database, LayoutGrid,
+    UploadCloud, DownloadCloud, Maximize, Maximize2, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
     Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
     BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle
@@ -616,7 +616,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.6.3 (April 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.6.6 (April 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -671,7 +671,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.6</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -695,7 +695,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.6</div>
                 </div>
             </div>
         </Modal>
@@ -1017,7 +1017,6 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
             const queries = [];
             if (type === 'party') {
                 queries.push(getDocs(query(collection(db, 'invoices'), where('partyId', '==', id), ...forwardConstraints)));
-                queries.push(getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'payments'), where('partyId', '==', id), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('drId', '==', id), where('drType', '==', 'party'), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('crId', '==', id), where('crType', '==', 'party'), ...forwardConstraints)));
@@ -1026,7 +1025,6 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                 queries.push(getDocs(query(collection(db, 'payments'), where('toAccountId', '==', id), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('drId', '==', id), where('drType', '==', 'account'), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('crId', '==', id), where('crType', '==', 'account'), ...forwardConstraints)));
-                queries.push(getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...forwardConstraints)));
             }
 
             const snaps = await Promise.all(queries);
@@ -1040,9 +1038,6 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                     // Only for Party logic or Addl Exp
                     if (type === 'party') {
                         if (v.partyId === id) { if (v.type === 'sales') recentDr += amt; else recentCr += amt; }
-                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
-                    } else {
-                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
                     }
                 } else if (vType === 'payment') {
                     if (type === 'account' && v.accountId === id) {
@@ -1059,7 +1054,7 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
             };
 
             snaps.forEach((snap, idx) => {
-                const vchType = idx <= 1 ? 'invoice' : (idx === 2 ? (type === 'party' ? 'payment' : 'payment') : (idx <= 4 ? 'jv' : 'invoice'));
+                const vchType = idx === 0 ? (type === 'party' ? 'invoice' : 'payment') : (idx === 1 ? (type === 'party' ? 'payment' : 'payment') : 'jv');
                 // Just map snaps to logic: actually easier to check based on which query they came from
                 snap.forEach(d => {
                     const v = d.data();
@@ -1071,7 +1066,6 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                             if (v.totalAmount) { if (v.type === 'sales') recentDr += baseAmt; else recentCr += baseAmt; }
                             else { if (v.type === 'out') recentDr += baseAmt; else recentCr += baseAmt; }
                         }
-                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
                         if (v.drId === id) recentDr += baseAmt;
                         if (v.crId === id) recentCr += baseAmt;
                     } else if (type === 'account') {
@@ -1079,7 +1073,6 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                         if (v.toAccountId === id) recentDr += baseAmt;
                         if (v.drId === id) recentDr += baseAmt;
                         if (v.crId === id) recentCr += baseAmt;
-                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
                     }
                 });
             });
@@ -1095,14 +1088,12 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
 
         if (type === 'party') {
             const invQ = query(collection(db, 'invoices'), where('partyId', '==', id), ...baseConstraints);
-            const invCrQ = query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints);
             const payQ = query(collection(db, 'payments'), where('partyId', '==', id), ...baseConstraints);
             const jvDrQ = query(collection(db, 'journal_vouchers'), where('drType', '==', 'party'), where('drId', '==', id), ...baseConstraints);
             const jvCrQ = query(collection(db, 'journal_vouchers'), where('crType', '==', 'party'), where('crId', '==', id), ...baseConstraints);
 
-            const [iS, pS, jvDrS, jvCrS, iCS] = await Promise.all([getDocs(invQ), getDocs(payQ), getDocs(jvDrQ), getDocs(jvCrQ), getDocs(invCrQ)]);
+            const [iS, pS, jvDrS, jvCrS] = await Promise.all([getDocs(invQ), getDocs(payQ), getDocs(jvDrQ), getDocs(jvCrQ)]);
 
-            iCS.forEach(d => { const v = d.data(); if (v.type === 'purchase') credit += (safeNumLocal(v.addlExpTotal) * safeNumLocal(v.exchangeRate || 1)); });
             iS.forEach(d => { const v = d.data(); if (v.type === 'sales') debit += safeNumLocal(v.totalAmount); else credit += safeNumLocal(v.totalAmount); });
             pS.forEach(d => { const v = d.data(); const amt = safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); if (v.type === 'out') debit += amt; else credit += amt; });
             jvDrS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.amount); });
@@ -1115,12 +1106,10 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                 getDocs(query(collection(db, 'payments'), where('accountId', '==', id), ...baseConstraints)),
                 getDocs(query(collection(db, 'payments'), where('toAccountId', '==', id), ...baseConstraints)),
                 getDocs(query(collection(db, 'journal_vouchers'), where('drType', '==', 'account'), where('drId', '==', id), ...baseConstraints)),
-                getDocs(query(collection(db, 'journal_vouchers'), where('crType', '==', 'account'), where('crId', '==', id), ...baseConstraints)),
-                getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints))
+                getDocs(query(collection(db, 'journal_vouchers'), where('crType', '==', 'account'), where('crId', '==', id), ...baseConstraints))
             ];
-            const [pS, pToS, jvDrS, jvCrS, invS] = await Promise.all(queries);
+            const [pS, pToS, jvDrS, jvCrS] = await Promise.all(queries);
 
-            invS.forEach(d => { const v = d.data(); if (v.type === 'purchase') credit += (safeNumLocal(v.addlExpTotal) * safeNumLocal(v.exchangeRate || 1)); });
             pS.forEach(d => { const v = d.data(); const amt = safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); if (v.type === 'in') debit += amt; else credit += amt; });
             pToS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); });
             jvDrS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.amount); });
@@ -4925,7 +4914,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.6.3";
+    const SYSTEM_VERSION = "2.6.6";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6586,15 +6575,16 @@ export default function App() {
                 // --- Finance Logic ---
                 const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                 const rate = Number(d.exchangeRate || 1);
-                const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && accBalMap[d.addlExpCreditId] !== undefined) {
-                    accBalMap[d.addlExpCreditId] -= addlExpBase;
-                }
+                const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
+                const expBase = expForeign * rate;
+                const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
+                const addlExpBase = addlExpForeign * rate;
+
 
                 if (d.partyId && partyBalMap[d.partyId] !== undefined) {
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                        ? Math.max(0, baseVal - addlExpBase)
+                    const supplierBase = (d.type === 'purchase')
+                        ? Math.max(0, baseVal - expBase - addlExpBase)
                         : baseVal;
                     const amt = (d.type === 'purchase') ? supplierBase : baseVal;
                     if (['sales', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
@@ -7675,8 +7665,19 @@ export default function App() {
                     if (v.type === 'sales' || v.type === 'sales_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) + grandTotalBase;
                     else if (v.type === 'purchase' || v.type === 'purchase_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) - grandTotalBase;
                 }
-                if (v.addlExpCreditId && v.addlExpTotal) {
-                    bal.accounts[v.addlExpCreditId] = (bal.accounts[v.addlExpCreditId] || 0) - (Number(v.addlExpTotal) * rate);
+
+                // Expenses go to their ledgers (Purchase Invoice context)
+                if (v.type === 'purchase') {
+                    (v.expenses || []).forEach(e => {
+                        if (e.expenseId) {
+                            bal.expenses[e.expenseId] = (bal.expenses[e.expenseId] || 0) + (Number(e.amount || 0) * rate);
+                        }
+                    });
+                    (v.addlExpenses || []).forEach(e => {
+                        if (e.expenseId) {
+                            bal.expenses[e.expenseId] = (bal.expenses[e.expenseId] || 0) - (Number(e.amount || 0) * rate);
+                        }
+                    });
                 }
             });
 
@@ -7778,9 +7779,25 @@ export default function App() {
                             lastModifiedBy: user?.uid || 'system',
                             lastModifiedByName: user?.displayName || user?.email || 'system'
                         }, { merge: true });
+
+                        // ✅ ALSO UPDATE companies_live FOR QUICKACCPRO PWAs
+                        const activeCoId = getActiveCompanyId();
+                        if (activeCoId) {
+                            batch.set(doc(db, 'companies_live', activeCoId, 'records', id), {
+                                syncTimestamp: Date.now(),
+                                data: {
+                                    [field]: val
+                                }
+                            }, { merge: true });
+                        }
+
                         count++;
                         updated++;
-                        if (count >= 450) { await batch.commit(); batch = writeBatch(db); count = 0; }
+                        if (count >= 220) { // Reduced batch limit since we do 2 writes per item
+                            await batch.commit();
+                            batch = writeBatch(db);
+                            count = 0;
+                        }
                     }
                     if (count > 0) await batch.commit();
                     console.log(`${label}: Updated ${updated} records`);
@@ -8651,14 +8668,20 @@ export default function App() {
                     }
                 });
 
-                // Invoices (Purchase Paid By Expense)
+                // Invoices (Purchase Expenses & Outstanding Additional Expenses)
                 invoices.forEach(inv => {
                     if (inv.type === 'purchase' && inRange(inv.date)) {
-                        if (inv.addlExpCreditId === exp.id) {
-                            const r = Number(inv.exchangeRate || 1);
-                            const val = Number(inv.addlExpTotal || 0) * r;
-                            total -= val;
-                        }
+                        const r = Number(inv.exchangeRate || 1);
+                        (inv.expenses || []).forEach(e => {
+                            if (e.expenseId === exp.id) {
+                                total += Number(e.amount || 0) * r;
+                            }
+                        });
+                        (inv.addlExpenses || []).forEach(e => {
+                            if (e.expenseId === exp.id) {
+                                total -= Number(e.amount || 0) * r;
+                            }
+                        });
                     }
                 });
 
@@ -8707,14 +8730,20 @@ export default function App() {
                     }
                 });
 
-                // Invoices (Purchase Paid By Expense)
+                // Invoices (Purchase Expenses & Outstanding Additional Expenses)
                 invoices.forEach(inv => {
                     if (inv.type === 'purchase' && inRange(inv.date)) {
-                        if (inv.addlExpCreditId === exp.id) {
-                            const r = Number(inv.exchangeRate || 1);
-                            const val = Number(inv.addlExpTotal || 0) * r;
-                            total -= val;
-                        }
+                        const r = Number(inv.exchangeRate || 1);
+                        (inv.expenses || []).forEach(e => {
+                            if (e.expenseId === exp.id) {
+                                total += Number(e.amount || 0) * r;
+                            }
+                        });
+                        (inv.addlExpenses || []).forEach(e => {
+                            if (e.expenseId === exp.id) {
+                                total -= Number(e.amount || 0) * r;
+                            }
+                        });
                     }
                 });
 
@@ -9084,11 +9113,19 @@ export default function App() {
                 slot.qty += qtyTotal || 1;
             }
 
-            if (inv.type === 'purchase' && inv.addlExpCreditId) {
+            if (inv.type === 'purchase') {
                 const slot = expenseMap.get(key);
-                const expVal = safeNum(inv.addlExpTotal) * safeNum(inv.exchangeRate || 1);
-                slot.value -= expVal;
-                slot.qty += expVal !== 0 ? 1 : 0;
+                const r = safeNum(inv.exchangeRate || 1);
+                (inv.expenses || []).forEach(e => {
+                    const expVal = safeNum(e.amount) * r;
+                    slot.value += expVal;
+                    slot.qty += expVal !== 0 ? 1 : 0;
+                });
+                (inv.addlExpenses || []).forEach(e => {
+                    const expVal = safeNum(e.amount) * r;
+                    slot.value -= expVal;
+                    slot.qty += expVal !== 0 ? 1 : 0;
+                });
             }
         });
 
@@ -9298,7 +9335,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.3</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v2.6.6</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -10773,6 +10810,8 @@ export default function App() {
                 effectiveName={effectiveName}
                 dataOwnerId={dataOwnerId}
                 products={products}
+                invoices={invoices}
+                stockJournals={stockJournals}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts}
                 accounts={accounts} // ✅ PASS ACCOUNTS
@@ -11904,7 +11943,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.3</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v2.6.6</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -15065,8 +15104,6 @@ const InvoiceModal = (props) => {
         }
 
         const cleanAddlExpenses = addlExpenses.filter(e => e.expenseId && e.amount > 0).map(e => ({ expenseId: e.expenseId, amount: Number(e.amount) }));
-        // Only require 'Paid By' for Purchase. Sales assumes deduction from invoice value.
-        if (cleanAddlExpenses.length > 0 && voucherType === 'purchase' && !addlExpCreditId) return alert("⚠️ Please select a 'Paid By' account for the additional expenses.");
 
         if (cleanAddlExpenses.length > 0 && voucherType === 'sales' && !salesExpenseMode) {
             setShowExpenseModeModal(true);
@@ -16301,24 +16338,9 @@ const InvoiceModal = (props) => {
                                     </div>
                                 ))}
 
-                                {/* Credit Account Selector - PURCHASE ONLY */}
                                 {voucherType === 'purchase' && (
-                                    <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex items-center gap-2">
-                                        <label className="text-[9px] font-bold text-slate-500 shrink-0 whitespace-nowrap">Paid Cr By:</label>
-                                        <div className="w-[220px]">
-                                            <SearchableSelect
-                                                placeholder="Cash / Bank / Party..."
-                                                value={addlExpCreditId}
-                                                onChange={setAddlExpCreditId}
-                                                groups={[
-                                                    { name: 'Cash/Bank', options: accounts.map(a => ({ value: a.id, text: a.name })) },
-                                                    { name: 'Parties', options: parties.map(p => ({ value: p.id, text: p.name })) },
-                                                    { name: 'Expenses', options: expenses.map(e => ({ value: e.id, text: e.name })) }
-                                                ]}
-                                                options={[]}
-                                            />
-                                        </div>
-                                        <span className="ml-auto text-[9px] text-orange-500 font-bold shrink-0">Total: {format3(totals.addlExpTotal)}</span>
+                                    <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex items-center justify-end">
+                                        <span className="text-[9px] text-orange-500 font-bold shrink-0">Total: {format3(totals.addlExpTotal)}</span>
                                     </div>
                                 )}
                                 {voucherType !== 'purchase' && (
@@ -18034,7 +18056,7 @@ function GlobalBagManagerModal({
 }
 
 const StockJournalModal = (props) => {
-    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
+    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, invoices = [], stockJournals = [], expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const [date, setDate] = useState(lastDate || new Date().toISOString().split('T')[0]);
     const targetUid = dataOwnerId || user.uid; // ✅ Define targetUid for queries
@@ -18057,6 +18079,7 @@ const StockJournalModal = (props) => {
     const [saving, setSaving] = useState(false); 
     const [showDateModal, setShowDateModal] = useState(false);
     const [showAutoCalcPanel, setShowAutoCalcPanel] = useState(false);
+    const [isAutoCalcFullView, setIsAutoCalcFullView] = useState(false);
     const [autoCalcView, setAutoCalcView] = useState('list');
     const [autoCalcForm, setAutoCalcForm] = useState(createAutoCalcBomForm());
     const [autoCalcSaving, setAutoCalcSaving] = useState(false);
@@ -18448,14 +18471,172 @@ const StockJournalModal = (props) => {
     const handleApplyAutoCalcResult = () => {
         if (!autoCalcCalcResult) return;
 
-        setConsumed(autoCalcCalcResult.consumedRows.map(item => ({
-            productId: item.productId,
-            quantity: item.quantity,
-            rate: item.rate,
-            total: item.total,
-            lotId: '',
-            pcs: ''
-        })));
+        const parseLocalDate = (dateStr) => {
+            if (!dateStr) return null;
+            const parts = dateStr.split('-');
+            if (parts.length === 3) {
+                return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+            }
+            return new Date(dateStr);
+        };
+
+        const vDate = parseLocalDate(date);
+        const startDate = new Date(vDate);
+        startDate.setDate(startDate.getDate() - 30);
+
+        console.log("=== AUTO CALC APPLY DEBUG ===");
+        console.log("Voucher Date:", date, vDate);
+        console.log("30 Days Before:", startDate);
+        console.log("Total Invoices in State:", invoices?.length);
+
+        const updatedConsumed = autoCalcCalcResult.consumedRows.map(item => {
+            let finalRate = Number(item.rate || 0);
+            let totalQty = 0;
+            let totalVal = 0;
+
+            // 1. Check Purchases in 30 days (excluding 0-rate entries)
+            if (invoices && Array.isArray(invoices)) {
+                invoices.forEach(inv => {
+                    if (inv.type === 'purchase' && inv.date && inv.items) {
+                        const invDate = parseLocalDate(inv.date);
+                        if (invDate && invDate >= startDate && invDate <= vDate) {
+                            inv.items.forEach(it => {
+                                if (it.productId === item.productId) {
+                                    const q = Number(it.quantity || 0);
+                                    const r = Number(it.rate || 0);
+                                    if (r > 0) {
+                                        totalQty += q;
+                                        totalVal += q * r;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+
+            // 2. Check Production in 30 days (excluding 0-rate entries)
+            if (stockJournals && Array.isArray(stockJournals)) {
+                stockJournals.forEach(sj => {
+                    if (sj.date && sj.produced) {
+                        const sjDate = parseLocalDate(sj.date);
+                        if (sjDate && sjDate >= startDate && sjDate <= vDate) {
+                            sj.produced.forEach(it => {
+                                if (it.productId === item.productId) {
+                                    const q = Number(it.quantity || 0);
+                                    const r = Number(it.rate || 0);
+                                    if (r > 0) {
+                                        totalQty += q;
+                                        totalVal += q * r;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+
+            if (totalQty > 0) {
+                finalRate = totalVal / totalQty;
+            } else {
+                // 3. Fallback: Find the latest historical date with non-zero rate ever recorded
+                let latestDate = '';
+
+                if (invoices && Array.isArray(invoices)) {
+                    invoices.forEach(inv => {
+                        if (inv.type === 'purchase' && inv.date && inv.items) {
+                            inv.items.forEach(it => {
+                                if (it.productId === item.productId && Number(it.rate || 0) > 0) {
+                                    if (!latestDate || inv.date > latestDate) {
+                                        latestDate = inv.date;
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+
+                if (stockJournals && Array.isArray(stockJournals)) {
+                    stockJournals.forEach(sj => {
+                        if (sj.date && sj.produced) {
+                            sj.produced.forEach(it => {
+                                if (it.productId === item.productId && Number(it.rate || 0) > 0) {
+                                    if (!latestDate || sj.date > latestDate) {
+                                        latestDate = sj.date;
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+
+                // If a historical non-zero rate exists, calculate average for that specific date
+                if (latestDate) {
+                    let latestDateQty = 0;
+                    let latestDateVal = 0;
+
+                    if (invoices && Array.isArray(invoices)) {
+                        invoices.forEach(inv => {
+                            if (inv.type === 'purchase' && inv.date === latestDate && inv.items) {
+                                inv.items.forEach(it => {
+                                    if (it.productId === item.productId) {
+                                        const q = Number(it.quantity || 0);
+                                        const r = Number(it.rate || 0);
+                                        if (r > 0) {
+                                            latestDateQty += q;
+                                            latestDateVal += q * r;
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    }
+
+                    if (stockJournals && Array.isArray(stockJournals)) {
+                        stockJournals.forEach(sj => {
+                            if (sj.date === latestDate && sj.produced) {
+                                sj.produced.forEach(it => {
+                                    if (it.productId === item.productId) {
+                                        const q = Number(it.quantity || 0);
+                                        const r = Number(it.rate || 0);
+                                        if (r > 0) {
+                                            latestDateQty += q;
+                                            latestDateVal += q * r;
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    }
+
+                    if (latestDateQty > 0) {
+                        finalRate = latestDateVal / latestDateQty;
+                    }
+                } else {
+                    // Fallback to product master purchasePrice or original BOM rate
+                    const prodPrice = Number(products.find(product => product.id === item.productId)?.purchasePrice || 0);
+                    if (prodPrice > 0) {
+                        finalRate = prodPrice;
+                    } else {
+                        finalRate = Number(item.rate || 0);
+                    }
+                }
+            }
+
+            const qty = Number(item.quantity || 0);
+            const total = qty * finalRate;
+
+            return {
+                productId: item.productId,
+                quantity: item.quantity,
+                rate: finalRate,
+                total: total,
+                lotId: '',
+                pcs: ''
+            };
+        });
+
+        setConsumed(updatedConsumed);
 
         setProduced(autoCalcCalcResult.producedRows.map(item => ({
             productId: item.productId,
@@ -19596,7 +19777,11 @@ const StockJournalModal = (props) => {
                     </div>
 
                     {showAutoCalcPanel && (
-                        <div className="absolute right-0 top-14 z-20 flex h-[calc(100%-56px)] w-full md:w-[470px] max-w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                        <div className={`absolute z-20 flex flex-col overflow-hidden bg-white transition-all duration-300 ${
+                            isAutoCalcFullView 
+                            ? "inset-0 h-full w-full rounded-2xl animate-in zoom-in-95 duration-200" 
+                            : "right-0 top-14 h-[calc(100%-56px)] w-full md:w-[470px] max-w-full rounded-2xl border border-slate-200 shadow-2xl animate-in slide-in-from-right duration-250"
+                        }`}>
                             <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-900 px-4 py-3 text-white">
                                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/20 text-blue-300">
                                     <Zap size={16} />
@@ -19605,6 +19790,9 @@ const StockJournalModal = (props) => {
                                     <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Auto Calc BOM</div>
                                     <div className="text-sm font-black">Batch Rule Workspace</div>
                                 </div>
+                                <button type="button" onClick={() => setIsAutoCalcFullView(!isAutoCalcFullView)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white" title={isAutoCalcFullView ? "Exit Fullscreen" : "Fullscreen"}>
+                                    {isAutoCalcFullView ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                                </button>
                                 <button type="button" onClick={() => setShowAutoCalcPanel(false)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white">
                                     <X size={16} />
                                 </button>
@@ -19784,7 +19972,8 @@ const StockJournalModal = (props) => {
                                         )}
 
                                         {autoCalcRecords.length > 0 && (
-                                            <div className="overflow-hidden rounded-2xl border border-slate-200">
+                                            <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                                                <div className="min-w-[1050px]">
                                                 <div className="grid grid-cols-[58px_1.2fr_70px_1.4fr_90px_1fr_90px_1.2fr_90px_70px] bg-slate-900 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white/70">
                                                     <div>S.No.</div>
                                                     <div>Item Produced</div>
@@ -19820,6 +20009,7 @@ const StockJournalModal = (props) => {
                                                         </div>
                                                     ))}
                                                 </div>
+                                            </div>
                                             </div>
                                         )}
                                     </div>
@@ -20586,7 +20776,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const d = doc.data();
                         const baseVal = safeNum(d.totalAmount ?? d.grandTotal ?? d.amount ?? 0);
                         const exRate = safeNum(d.exchangeRate || 1);
-                        const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
+                        const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) : 0;
+                        const expBase = expForeign * exRate;
+                        const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) || safeNum(d.addlExpTotal || 0)) : 0;
                         const addlExpBase = addlExpForeign * exRate;
                         const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
 
@@ -20595,10 +20787,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         let qIn = 0;
                         let qOut = 0;
 
-                        // If we are looking at main supplier, additional expenses paid by another ledger
-                        // should not remain in supplier purchase amount.
-                        const supplierBase = (d.type === 'purchase' && hasAddlSplit && d.addlExpCreditId !== d.partyId)
-                            ? Math.max(0, baseVal - addlExpBase)
+                        // Supplier amount excludes all expenses
+                        const supplierBase = (d.type === 'purchase')
+                            ? Math.max(0, baseVal - expBase - addlExpBase)
                             : baseVal;
 
                         if (docType === 'inv') {
@@ -20619,11 +20810,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return';
                                 amtIn = isDr ? amt : 0;
                                 amtOut = isCr ? amt : 0;
-
-                                // Purchase additional expense paid by this same party/account in split mode
-                                if (hasAddlSplit && d.addlExpCreditId === filter.id && d.addlExpCreditId !== d.partyId) {
-                                    amtOut += addlExpBase;
-                                }
                             }
                             else if (filter.type === 'expense' || filter.type === 'direct_expense') {
                                 const checkExpense = (list) => {
@@ -20634,17 +20820,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     });
                                     return sum;
                                 };
-                                // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
                                 const isSales = d.type === 'sales';
                                 if (isSales) {
                                     amtOut += checkExpense(d.expenses);
                                     amtOut += checkExpense(d.addlExpenses);
                                 } else {
                                     amtIn += checkExpense(d.expenses);
-                                    // Purchase additional expenses are capitalized, not expense-ledger debit
+                                    amtOut += checkExpense(d.addlExpenses); // ✅ Outstanding additional expenses credit (amtOut)
                                 }
-                            } else if (filter.type === 'account' && hasAddlSplit && d.addlExpCreditId === filter.id) {
-                                amtOut += addlExpBase;
                             } else if (filter.type === 'tax') {
                                 const taxAmt = safeNum(d.taxAmount || 0);
                                 if (!taxAmt) return;
@@ -20935,13 +21118,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const foreignVal = safeNum(d.foreignTotal || d.foreignAmount || 0);
                     const baseVal = safeNum(d.totalAmount || d.amount || 0);
 
-                    // 🔀 Split additional expenses for Purchase invoices so supplier ledger only gets goods + tax
+                    // 🔀 Split expenses for Purchase invoices so supplier ledger only gets goods + tax
                     const rate = safeNum(d.exchangeRate || 1);
-                    const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
+                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) : 0;
+                    const expBase = expForeign * rate;
+                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) || safeNum(d.addlExpTotal || 0)) : 0;
                     const addlExpBase = addlExpForeign * rate;
                     const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
-                    const supplierBase = hasAddlSplit ? Math.max(0, baseVal - addlExpBase) : baseVal;
-                    const supplierForeign = hasAddlSplit && isForeign ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
+                    const supplierBase = (d.type === 'purchase') ? Math.max(0, baseVal - expBase - addlExpBase) : baseVal;
+                    const supplierForeign = (d.type === 'purchase') && isForeign ? Math.max(0, foreignVal - expForeign - addlExpForeign) : foreignVal;
                     const addlCreditCategory = hasAddlSplit
                         ? (accounts.find(a => a.id === d.addlExpCreditId) ? 'account'
                             : parties.find(p => p.id === d.addlExpCreditId) ? 'party'
@@ -21021,38 +21206,38 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 });
                             }
 
-                            // ✅ Add a separate row if the party is the one who paid the expenses for a purchase
-                            if (isExpCredit && d.type === 'purchase' && d.addlExpCreditId !== d.partyId) {
-                                const expRow = buildRow(doc, d, { amtIn: 0, amtOut: addlExpBase, foreignIn: 0, foreignOut: 0 });
-                                expRow.drName = "Purchase Expenses (Paid By)";
-                                if (isDaybook) allTx.push(expRow);
-                                else row = expRow;
-                            }
                         }
                         else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
-                            const processExpList = (list) => {
+                            const processExpList = (list, isAddl = false) => {
                                 if (!list) return;
                                 list.forEach(exp => {
                                     if (exp.expenseId === activeFilter.id) {
                                         const expForeign = safeNum(exp.amount);
                                         const expBase = expForeign * safeNum(d.exchangeRate || 1);
-                                        // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
-                                        const isSales = d.type === 'sales';
+                                        
+                                        let amtIn = 0;
+                                        let amtOut = 0;
+                                        if (d.type === 'sales') {
+                                            amtOut = expBase;
+                                        } else {
+                                            if (isAddl) {
+                                                amtOut = expBase; // Purchase additional expenses credit (amtOut) because they are outstanding
+                                            } else {
+                                                amtIn = expBase; // Purchase standard expenses debit (amtIn)
+                                            }
+                                        }
+                                        
                                         allTx.push(buildRow(doc, d, {
-                                            amtIn: isSales ? 0 : expBase,
-                                            amtOut: isSales ? expBase : 0,
-                                            foreignIn: (isForeign && !isSales) ? expForeign : 0,
-                                            foreignOut: (isForeign && isSales) ? expForeign : 0
+                                            amtIn,
+                                            amtOut,
+                                            foreignIn: (isForeign && amtIn > 0) ? expForeign : 0,
+                                            foreignOut: (isForeign && amtOut > 0) ? expForeign : 0
                                         }));
                                     }
                                 });
                             };
-                            processExpList(d.expenses);
-                            // ⚠️ For Purchase: Additional expenses are capitalized into item cost, NOT posted to expense ledger
-                            // ⚠️ For Sales: Additional expenses are processed normally
-                            if (d.type !== 'purchase') {
-                                processExpList(d.addlExpenses);
-                            }
+                            processExpList(d.expenses, false);
+                            processExpList(d.addlExpenses, true);
                         }
                         else if (activeFilter.type === 'tax') {
                             const taxAmt = safeNum(d.taxAmount || 0);
@@ -21078,27 +21263,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             });
                         }
 
-                        // ➕ Add separate ledger row for additional expenses paid via another ledger
-                        if (hasAddlSplit && activeFilter.type !== 'item') {
-                            const matchesExpenseLedger = addlCreditCategory === 'expense' && activeFilter.type === 'expense' && activeFilter.id === d.addlExpCreditId;
-                            const matchesPartyLedger = addlCreditCategory === 'party' && activeFilter.type === 'party' && activeFilter.id === d.addlExpCreditId;
-                            const matchesAccountLedger = addlCreditCategory === 'account' && activeFilter.type === 'account' && activeFilter.id === d.addlExpCreditId;
-                            const matchesDaybook = ['daybook', 'user'].includes(activeFilter.type);
 
-                            if (matchesExpenseLedger || matchesPartyLedger || matchesAccountLedger || matchesDaybook) {
-                                const expRow = buildRow(doc, d, {
-                                    amtIn: 0,
-                                    amtOut: addlExpBase,
-                                    foreignIn: 0,
-                                    foreignOut: isForeign ? addlExpForeign : 0
-                                });
-                                expRow.drName = 'Purchase Cost';
-                                expRow.crName = findName(d.addlExpCreditId) || 'Paid By';
-                                expRow.vchType = 'PURCHASE EXP';
-                                expRow.searchStr = `${expRow.searchStr} ${expRow.crName}`.toLowerCase();
-                                allTx.push(expRow);
-                            }
-                        }
                     }
                     else if (docType === 'pay') {
                         if (['sales', 'purchase', 'item', 'tax'].includes(activeFilter.type)) return;
@@ -21133,7 +21298,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'party') {
-                            if (d.partyId === activeFilter.id) row = buildRow(doc, d, { amtIn: d.type === 'out' ? amt : 0, amtOut: d.type === 'in' ? amt : 0, foreignIn: d.type === 'out' ? fAmt : 0, foreignOut: d.type === 'in' ? fAmt : 0 });
+                            if (!d.isMulti && d.partyId === activeFilter.id) row = buildRow(doc, d, { amtIn: d.type === 'out' ? amt : 0, amtOut: d.type === 'in' ? amt : 0, foreignIn: d.type === 'out' ? fAmt : 0, foreignOut: d.type === 'in' ? fAmt : 0 });
                             else if (splitMatch) {
                                 const sForeignAmt = isForeign ? sAmt : 0;
                                 const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
@@ -21142,7 +21307,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
-                            if (d.transactionCategory === 'expense' && d.expenseId === activeFilter.id) {
+                            if (!d.isMulti && d.transactionCategory === 'expense' && d.expenseId === activeFilter.id) {
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -21153,7 +21318,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'capital') {
-                            if (d.transactionCategory === 'capital' && d.capitalId === activeFilter.id) {
+                            if (!d.isMulti && d.transactionCategory === 'capital' && d.capitalId === activeFilter.id) {
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -21164,7 +21329,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'asset') {
-                            if (d.transactionCategory === 'asset' && d.assetId === activeFilter.id) {
+                            if (!d.isMulti && d.transactionCategory === 'asset' && d.assetId === activeFilter.id) {
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -21175,7 +21340,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'income') {
-                            if (d.transactionCategory === 'income' && d.incomeId === activeFilter.id) {
+                            if (!d.isMulti && d.transactionCategory === 'income' && d.incomeId === activeFilter.id) {
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -27178,11 +27343,13 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     const d = doc.data();
                     const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                     const rate = Number(d.exchangeRate || 1);
-                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
+                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
+                    const expBase = expForeign * rate;
+                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
+                    const addlExpBase = addlExpForeign * rate;
 
-                    // If we are looking at the Main Supplier, subtract the addl expense portion
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                        ? Math.max(0, baseVal - addlExpBase)
+                    const supplierBase = (d.type === 'purchase')
+                        ? Math.max(0, baseVal - expBase - addlExpBase)
                         : baseVal;
 
                     if (d.partyId && balMap[d.partyId] !== undefined) {
@@ -27190,9 +27357,23 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
                     }
-                    // ✅ Credit the account that paid the expenses
-                    if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
-                        balMap[d.addlExpCreditId] -= addlExpBase;
+                    // ✅ Debit the expenses to expense accounts
+                    if (ledgerType === 'expense' || ledgerType === 'direct_expense') {
+                        if (d.type === 'purchase') {
+                            (d.expenses || []).forEach(e => {
+                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] += Number(e.amount || 0) * rate;
+                            });
+                            (d.addlExpenses || []).forEach(e => {
+                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
+                            });
+                        } else if (d.type === 'sales') {
+                            (d.expenses || []).forEach(e => {
+                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
+                            });
+                            (d.addlExpenses || []).forEach(e => {
+                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
+                            });
+                        }
                     }
                     if (ledgerType === 'item' && d.items) {
                         d.items.forEach(it => {
@@ -29097,9 +29278,13 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 invoicesAsOf.forEach((d) => {
                     const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                     const rate = Number(d.exchangeRate || 1);
-                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                        ? Math.max(0, baseVal - addlExpBase)
+                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
+                    const expBase = expForeign * rate;
+                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
+                    const addlExpBase = addlExpForeign * rate;
+
+                    const supplierBase = (d.type === 'purchase')
+                        ? Math.max(0, baseVal - expBase - addlExpBase)
                         : baseVal;
 
                     if (ledgerType === 'party' && d.partyId && map[d.partyId] !== undefined) {
@@ -29108,8 +29293,23 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') map[d.partyId] -= amt;
                     }
 
-                    if (ledgerType === 'account' && d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && map[d.addlExpCreditId] !== undefined) {
-                        map[d.addlExpCreditId] -= addlExpBase;
+
+                    if (ledgerType === 'expense' || ledgerType === 'direct_expense') {
+                        if (d.type === 'purchase') {
+                            (d.expenses || []).forEach(e => {
+                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] += Number(e.amount || 0) * rate;
+                            });
+                            (d.addlExpenses || []).forEach(e => {
+                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] -= Number(e.amount || 0) * rate;
+                            });
+                        } else if (d.type === 'sales') {
+                            (d.expenses || []).forEach(e => {
+                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] -= Number(e.amount || 0) * rate;
+                            });
+                            (d.addlExpenses || []).forEach(e => {
+                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] -= Number(e.amount || 0) * rate;
+                            });
+                        }
                     }
                 });
 
@@ -30903,10 +31103,13 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                     const d = doc.data();
                     const baseVal = Number(d.grandTotal || d.totalAmount || 0);
                     const rate = Number(d.exchangeRate || 1);
-                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
+                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
+                    const expBase = expForeign * rate;
+                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
+                    const addlExpBase = addlExpForeign * rate;
 
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                        ? Math.max(0, baseVal - addlExpBase)
+                    const supplierBase = (d.type === 'purchase')
+                        ? Math.max(0, baseVal - expBase - addlExpBase)
                         : baseVal;
 
                     if (d.partyId && balMap[d.partyId] !== undefined) {
@@ -30914,8 +31117,21 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                         if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
                     }
-                    if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
-                        balMap[d.addlExpCreditId] -= addlExpBase;
+                    // ✅ Debit the expenses to expense accounts
+                    if (d.type === 'purchase') {
+                        (d.expenses || []).forEach(e => {
+                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] += Number(e.amount || 0) * rate;
+                        });
+                        (d.addlExpenses || []).forEach(e => {
+                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
+                        });
+                    } else if (d.type === 'sales') {
+                        (d.expenses || []).forEach(e => {
+                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
+                        });
+                        (d.addlExpenses || []).forEach(e => {
+                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
+                        });
                     }
                 });
 

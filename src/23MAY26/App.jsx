@@ -114,18 +114,19 @@ import {
     UploadCloud, DownloadCloud, Maximize, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
     Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
-    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings
+    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle
 
 } from 'lucide-react';
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
 import { createSheetInDB, updateSheetInDB } from "./sheetService";
-import { generateInvoicePDF, generatePackingListPDF, generateBillOfExchangePDF, generateBankApplicationPDF, downloadInvoiceExcel, generateAccountingVoucherPDF } from "./invoiceGenerator";
+import { generateInvoicePDF, generatePackingListPDF, generateBillOfExchangePDF, generateBankApplicationPDF, generateExportInvoicePDF, downloadInvoiceExcel, generateAccountingVoucherPDF } from "./invoiceGenerator";
 import BagWiseInventoryModal from "./BagWiseInventoryModal.jsx"; // IMPORT
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
 import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
 import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta } from './liveSync.js';
+import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
 import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
@@ -193,6 +194,152 @@ const formatQtyInOut = (qtyIn, qtyOut, netOverride) => {
     if (netQty === 0) return '-';
     if (netQty < 0) return `(${format3_global(Math.abs(netQty))})`;
     return format3_global(netQty);
+};
+
+const normalizeBagStatus = (status) => String(status || '').trim().toLowerCase();
+const normalizeBagNoKey = (bagNo) => String(bagNo || '').replace(/^#/, '').trim().toUpperCase();
+const isReusableBagLike = (bag) => {
+    if (!bag || typeof bag !== 'object') return false;
+    return (
+        bag.isReusable === true ||
+        bag.allowMultiFilling === true ||
+        normalizeBagStatus(bag.status) === 'reusable'
+    );
+};
+const DELETED_VOUCHER_STATUSES = new Set(['deleted', 'bulk_deleted']);
+const isVoucherDeleted = (voucher) => {
+    const status = String(voucher?.status || '').trim().toLowerCase();
+    return (
+        voucher?.isDeleted === true ||
+        voucher?.deleted === true ||
+        voucher?.is_deleted === true ||
+        DELETED_VOUCHER_STATUSES.has(status)
+    );
+};
+const filterActiveVouchers = (rows = []) => rows.filter((row) => !isVoucherDeleted(row));
+
+const getEmbeddedBagsFromJournal = (journal) => {
+    if (!journal) return [];
+    return [
+        ...(Array.isArray(journal.jumboBags) ? journal.jumboBags : []),
+        ...(Array.isArray(journal.jumbo_bags) ? journal.jumbo_bags : []),
+        ...(Array.isArray(journal.producedBags) ? journal.producedBags : []),
+        ...(Array.isArray(journal.produced)
+            ? journal.produced.flatMap((p) =>
+                Array.isArray(p.jumboBags)
+                    ? p.jumboBags
+                    : Array.isArray(p.jumbo_bags)
+                        ? p.jumbo_bags
+                        : []
+            )
+            : [])
+    ].filter((jb) => jb && typeof jb === 'object');
+};
+
+const buildSoldInvoiceBagPoolFromInvoices = (invoices = []) => {
+    return invoices
+        .filter((inv) => !isVoucherDeleted(inv))
+        .filter((inv) => String(inv?.type || '').toLowerCase() === 'sales')
+        .flatMap((inv) => {
+            const soldList = [
+                ...(Array.isArray(inv?.soldBags) ? inv.soldBags : []),
+                ...(Array.isArray(inv?.jumboBags) ? inv.jumboBags : [])
+            ];
+            return soldList.map((bag, idx) => ({
+                ...bag,
+                id: bag?.id || `inv-${inv.id}-sold-${idx}`,
+                salesId: inv.id,
+                salesRefNo: inv.refNo || bag?.salesRefNo || '',
+                status: 'sold'
+            }));
+        });
+};
+
+const deriveRemainingBags = ({ globalBags = [], stockJournals = [], soldInvoiceBagPool = [] }) => {
+    const activeStockJournals = filterActiveVouchers(stockJournals);
+    const activeJournalIds = new Set(activeStockJournals.map((j) => String(j?.id || '').trim()).filter(Boolean));
+    const activeJournalRefs = new Set(activeStockJournals.map((j) => String(j?.refNo || '').trim().toLowerCase()).filter(Boolean));
+
+    const soldSources = [
+        ...globalBags.filter((b) => normalizeBagStatus(b?.status) === 'sold'),
+        ...soldInvoiceBagPool
+    ];
+
+    const soldBagIds = new Set(
+        soldSources
+            .map((b) => String(b?.id || '').trim())
+            .filter(Boolean)
+    );
+    const soldBagNos = new Set(
+        soldSources
+            .map((b) => normalizeBagNoKey(b?.bagNo))
+            .filter(Boolean)
+    );
+
+    const seenIds = new Set(globalBags.map((b) => String(b?.id || '').trim()).filter(Boolean));
+    const seenBagNos = new Set(globalBags.map((b) => normalizeBagNoKey(b?.bagNo)).filter(Boolean));
+    const uniqueEmbedded = [];
+
+    activeStockJournals.forEach((journal) => {
+        const journalId = String(journal?.id || '');
+        getEmbeddedBagsFromJournal(journal).forEach((eb, idx) => {
+            const ebId = String(eb.id || `embedded-${journalId || 'NA'}-${idx}`);
+            const ebBagNo = normalizeBagNoKey(eb.bagNo);
+            if (!seenIds.has(ebId) && (!ebBagNo || !seenBagNos.has(ebBagNo))) {
+                seenIds.add(ebId);
+                if (ebBagNo) seenBagNos.add(ebBagNo);
+                uniqueEmbedded.push({
+                    ...eb,
+                    id: ebId,
+                    date: eb.date || journal.date,
+                    voucherRefNo: eb.voucherRefNo || journal.refNo,
+                    stockJournalRefNo: journal.refNo,
+                    stockJournalId: journalId
+                });
+            }
+        });
+    });
+
+    const dedupedRemainingMap = new Map();
+    [...globalBags, ...uniqueEmbedded].forEach((bag, idx) => {
+        if (bag?.isDeleted || normalizeBagStatus(bag?.status) === 'deleted' || normalizeBagStatus(bag?.status) === 'bulk_deleted') return;
+
+        // Reusable/refill-only bags are operational containers, not sellable inventory bags.
+        if (isReusableBagLike(bag)) return;
+
+        const sourceJournalId = String(
+            bag?.stockJournalId ||
+            bag?.linkedStockJournalId ||
+            bag?.originId ||
+            ''
+        ).trim();
+        const sourceJournalRef = String(bag?.stockJournalRefNo || '').trim().toLowerCase();
+        const hasJournalLink = !!(sourceJournalId || sourceJournalRef);
+        const sourceJournalExists =
+            (sourceJournalId && (activeJournalIds.has(sourceJournalId) || activeJournalRefs.has(sourceJournalId.toLowerCase()))) ||
+            (sourceJournalRef && activeJournalRefs.has(sourceJournalRef));
+
+        // Hide bags that still exist in jumbo_bags but whose production source voucher was deleted.
+        if (hasJournalLink && !sourceJournalExists) return;
+
+        const bagId = String(bag?.id || '').trim();
+        const bagNo = normalizeBagNoKey(bag?.bagNo);
+        const isSold = (
+            normalizeBagStatus(bag?.status) === 'sold' ||
+            !!bag?.salesId ||
+            !!bag?.salesRefNo ||
+            (bagId && soldBagIds.has(bagId)) ||
+            (bagNo && soldBagNos.has(bagNo))
+        );
+        if (isSold) return;
+
+        const dedupeKey = bagNo || bagId || `remaining-${idx}`;
+        if (!dedupedRemainingMap.has(dedupeKey)) {
+            dedupedRemainingMap.set(dedupeKey, bag);
+        }
+    });
+
+    return [...dedupedRemainingMap.values()];
 };
 
 // --- -----------------------------------------------------------------------------------------
@@ -949,13 +1096,27 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
         if (type === 'party') {
             const invQ = query(collection(db, 'invoices'), where('partyId', '==', id), ...baseConstraints);
             const invCrQ = query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints);
+            const invCrArrQ = query(collection(db, 'invoices'), where('addlExpCreditIds', 'array-contains', id), ...baseConstraints);
             const payQ = query(collection(db, 'payments'), where('partyId', '==', id), ...baseConstraints);
             const jvDrQ = query(collection(db, 'journal_vouchers'), where('drType', '==', 'party'), where('drId', '==', id), ...baseConstraints);
             const jvCrQ = query(collection(db, 'journal_vouchers'), where('crType', '==', 'party'), where('crId', '==', id), ...baseConstraints);
 
-            const [iS, pS, jvDrS, jvCrS, iCS] = await Promise.all([getDocs(invQ), getDocs(payQ), getDocs(jvDrQ), getDocs(jvCrQ), getDocs(invCrQ)]);
+            const [iS, pS, jvDrS, jvCrS, iCS, iCrArrS] = await Promise.all([getDocs(invQ), getDocs(payQ), getDocs(jvDrQ), getDocs(jvCrQ), getDocs(invCrQ), getDocs(invCrArrQ)]);
 
+            // Process old-style addlExpCreditId matches
             iCS.forEach(d => { const v = d.data(); if (v.type === 'purchase') credit += (safeNumLocal(v.addlExpTotal) * safeNumLocal(v.exchangeRate || 1)); });
+            // Process per-expense creditId matches (avoid double-counting same docs)
+            const seenCr = new Set();
+            iCS.forEach(d => seenCr.add(d.id));
+            iCrArrS.forEach(d => {
+                if (seenCr.has(d.id)) return;
+                const v = d.data();
+                if (v.type === 'purchase' && v.addlExpenses) {
+                    v.addlExpenses.forEach(e => {
+                        if (e.creditId === id) credit += (safeNumLocal(e.amount) * safeNumLocal(v.exchangeRate || 1));
+                    });
+                }
+            });
             iS.forEach(d => { const v = d.data(); if (v.type === 'sales') debit += safeNumLocal(v.totalAmount); else credit += safeNumLocal(v.totalAmount); });
             pS.forEach(d => { const v = d.data(); const amt = safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); if (v.type === 'out') debit += amt; else credit += amt; });
             jvDrS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.amount); });
@@ -969,11 +1130,25 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                 getDocs(query(collection(db, 'payments'), where('toAccountId', '==', id), ...baseConstraints)),
                 getDocs(query(collection(db, 'journal_vouchers'), where('drType', '==', 'account'), where('drId', '==', id), ...baseConstraints)),
                 getDocs(query(collection(db, 'journal_vouchers'), where('crType', '==', 'account'), where('crId', '==', id), ...baseConstraints)),
-                getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints))
+                getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints)),
+                getDocs(query(collection(db, 'invoices'), where('addlExpCreditIds', 'array-contains', id), ...baseConstraints))
             ];
-            const [pS, pToS, jvDrS, jvCrS, invS] = await Promise.all(queries);
+            const [pS, pToS, jvDrS, jvCrS, invS, invCrArrS] = await Promise.all(queries);
 
+            // Old-style single credit ID matches
             invS.forEach(d => { const v = d.data(); if (v.type === 'purchase') credit += (safeNumLocal(v.addlExpTotal) * safeNumLocal(v.exchangeRate || 1)); });
+            // Per-expense creditId matches (avoid double-count)
+            const seenInv = new Set();
+            invS.forEach(d => seenInv.add(d.id));
+            invCrArrS.forEach(d => {
+                if (seenInv.has(d.id)) return;
+                const v = d.data();
+                if (v.type === 'purchase' && v.addlExpenses) {
+                    v.addlExpenses.forEach(e => {
+                        if (e.creditId === id) credit += (safeNumLocal(e.amount) * safeNumLocal(v.exchangeRate || 1));
+                    });
+                }
+            });
             pS.forEach(d => { const v = d.data(); const amt = safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); if (v.type === 'in') debit += amt; else credit += amt; });
             pToS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); });
             jvDrS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.amount); });
@@ -1096,10 +1271,14 @@ const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
         if (!snap.empty) {
             if (excludeId) {
                 // If even one found matching doc is NOT our self, it's a dupe
-                const isDupe = snap.docs.some(d => d.id !== excludeId);
-                if (isDupe) return true;
+                const dupeDoc = snap.docs.find(d => d.id !== excludeId);
+                if (dupeDoc) {
+                    const friendlyName = col === 'invoices' ? 'Invoices' : col === 'payments' ? 'Payments/Receipts' : col === 'journal_vouchers' ? 'Journal Vouchers' : 'Manufacturing/Stock';
+                    return `${friendlyName} -> ID: ${dupeDoc.id}`;
+                }
             } else {
-                return true;
+                const friendlyName = col === 'invoices' ? 'Invoices' : col === 'payments' ? 'Payments/Receipts' : col === 'journal_vouchers' ? 'Journal Vouchers' : 'Manufacturing/Stock';
+                return `${friendlyName} -> ID: ${snap.docs[0].id}`;
             }
         }
     }
@@ -3716,6 +3895,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         try {
             // 1. Stop live sync first to prevent auto re-registration after delete
             stopLiveSync(co.id);
+            stopCompanySyncScheduler(co.id);
 
             // 2. Delete all Firebase records + registry entry
             const result = await removeCompanyFromFirebase(co.id);
@@ -4888,6 +5068,7 @@ export default function App() {
         // Re-trigger auth and sync sequence
         try {
             startLiveSync(activeCompanyId);
+            triggerCompanySyncNow(activeCompanyId, 'manual-sync-button');
             setTimeout(() => {
                 setToast({ type: 'success', title: 'Sync Triggered', message: 'Cloud listeners have been refreshed.' });
             }, 1000);
@@ -4988,6 +5169,7 @@ export default function App() {
                 if (!syncInitializedRef.current[activeCompanyId]) {
                     syncInitializedRef.current[activeCompanyId] = true;
                     startLiveSync(activeCompanyId);
+                    triggerCompanySyncNow(activeCompanyId, 'active-company-init');
                 }
             }
 
@@ -5022,6 +5204,47 @@ export default function App() {
             setDataOwnerId(null);
         }
     }, [activeCompanyId, user?.email, subUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        let isMounted = true;
+
+        if (!activeCompanyId) {
+            stopAllCompanySyncSchedulers().catch(() => {});
+            return undefined;
+        }
+
+        (async () => {
+            try {
+                const master = await getMasterDB();
+                const coDoc = await master.companies.findOne({ selector: { id: activeCompanyId } }).exec();
+                if (!isMounted || !coDoc) return;
+
+                const company = typeof coDoc.toJSON === 'function' ? coDoc.toJSON() : coDoc;
+                if (isBackgroundSyncEnabled(company)) {
+                    await startCompanySyncScheduler({
+                        id: company.id,
+                        name: company.name,
+                        settings: company.settings || {},
+                    });
+                } else {
+                    await stopCompanySyncScheduler(activeCompanyId);
+                }
+            } catch (err) {
+                console.warn('[SYNC] Failed to initialize scheduler for active company:', activeCompanyId, err);
+            }
+        })();
+
+        return () => {
+            isMounted = false;
+            stopCompanySyncScheduler(activeCompanyId).catch(() => {});
+        };
+    }, [activeCompanyId]);
+
+    useEffect(() => {
+        return () => {
+            stopAllCompanySyncSchedulers().catch(() => {});
+        };
+    }, []);
 
     // 2. Block UI if No Company Selected (REMOVED - now accessible via Management)
     // if (!activeCompanyId) {
@@ -5168,6 +5391,8 @@ export default function App() {
     const [vehicles, setVehicles] = useState([]); // <--- TRANSPORT STATE
     const [companyProfile, setCompanyProfile] = useState(null); // <--- COMPANY PROFILE STATE
     const [dashboardLogCount, setDashboardLogCount] = useState(0);
+    const [filledStockCount, setFilledStockCount] = useState(0);
+    const [packagingLaunchView, setPackagingLaunchView] = useState(null);
     const [liveRegistryCompanies, setLiveRegistryCompanies] = useState([]);
     const [systemInfo, setSystemInfo] = useState(null);
 
@@ -5543,16 +5768,17 @@ export default function App() {
         });
 
         // --- TRANSACTIONS (Filtered for Data Entry 1) ---
-        const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (payments):", err));
-        const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => setJournalVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (journal_vouchers):", err));
+        const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => setPayments(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (payments):", err));
+        const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => setJournalVouchers(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (journal_vouchers):", err));
 
         // ✅ ADD THIS LINE to fetch Stock Journals globally
-        const unsubStockJournals = onSnapshot(getTxQuery("stock_journals"), (snap) => setStockJournals(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (stock_journals):", err));
+        const unsubStockJournals = onSnapshot(getTxQuery("stock_journals"), (snap) => setStockJournals(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (stock_journals):", err));
 
         // For Invoices, we need specific logic for stats even if filtered
         // But for Data Entry 1 viewing, we filter the list
         const unsubInvoices = onSnapshot(getTxQuery("invoices"), (snap) => {
-            setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+            const activeInvoices = filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+            setInvoices(activeInvoices);
 
             // Always calculate stats regardless of role to ensure consistent dashboard view
             {
@@ -5560,8 +5786,7 @@ export default function App() {
                 const lastSales = {};
                 const tempLotStats = {};
 
-                snap.docs.forEach(doc => {
-                    const d = doc.data();
+                activeInvoices.forEach(d => {
 
                     if (d.items) {
                         d.items.forEach(item => {
@@ -6216,6 +6441,7 @@ export default function App() {
     const handleCloseModal = () => {
         // Reset activity when closing
         updateMyActivity('Viewing Dashboard');
+        setPackagingLaunchView(null);
         if (modalStack.length > 0) {
             // Pop last modal from stack and open it
             const last = modalStack[modalStack.length - 1];
@@ -6393,15 +6619,9 @@ export default function App() {
                 const rate = Number(d.exchangeRate || 1);
                 const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && accBalMap[d.addlExpCreditId] !== undefined) {
-                    accBalMap[d.addlExpCreditId] -= addlExpBase;
-                }
-
                 if (d.partyId && partyBalMap[d.partyId] !== undefined) {
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                        ? Math.max(0, baseVal - addlExpBase)
-                        : baseVal;
-                    const amt = (d.type === 'purchase') ? supplierBase : baseVal;
+                    // ✅ For purchase: use net amount (exclude capitalized expenses)
+                    const amt = (d.type === 'purchase' && addlExpBase > 0) ? Math.max(0, baseVal - addlExpBase) : baseVal;
                     if (['sales', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
                     else if (['purchase', 'credit_note', 'sales_return'].includes(d.type)) partyBalMap[d.partyId] -= amt;
                 }
@@ -6749,7 +6969,8 @@ export default function App() {
                         if (bagCount > 0) await bagBatch.commit();
                     } catch (bagErr) { console.warn('Bulk-delete bag sync failed for', id, bagErr); }
 
-                    await deleteDoc(doc(db, collectionName, id));
+                    // Fix: Use the 'col' variable which was accurately resolved by tryFindDocWithFallback
+                    await deleteDoc(doc(db, col, id));
 
                     await addDoc(collection(db, 'audit_logs'), {
                         date: serverTimestamp(),
@@ -7476,11 +7697,11 @@ export default function App() {
                 });
 
                 if (v.partyId) {
-                    if (v.type === 'sales' || v.type === 'sales_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) + grandTotalBase;
-                    else if (v.type === 'purchase' || v.type === 'purchase_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) - grandTotalBase;
-                }
-                if (v.addlExpCreditId && v.addlExpTotal) {
-                    bal.accounts[v.addlExpCreditId] = (bal.accounts[v.addlExpCreditId] || 0) - (Number(v.addlExpTotal) * rate);
+                    // ✅ For purchase: exclude capitalized expenses from supplier balance
+                    const addlExpBase = (v.type === 'purchase') ? (Number(v.addlExpTotal || 0) * rate) : 0;
+                    const netBase = (v.type === 'purchase' && addlExpBase > 0) ? Math.max(0, grandTotalBase - addlExpBase) : grandTotalBase;
+                    if (v.type === 'sales' || v.type === 'sales_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) + netBase;
+                    else if (v.type === 'purchase' || v.type === 'purchase_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) - netBase;
                 }
             });
 
@@ -7894,6 +8115,158 @@ export default function App() {
         }
     };
 
+    const handlePurgeSoftDeletedVouchers = async () => {
+        if (!user) return;
+        const ownerUid = dataOwnerId || user.uid;
+
+        if (!window.confirm('⚠️ PURGE SOFT-DELETED VOUCHERS\n\nThis will permanently remove soft-deleted voucher records from Firestore for this company/user scope. Audit logs will be kept. Proceed?')) {
+            return;
+        }
+
+        setToast({ type: 'loading', title: 'Purging...', message: 'Scanning for soft-deleted vouchers and cleanup records...' });
+
+        const voucherCollections = [
+            { name: 'invoices', fields: ['userId', 'ownerId'] },
+            { name: 'payments', fields: ['userId', 'ownerId'] },
+            { name: 'journal_vouchers', fields: ['userId', 'ownerId'] },
+            { name: 'stock_journals', fields: ['userId', 'ownerId'] },
+            { name: 'order_vouchers', fields: ['userId', 'ownerId'] },
+            { name: 'jumbo_bags', fields: ['userId', 'ownerId', 'companyId'] }
+        ];
+
+        const isSoftDeleted = (docData = {}) => {
+            const status = String(docData.status || '').trim().toLowerCase();
+            return (
+                docData.isDeleted === true ||
+                docData.deleted === true ||
+                docData.is_deleted === true ||
+                status === 'deleted' ||
+                status === 'bulk_deleted'
+            );
+        };
+
+        const fetchDocsForCollection = async (colName, fields) => {
+            const snapMap = new Map();
+            for (const field of fields) {
+                try {
+                    const snap = await getDocs(query(collection(db, colName), where(field, '==', ownerUid)));
+                    snap.docs.forEach((d) => {
+                        snapMap.set(d.id, { id: d.id, ref: d.ref, ...d.data() });
+                    });
+                } catch (err) {
+                    console.warn(`Purging scan failed for ${colName}.${field}`, err);
+                }
+            }
+            return [...snapMap.values()].filter((d) => isSoftDeleted(d));
+        };
+
+        const cleanLinkedBags = async (voucher) => {
+            const colName = voucher?.collectionName;
+            const ref = voucher?.refNo || '';
+            const id = voucher?.id || '';
+            if (!colName) return 0;
+
+            try {
+                const bagQueries = [];
+                const isSalesVoucher = colName === 'invoices' && String(voucher?.type || '').toLowerCase() === 'sales';
+
+                if (isSalesVoucher) {
+                    if (id) bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
+                    if (ref) bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', ref))));
+                } else if (colName === 'invoices' || colName === 'stock_journals') {
+                    if (id) {
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
+                    }
+                    if (ref) {
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', ref))));
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', ref))));
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', ref))));
+                    }
+                }
+
+                if (bagQueries.length === 0) return 0;
+
+                const bagSnaps = await Promise.all(bagQueries);
+                const seenBagIds = new Set();
+                const batch = writeBatch(db);
+                let bagOps = 0;
+
+                bagSnaps.forEach((sn) => {
+                    sn.docs.forEach((d) => {
+                        if (seenBagIds.has(d.id)) return;
+                        seenBagIds.add(d.id);
+                        if (isSalesVoucher) {
+                            batch.update(d.ref, {
+                                status: 'in_stock',
+                                salesId: deleteField(),
+                                salesRefNo: deleteField(),
+                                soldDate: deleteField(),
+                                weightVariance: deleteField(),
+                                varianceNote: deleteField()
+                            });
+                        } else {
+                            batch.delete(d.ref);
+                        }
+                        bagOps++;
+                    });
+                });
+
+                if (bagOps > 0) await batch.commit();
+                return bagOps;
+            } catch (err) {
+                console.warn('Linked bag cleanup failed during purge:', err);
+                return 0;
+            }
+        };
+
+        try {
+            const targetsByCollection = await Promise.all(
+                voucherCollections.map(async ({ name, fields }) => ({
+                    name,
+                    rows: await fetchDocsForCollection(name, fields)
+                }))
+            );
+
+            let deletedCount = 0;
+            let bagCleanupCount = 0;
+
+            for (const bucket of targetsByCollection) {
+                if (!bucket.rows.length) continue;
+
+                for (let i = 0; i < bucket.rows.length; i += 400) {
+                    const chunk = bucket.rows.slice(i, i + 400);
+                    const batch = writeBatch(db);
+
+                    chunk.forEach((row) => {
+                        batch.delete(doc(db, bucket.name, row.id));
+                    });
+
+                    await batch.commit();
+                    deletedCount += chunk.length;
+
+                    for (const row of chunk) {
+                        bagCleanupCount += await cleanLinkedBags({
+                            collectionName: bucket.name,
+                            id: row.id,
+                            refNo: row.refNo || row.invoiceNo || row.voucherNo || row.name || '',
+                            type: row.type
+                        });
+                    }
+                }
+            }
+
+            setToast({
+                type: 'success',
+                title: 'Purge Complete',
+                message: `Removed ${deletedCount} soft-deleted voucher record(s)${bagCleanupCount ? ` and cleaned ${bagCleanupCount} linked bag record(s)` : ''}.`
+            });
+        } catch (error) {
+            console.error('Soft-deleted purge failed:', error);
+            setToast({ type: 'error', title: 'Purge Failed', message: error.message });
+        }
+    };
+
     // ---------- ADD INSIDE THE App() COMPONENT (e.g. after handleRecalculateAccounts or near other helpers) ----------
     // --- Helper functions to open modals with history support ---
 
@@ -8303,9 +8676,10 @@ export default function App() {
                     }
                 });
 
-                // Invoices (Purchase Paid By Expense)
+                // Invoices — Purchase expenses are capitalized, not posted to expense ledger
                 invoices.forEach(inv => {
                     if (inv.type === 'purchase' && inRange(inv.date)) {
+                        // Only check old backward compat data where addlExpCreditId matches expense
                         if (inv.addlExpCreditId === exp.id) {
                             const r = Number(inv.exchangeRate || 1);
                             const val = Number(inv.addlExpTotal || 0) * r;
@@ -8359,9 +8733,10 @@ export default function App() {
                     }
                 });
 
-                // Invoices (Purchase Paid By Expense)
+                // Invoices — Purchase expenses are capitalized, not posted to expense ledger
                 invoices.forEach(inv => {
                     if (inv.type === 'purchase' && inRange(inv.date)) {
+                        // Only check old backward compat data where addlExpCreditId matches expense
                         if (inv.addlExpCreditId === exp.id) {
                             const r = Number(inv.exchangeRate || 1);
                             const val = Number(inv.addlExpTotal || 0) * r;
@@ -8396,8 +8771,17 @@ export default function App() {
                 // JVs
                 journalVouchers.forEach(jv => {
                     if (inRange(jv.date)) {
-                        if (jv.crType === 'income' && jv.crId === inc.id) total += Number(jv.amount);
-                        if (jv.drType === 'income' && jv.drId === inc.id) total -= Number(jv.amount);
+                        if (jv.isMulti && jv.rows) {
+                            jv.rows.forEach(r => {
+                                if (r.category === 'income' && r.id === inc.id) {
+                                    if (r.type === 'cr') total += Number(r.amount);
+                                    if (r.type === 'dr') total -= Number(r.amount);
+                                }
+                            });
+                        } else {
+                            if (jv.crType === 'income' && jv.crId === inc.id) total += Number(jv.amount);
+                            if (jv.drType === 'income' && jv.drId === inc.id) total -= Number(jv.amount);
+                        }
                     }
                 });
 
@@ -8479,9 +8863,19 @@ export default function App() {
                     if (isUpTo(jv.date)) {
                         const amt = Number(jv.amount || 0);
                         let affects = false;
-                        if (jv.drType === type && jv.drId === ent.id) { bal += amt; affects = true; }
-                        if (jv.crType === type && jv.crId === ent.id) { bal -= amt; affects = true; }
-
+                        // Multi-line JV: check rows
+                        if (jv.isMulti && jv.rows) {
+                            jv.rows.forEach(r => {
+                                if (r.category === type && r.id === ent.id) {
+                                    if (r.type === 'dr') { bal += Number(r.amount || 0); affects = true; }
+                                    else { bal -= Number(r.amount || 0); affects = true; }
+                                }
+                            });
+                        } else {
+                            // Single JV (legacy)
+                            if (jv.drType === type && jv.drId === ent.id) { bal += amt; affects = true; }
+                            if (jv.crType === type && jv.crId === ent.id) { bal -= amt; affects = true; }
+                        }
                         if (affects && inRange(jv.date)) hasActivity = true;
                     }
                 });
@@ -8736,11 +9130,24 @@ export default function App() {
                 slot.qty += qtyTotal || 1;
             }
 
-            if (inv.type === 'purchase' && inv.addlExpCreditId) {
-                const slot = expenseMap.get(key);
-                const expVal = safeNum(inv.addlExpTotal) * safeNum(inv.exchangeRate || 1);
-                slot.value -= expVal;
-                slot.qty += expVal !== 0 ? 1 : 0;
+            if (inv.type === 'purchase') {
+                // Per-expense creditId mapping for cash flow
+                if (inv.addlExpenses && Array.isArray(inv.addlExpenses)) {
+                    inv.addlExpenses.forEach(e => {
+                        if (e.creditId && e.amount > 0) {
+                            const slot = expenseMap.get(key);
+                            const expVal = safeNum(e.amount) * safeNum(inv.exchangeRate || 1);
+                            slot.value -= expVal;
+                            slot.qty += 1;
+                        }
+                    });
+                } else if (inv.addlExpCreditId) {
+                    // Backward compat
+                    const slot = expenseMap.get(key);
+                    const expVal = safeNum(inv.addlExpTotal) * safeNum(inv.exchangeRate || 1);
+                    slot.value -= expVal;
+                    slot.qty += expVal !== 0 ? 1 : 0;
+                }
             }
         });
 
@@ -8828,7 +9235,24 @@ export default function App() {
             }
         };
 
+        const loadFilledStockCount = async () => {
+            if (!dataOwnerId) {
+                if (active) setFilledStockCount(0);
+                return;
+            }
+            try {
+                const bagsSnap = await getDocs(
+                    query(collection(db, 'jumbo_bags'), where('status', 'in', ['in_stock', 'filled', 'available']))
+                );
+                if (active) setFilledStockCount(bagsSnap.size);
+            } catch (err) {
+                console.error("Error loading filled stock count", err);
+                if (active) setFilledStockCount(0);
+            }
+        };
+
         loadDashboardLogCount();
+        loadFilledStockCount();
         intervalId = window.setInterval(loadDashboardLogCount, 3000);
 
         return () => {
@@ -9469,6 +9893,15 @@ export default function App() {
                             title="View Log History"
                         >
                             Logs: <span className="font-black text-[#005994]">{displayLogCount}</span>
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button
+                            type="button"
+                            onClick={() => { setModalStack(s => [...s, 'dashboard']); setPackagingLaunchView({ detail: 'ready_stock', subTab: 'remaining' }); setActiveModal('packaging_smart_report'); }}
+                            className="hover:text-[#005994] hover:underline transition-colors cursor-pointer"
+                            title="Filled Bags Inventory Intelligence"
+                        >
+                            Filled Bags Stock <span className="font-black text-[#005994]">{filledStockCount}</span>
                         </button>
                     </div>
 
@@ -10473,6 +10906,7 @@ export default function App() {
                 products={products}
                 units={units}
                 currencySymbol={currencySymbol}
+                launchView={packagingLaunchView}
             />
 
             {/* Simple List Modals - WITH SAFETY CHECKS */}
@@ -11339,6 +11773,7 @@ export default function App() {
                 effectiveName={effectiveName}
                 dataOwnerId={dataOwnerId}
                 onScan={handleRunSystemScan}
+                onPurgeSoftDeleted={handlePurgeSoftDeletedVouchers}
                 accounts={accounts}
                 parties={parties}
                 expenses={expenses}
@@ -12126,6 +12561,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             const result = await makeCompanyLive(co.id, co.name, null, liveStats);
             if (result.success) {
                 startLiveSync(co.id);
+                triggerCompanySyncNow(co.id, 'make-live-complete');
                 const freshList = await listCompanies();
                 const withStats = await Promise.all(freshList.map(async (c) => {
                     const stats = (dataOwnerId && c.id === dataOwnerId && currentStats)
@@ -12273,10 +12709,19 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                 updatedBy: user.email
             };
 
-            // Use local setDoc instead of Cloud Function for offline company management
-            await setDoc(doc(db, "companies", dataOwnerId), data);
+            // Update RxDB directly so settings persist locally immediately
+            try {
+                const master = await getMasterDB();
+                const targetDoc = await master.companies.findOne({ selector: { id: dataOwnerId } }).exec();
+                if (targetDoc) {
+                    await targetDoc.patch(data);
+                }
+            } catch (err) { console.warn("Failed to patch RxDB settings:", err); }
 
             if (onUpdateProfile) onUpdateProfile(data); // Immediate UI update
+
+            // Background save to Firebase (doesn't block UI if offline)
+            setDoc(doc(db, "companies", dataOwnerId), data).catch(e => console.warn("Firebase save queued/failed:", e));
 
             // Refresh companies list so the sidebar/selector shows the new name
             const list = await listCompanies();
@@ -12327,7 +12772,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                         </div>
                         <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Company Name</label>
-                            <input autoFocus type="text" required placeholder="e.g. My Great Company Ltd." className="w-full p-2 border rounded focus:ring-2 ring-blue-500 outline-none" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+                            <input autoFocus type="text" required placeholder="e.g. My Great Company Ltd." className="w-full p-2 border rounded focus:ring-2 ring-blue-500 outline-none" value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} />
                         </div>
                         <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Full Address</label>
@@ -13905,7 +14350,7 @@ const InvoiceModal = (props) => {
         // New Shipping Details
         portOfLoading: '', portOfDischarge: '',
         vesselName: '', voyageNo: '',
-        countryOfOrigin: 'UNITED ARAB EMIRATES',
+        countryOfOrigin: '',
         finalDestination: '',
         buyerName: '', buyerAddress: '',
         consigneeName: '', consigneeAddress: '',
@@ -13984,9 +14429,8 @@ const InvoiceModal = (props) => {
     const [editNarration, setEditNarration] = useState(false);
     const [taxPercent, setTaxPercent] = useState('');
 
-    // ✅ NEW: Additional Expenses (Capitalized)
+    // ✅ NEW: Additional Expenses (Capitalized) — simple array without credit account
     const [addlExpenses, setAddlExpenses] = useState([]);   // [{ expenseId, amount }]
-    const [addlExpCreditId, setAddlExpCreditId] = useState('');
     const [showAddlExp, setShowAddlExp] = useState(false);
 
     // ✅ NEW: Sales Expense Mode Selection
@@ -14001,6 +14445,7 @@ const InvoiceModal = (props) => {
     const [jumboBags, setJumboBags] = useState([]);
     const [showJumboEntry, setShowJumboEntry] = useState(false);
     const [showJumboSelection, setShowJumboSelection] = useState(false); // For Sales
+    const [showGlobalBagManager, setShowGlobalBagManager] = useState(false); // Global bags edit modal
     const [activeBagRowIndex, setActiveBagRowIndex] = useState(null); // Track which row is selecting bags
     const [activeBagProduct, setActiveBagProduct] = useState(null); // Track product being selected
     const [availableBags, setAvailableBags] = useState([]); // For Sales selection
@@ -14011,6 +14456,19 @@ const InvoiceModal = (props) => {
     // ✅ Store bag counts per product for UI Display
     const [productsBagMap, setProductsBagMap] = useState({});
     const [allRemainingBagsMemo, setAllRemainingBagsMemo] = useState([]);
+
+    // Sync jumboBags state dynamically for sales vouchers to keep bottom panel in live sync
+    useEffect(() => {
+        if (isOpen && voucherType === 'sales' && formData.packingType === 'bags') {
+            const consolidatedBags = [];
+            items.forEach(item => {
+                if (item.selectedBags && item.selectedBags.length > 0) {
+                    consolidatedBags.push(...item.selectedBags);
+                }
+            });
+            setJumboBags(consolidatedBags);
+        }
+    }, [items, isOpen, voucherType, formData.packingType]);
 
     // Fetch Company Images for Printing
     useEffect(() => {
@@ -14056,6 +14514,8 @@ const InvoiceModal = (props) => {
         if (isOpen && voucherType === 'sales') {
             const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
             const bagCache = {};
+            const salesInvoiceCache = {};
+            let salesInvoicePool = [];
 
             const recomputeBagMap = () => {
                 const merged = new Map();
@@ -14064,40 +14524,11 @@ const InvoiceModal = (props) => {
                 });
 
                 const globalBags = [...merged.values()];
-                const soldBagNos = new Set(globalBags.filter(b => b.status === 'sold').map(b => String(b.bagNo || '').toLowerCase()));
-                const seenIds = new Set(globalBags.map(b => String(b.id)));
-                const seenBagNos = new Set(globalBags.map(b => String(b.bagNo || '').toLowerCase()));
-                
-                const uniqueEmbedded = [];
-                (stockJournals || []).forEach(vch => {
-                    const vchId = String(vch.id);
-                    const embedded = [
-                        ...(Array.isArray(vch.jumboBags) ? vch.jumboBags : []),
-                        ...(Array.isArray(vch.jumbo_bags) ? vch.jumbo_bags : []),
-                        ...(Array.isArray(vch.producedBags) ? vch.producedBags : []),
-                        ...(Array.isArray(vch.produced) ? vch.produced.flatMap(p => (Array.isArray(p.jumboBags) ? p.jumboBags : Array.isArray(p.jumbo_bags) ? p.jumbo_bags : [])) : [])
-                    ].filter(jb => jb && typeof jb === 'object');
-                    
-                    embedded.forEach((eb, idx) => {
-                        const ebId = eb.id || `embedded-${vchId}-${idx}`;
-                        const ebBagNo = String(eb.bagNo || '').toLowerCase();
-                        if (!seenIds.has(ebId) && (!ebBagNo || !seenBagNos.has(ebBagNo))) {
-                            seenIds.add(ebId);
-                            if (ebBagNo) seenBagNos.add(ebBagNo);
-                            uniqueEmbedded.push({
-                                ...eb,
-                                id: ebId,
-                                date: eb.date || vch.date,
-                                voucherRefNo: eb.voucherRefNo || vch.refNo,
-                                stockJournalRefNo: vch.refNo,
-                                stockJournalId: vchId
-                            });
-                        }
-                    });
+                const finalRemaining = deriveRemainingBags({
+                    globalBags,
+                    stockJournals: stockJournals || [],
+                    soldInvoiceBagPool: salesInvoicePool
                 });
-                
-                const combined = [...globalBags, ...uniqueEmbedded];
-                const finalRemaining = combined.filter(b => b.status !== 'sold' && !soldBagNos.has(String(b.bagNo || '').toLowerCase()));
                 
                 setAllRemainingBagsMemo(finalRemaining);
 
@@ -14121,11 +14552,25 @@ const InvoiceModal = (props) => {
                 });
             });
 
+            const invoiceUnsubs = uidCandidates.map((uid) => {
+                const qInv = query(collection(db, 'invoices'), where('userId', '==', uid), where('type', '==', 'sales'));
+                return onSnapshot(qInv, (snap) => {
+                    const salesInvoicesForUid = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                    salesInvoiceCache[uid] = buildSoldInvoiceBagPoolFromInvoices(salesInvoicesForUid);
+                    salesInvoicePool = Object.values(salesInvoiceCache).flat();
+                    recomputeBagMap();
+                }, (err) => {
+                    console.warn('Sales invoice bag snapshot sync error:', err);
+                });
+            });
+
             return () => {
+                invoiceUnsubs.forEach((unsub) => unsub());
                 unsubs.forEach((unsub) => unsub());
             };
         } else {
             setProductsBagMap({});
+            setAllRemainingBagsMemo([]);
         }
     }, [isOpen, voucherType, dataOwnerId, user]);
 
@@ -14184,7 +14629,7 @@ const InvoiceModal = (props) => {
                     portOfDischarge: initialData.portOfDischarge || '',
                     vesselName: initialData.vesselName || '',
                     voyageNo: initialData.voyageNo || '',
-                    countryOfOrigin: initialData.countryOfOrigin || 'UNITED ARAB EMIRATES',
+                    countryOfOrigin: initialData.countryOfOrigin || '',
                     finalDestination: initialData.finalDestination || '',
                     buyerName: initialData.buyerName || '',
                     buyerAddress: initialData.buyerAddress || '',
@@ -14239,22 +14684,83 @@ const InvoiceModal = (props) => {
                     setAdjustAdvRef(null); setAdjustAdvAmount('');
                 }
                 if (initialData.lotId) { setLotId(initialData.lotId); }
-                if (initialData.jumboBags && Array.isArray(initialData.jumboBags)) {
-                    setJumboBags(initialData.jumboBags);
+                // ✅ Instant Render + Background Firestore Sync Loader
+                // 1. Instantly load and map bags from the embedded invoice snapshot so they render in the UI immediately without any query delay
+                const embeddedBags = initialData.soldBags || initialData.jumboBags || [];
+                if (embeddedBags.length > 0) {
+                    setJumboBags(embeddedBags);
                     setJumboEnabled(true);
-                } else {
-                    // ✅ FALLBACK: Fetch Bags from DB if not passed in proper object
-                    const field = (initialData.type || type) === 'purchase' ? 'purchaseId' : ((initialData.type || type) === 'sales' ? 'salesId' : null);
-                    if (field && initialData.id) {
-                        const q = query(collection(db, 'jumbo_bags'), where(field, '==', initialData.id));
-                        getDocs(q).then(snap => {
-                            if (!snap.empty) {
-                                const loaded = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                                setJumboBags(loaded);
-                                if ((initialData.type || type) === 'purchase') setJumboEnabled(true);
+                    setItems(prevItems => {
+                        return prevItems.map(item => {
+                            const rowBags = embeddedBags.filter(b => b.productId === item.productId);
+                            return {
+                                ...item,
+                                selectedBags: rowBags
+                            };
+                        });
+                    });
+                }
+
+                // 2. Query Firestore in the background to fetch full bag documents with real IDs (maintaining transactional integrity on save)
+                // ⚠️ IMPORTANT: NEVER call updateItemsAndBags with an empty array when embedded bags exist,
+                // otherwise Phase 1 loaded bags will be wiped out (see Firestore 404/400 channel bug)
+                if (initialData.id) {
+                    const isSales = (initialData.type || type) === 'sales';
+                    const field = isSales ? 'salesId' : 'purchaseId';
+                    
+                    const updateItemsAndBags = (loaded) => {
+                        // 🛡️ GUARD: Never overwrite with empty when embedded bags were successfully loaded
+                        if (loaded.length === 0 && embeddedBags.length > 0) {
+                            console.warn("Background bag query returned empty but embedded bags exist — keeping Phase 1 loaded bags.");
+                            return;
+                        }
+                        setJumboBags(loaded);
+                        setJumboEnabled(true);
+                        setItems(prevItems => {
+                            return prevItems.map(item => {
+                                const rowBags = loaded.filter(b => b.productId === item.productId);
+                                return {
+                                    ...item,
+                                    selectedBags: rowBags
+                                };
+                            });
+                        });
+                    };
+
+                    const q = query(collection(db, 'jumbo_bags'), where(field, '==', initialData.id));
+                    getDocs(q).then(snap => {
+                        let loaded = [];
+                        if (!snap.empty) {
+                            loaded = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        }
+                        
+                        // Fallback: If standard query didn't find all bags, but we have embedded bags, query them by bagNo!
+                        if (loaded.length < embeddedBags.length && embeddedBags.length > 0) {
+                            const bagNos = embeddedBags.map(b => b.bagNo).filter(Boolean);
+                            if (bagNos.length > 0) {
+                                const qFallback = query(collection(db, 'jumbo_bags'), where('bagNo', 'in', bagNos.slice(0, 30)));
+                                getDocs(qFallback).then(snapFallback => {
+                                    const fallbackLoaded = snapFallback.docs.map(d => ({ id: d.id, ...d.data() }));
+                                    const merged = [...loaded];
+                                    fallbackLoaded.forEach(fb => {
+                                        if (!merged.some(m => m.id === fb.id)) {
+                                            merged.push(fb);
+                                        }
+                                    });
+                                    updateItemsAndBags(merged);
+                                }).catch(err => {
+                                    console.warn("Fallback bag query error (bags preserved from Phase 1):", err);
+                                });
+                                return;
                             }
-                        }).catch(err => console.error("Error fetching linked bags:", err));
-                    }
+                        }
+                        
+                        if (loaded.length > 0) {
+                            updateItemsAndBags(loaded);
+                        } else if (embeddedBags.length > 0) {
+                            console.warn("Background bag query returned 0 results — keeping Phase 1 embedded bags.");
+                        }
+                    }).catch(err => console.warn("Error fetching and mapping bags (bags preserved from Phase 1):", err));
                 }
             } else {
                 setVoucherType(type);
@@ -14277,7 +14783,7 @@ const InvoiceModal = (props) => {
                     packingType: 'loose',
                     portOfLoading: '', portOfDischarge: '',
                     vesselName: '', voyageNo: '',
-                    countryOfOrigin: 'UNITED ARAB EMIRATES',
+                    countryOfOrigin: '',
                     finalDestination: '',
                     buyerName: '', buyerAddress: '',
                     consigneeName: '', consigneeAddress: '',
@@ -14294,40 +14800,23 @@ const InvoiceModal = (props) => {
             }
             setShowContainerForm(false); // Reset popup
             setAddlExpenses([]);
-            setAddlExpCreditId('');
             setShowAddlExp(false);
             setSalesExpenseMode('');
             setShowExpenseModeModal(false);
             if (initialData?.addlExpenses) {
-                setAddlExpenses(initialData.addlExpenses);
-                setAddlExpCreditId(initialData.addlExpCreditId || '');
+                // Load expenses — strip any creditId (now handled via payment vouchers)
+                const loaded = initialData.addlExpenses.map(e => ({
+                    expenseId: e.expenseId,
+                    amount: e.amount
+                }));
+                setAddlExpenses(loaded);
                 // NOTE: Do NOT auto-open showAddlExp — always start collapsed; user can click Edit Expenses
                 if (initialData.salesExpenseMode) setSalesExpenseMode(initialData.salesExpenseMode);
             }
 
-            // LOAD JUMBO FLAGS: Use embedded snapshot first, fallback to DB query
-            if (initialData?.jumboEnabled || initialData?.packingType === 'bags') {
-                setJumboEnabled(true);
-                const loadedType = (initialData.type || type);
-                // For purchase: use jumboBags; for sales: use soldBags (bags that were sold)
-                const embeddedBags = loadedType === 'sales'
-                    ? (initialData.soldBags || initialData.jumboBags)
-                    : initialData.jumboBags;
-                if (Array.isArray(embeddedBags) && embeddedBags.length > 0) {
-                    setJumboBags(embeddedBags);
-                } else {
-                    // Fallback query (backward compatibility)
-                    const field = loadedType === 'sales' ? 'salesId' : 'purchaseId';
-                    if (initialData.id) {
-                        const qBags = query(collection(db, 'jumbo_bags'), where(field, '==', initialData.id));
-                        getDocs(qBags).then(snap => {
-                            setJumboBags(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                        }).catch(console.error);
-                    }
-                }
-            } else {
-                setJumboEnabled(false);
-                setJumboBags([]);
+            // Decoupled secondary loader: handled dynamically above with full mapping
+            if (initialData) {
+                setJumboEnabled(!!initialData.jumboEnabled || initialData.packingType === 'bags');
             }
         }
     }, [isOpen, initialData, type]);
@@ -14542,7 +15031,15 @@ const InvoiceModal = (props) => {
                     let consolidatedBags = [];
                     items.forEach(item => {
                         if (item.selectedBags && item.selectedBags.length > 0) {
-                            consolidatedBags.push(...item.selectedBags);
+                            // Automatically recover missing bag IDs from the in-memory allRemainingBagsMemo pool
+                            const mapped = item.selectedBags.map(b => {
+                                if (!b.id && b.bagNo) {
+                                    const match = allRemainingBagsMemo.find(rm => rm.bagNo === b.bagNo);
+                                    if (match) return { ...b, id: match.id };
+                                }
+                                return b;
+                            });
+                            consolidatedBags.push(...mapped);
                         }
                     });
 
@@ -14590,8 +15087,9 @@ const InvoiceModal = (props) => {
         if (paymentTerms === 'advance' && !adjustAdvRef?.refNo) return alert('⚠️ Please select an Advance Ref No. before saving.');
 
         const targetUid = dataOwnerId || user.uid;
-        if (await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! This Ref No exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! This Ref No exists in another transaction (${duplicateCol}).`);
         }
 
         /*
@@ -14654,9 +15152,15 @@ const InvoiceModal = (props) => {
             });
         }
 
-        const cleanAddlExpenses = addlExpenses.filter(e => e.expenseId && e.amount > 0).map(e => ({ expenseId: e.expenseId, amount: Number(e.amount) }));
-        // Only require 'Paid By' for Purchase. Sales assumes deduction from invoice value.
-        if (cleanAddlExpenses.length > 0 && voucherType === 'purchase' && !addlExpCreditId) return alert("⚠️ Please select a 'Paid By' account for the additional expenses.");
+        const cleanAddlExpenses = addlExpenses.filter(e => e.expenseId && e.amount > 0).map(e => ({
+            expenseId: e.expenseId,
+            amount: Number(e.amount)
+        }));
+
+        if (cleanAddlExpenses.length > 0 && voucherType === 'sales' && !salesExpenseMode) {
+            setShowExpenseModeModal(true);
+            return alert("⚠️ Please select how to handle additional expenses (Include or Add).");
+        }
 
         if (cleanAddlExpenses.length > 0 && voucherType === 'sales' && !salesExpenseMode) {
             setShowExpenseModeModal(true);
@@ -14711,8 +15215,11 @@ const InvoiceModal = (props) => {
                     ...formData, // ✅ This includes containerNo, sealNo, otherRef, bankDetails automatically
                     companyBank: formData.bankDetails || (formData.companyBankId ? companyProfile.banks.find(b => b.accNumber === formData.companyBankId || b.id === formData.companyBankId) : null), // Save Full Bank Object for Reports
                     type: voucherType, items: cleanItems, expenses: cleanExpenses,
-                    addlExpenses: cleanAddlExpenses, addlExpCreditId: addlExpCreditId || null,
+                    addlExpenses: cleanAddlExpenses,
                     addlExpTotal: totals.addlExpTotal,
+                    // Clear old paid-by fields (now handled via payment vouchers)
+                    addlExpCreditId: null,
+                    addlExpCreditIds: [],
                     salesExpenseMode: voucherType === 'sales' ? (salesExpenseMode || null) : null, // Save mode for sales
                     totalAmount: totals.grandTotalBase,
                     foreignTotal: totals.grandTotalForeign,
@@ -14730,10 +15237,10 @@ const InvoiceModal = (props) => {
                     bagCount: finalJumboBags.length,
                     // ✅ EMBED BAG SNAPSHOT so details load instantly when voucher is re-opened
                     jumboBags: voucherType === 'purchase' && finalJumboBags.length > 0
-                        ? finalJumboBags.map(b => ({ bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
+                        ? finalJumboBags.map(b => ({ id: b.id || '', bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
                         : (initialData?.jumboBags || []),
                     soldBags: voucherType === 'sales' && finalJumboBags.length > 0
-                        ? finalJumboBags.map(b => ({ bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
+                        ? finalJumboBags.map(b => ({ id: b.id || '', bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
                         : (initialData?.soldBags || []),
                     paymentTerms: paymentTerms === 'today' ? formData.date
                         : paymentTerms === 'advance' ? formData.date
@@ -14762,9 +15269,14 @@ const InvoiceModal = (props) => {
                                 productId: b.productId,
                                 qty: Number(b.qty),
                                 purchaseId: invoiceRef.id,
+                                purchaseRefNo: formData.refNo || '',
+                                voucherRefNo: formData.refNo || '',
+                                source: 'purchase',
                                 date: formData.date,
                                 status: 'in_stock',
                                 userId: targetUid,
+                                ownerId: targetUid,
+                                companyId: targetUid,
                                 createdAt: serverTimestamp()
                             });
                         }
@@ -14775,12 +15287,41 @@ const InvoiceModal = (props) => {
                         await transaction.update(doc(db, 'jumbo_bags', bid), {
                             status: 'in_stock',
                             salesId: deleteField(),
+                            salesRefNo: deleteField(),
                             soldDate: deleteField()
                         });
                     }
 
                     // 2. Mark New Selection as Sold & Handle Weight Variance
                     if (finalJumboBags.length > 0) {
+                        const selectedBagIds = new Set();
+                        for (const b of finalJumboBags) {
+                            if (!b?.id) {
+                                throw new Error('Invalid bag selection detected. Please re-open bag picker and try again.');
+                            }
+                            if (selectedBagIds.has(b.id)) {
+                                throw new Error(`Duplicate bag selected in voucher: ${b.bagNo || b.id}`);
+                            }
+                            selectedBagIds.add(b.id);
+
+                            const bagRef = doc(db, 'jumbo_bags', b.id);
+                            const bagSnap = await transaction.get(bagRef);
+                            if (!bagSnap.exists()) {
+                                console.warn(`Selected bag not found: ${b.bagNo || b.id}. Skipping.`);
+                                continue;
+                            }
+
+                            const bagData = bagSnap.data() || {};
+                            const soldElsewhere = bagData.status === 'sold' && bagData.salesId && bagData.salesId !== invoiceRef.id;
+                            if (soldElsewhere) {
+                                throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} is already sold in another voucher.`);
+                            }
+
+                            if (bagData.productId && b.productId && bagData.productId !== b.productId) {
+                                throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} does not belong to selected item.`);
+                            }
+                        }
+
                         // Group bags by product to calculate variance per item
                         const bagsByProduct = finalJumboBags.reduce((acc, b) => {
                             if (!acc[b.productId]) acc[b.productId] = [];
@@ -14844,7 +15385,7 @@ const InvoiceModal = (props) => {
                 setPaymentTerms('today'); setPaymentTermsDate('');
                 setItems([{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: 0, lotId: formData.lotId || '' }]);
                 setInvExpenses([]);
-                setAddlExpenses([]); setAddlExpCreditId(''); setShowAddlExp(false);
+                setAddlExpenses([]); setShowAddlExp(false);
             }
 
         } catch (e) { console.error(e); alert("Error: " + e.message); }
@@ -15505,6 +16046,32 @@ const InvoiceModal = (props) => {
                                                 </div>
                                             </div>
 
+                                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1 pt-2">Export / Transport Details</h4>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Contract No</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.contractNo} onChange={e => setFormData({ ...formData, contractNo: e.target.value })} />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Place of Delivery</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.placeOfDelivery} onChange={e => setFormData({ ...formData, placeOfDelivery: e.target.value })} />
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2 mt-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Mode of Transport</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.modeOfTransport} onChange={e => setFormData({ ...formData, modeOfTransport: e.target.value })} />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Payment Terms</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.paymentTerms} onChange={e => setFormData({ ...formData, paymentTerms: e.target.value })} />
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1 mt-2">
+                                                <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Bank Details (Override)</label>
+                                                <textarea className="w-full p-2 border border-slate-200 rounded-xl text-[10px] font-bold text-slate-700 bg-slate-50 h-16 resize-none" value={formData.bankDetailsOverride} onChange={e => setFormData({ ...formData, bankDetailsOverride: e.target.value })} placeholder="Leave blank to use selected 'Our Bank' below..." />
+                                            </div>
+
                                             <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1 pt-2">Buyer / Consignee Overrides</h4>
                                             <div className="space-y-1">
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase px-1 text-blue-600">Consignee (If different from Party)</label>
@@ -15636,7 +16203,7 @@ const InvoiceModal = (props) => {
                                                     >
                                                         <ShoppingBag size={10} />
                                                         {(jumboBags || []).filter(b => b.productId === item.productId).length > 0
-                                                            ? `${(jumboBags || []).filter(b => b.productId === item.productId).length} Bags Selected`
+                                                            ? 'Edit Bags'
                                                             : 'Select Bags / Scan'}
                                                     </button>
                                                 )}
@@ -15799,7 +16366,7 @@ const InvoiceModal = (props) => {
                                     </div>
                                 </div>
 
-                                {/* Expense Rows — compact 23-char width fields */}
+                                {/* Expense Rows */}
                                 {addlExpenses.map((exp, i) => (
                                     <div key={i} className="flex gap-1 items-center">
                                         <div className="w-[185px] shrink-0">
@@ -15830,27 +16397,6 @@ const InvoiceModal = (props) => {
                                         <button type="button" onClick={() => setAddlExpenses(addlExpenses.filter((_, idx) => idx !== i))} className="text-red-400 hover:text-red-600 px-1"><X size={12} /></button>
                                     </div>
                                 ))}
-
-                                {/* Credit Account Selector - PURCHASE ONLY */}
-                                {voucherType === 'purchase' && (
-                                    <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex items-center gap-2">
-                                        <label className="text-[9px] font-bold text-slate-500 shrink-0 whitespace-nowrap">Paid Cr By:</label>
-                                        <div className="w-[220px]">
-                                            <SearchableSelect
-                                                placeholder="Cash / Bank / Party..."
-                                                value={addlExpCreditId}
-                                                onChange={setAddlExpCreditId}
-                                                groups={[
-                                                    { name: 'Cash/Bank', options: accounts.map(a => ({ value: a.id, text: a.name })) },
-                                                    { name: 'Parties', options: parties.map(p => ({ value: p.id, text: p.name })) },
-                                                    { name: 'Expenses', options: expenses.map(e => ({ value: e.id, text: e.name })) }
-                                                ]}
-                                                options={[]}
-                                            />
-                                        </div>
-                                        <span className="ml-auto text-[9px] text-orange-500 font-bold shrink-0">Total: {format3(totals.addlExpTotal)}</span>
-                                    </div>
-                                )}
                                 {voucherType !== 'purchase' && (
                                     <div className="text-right">
                                         <span className="text-[9px] text-orange-400 font-normal mr-1">Total Exp:</span>
@@ -15867,11 +16413,23 @@ const InvoiceModal = (props) => {
                         {/* BAG DETAILS SUMMARY (shown when bags are allocated/selected) */}
                         {jumboBags && jumboBags.length > 0 && (
                             <div className="mx-1 mb-2 p-2 bg-amber-50 border border-amber-200 rounded-xl relative overflow-hidden">
-                                <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-amber-200">
-                                    <div className="p-1 bg-amber-100 rounded text-amber-600"><Box size={12} /></div>
-                                    <span className="text-[10px] font-black text-amber-800 uppercase tracking-wide">
-                                        {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} — {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
-                                    </span>
+                                <div className="flex items-center justify-between gap-2 mb-1.5 pb-1.5 border-b border-amber-200">
+                                    <div className="flex items-center gap-2">
+                                        <div className="p-1 bg-amber-100 rounded text-amber-600"><Box size={12} /></div>
+                                        <span className="text-[10px] font-black text-amber-800 uppercase tracking-wide">
+                                            {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} — {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
+                                        </span>
+                                    </div>
+                                    {voucherType === 'sales' && formData.packingType === 'bags' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowGlobalBagManager(true)}
+                                            className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-md transition-all active:scale-95 flex items-center gap-1 shadow-sm"
+                                        >
+                                            <Edit size={10} />
+                                            <span>Edit / Add</span>
+                                        </button>
+                                    )}
                                 </div>
                                 <div className="flex flex-wrap gap-x-6 gap-y-1.5 max-h-20 overflow-y-auto custom-scrollbar">
                                     {jumboBags.map((bag, idx) => {
@@ -15987,7 +16545,7 @@ const InvoiceModal = (props) => {
                             row.selectedBags = selectedBags;
                             const totalWeight = round3(selectedBags.reduce((sum, b) => sum + Number(b.qty), 0));
                             row.quantity = totalWeight; // Auto-fill Qty
-                            row.pieces = selectedBags.length; // Auto-fill Pieces (Bag Count)
+                            // row.pieces = selectedBags.length; // Decoupled: Auto-fill Pieces disabled by user request
 
                             // Recalculate Total
                             const rate = Number(row.rate) || 0;
@@ -16003,6 +16561,16 @@ const InvoiceModal = (props) => {
                     products={products}
                     initialSelectedIds={items[activeBagRowIndex]?.selectedBags?.map(b => b.id) || []} // Pre-select if re-opening
                     targetProductId={activeBagProduct?.id} // Filter visual
+                />
+
+                <GlobalBagManagerModal
+                    isOpen={showGlobalBagManager}
+                    onClose={() => setShowGlobalBagManager(false)}
+                    items={items}
+                    setItems={setItems}
+                    products={products}
+                    allRemainingBagsMemo={allRemainingBagsMemo}
+                    round3={round3}
                 />
 
                 {/* ✅ Sales Expense Mode Selection Modal */}
@@ -16102,7 +16670,8 @@ const InvoiceModal = (props) => {
                                                 { id: 'invoice', templateId: 'invoice', name: voucherType === 'purchase' ? 'Purchase Bill' : 'Invoice', enabled: true },
                                                 { id: 'packing_list', templateId: 'packing_list', name: 'Packing List', enabled: true },
                                                 { id: 'bill_of_exchange', templateId: 'bill_of_exchange', name: 'Bill of Exch', enabled: true },
-                                                { id: 'bank_application', templateId: 'bank_application', name: 'Bank Letter', enabled: true }
+                                                { id: 'bank_application', templateId: 'bank_application', name: 'Bank Letter', enabled: true },
+                                                { id: 'export_invoice', templateId: 'export_invoice', name: 'Export Invoice', enabled: true }
                                             ]).filter(d => d.enabled).map(docType => (
                                                 <button
                                                     key={docType.id}
@@ -16398,6 +16967,7 @@ const InvoiceModal = (props) => {
                                                     else if (config.templateId === 'packing_list') combinedDoc = await generatePackingListPDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bill_of_exchange') combinedDoc = await generateBillOfExchangePDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bank_application') combinedDoc = await generateBankApplicationPDF(configData, 'return', combinedDoc);
+                                                    else if (config.templateId === 'export_invoice') combinedDoc = await generateExportInvoicePDF(configData, 'return', combinedDoc);
                                                 }
                                                 if (combinedDoc) window.open(combinedDoc.output('bloburl'), '_blank');
                                             } else {
@@ -16407,6 +16977,8 @@ const InvoiceModal = (props) => {
                                                     generateBillOfExchangePDF(rawData, 'preview');
                                                 } else if (printOptions.documentType === 'bank_application') {
                                                     generateBankApplicationPDF(rawData, 'preview');
+                                                } else if (printOptions.documentType === 'export_invoice') {
+                                                    generateExportInvoicePDF(rawData, 'preview');
                                                 } else {
                                                     generateInvoicePDF(rawData, 'preview');
                                                 }
@@ -16467,6 +17039,7 @@ const InvoiceModal = (props) => {
                                                     else if (config.templateId === 'packing_list') combinedDoc = await generatePackingListPDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bill_of_exchange') combinedDoc = await generateBillOfExchangePDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bank_application') combinedDoc = await generateBankApplicationPDF(configData, 'return', combinedDoc);
+                                                    else if (config.templateId === 'export_invoice') combinedDoc = await generateExportInvoicePDF(configData, 'return', combinedDoc);
                                                 }
                                                 if (combinedDoc) combinedDoc.save(`All_Docs_${rawData.invoiceNo || 'Draft'}.pdf`);
                                             } else {
@@ -16476,6 +17049,8 @@ const InvoiceModal = (props) => {
                                                     generateBillOfExchangePDF(rawData);
                                                 } else if (printOptions.documentType === 'bank_application') {
                                                     generateBankApplicationPDF(rawData);
+                                                } else if (printOptions.documentType === 'export_invoice') {
+                                                    generateExportInvoicePDF(rawData);
                                                 } else {
                                                     generateInvoicePDF(rawData);
                                                 }
@@ -16719,6 +17294,9 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
     const [nextBagNo, setNextBagNo] = useState('');
     const [selectedItem, setSelectedItem] = useState('');
     const [qty, setQty] = useState('');
+    const [useReusablePicker, setUseReusablePicker] = useState(false);
+    const [reusableBagOptions, setReusableBagOptions] = useState([]);
+    const [selectedReusableBag, setSelectedReusableBag] = useState('');
 
     // Initialize/Reset
     useEffect(() => {
@@ -16726,7 +17304,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
 
         // LOAD INITIAL BAGS IF PROVIDED (EDIT MODE)
         if (initialBags && initialBags.length > 0) {
-            setBags(initialBags);
+            setBags(initialBags.map(b => ({ ...b, id: b.id || (Date.now() + Math.random()) })));
             // "Real" bag seed logic: Find max numeric bagNo in THIS list
             const maxNumericBagNo = initialBags.reduce((max, b) => {
                 let num = 0;
@@ -16793,13 +17371,47 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
 
     const [isChecking, setIsChecking] = useState(false);
 
+    // Load active reusable bags for quick selection in allocation window.
+    useEffect(() => {
+        if (!isOpen || !useReusablePicker) return;
+        const targetUid = dataOwnerId || user?.uid;
+        if (!targetUid) return;
+
+        const loadReusable = async () => {
+            try {
+                let snap = await getDocs(query(
+                    collection(db, 'reusable_jumbo_bags'),
+                    where('ownerId', '==', targetUid),
+                    where('status', '==', 'active')
+                ));
+
+                if (snap.empty) {
+                    snap = await getDocs(query(
+                        collection(db, 'reusable_jumbo_bags'),
+                        where('userId', '==', targetUid),
+                        where('status', '==', 'active')
+                    ));
+                }
+
+                const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                setReusableBagOptions(list);
+            } catch (e) {
+                console.warn('Failed to load reusable bags:', e);
+                setReusableBagOptions([]);
+            }
+        };
+
+        loadReusable();
+    }, [isOpen, useReusablePicker, dataOwnerId, user?.uid]);
+
     const handleAddBag = async () => {
         if (isChecking) return;
         if (!selectedItem) return showToast({ type: 'error', title: 'Error', message: 'Select an item' });
 
         const normalizeBagNo = (val) => String(val || '').replace(/^#/, '').trim().toUpperCase();
-        const cleanNext = normalizeBagNo(nextBagNo);
-        if (!cleanNext) return showToast({ type: 'error', title: 'Error', message: 'Enter Bag Number' });
+        const rawBagNo = useReusablePicker ? selectedReusableBag : nextBagNo;
+        const cleanNext = normalizeBagNo(rawBagNo);
+        if (!cleanNext) return showToast({ type: 'error', title: 'Error', message: useReusablePicker ? 'Select reusable bag number' : 'Enter Bag Number' });
 
         const q = Number(qty);
         if (!q || q <= 0) return showToast({ type: 'error', title: 'Error', message: 'Invalid Quantity' });
@@ -16812,14 +17424,16 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         }
 
         // ✅ LOCAL DUPLICATE CHECK (current allocation list)
-        if (bags.some(b => normalizeBagNo(b.bagNo) === cleanNext)) {
+        if (!useReusablePicker && bags.some(b => normalizeBagNo(b.bagNo) === cleanNext)) {
             return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${cleanNext} is already in this allocation list!` });
         }
 
         // ✅✅ STRICT DATABASE DUPLICATE CHECK with FALLBACK SCAN
+        // Skip this in reusable mode because these bags are intentionally refillable.
         setIsChecking(true);
         let blocked = false;
         try {
+            if (!useReusablePicker) {
             const targetUid = dataOwnerId || user?.uid;
             if (!targetUid) throw new Error("No user");
 
@@ -16924,6 +17538,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                     blocked = true;
                 }
             }
+            }
         } catch (e) {
             console.error('[DUP CHECK] Unexpected error:', e);
             alert(
@@ -16940,11 +17555,19 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         if (blocked) return;
 
         // --- ADD TO LIST (only reaches here if no duplicate found) ---
-        const bagRow = { id: Date.now() + Math.random(), bagNo: cleanNext, productId: selectedItem, qty: q };
+        const selectedReusableMeta = reusableBagOptions.find(r => String(r.bagNo || '').toUpperCase() === cleanNext);
+        const bagRow = {
+            id: Date.now() + Math.random(),
+            bagNo: cleanNext,
+            productId: selectedItem,
+            qty: q,
+            isReusable: !!useReusablePicker,
+            reusableBagId: selectedReusableMeta?.id || null
+        };
         setBags(prev => [...prev, bagRow]);
 
         // Auto-increment bag number for next entry
-        if (mode === 'production') {
+        if (!useReusablePicker && mode === 'production') {
             const prefix = 'A';
             const num = parseInt(cleanNext.replace(prefix, '')) || 0;
             let candidateNum = num + 1;
@@ -16953,7 +17576,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                 candidateNum++;
             }
             setNextBagNo(prefix + candidateNum);
-        } else {
+        } else if (!useReusablePicker) {
             setNextBagNo('');
         }
         setQty('');
@@ -16990,7 +17613,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
                 <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
                     <div className="flex items-center gap-3">
-                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> Jumbo Bag Allocation</h2>
+                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> FILLING JUMBO BAG ALLOCATION AREA</h2>
                         <span className="px-2 py-1 rounded bg-blue-500/20 border border-blue-300/30 text-[10px] font-black uppercase tracking-wider text-blue-100">
                             Ref No: {voucherRefNo?.trim() || 'N/A'}
                         </span>
@@ -17002,8 +17625,36 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                     {/* INPUT ROW */}
                     <div className="flex gap-2 items-end">
                         <div className="w-32">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Bag Number</label>
-                            <input type="text" className="w-full p-2 border rounded font-mono font-bold text-center" value={nextBagNo} onChange={e => setNextBagNo(e.target.value)} />
+                            <div className="flex items-center justify-between mb-1">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">Bag Number</label>
+                                <button
+                                    type="button"
+                                    title="Use reusable bag"
+                                    onClick={() => {
+                                        setUseReusablePicker(v => !v);
+                                        setSelectedReusableBag('');
+                                    }}
+                                    className={`p-1 rounded border transition-all ${useReusablePicker ? 'bg-emerald-100 border-emerald-300 text-emerald-700' : 'bg-white border-slate-300 text-slate-500 hover:bg-slate-100'}`}
+                                >
+                                    <Recycle size={12} />
+                                </button>
+                            </div>
+                            {useReusablePicker ? (
+                                <select
+                                    className="w-full p-2 border rounded font-mono font-bold text-center"
+                                    value={selectedReusableBag}
+                                    onChange={e => setSelectedReusableBag(e.target.value)}
+                                >
+                                    <option value="">Reusable list</option>
+                                    {reusableBagOptions.map(rb => (
+                                        <option key={rb.id} value={String(rb.bagNo || '').toUpperCase()}>
+                                            {String(rb.bagNo || '').toUpperCase()}
+                                        </option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <input type="text" className="w-full p-2 border rounded font-mono font-bold text-center" value={nextBagNo} onChange={e => setNextBagNo(e.target.value)} />
+                            )}
                         </div>
                         <div className="flex-1">
                             <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Item Produced</label>
@@ -17044,11 +17695,14 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                         </thead>
                         <tbody className="divide-y">
                             {bags.map((b, i) => (
-                                <tr key={b.id || `${b.bagNo}-${b.productId}-${i}`} className="hover:bg-slate-50">
-                                    <td className="p-2 text-xs font-bold text-slate-400">{i + 1}</td>
-                                    <td className="p-2 font-mono font-bold text-lg">{b.bagNo}</td>
-                                    <td className="p-2">{producedItems.find(p => p.productId === b.productId)?.productName}</td>
-                                    <td className="p-2 text-right font-bold">{b.qty}</td>
+                                <tr key={b.id || `${b.bagNo}-${b.productId}-${i}`} className={b.isReusable ? "bg-emerald-50 hover:bg-emerald-100 border-b border-emerald-100" : "hover:bg-slate-50"}>
+                                    <td className={`p-2 text-xs font-bold ${b.isReusable ? 'text-emerald-500' : 'text-slate-400'}`}>{i + 1}</td>
+                                    <td className={`p-2 font-mono font-bold text-lg flex items-center gap-1 ${b.isReusable ? 'text-emerald-700' : ''}`}>
+                                        {b.isReusable && <Recycle size={14} className="text-emerald-600" />}
+                                        {b.bagNo}
+                                    </td>
+                                    <td className={`p-2 ${b.isReusable ? 'text-emerald-800 font-medium' : ''}`}>{producedItems.find(p => p.productId === b.productId)?.productName}</td>
+                                    <td className={`p-2 text-right font-bold ${b.isReusable ? 'text-emerald-700' : ''}`}>{b.qty}</td>
                                     <td className="p-2 text-center text-red-400 cursor-pointer" onClick={() => handleRemoveBag(b.id)}><X size={16} /></td>
                                 </tr>
                             ))}
@@ -17204,6 +17858,256 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
         </div>
     );
 };
+
+// --- GLOBAL BAG MANAGER MODAL (For Sales) ---
+function GlobalBagManagerModal({
+    isOpen,
+    onClose,
+    items,
+    setItems,
+    products,
+    allRemainingBagsMemo,
+    round3
+}) {
+    const [showAddView, setShowAddView] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+
+    if (!isOpen) return null;
+
+    // Get active products currently in the items array (with a valid productId)
+    const activeProductIds = new Set(items.map(i => i.productId).filter(Boolean));
+
+    // Get selected bags from items
+    const selectedBags = items.flatMap(i => (i.selectedBags || []).map(b => ({
+        ...b,
+        itemRowKey: i._rowKey,
+        itemProductName: products.find(p => p.id === i.productId)?.name || 'Item'
+    })));
+
+    // Remaining available bags strictly filtered by active products inside items
+    const remainingBags = allRemainingBagsMemo.filter(b => {
+        if (!activeProductIds.has(b.productId)) return false;
+        
+        // Exclude already selected bags
+        const isAlreadySelected = items.some(i => i.selectedBags?.some(sb => sb.id === b.id));
+        if (isAlreadySelected) return false;
+
+        if (searchTerm) {
+            const s = searchTerm.toLowerCase();
+            const pName = products.find(p => p.id === b.productId)?.name || '';
+            return String(b.bagNo || '').toLowerCase().includes(s) || pName.toLowerCase().includes(s);
+        }
+        return true;
+    });
+
+    const handleRemoveBag = (bagId) => {
+        const targetRowIndex = items.findIndex(item => item.selectedBags?.some(b => b.id === bagId));
+        if (targetRowIndex !== -1) {
+            const newItems = [...items];
+            const row = { ...newItems[targetRowIndex] };
+            row.selectedBags = (row.selectedBags || []).filter(b => b.id !== bagId);
+            const totalWeight = round3(row.selectedBags.reduce((sum, b) => sum + Number(b.qty), 0));
+            row.quantity = totalWeight;
+            const rate = Number(row.rate) || 0;
+            row.total = round3(totalWeight * rate);
+            newItems[targetRowIndex] = row;
+            setItems(newItems);
+        }
+    };
+
+    const handleAddBag = (bag) => {
+        const targetRowIndex = items.findIndex(item => item.productId === bag.productId);
+        if (targetRowIndex !== -1) {
+            const newItems = [...items];
+            const row = { ...newItems[targetRowIndex] };
+            const currentBags = row.selectedBags ? [...row.selectedBags] : [];
+            if (!currentBags.some(b => b.id === bag.id)) {
+                currentBags.push(bag);
+                row.selectedBags = currentBags;
+                const totalWeight = round3(currentBags.reduce((sum, b) => sum + Number(b.qty), 0));
+                row.quantity = totalWeight;
+                const rate = Number(row.rate) || 0;
+                row.total = round3(totalWeight * rate);
+                newItems[targetRowIndex] = row;
+                setItems(newItems);
+            }
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-100">
+                
+                {/* Header */}
+                <div className="px-6 py-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex justify-between items-center shrink-0 shadow-md">
+                    <div>
+                        <h2 className="text-lg font-black uppercase tracking-wider flex items-center gap-2">
+                            <Box size={20} className="text-amber-400" />
+                            <span>Jumbo Bag Manager</span>
+                        </h2>
+                        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                            {showAddView ? 'Add Remaining Available Bags' : `Currently Selected: ${selectedBags.length} Bags`}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setShowAddView(!showAddView);
+                                setSearchTerm('');
+                            }}
+                            className={`px-3 py-1.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5 shadow-sm border ${
+                                showAddView 
+                                ? 'bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600'
+                                : 'bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 shadow-emerald-950/20'
+                            }`}
+                        >
+                            {showAddView ? (
+                                <>
+                                    <X size={12} />
+                                    <span>Back to list</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Plus size={12} strokeWidth={3} />
+                                    <span>Add Bags</span>
+                                </>
+                            )}
+                        </button>
+                        <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full transition-colors"><X size={20} /></button>
+                    </div>
+                </div>
+
+                {/* Subheader Search (only shown when adding bags) */}
+                {showAddView && (
+                    <div className="p-4 bg-slate-50 border-b flex gap-3 items-center shrink-0">
+                        <div className="flex-1 relative">
+                            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                            <input
+                                type="text"
+                                placeholder="Search remaining bags by number or product..."
+                                className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-xl shadow-inner font-bold text-slate-700 bg-white focus:outline-none focus:border-blue-400 transition-all text-xs"
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* Content Area */}
+                <div className="flex-1 overflow-y-auto p-6 min-h-[250px] custom-scrollbar bg-slate-50/50">
+                    {showAddView ? (
+                        /* ADD BAGS VIEW */
+                        <div className="space-y-3">
+                            {remainingBags.map((bag, i) => (
+                                <div key={bag.id || i} className="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:border-emerald-200 hover:shadow-md transition-all group animate-in slide-in-from-bottom-2 duration-200">
+                                    <div className="flex items-center gap-4">
+                                        <div className="bg-slate-100 w-10 h-10 rounded-xl flex items-center justify-center text-slate-500 font-mono font-black text-sm border border-slate-200/50">
+                                            #{bag.bagNo}
+                                        </div>
+                                        <div>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">
+                                                {products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}
+                                            </h4>
+                                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5 flex items-center gap-1.5">
+                                                <span>Weight:</span>
+                                                <span className="text-blue-600 font-black">{Number(bag.qty || 0).toFixed(3)} kg</span>
+                                                {bag.date && (
+                                                    <>
+                                                        <span className="text-slate-300">•</span>
+                                                        <span>{bag.date}</span>
+                                                    </>
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleAddBag(bag)}
+                                        className="bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white px-4 h-9 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all border border-emerald-100 hover:border-emerald-600 active:scale-95 flex items-center gap-1 shadow-sm"
+                                    >
+                                        <Plus size={12} strokeWidth={3} />
+                                        <span>Add</span>
+                                    </button>
+                                </div>
+                            ))}
+                            {remainingBags.length === 0 && (
+                                <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 p-8 shadow-sm">
+                                    <Package size={40} className="mx-auto text-slate-300 mb-2" />
+                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No remaining available bags found</p>
+                                    <p className="text-slate-400 text-[10px] mt-1">Only bags for items currently added in the voucher are listed.</p>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        /* CURRENTLY SELECTED BAGS LIST */
+                        <div className="space-y-3">
+                            {selectedBags.map((bag, i) => (
+                                <div key={bag.id || i} className="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all group animate-in slide-in-from-bottom-2 duration-200">
+                                    <div className="flex items-center gap-4">
+                                        <div className="bg-amber-50 w-10 h-10 rounded-xl flex items-center justify-center text-amber-700 font-mono font-black text-sm border border-amber-100">
+                                            #{bag.bagNo}
+                                        </div>
+                                        <div>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">{bag.itemProductName}</h4>
+                                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5 flex items-center gap-1.5">
+                                                <span>Weight:</span>
+                                                <span className="text-amber-700 font-black">{Number(bag.qty || 0).toFixed(3)} kg</span>
+                                                {bag.date && (
+                                                    <>
+                                                        <span className="text-slate-300">•</span>
+                                                        <span>{bag.date}</span>
+                                                    </>
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleRemoveBag(bag.id)}
+                                        className="bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white px-3.5 h-9 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all border border-rose-100 hover:border-rose-600 active:scale-95 flex items-center gap-1 shadow-sm"
+                                    >
+                                        <Trash2 size={12} />
+                                        <span>Remove</span>
+                                    </button>
+                                </div>
+                            ))}
+                            {selectedBags.length === 0 && (
+                                <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 p-8 shadow-sm">
+                                    <Box size={40} className="mx-auto text-slate-300 mb-2" />
+                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No bags linked to this voucher yet</p>
+                                    <p className="text-slate-400 text-[10px] mt-1">Click the + Add Bags button at the top right to link available bags.</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Footer Summary */}
+                {!showAddView && selectedBags.length > 0 && (
+                    <div className="px-6 py-4 bg-slate-100 border-t flex justify-between items-center shrink-0">
+                        <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
+                            Total Bags Summary
+                        </span>
+                        <div className="flex items-center gap-6">
+                            <div className="text-right">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">Bag Count</span>
+                                <span className="text-sm font-black text-slate-800">{selectedBags.length} Bags</span>
+                            </div>
+                            <div className="text-right">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">Total Net Weight</span>
+                                <span className="text-sm font-black text-blue-600 font-mono">
+                                    {selectedBags.reduce((sum, b) => sum + Number(b.qty || 0), 0).toFixed(3)} kg
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
 
 const StockJournalModal = (props) => {
     const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
@@ -17961,15 +18865,19 @@ const StockJournalModal = (props) => {
             // --- 🔒 VALIDATION RULE 2: DUPLICATE BAG NO CHECK (Strict - No Reuse) ---
             if (finalJumboBags.length > 0) {
                 const normalizeBagNo = (val) => String(val || '').replace(/^#/, '').trim().toUpperCase();
-                const internalBagNos = finalJumboBags.map(b => normalizeBagNo(b.bagNo)).filter(Boolean);
+                const strictBags = finalJumboBags.filter(b => !b?.isReusable);
+                const internalBagNos = strictBags.map(b => normalizeBagNo(b.bagNo)).filter(Boolean);
                 if (new Set(internalBagNos).size !== internalBagNos.length) {
-                    alert(`❌ INTERNAL DUPLICATE: You have entered the same Bag Number multiple times in this voucher. Please ensure each bag has a unique number.`);
+                    alert(`❌ INTERNAL DUPLICATE: You have entered the same non-reusable Bag Number multiple times in this voucher. Please ensure each bag has a unique number.`);
                     setSaving(false);
                     return;
                 }
 
                 const bagNumbers = [...new Set(internalBagNos)];
-                for (const bNo of bagNumbers) {
+                const existingBagNos = (initialData?.jumboBags || []).map(b => normalizeBagNo(b.bagNo));
+                const bagNumbersToCheckInDb = bagNumbers.filter(bNo => !existingBagNos.includes(bNo));
+
+                for (const bNo of bagNumbersToCheckInDb) {
                     const bLower = bNo.toLowerCase();
                     const searchArray = [bNo, `#${bNo}`, bLower, `#${bLower}`];
                     const belongsToTarget = (data) => {
@@ -18001,7 +18909,7 @@ const StockJournalModal = (props) => {
                     const otherDocs = matchedDocs.filter(d => d.data().stockJournalId !== initialData?.id);
                     
                     if (otherDocs.length > 0) {
-                        alert(`❌ DUPLICATE BAG: Bag #${bNo} is already used in another voucher.\n\nRefill is NOT allowed for this bag number.`);
+                        alert(`❌ DUPLICATE BAG: Bag #${bNo} is already used in another voucher.\n\nReuse is NOT allowed for this bag number.`);
                         setSaving(false);
                         return;
                     }
@@ -18023,9 +18931,12 @@ const StockJournalModal = (props) => {
                 snapOld.forEach(docSnap => {
                     const d = docSnap.data();
                     if (d.bagNo) {
-                        statusPreservationMap[d.bagNo] = {
+                        const normalized = String(d.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                        if (!normalized) return;
+                        statusPreservationMap[normalized] = {
                             status: d.status || 'in_stock',
                             salesId: d.salesId || null,
+                            salesRefNo: d.salesRefNo || null,
                             soldDate: d.soldDate || null
                         };
                     }
@@ -18039,9 +18950,67 @@ const StockJournalModal = (props) => {
                 }
             }
 
+            const targetUidForQuery = dataOwnerId || user?.uid;
+            
+            // For reusable refills, update existing bag weight instead of creating a new bag row.
+            const reusableGroupedByNo = finalJumboBags
+                .filter(b => b?.isReusable && b?.bagNo)
+                .reduce((acc, row) => {
+                    const key = String(row.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                    if (!key) return acc;
+                    if (!acc[key]) {
+                        acc[key] = {
+                            bagNo: key,
+                            qty: 0,
+                            productId: row.productId || null,
+                            rows: []
+                        };
+                    }
+                    acc[key].qty += Number(row.qty || 0);
+                    acc[key].productId = row.productId || acc[key].productId;
+                    acc[key].rows.push(row);
+                    return acc;
+                }, {});
+
+            const reusableBagNos = Object.keys(reusableGroupedByNo);
+            const existingReusableInventoryMap = {};
+
+            if (reusableBagNos.length > 0 && targetUidForQuery) {
+                try {
+                    let invSnap;
+                    try {
+                        invSnap = await getDocs(query(
+                            collection(db, 'jumbo_bags'),
+                            where('userId', '==', targetUidForQuery),
+                            where('status', '==', 'in_stock'),
+                            limit(10000)
+                        ));
+                    } catch (e) {
+                        invSnap = await getDocs(query(
+                            collection(db, 'jumbo_bags'),
+                            where('userId', '==', targetUidForQuery),
+                            limit(10000)
+                        ));
+                    }
+
+                    invSnap.docs.forEach(d => {
+                        const data = d.data() || {};
+                        const key = String(data.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                        if (!key) return;
+                        if (!reusableBagNos.includes(key)) return;
+                        if (String(data.status || '').toLowerCase() === 'sold') return;
+                        existingReusableInventoryMap[key] = { id: d.id, ...data };
+                    });
+                } catch (e) {
+                    console.warn('Failed to prefetch reusable inventory rows:', e);
+                }
+            }
+
+            let savedJournalId = null;
             await runTransaction(db, async (transaction) => {
                 const journalRef = initialData?.id ? doc(db, 'stock_journals', initialData.id) : doc(collection(db, 'stock_journals'));
                 const targetUid = dataOwnerId || user.uid;
+                savedJournalId = journalRef.id;
 
                 if (initialData?.id) {
                     await transaction.get(journalRef); 
@@ -18093,9 +19062,15 @@ const StockJournalModal = (props) => {
                     expenseJournalId: jvId,
                     consumedTotal: consumedTotal, producedTotal: producedTotal,
                     jumboEnabled: jumboEnabled || false,
-                    bagCount: finalJumboBags.length,
+                    bagCount: finalJumboBags.filter(b => !b?.isReusable).length,
                     // ✅ EMBED BAG SNAPSHOT so they load instantly when voucher is re-opened
-                    jumboBags: finalJumboBags.map(b => ({ bagNo: b.bagNo, productId: b.productId, qty: round3(b.qty) })),
+                    jumboBags: finalJumboBags.map(b => ({ 
+                        id: b.id || (Date.now() + Math.random()), 
+                        bagNo: b.bagNo, 
+                        productId: b.productId, 
+                        qty: round3(b.qty),
+                        isReusable: !!b.isReusable
+                    })),
                     productionStaffIds: productionStaffIds || [],
                     userId: targetUid,
                     updatedAt: serverTimestamp(),
@@ -18106,7 +19081,7 @@ const StockJournalModal = (props) => {
                 // DETERMINISTIC BAG IDs TO PREVENT DUPLICATES
                 if (finalJumboBags.length > 0) {
                     let currentUniSeed = freshUniSeed || 0;
-                    for (const b of finalJumboBags) {
+                    for (const b of finalJumboBags.filter(x => !x?.isReusable)) {
                         // Use deterministic ID: journalId + bagNo
                         const bDocId = `${journalRef.id}_${b.bagNo}`.replace(/[^a-zA-Z0-9]/g, '_');
                         const bRef = doc(db, 'jumbo_bags', bDocId);
@@ -18128,12 +19103,55 @@ const StockJournalModal = (props) => {
                             allowMultiFilling: false,
                             status: preserved.status || 'in_stock',
                             salesId: preserved.salesId || null,
+                            salesRefNo: preserved.salesRefNo || null,
                             soldDate: preserved.soldDate || null,
                             userId: targetUid,
                             ownerId: targetUid,
 
                             createdAt: serverTimestamp()
                         });
+                    }
+
+                    // Refillable bags: increase existing weight; do not increase bag count.
+                    for (const [bagNo, entry] of Object.entries(reusableGroupedByNo)) {
+                        const existing = existingReusableInventoryMap[bagNo];
+                        if (existing?.id && !bagsToDelete.includes(existing.id)) {
+                            const newQty = round3(Number(existing.qty || 0) + Number(entry.qty || 0));
+                            const existingPct = Number(existing.percent || 0);
+                            const addPct = consumedQuantTotal > 0 ? (Number(entry.qty || 0) / consumedQuantTotal) * 100 : 0;
+
+                            await transaction.update(doc(db, 'jumbo_bags', existing.id), {
+                                qty: newQty,
+                                percent: round3(existingPct + addPct),
+                                productId: entry.productId || existing.productId || null,
+                                allowMultiFilling: true,
+                                lastRefillDate: date,
+                                lastRefillRefNo: refNo || '',
+                                updatedAt: serverTimestamp()
+                            });
+                        } else {
+                            const reusableDocId = `reusable_${bagNo}`.replace(/[^a-zA-Z0-9]/g, '_');
+                            const reusableRef = doc(db, 'jumbo_bags', reusableDocId);
+                            await transaction.set(reusableRef, {
+                                bagNo,
+                                universalBagNo: ++currentUniSeed,
+                                productId: entry.productId || null,
+                                qty: round3(entry.qty),
+                                percent: consumedQuantTotal > 0 ? (Number(entry.qty || 0) / consumedQuantTotal) * 100 : 0,
+                                stockJournalId: journalRef.id,
+                                stockJournalRefNo: refNo || '',
+                                voucherRefNo: refNo || '',
+                                sourceId: journalRef.id,
+                                source: 'production',
+                                date: date,
+                                allowMultiFilling: true,
+                                status: 'in_stock',
+                                userId: targetUid,
+                                ownerId: targetUid,
+                                createdAt: serverTimestamp(),
+                                updatedAt: serverTimestamp()
+                            }, { merge: true });
+                        }
                     }
                 }
 
@@ -18144,6 +19162,70 @@ const StockJournalModal = (props) => {
                     description: `Mfg Journal ${refNo || journalRef.id}`, docId: journalRef.id
                 });
             });
+
+            // Save reusable bag refill details so each reusable bag keeps manufacturing history.
+            const reusableRows = finalJumboBags.filter(b => b?.isReusable && b?.bagNo);
+            const targetUidForHistory = dataOwnerId || user?.uid;
+            if (reusableRows.length > 0 && targetUidForHistory) {
+                const grouped = reusableRows.reduce((acc, row) => {
+                    const key = String(row.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                    if (!key) return acc;
+                    if (!acc[key]) acc[key] = [];
+                    acc[key].push(row);
+                    return acc;
+                }, {});
+
+                for (const [bagNo, rows] of Object.entries(grouped)) {
+                    try {
+                        let snap = await getDocs(query(
+                            collection(db, 'reusable_jumbo_bags'),
+                            where('ownerId', '==', targetUidForHistory),
+                            where('bagNo', '==', bagNo),
+                            limit(1)
+                        ));
+
+                        if (snap.empty) {
+                            snap = await getDocs(query(
+                                collection(db, 'reusable_jumbo_bags'),
+                                where('userId', '==', targetUidForHistory),
+                                where('bagNo', '==', bagNo),
+                                limit(1)
+                            ));
+                        }
+
+                        if (snap.empty) continue;
+
+                        const totalQty = rows.reduce((s, r) => s + Number(r.qty || 0), 0);
+                        const usageEntry = {
+                            date: date || '',
+                            manufacturingRefNo: refNo || '',
+                            stockJournalId: savedJournalId || '',
+                            qty: round3(totalQty),
+                            fillCount: rows.length,
+                            productIds: [...new Set(rows.map(r => r.productId).filter(Boolean))],
+                            productNames: [...new Set(rows
+                                .map(r => products.find(p => p.id === r.productId)?.name)
+                                .filter(Boolean)
+                            )],
+                            createdAtIso: new Date().toISOString()
+                        };
+
+                        const rbDocId = snap.docs[0].id;
+                        const rbRef = doc(db, 'reusable_jumbo_bags', rbDocId);
+                        
+                        await updateDoc(rbRef, {
+                            usageHistory: arrayUnion(usageEntry),
+                            lastUsedDate: date || '',
+                            lastUsedRefNo: refNo || '',
+                            totalRefillWeight: increment(totalQty),
+                            refillCount: increment(rows.length),
+                            updatedAt: serverTimestamp()
+                        });
+                    } catch (e) {
+                        console.warn(`Failed to update history for reusable bag ${bagNo}`, e);
+                    }
+                }
+            }
 
             if (onUpdateDate) onUpdateDate(date);
             showToast({ type: 'success', title: 'Saved!', message: 'Journal Saved Successfully' });
@@ -18965,20 +20047,33 @@ const StockJournalModal = (props) => {
                                 <div className="p-1.5 bg-orange-100 rounded-lg text-orange-600 shadow-sm">
                                     <Box size={14} />
                                 </div>
-                                <span className="text-[11px] font-black text-slate-700 uppercase tracking-[0.15em]">{jumboBags.length} BAGS ALLOCATED</span>
+                                <span className="text-[11px] font-black text-slate-700 uppercase tracking-[0.15em]">
+                                    {(() => {
+                                        const reusableCount = jumboBags.filter(b => b.isReusable).length;
+                                        const regularCount = jumboBags.length - reusableCount;
+                                        if (reusableCount > 0) {
+                                            return `${reusableCount} REUSABLE BAGS USED AND ${regularCount} FULL BAGS FILLED`;
+                                        }
+                                        return `${jumboBags.length} BAGS ALLOCATED`;
+                                    })()}
+                                </span>
                                 <button type="button" onClick={() => setShowJumboEntry(true)} className="ml-auto text-[10px] font-black text-blue-600 uppercase tracking-widest hover:text-blue-800 flex items-center gap-1.5 transition-colors bg-white px-3 py-1 rounded-full border border-blue-100 hover:border-blue-400">
                                     <Plus size={11} /> Edit Details
                                 </button>
                             </div>
                             <div className="flex flex-wrap gap-x-8 gap-y-2.5 px-0.5 relative z-10 max-h-24 overflow-y-auto custom-scrollbar">
                                 {jumboBags.map((bag, idx) => (
-                                    <div key={idx} className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-slate-50 shadow-sm hover:border-blue-200 transition-all group">
-                                        <span className="text-[11px] font-black text-slate-400 group-hover:text-blue-500 transition-colors uppercase tracking-[0.1em] font-mono">#{bag.bagNo}</span>
+                                    <div key={idx} className={`flex items-center gap-2 px-2 py-1 rounded border ${bag.isReusable ? 'bg-emerald-50 border-emerald-200 hover:border-emerald-400 shadow-emerald-100' : 'bg-white border-slate-50 hover:border-blue-200'} shadow-sm transition-all group`}>
+                                        {bag.isReusable ? (
+                                            <span className="flex items-center gap-1 text-[11px] font-black text-emerald-600 transition-colors uppercase tracking-[0.1em] font-mono"><Recycle size={11} />#{bag.bagNo}</span>
+                                        ) : (
+                                            <span className="text-[11px] font-black text-slate-400 group-hover:text-blue-500 transition-colors uppercase tracking-[0.1em] font-mono">#{bag.bagNo}</span>
+                                        )}
                                         <div className="flex flex-col">
-                                            <span className="text-[10px] font-black text-slate-800 uppercase leading-none mb-0.5">{products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}</span>
+                                            <span className={`text-[10px] font-black uppercase leading-none mb-0.5 ${bag.isReusable ? 'text-emerald-800' : 'text-slate-800'}`}>{products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}</span>
                                             <div className="flex items-center gap-1">
-                                                <span className="text-[11px] font-black text-orange-700 tracking-tight">{format3(bag.qty)}</span>
-                                                <span className="text-[8px] font-bold text-slate-400 uppercase">kg</span>
+                                                <span className={`text-[11px] font-black tracking-tight ${bag.isReusable ? 'text-emerald-700' : 'text-orange-700'}`}>{format3(bag.qty)}</span>
+                                                <span className={`text-[8px] font-bold uppercase ${bag.isReusable ? 'text-emerald-500' : 'text-slate-400'}`}>kg</span>
                                             </div>
                                         </div>
                                     </div>
@@ -19567,23 +20662,17 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const d = doc.data();
                         const baseVal = safeNum(d.totalAmount ?? d.grandTotal ?? d.amount ?? 0);
                         const exRate = safeNum(d.exchangeRate || 1);
+                        // ✅ For purchase: net material value = total - capitalized expenses
                         const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
                         const addlExpBase = addlExpForeign * exRate;
-                        const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
 
                         let amtIn = 0;
                         let amtOut = 0;
                         let qIn = 0;
                         let qOut = 0;
 
-                        // If we are looking at main supplier, additional expenses paid by another ledger
-                        // should not remain in supplier purchase amount.
-                        const supplierBase = (d.type === 'purchase' && hasAddlSplit && d.addlExpCreditId !== d.partyId)
-                            ? Math.max(0, baseVal - addlExpBase)
-                            : baseVal;
-
                         if (docType === 'inv') {
-                            const amt = (d.type === 'purchase') ? supplierBase : baseVal;
+                            const amt = (d.type === 'purchase' && addlExpBase > 0) ? Math.max(0, baseVal - addlExpBase) : baseVal;
 
                             if (filter.type === 'item') {
                                 const matchedItems = d.items?.filter(i => i.productId === filter.id) || [];
@@ -19600,11 +20689,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return';
                                 amtIn = isDr ? amt : 0;
                                 amtOut = isCr ? amt : 0;
-
-                                // Purchase additional expense paid by this same party/account in split mode
-                                if (hasAddlSplit && d.addlExpCreditId === filter.id && d.addlExpCreditId !== d.partyId) {
-                                    amtOut += addlExpBase;
-                                }
                             }
                             else if (filter.type === 'expense' || filter.type === 'direct_expense') {
                                 const checkExpense = (list) => {
@@ -19615,17 +20699,17 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     });
                                     return sum;
                                 };
-                                // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
+                                // ✅ Purchase expenses NOT YET PAID → Credit side (accrued)
+                                // Sales expenses → Credit side (reducing income)
                                 const isSales = d.type === 'sales';
                                 if (isSales) {
                                     amtOut += checkExpense(d.expenses);
                                     amtOut += checkExpense(d.addlExpenses);
                                 } else {
-                                    amtIn += checkExpense(d.expenses);
-                                    // Purchase additional expenses are capitalized, not expense-ledger debit
+                                    // ✅ Purchase expenses on Credit side (amtOut) = accrued liability
+                                    amtOut += checkExpense(d.expenses);
+                                    amtOut += checkExpense(d.addlExpenses);
                                 }
-                            } else if (filter.type === 'account' && hasAddlSplit && d.addlExpCreditId === filter.id) {
-                                amtOut += addlExpBase;
                             } else if (filter.type === 'tax') {
                                 const taxAmt = safeNum(d.taxAmount || 0);
                                 if (!taxAmt) return;
@@ -19916,34 +21000,25 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const foreignVal = safeNum(d.foreignTotal || d.foreignAmount || 0);
                     const baseVal = safeNum(d.totalAmount || d.amount || 0);
 
-                    // 🔀 Split additional expenses for Purchase invoices so supplier ledger only gets goods + tax
-                    const rate = safeNum(d.exchangeRate || 1);
+                    // ✅ For purchase: net material value = total - capitalized expenses
                     const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
-                    const addlExpBase = addlExpForeign * rate;
-                    const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
-                    const supplierBase = hasAddlSplit ? Math.max(0, baseVal - addlExpBase) : baseVal;
-                    const supplierForeign = hasAddlSplit && isForeign ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
-                    const addlCreditCategory = hasAddlSplit
-                        ? (accounts.find(a => a.id === d.addlExpCreditId) ? 'account'
-                            : parties.find(p => p.id === d.addlExpCreditId) ? 'party'
-                                : expenses.find(e => e.id === d.addlExpCreditId) ? 'expense'
-                                    : null)
-                        : null;
+                    const addlExpBase = addlExpForeign * safeNum(d.exchangeRate || 1);
+                    const netAmt = (d.type === 'purchase' && addlExpBase > 0) ? Math.max(0, baseVal - addlExpBase) : baseVal;
+                    const netForeignAmt = (d.type === 'purchase' && addlExpForeign > 0 && isForeign) ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
 
                     if (docType === 'inv') {
-                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
-                        const fAmt = (d.type === 'purchase') ? supplierForeign : foreignVal;
+                        const amt = netAmt;
+                        const fAmt = netForeignAmt;
                         if (activeFilter.type === 'item') {
                             const matchedItems = d.items?.filter(i => i.productId === activeFilter.id) || [];
                             if (matchedItems.length === 0) return;
 
                             const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
                             const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
-                            if (!isInward && !isOutward) return; // Ignore non-stock invoices (Proforma, etc.)
+                            if (!isInward && !isOutward) return;
 
                             const itemAmt = matchedItems.reduce((sum, i) => sum + (Number(i.quantity) * Number(i.rate)), 0);
                             row = buildRow(doc, d, { amtIn: isInward ? itemAmt : 0, amtOut: isOutward ? itemAmt : 0, foreignIn: 0, foreignOut: 0 });
-                            // ✅ Stop here for item ledger to prevent extra rows/expenses
                             if (row) allTx.push(row);
                             return; 
                         }
@@ -19953,10 +21028,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                             // 🛑 Check if this transaction matches the filtered entity
                             const isMainParty = activeFilter.type === 'party' && d.partyId === activeFilter.id;
-                            const isExpCredit = d.addlExpCreditId === activeFilter.id;
                             const isDaybook = ['daybook', 'user', 'sales', 'purchase'].includes(activeFilter.type);
 
-                            if (!isMainParty && !isExpCredit && !isDaybook) return;
+                            if (!isMainParty && !isDaybook) return;
 
                             const isDr = d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return';
                             const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return';
@@ -19965,8 +21039,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 // Calculate total qty/rate for registers
                                 const totalQty = (d.items || []).reduce((acc, i) => acc + safeNum(i.quantity), 0);
                                 const avgRate = totalQty > 0 ? amt / totalQty : 0;
-                                const isSaleType = ['sales', 'debit_note', 'purchase_return'].includes(d.type);
-                                const isPurchaseType = ['purchase', 'credit_note', 'sales_return'].includes(d.type);
 
                                 // Logic: In registers (Sales/Purchase), we want to see the values in their natural columns
                                 // Sales -> Outward (Credit), Purchase -> Inward (Debit)
@@ -20001,14 +21073,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     foreignOut: isForeign && isCr ? fAmt : 0
                                 });
                             }
-
-                            // ✅ Add a separate row if the party is the one who paid the expenses for a purchase
-                            if (isExpCredit && d.type === 'purchase' && d.addlExpCreditId !== d.partyId) {
-                                const expRow = buildRow(doc, d, { amtIn: 0, amtOut: addlExpBase, foreignIn: 0, foreignOut: 0 });
-                                expRow.drName = "Purchase Expenses (Paid By)";
-                                if (isDaybook) allTx.push(expRow);
-                                else row = expRow;
-                            }
                         }
                         else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
                             const processExpList = (list) => {
@@ -20017,23 +21081,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     if (exp.expenseId === activeFilter.id) {
                                         const expForeign = safeNum(exp.amount);
                                         const expBase = expForeign * safeNum(d.exchangeRate || 1);
-                                        // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
+                                        // ✅ Purchase expenses NOT YET PAID → Credit side (accrued liability)
+                                        // Sales expenses → Credit side (reducing income)
                                         const isSales = d.type === 'sales';
                                         allTx.push(buildRow(doc, d, {
-                                            amtIn: isSales ? 0 : expBase,
-                                            amtOut: isSales ? expBase : 0,
-                                            foreignIn: (isForeign && !isSales) ? expForeign : 0,
-                                            foreignOut: (isForeign && isSales) ? expForeign : 0
+                                            amtIn: isSales ? 0 : 0,
+                                            amtOut: expBase,
+                                            foreignIn: 0,
+                                            foreignOut: isForeign ? expForeign : 0
                                         }));
                                     }
                                 });
                             };
                             processExpList(d.expenses);
-                            // ⚠️ For Purchase: Additional expenses are capitalized into item cost, NOT posted to expense ledger
-                            // ⚠️ For Sales: Additional expenses are processed normally
-                            if (d.type !== 'purchase') {
-                                processExpList(d.addlExpenses);
-                            }
+                            // ✅ Purchase additional expenses now show in expense ledger (debited)
+                            processExpList(d.addlExpenses);
                         }
                         else if (activeFilter.type === 'tax') {
                             const taxAmt = safeNum(d.taxAmount || 0);
@@ -20057,28 +21119,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 foreignIn: 0,
                                 foreignOut: 0
                             });
-                        }
-
-                        // ➕ Add separate ledger row for additional expenses paid via another ledger
-                        if (hasAddlSplit && activeFilter.type !== 'item') {
-                            const matchesExpenseLedger = addlCreditCategory === 'expense' && activeFilter.type === 'expense' && activeFilter.id === d.addlExpCreditId;
-                            const matchesPartyLedger = addlCreditCategory === 'party' && activeFilter.type === 'party' && activeFilter.id === d.addlExpCreditId;
-                            const matchesAccountLedger = addlCreditCategory === 'account' && activeFilter.type === 'account' && activeFilter.id === d.addlExpCreditId;
-                            const matchesDaybook = ['daybook', 'user'].includes(activeFilter.type);
-
-                            if (matchesExpenseLedger || matchesPartyLedger || matchesAccountLedger || matchesDaybook) {
-                                const expRow = buildRow(doc, d, {
-                                    amtIn: 0,
-                                    amtOut: addlExpBase,
-                                    foreignIn: 0,
-                                    foreignOut: isForeign ? addlExpForeign : 0
-                                });
-                                expRow.drName = 'Purchase Cost';
-                                expRow.crName = findName(d.addlExpCreditId) || 'Paid By';
-                                expRow.vchType = 'PURCHASE EXP';
-                                expRow.searchStr = `${expRow.searchStr} ${expRow.crName}`.toLowerCase();
-                                allTx.push(expRow);
-                            }
                         }
                     }
                     else if (docType === 'pay') {
@@ -20176,6 +21216,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                         const amt = baseVal;
                         const fAmt = foreignVal;
+                        const rate = safeNum(d.exchangeRate || 1);
 
                         if (d.rows && d.rows.length > 0) {
                             if (['daybook', 'user'].includes(activeFilter.type)) {
@@ -22848,8 +23889,9 @@ const PaymentModal = (props) => {
         if (baseAmount <= 0) return alert("Total amount must be greater than 0");
         if (splits.every(s => !s.targetId)) return alert("Please select at least one receiver / account.");
         if (type === 'contra' && accountId === singleId) return alert("Source and Target accounts cannot be the same!");
-        const untaggedPartyRows = splits.filter(s => s.category === 'party' && s.targetId && !s.paymentAgainst);
-        if (untaggedPartyRows.length > 0) return alert(`⚠️ "Payment Against" is mandatory for Party/Customer rows. Please tag ${untaggedPartyRows.length > 1 ? 'all ' + untaggedPartyRows.length + ' party rows' : 'the party row'} before saving.`);
+        // ⚡ Optional Payment Against: User can leave it empty if they wish. Mandatory check disabled by request.
+        // const untaggedPartyRows = splits.filter(s => s.category === 'party' && s.targetId && !s.paymentAgainst);
+        // if (untaggedPartyRows.length > 0) return alert(`⚠️ "Payment Against" is mandatory...`);
 
         // 🔒 Mandatory Ref No. for advance/loan rows
         for (const s of splits) {
@@ -22876,8 +23918,9 @@ const PaymentModal = (props) => {
 
         // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        if (await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! Exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! Exists in another transaction (${duplicateCol}).`);
         }
 
         setSaving(true);
@@ -23550,7 +24593,7 @@ const PaymentModal = (props) => {
                                                             ? `Our Loan · ${row.advRefNo || '⚠ Set Ref No.'}`
                                                             : row.paymentAgainst === 'their-loan'
                                                             ? `Their Loan · ${row.advRefNo || '⚠ Set Ref No.'}`
-                                                            : '+ Set Payment Against? (Required)'}
+                                                            : '+ Set Payment Against?'}
                                                     </button>
                                                 )}
                                             </td>
@@ -24312,8 +25355,9 @@ const JournalVoucherModal = (props) => {
 
         // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        if (await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! Exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! Exists in another transaction (${duplicateCol}).`);
         }
 
         setSaving(true);
@@ -24964,14 +26008,19 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
             const qInvConstraints = [where('userId', '==', targetUid)];
             const qMfgConstraints = [where('userId', '==', targetUid)];
-            const qBagConstraints = [where('userId', '==', targetUid), where('status', '==', 'in_stock')];
 
             const qInv = query(collection(db, 'invoices'), ...qInvConstraints);
             const qMfg = query(collection(db, 'stock_journals'), ...qMfgConstraints);
-            const qBags = query(collection(db, 'jumbo_bags'), ...qBagConstraints);
 
-            const [invSnap, mfgSnap, bagSnap] = await Promise.all([
-                getDocs(qInv), getDocs(qMfg), getDocs(qBags)
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            const bagFetches = uidCandidates.flatMap((uid) =>
+                ['userId', 'ownerId', 'companyId'].map((field) =>
+                    getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid)))
+                )
+            );
+
+            const [invSnap, mfgSnap, ...bagSnaps] = await Promise.all([
+                getDocs(qInv), getDocs(qMfg), ...bagFetches
             ]);
 
             const itemMap = {};
@@ -25011,9 +26060,25 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 };
             });
 
-            // Count Available Bags
-            bagSnap.forEach(doc => {
-                const b = doc.data();
+            const mergedBagMap = new Map();
+            bagSnaps.forEach((snap) => {
+                snap.forEach((d) => {
+                    mergedBagMap.set(String(d.id), { id: d.id, ...d.data() });
+                });
+            });
+            const globalBags = [...mergedBagMap.values()];
+
+            const allInvoices = filterActiveVouchers(invSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+            const soldInvoiceBagPool = buildSoldInvoiceBagPoolFromInvoices(allInvoices);
+            const stockJournalsFromSnap = filterActiveVouchers(mfgSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })));
+
+            const remainingBags = deriveRemainingBags({
+                globalBags,
+                stockJournals: stockJournalsFromSnap,
+                soldInvoiceBagPool
+            });
+
+            remainingBags.forEach((b) => {
                 if (itemMap[b.productId]) {
                     itemMap[b.productId].bagCount++;
                 }
@@ -25088,8 +26153,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             const movements = [];
             let movementSeq = 0;
 
-            invSnap.forEach(doc => {
-                const d = doc.data();
+            allInvoices.forEach(d => {
                 if (selectedLoc && d.locationId !== selectedLoc) return;
 
                 const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
@@ -25119,8 +26183,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 });
             });
 
-            mfgSnap.forEach(doc => {
-                const d = doc.data();
+            stockJournalsFromSnap.forEach(d => {
                 if (selectedLoc && d.locationId !== selectedLoc) return;
                 (d.produced || []).forEach(item => {
                     const qtyRaw = Number(item.quantity || 0);
@@ -26139,19 +27202,11 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     const rate = Number(d.exchangeRate || 1);
                     const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                    // If we are looking at the Main Supplier, subtract the addl expense portion
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                        ? Math.max(0, baseVal - addlExpBase)
-                        : baseVal;
-
                     if (d.partyId && balMap[d.partyId] !== undefined) {
-                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
+                        // ✅ For purchase: exclude capitalized expenses from supplier balance
+                        const amt = (d.type === 'purchase' && addlExpBase > 0) ? Math.max(0, baseVal - addlExpBase) : baseVal;
                         if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
-                    }
-                    // ✅ Credit the account that paid the expenses
-                    if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
-                        balMap[d.addlExpCreditId] -= addlExpBase;
                     }
                     if (ledgerType === 'item' && d.items) {
                         d.items.forEach(it => {
@@ -26504,7 +27559,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         totalQty: filteredData.reduce((sum, item) => sum + (item.qty || 0), 0),
         totalBags: filteredData.reduce((sum, item) => sum + (Number(item.bagCount) || 0), 0)
     };
-    const shouldStretchListToBottom = title === 'Payables Breakdown' || title === 'Receivables Breakdown';
+    const shouldStretchListToBottom = title === 'Payables Breakdown' || title === 'Receivables Breakdown' || registerType === 'manufacturing';
 
     const downloadExcel = async () => {
         try {
@@ -26676,7 +27731,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     };
 
     const HeaderTitle = (
-        <div className="flex items-center w-full gap-2 lg:gap-4 no-drag overflow-hidden lg:overflow-visible pr-8">
+        <div className="flex items-center h-[28px] w-full gap-2 lg:gap-4 no-drag overflow-hidden lg:overflow-visible pr-8">
             <div className="flex items-center gap-2 shrink-0 border-r border-slate-200 pr-3 mr-1">
                 <span className="font-black text-slate-800 tracking-tight text-sm lg:text-base truncate max-w-[120px] lg:max-w-none">{title}</span>
                 <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded font-black text-slate-500 border border-slate-200">{filteredData.length}</span>
@@ -26745,14 +27800,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
             {/* SUMMARIES IN HEADER */}
             <div className="flex-1 flex items-center justify-center gap-4 lg:gap-8 min-w-0">
-                {registerType === 'manufacturing' ? (
-                    <div className="flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-100 rounded-md shrink-0">
-                        <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest hidden lg:inline">Consumption</span>
-                        <span className="text-[11px] lg:text-xs font-black text-amber-700">
-                             {Number(filteredData.reduce((sum, i) => sum + (i.amt || 0), 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </span>
-                    </div>
-                ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
+                {registerType === 'manufacturing' ? null : ['payment', 'receipt', 'contra'].includes(registerType) ? (
                     <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 border border-blue-100 rounded-md shrink-0 truncate max-w-[150px] lg:max-w-none">
                         <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest hidden lg:inline">
                             {registerType === 'payment' ? 'Grand Total Out' : registerType === 'receipt' ? 'Grand Total In' : 'Total Transferred'}
@@ -26880,7 +27928,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={HeaderTitle} maxWidth={registerType === 'manufacturing' ? "max-w-6xl" : "max-w-4xl"} defaultMaximized={true}>
-            <div className={`flex min-h-0 flex-col ${shouldStretchListToBottom ? 'h-full' : ''}`}>
+            <div className={`flex min-h-0 flex-col ${shouldStretchListToBottom ? 'h-[85vh] lg:h-[88vh]' : ''}`}>
 
             {/* --- SUMMARY STRIP REMOVED - MOVED TO HEADER --- */}
 
@@ -26942,7 +27990,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             )}
 
             {/* --- THEMED TABLE HEADER --- */}
-            <div className={`border border-slate-200 rounded-xl overflow-y-auto shadow-inner bg-white ${shouldStretchListToBottom ? 'flex-1 min-h-0 mb-0' : 'max-h-[65vh] mb-2'}`}>
+            <div className={`border border-slate-200 rounded-xl overflow-y-auto shadow-inner bg-white ${shouldStretchListToBottom ? 'flex-1 min-h-0 mb-0 h-full' : 'max-h-[65vh] mb-2'}`}>
                 <table className="w-full text-left text-sm border-collapse">
                     <thead className="bg-[#1e293b] text-white font-bold uppercase text-[10px] sticky top-0 z-20 shadow-md">
                         {registerType === 'manufacturing' ? (
@@ -26964,7 +28012,14 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         <span className="text-[9px]">Weight</span>
                                     </div>
                                 } align="right" className="border-r border-white/5" />
-                                <Th col="amount" label="Value" align="right" />
+                                <Th col="amount" label={
+                                    <div className="flex flex-col items-end">
+                                        <span className="text-[23px] text-white font-bold tracking-tighter leading-none mb-1">
+                                            {Number(filteredData.reduce((sum, i) => sum + (i.amt || 0), 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        </span>
+                                        <span className="text-[9px]">Value</span>
+                                    </div>
+                                } align="right" />
                             </tr>
                         ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
                             <tr>
@@ -27806,16 +28861,6 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     if (d.type === 'purchase') {
                         const purePurchase = grandTotal - tax - docDirectExp;
                         totalPurchases += purePurchase;
-
-                        // Indirect Exp Credit (Paid By)
-                        if (d.addlExpCreditId) {
-                            const expObj = expenses.find(e => e.id === d.addlExpCreditId);
-                            if (expObj) {
-                                const r = Number(d.exchangeRate || 1);
-                                const creditAmt = safeNum(d.addlExpTotal || 0) * r;
-                                indirectExpensesMap[expObj.name] = (indirectExpensesMap[expObj.name] || 0) - creditAmt;
-                            }
-                        }
                     }
                 }
             });

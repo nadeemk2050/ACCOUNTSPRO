@@ -285,7 +285,18 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     typeLabel = 'PAYMENT';
                 }
                 else if (d.type === 'contra') { drName = accounts.find(a => a.id === d.toAccountId)?.name || 'Receiver'; crName = accounts.find(a => a.id === d.accountId)?.name || 'Giver'; typeLabel = 'CONTRA'; }
-                else if (d.type === 'journal') { drName = d.drName || findName(d.drId); crName = d.crName || findName(d.crId); typeLabel = 'JOURNAL'; }
+                else if (d.type === 'journal') {
+                    if (d.isMulti && d.rows) {
+                        const firstDr = d.rows.find(r => r.type === 'dr');
+                        const firstCr = d.rows.find(r => r.type === 'cr');
+                        drName = firstDr ? findName(firstDr.id) : 'Multiple';
+                        crName = firstCr ? findName(firstCr.id) : 'Multiple';
+                    } else {
+                        drName = d.drName || findName(d.drId);
+                        crName = d.crName || findName(d.crId);
+                    }
+                    typeLabel = 'JOURNAL';
+                }
                 else if (d.type === 'manufacturing') { drName = 'Production (In)'; crName = 'Consumption (Out)'; typeLabel = 'MFG JOURNAL'; }
 
                 return {
@@ -332,11 +343,55 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const baseVal = safeNum(d.grandTotal || d.totalAmount || d.amount || 0);
 
                     if (docType === 'inv') {
-                        // 🛑 Explicitly block Purchase Vouchers from showing in Expense Ledger
-                        // because expenses are capitalized (added to item cost) and not debited to expense ledger.
-                        if (activeFilter.type === 'expense' && d.type === 'purchase') return;
+                        const addlExpTotal = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
+                        const addlExpBase = addlExpTotal * safeNum(d.exchangeRate || 1);
+                        const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
+                        const addlCreditCategory = hasAddlSplit
+                            ? (accounts.find(a => a.id === d.addlExpCreditId) ? 'account'
+                                : parties.find(p => p.id === d.addlExpCreditId) ? 'party'
+                                    : expenses.find(e => e.id === d.addlExpCreditId) ? 'expense'
+                                        : null)
+                            : null;
+
+                        // ✅ Purchase additional expenses: Show in expense ledger (each expense gets its own debit row)
+                        if (activeFilter.type === 'expense' && d.type === 'purchase') {
+                            if (d.addlExpenses && Array.isArray(d.addlExpenses)) {
+                                d.addlExpenses.forEach(exp => {
+                                    if (exp.expenseId === activeFilter.id) {
+                                        const expForeign = safeNum(exp.amount);
+                                        const expBase = expForeign * safeNum(d.exchangeRate || 1);
+                                        // ✅ Purchase expenses NOT YET PAID → show on Credit side (accrued liability)
+                                        allTx.push(buildRow(doc, d, {
+                                            amtIn: 0, amtOut: expBase,
+                                            foreignIn: 0, foreignOut: isForeign ? expForeign : 0
+                                        }));
+                                    }
+                                });
+                            }
+                            if (d.expenses && Array.isArray(d.expenses)) {
+                                d.expenses.forEach(exp => {
+                                    if (exp.expenseId === activeFilter.id) {
+                                        const expForeign = safeNum(exp.amount);
+                                        const expBase = expForeign * safeNum(d.exchangeRate || 1);
+                                        // ✅ Standard purchase expenses → show on Debit side (In)
+                                        allTx.push(buildRow(doc, d, {
+                                            amtIn: expBase, amtOut: 0,
+                                            foreignIn: isForeign ? expForeign : 0, foreignOut: 0
+                                        }));
+                                    }
+                                });
+                            }
+                            return;
+                        }
 
                         const amt = baseVal; const fAmt = foreignVal;
+
+                        // ✅ For purchase: calculate net material value (exclude capitalized expenses)
+                        const addlExpTotal = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
+                        const addlExpBase = addlExpTotal * safeNum(d.exchangeRate || 1);
+                        const netAmt = (d.type === 'purchase' && addlExpBase > 0) ? Math.max(0, baseVal - addlExpBase) : baseVal;
+                        const netForeignAmt = (d.type === 'purchase' && addlExpTotal > 0 && isForeign) ? Math.max(0, foreignVal - addlExpTotal) : foreignVal;
+
                         if (activeFilter.type === 'item') {
                             const matchedItems = d.items?.filter(i => i.productId === activeFilter.id) || [];
                             if (matchedItems.length === 0) return;
@@ -370,40 +425,20 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                             if (!isMainParty && !isExpCredit && !isDaybook) return;
 
-                            // ✅ FIX: Balanced calculation of additional expenses
-                            const rate = safeNum(d.exchangeRate || 1);
-                            const addlExpBase = safeNum(d.addlExpTotal) * rate;
-
-                            // If we are looking at the Main Supplier, subtract the addl expense portion from the display base
-                            // because the expense is credited to ANOTHER account/party.
-                            const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
-                                ? Math.max(0, baseVal - addlExpBase)
-                                : baseVal;
+                            // For purchase invoices, show net amount (material value excluding capitalized expenses)
+                            const displayAmt = (d.type === 'purchase') ? netAmt : baseVal;
+                            const displayForeignAmt = (d.type === 'purchase') ? netForeignAmt : foreignVal;
 
                             if (isMainParty || isDaybook) {
                                 const isDr = d.type === 'sales' || d.type === 'debit_note' || d.type === 'out' || d.type === 'purchase_return';
                                 const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'in' || d.type === 'sales_return';
 
                                 row = buildRow(doc, d, {
-                                    amtIn: isDr ? supplierBase : 0,
-                                    amtOut: isCr ? supplierBase : 0,
-                                    foreignIn: isForeign && isDr ? fAmt : 0,
-                                    foreignOut: isForeign && isCr ? fAmt : 0
+                                    amtIn: isDr ? displayAmt : 0,
+                                    amtOut: isCr ? displayAmt : 0,
+                                    foreignIn: isForeign && isDr ? displayForeignAmt : 0,
+                                    foreignOut: isForeign && isCr ? displayForeignAmt : 0
                                 });
-                            }
-
-                            // ✅ Add a separate row if the party is the one who paid the expenses for a purchase
-                            if (isExpCredit && d.type === 'purchase' && d.addlExpCreditId !== d.partyId) {
-                                const expRow = buildRow(doc, d, {
-                                    amtIn: 0,
-                                    amtOut: addlExpBase,
-                                    foreignIn: 0,
-                                    foreignOut: 0
-                                });
-                                expRow.drName = "Purchase Expenses (Paid By)";
-                                // If daybook, we have both rows. If single party ledger, we only have this one.
-                                if (isDaybook) allTx.push(expRow);
-                                else row = expRow;
                             }
                         }
                         else if (activeFilter.type === 'expense') {
@@ -422,22 +457,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
 
-                        // ✅ CHECK FOR "PAID BY" CREDIT (If viewing that account)
-                        // If I am viewing 'Cash' or 'Customer' and this purchase voucher has expenses paid by THIS account.
-                        if (d.type === 'purchase' && d.addlExpCreditId === activeFilter.id) {
-                            const pExp = (safeNum(d.addlExpTotal) || (d.addlExpenses || []).reduce((s, e) => s + safeNum(e.amount), 0));
-                            if (pExp > 0 && ['account', 'party'].includes(activeFilter.type)) {
-                                // Credit the "Paid By" account (Amount Out)
-                                // We push a separate row for this payment aspect of the invoice.
-                                const exRate = safeNum(d.exchangeRate) || 1;
-                                const pExpBase = pExp * exRate;
-                                allTx.push(buildRow(doc, d, {
-                                    amtIn: 0, amtOut: pExpBase,
-                                    foreignIn: 0, foreignOut: (isForeign ? pExp : 0),
-                                    narration: `Exp Pymt: ${d.refNo} (${d.partyName})` // Optional: Make clear this is for expense
-                                }));
-                            }
-                        }
+
                     }
                     else if (docType === 'pay') {
                         if (['sales', 'purchase', 'item', 'tax'].includes(activeFilter.type)) return;

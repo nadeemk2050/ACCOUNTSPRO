@@ -111,7 +111,7 @@ import {
     FileText, CreditCard, ChevronDown, ChevronRight, ChevronLeft, Save, ArrowRight, AlertTriangle,
     TrendingUp, TrendingDown, Wallet, Printer, Download, Zap, Briefcase, LayoutDashboard,
     Users, History, Archive, Layers,
-    UploadCloud, DownloadCloud, Maximize, Minimize2, FileSpreadsheet, Database, LayoutGrid,
+    UploadCloud, DownloadCloud, Maximize, Maximize2, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
     Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
     BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle
@@ -119,12 +119,14 @@ import {
 } from 'lucide-react';
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
 import { createSheetInDB, updateSheetInDB } from "./sheetService";
-import { generateInvoicePDF, generatePackingListPDF, generateBillOfExchangePDF, generateBankApplicationPDF, downloadInvoiceExcel, generateAccountingVoucherPDF } from "./invoiceGenerator";
+import { generateInvoicePDF, generatePackingListPDF, generateBillOfExchangePDF, generateBankApplicationPDF, generateExportInvoicePDF, downloadInvoiceExcel, generateAccountingVoucherPDF } from "./invoiceGenerator";
+import BagWiseInventoryModal from "./BagWiseInventoryModal.jsx"; // IMPORT
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
 import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
 import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta } from './liveSync.js';
+import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
 import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
@@ -192,6 +194,152 @@ const formatQtyInOut = (qtyIn, qtyOut, netOverride) => {
     if (netQty === 0) return '-';
     if (netQty < 0) return `(${format3_global(Math.abs(netQty))})`;
     return format3_global(netQty);
+};
+
+const normalizeBagStatus = (status) => String(status || '').trim().toLowerCase();
+const normalizeBagNoKey = (bagNo) => String(bagNo || '').replace(/^#/, '').trim().toUpperCase();
+const isReusableBagLike = (bag) => {
+    if (!bag || typeof bag !== 'object') return false;
+    return (
+        bag.isReusable === true ||
+        bag.allowMultiFilling === true ||
+        normalizeBagStatus(bag.status) === 'reusable'
+    );
+};
+const DELETED_VOUCHER_STATUSES = new Set(['deleted', 'bulk_deleted']);
+const isVoucherDeleted = (voucher) => {
+    const status = String(voucher?.status || '').trim().toLowerCase();
+    return (
+        voucher?.isDeleted === true ||
+        voucher?.deleted === true ||
+        voucher?.is_deleted === true ||
+        DELETED_VOUCHER_STATUSES.has(status)
+    );
+};
+const filterActiveVouchers = (rows = []) => rows.filter((row) => !isVoucherDeleted(row));
+
+const getEmbeddedBagsFromJournal = (journal) => {
+    if (!journal) return [];
+    return [
+        ...(Array.isArray(journal.jumboBags) ? journal.jumboBags : []),
+        ...(Array.isArray(journal.jumbo_bags) ? journal.jumbo_bags : []),
+        ...(Array.isArray(journal.producedBags) ? journal.producedBags : []),
+        ...(Array.isArray(journal.produced)
+            ? journal.produced.flatMap((p) =>
+                Array.isArray(p.jumboBags)
+                    ? p.jumboBags
+                    : Array.isArray(p.jumbo_bags)
+                        ? p.jumbo_bags
+                        : []
+            )
+            : [])
+    ].filter((jb) => jb && typeof jb === 'object');
+};
+
+const buildSoldInvoiceBagPoolFromInvoices = (invoices = []) => {
+    return invoices
+        .filter((inv) => !isVoucherDeleted(inv))
+        .filter((inv) => String(inv?.type || '').toLowerCase() === 'sales')
+        .flatMap((inv) => {
+            const soldList = [
+                ...(Array.isArray(inv?.soldBags) ? inv.soldBags : []),
+                ...(Array.isArray(inv?.jumboBags) ? inv.jumboBags : [])
+            ];
+            return soldList.map((bag, idx) => ({
+                ...bag,
+                id: bag?.id || `inv-${inv.id}-sold-${idx}`,
+                salesId: inv.id,
+                salesRefNo: inv.refNo || bag?.salesRefNo || '',
+                status: 'sold'
+            }));
+        });
+};
+
+const deriveRemainingBags = ({ globalBags = [], stockJournals = [], soldInvoiceBagPool = [] }) => {
+    const activeStockJournals = filterActiveVouchers(stockJournals);
+    const activeJournalIds = new Set(activeStockJournals.map((j) => String(j?.id || '').trim()).filter(Boolean));
+    const activeJournalRefs = new Set(activeStockJournals.map((j) => String(j?.refNo || '').trim().toLowerCase()).filter(Boolean));
+
+    const soldSources = [
+        ...globalBags.filter((b) => normalizeBagStatus(b?.status) === 'sold'),
+        ...soldInvoiceBagPool
+    ];
+
+    const soldBagIds = new Set(
+        soldSources
+            .map((b) => String(b?.id || '').trim())
+            .filter(Boolean)
+    );
+    const soldBagNos = new Set(
+        soldSources
+            .map((b) => normalizeBagNoKey(b?.bagNo))
+            .filter(Boolean)
+    );
+
+    const seenIds = new Set(globalBags.map((b) => String(b?.id || '').trim()).filter(Boolean));
+    const seenBagNos = new Set(globalBags.map((b) => normalizeBagNoKey(b?.bagNo)).filter(Boolean));
+    const uniqueEmbedded = [];
+
+    activeStockJournals.forEach((journal) => {
+        const journalId = String(journal?.id || '');
+        getEmbeddedBagsFromJournal(journal).forEach((eb, idx) => {
+            const ebId = String(eb.id || `embedded-${journalId || 'NA'}-${idx}`);
+            const ebBagNo = normalizeBagNoKey(eb.bagNo);
+            if (!seenIds.has(ebId) && (!ebBagNo || !seenBagNos.has(ebBagNo))) {
+                seenIds.add(ebId);
+                if (ebBagNo) seenBagNos.add(ebBagNo);
+                uniqueEmbedded.push({
+                    ...eb,
+                    id: ebId,
+                    date: eb.date || journal.date,
+                    voucherRefNo: eb.voucherRefNo || journal.refNo,
+                    stockJournalRefNo: journal.refNo,
+                    stockJournalId: journalId
+                });
+            }
+        });
+    });
+
+    const dedupedRemainingMap = new Map();
+    [...globalBags, ...uniqueEmbedded].forEach((bag, idx) => {
+        if (bag?.isDeleted || normalizeBagStatus(bag?.status) === 'deleted' || normalizeBagStatus(bag?.status) === 'bulk_deleted') return;
+
+        // Reusable/refill-only bags are operational containers, not sellable inventory bags.
+        if (isReusableBagLike(bag)) return;
+
+        const sourceJournalId = String(
+            bag?.stockJournalId ||
+            bag?.linkedStockJournalId ||
+            bag?.originId ||
+            ''
+        ).trim();
+        const sourceJournalRef = String(bag?.stockJournalRefNo || '').trim().toLowerCase();
+        const hasJournalLink = !!(sourceJournalId || sourceJournalRef);
+        const sourceJournalExists =
+            (sourceJournalId && (activeJournalIds.has(sourceJournalId) || activeJournalRefs.has(sourceJournalId.toLowerCase()))) ||
+            (sourceJournalRef && activeJournalRefs.has(sourceJournalRef));
+
+        // Hide bags that still exist in jumbo_bags but whose production source voucher was deleted.
+        if (hasJournalLink && !sourceJournalExists) return;
+
+        const bagId = String(bag?.id || '').trim();
+        const bagNo = normalizeBagNoKey(bag?.bagNo);
+        const isSold = (
+            normalizeBagStatus(bag?.status) === 'sold' ||
+            !!bag?.salesId ||
+            !!bag?.salesRefNo ||
+            (bagId && soldBagIds.has(bagId)) ||
+            (bagNo && soldBagNos.has(bagNo))
+        );
+        if (isSold) return;
+
+        const dedupeKey = bagNo || bagId || `remaining-${idx}`;
+        if (!dedupedRemainingMap.has(dedupeKey)) {
+            dedupedRemainingMap.set(dedupeKey, bag);
+        }
+    });
+
+    return [...dedupedRemainingMap.values()];
 };
 
 // --- -----------------------------------------------------------------------------------------
@@ -468,7 +616,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">V2.6.5 (April 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.6.3 (April 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -523,7 +671,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} V2.6.5</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.3</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -547,7 +695,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">V2.6.5</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.3</div>
                 </div>
             </div>
         </Modal>
@@ -1095,10 +1243,14 @@ const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
         if (!snap.empty) {
             if (excludeId) {
                 // If even one found matching doc is NOT our self, it's a dupe
-                const isDupe = snap.docs.some(d => d.id !== excludeId);
-                if (isDupe) return true;
+                const dupeDoc = snap.docs.find(d => d.id !== excludeId);
+                if (dupeDoc) {
+                    const friendlyName = col === 'invoices' ? 'Invoices' : col === 'payments' ? 'Payments/Receipts' : col === 'journal_vouchers' ? 'Journal Vouchers' : 'Manufacturing/Stock';
+                    return `${friendlyName} -> ID: ${dupeDoc.id}`;
+                }
             } else {
-                return true;
+                const friendlyName = col === 'invoices' ? 'Invoices' : col === 'payments' ? 'Payments/Receipts' : col === 'journal_vouchers' ? 'Journal Vouchers' : 'Manufacturing/Stock';
+                return `${friendlyName} -> ID: ${snap.docs[0].id}`;
             }
         }
     }
@@ -3715,6 +3867,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         try {
             // 1. Stop live sync first to prevent auto re-registration after delete
             stopLiveSync(co.id);
+            stopCompanySyncScheduler(co.id);
 
             // 2. Delete all Firebase records + registry entry
             const result = await removeCompanyFromFirebase(co.id);
@@ -4772,7 +4925,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "V2.6.5";
+    const SYSTEM_VERSION = "2.6.3";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -4823,106 +4976,6 @@ export default function App() {
     const [currentRole, setCurrentRole] = useState(null); // role (owner, data_entry_1, etc)
     const [loading, setLoading] = useState(true);
     const [activeModal, setActiveModal] = useState(null);
-    const [packagingLaunchView, setPackagingLaunchView] = useState(null);
-    const [allJumboBags, setAllJumboBags] = useState([]);
-    const readyDispatchBags = useMemo(() => {
-        // 1. Setup Sold Registry
-        const soldBagNos = new Set(allJumboBags.filter(b => b.status === 'sold').map(b => String(b.bagNo || '').toLowerCase()));
-        
-        // 2. Process each Manufacturing Journal exactly like the Modal does
-        let inBags = [];
-        let fallbackCount = 0;
-        let fallbackWeight = 0;
-
-        (stockJournals || []).forEach(vch => {
-            const vchId = String(vch.id);
-            const vchRef = (vch.refNo || '').toLowerCase();
-            
-            // 1. Find bags in the global collection linked via ID or RefNo
-            const linkedInGlobal = allJumboBags.filter(b => {
-                const bIdMatch = (
-                    (b.stockJournalId && String(b.stockJournalId) === vchId) ||
-                    (b.linkedStockJournalId && String(b.linkedStockJournalId) === vchId) ||
-                    (b.voucherId && String(b.voucherId) === vchId) ||
-                    (b.purchaseId && String(b.purchaseId) === vchId) ||
-                    (b.salesId && String(b.salesId) === vchId) ||
-                    (b.originId && String(b.originId) === vchId)
-                );
-
-                const bRefMatch = vchRef && (
-                    (b.stockJournalRefNo && String(b.stockJournalRefNo).toLowerCase() === vchRef) ||
-                    (b.voucherRefNo && String(b.voucherRefNo).toLowerCase() === vchRef) ||
-                    (b.purchaseRefNo && String(b.purchaseRefNo).toLowerCase() === vchRef) ||
-                    (b.salesRefNo && String(b.salesRefNo).toLowerCase() === vchRef) ||
-                    (b.refNo && String(b.refNo).toLowerCase() === vchRef)
-                );
-
-                const bListMatch = (
-                    (vch.jumboBags && Array.isArray(vch.jumboBags) && vch.jumboBags.some(jb => (jb.id || jb) === b.id)) ||
-                    (vch.jumbo_bags && Array.isArray(vch.jumbo_bags) && vch.jumbo_bags.some(jb => (jb.id || jb) === b.id))
-                );
-
-                return bIdMatch || bRefMatch || bListMatch;
-            }).map(b => ({
-                ...b,
-                voucherRefNo: b.voucherRefNo || vch.refNo,
-                stockJournalRefNo: b.stockJournalRefNo || vch.refNo,
-                stockJournalId: b.stockJournalId || vchId
-            }));
-
-            // 2. Find bags embedded directly in the voucher
-            const embedded = [
-                ...(Array.isArray(vch.jumboBags) ? vch.jumboBags : []),
-                ...(Array.isArray(vch.jumbo_bags) ? vch.jumbo_bags : []),
-                ...(Array.isArray(vch.producedBags) ? vch.producedBags : []),
-                ...(Array.isArray(vch.produced) ? vch.produced.flatMap(p => (Array.isArray(p.jumboBags) ? p.jumboBags : Array.isArray(p.jumbo_bags) ? p.jumbo_bags : [])) : [])
-            ].filter(jb => jb && typeof jb === 'object');
-
-            // Deduplicate embedded by ID or BagNo
-            const uniqueEmbedded = [];
-            const seenIds = new Set(linkedInGlobal.map(b => String(b.id)));
-            const seenBagNos = new Set(linkedInGlobal.map(b => String(b.bagNo || '').toLowerCase()));
-            
-            embedded.forEach((eb, idx) => {
-                const ebId = eb.id || `embedded-${vchId}-${idx}`;
-                const ebBagNo = String(eb.bagNo || '').toLowerCase();
-                
-                if (!seenIds.has(ebId) && (!ebBagNo || !seenBagNos.has(ebBagNo))) {
-                    seenIds.add(ebId);
-                    if (ebBagNo) seenBagNos.add(ebBagNo);
-                    
-                    uniqueEmbedded.push({
-                        ...eb,
-                        id: ebId,
-                        date: eb.date || vch.date,
-                        voucherRefNo: eb.voucherRefNo || vch.refNo,
-                        stockJournalRefNo: vch.refNo,
-                        stockJournalId: vchId
-                    });
-                }
-            });
-
-            const vchBags = [...linkedInGlobal, ...uniqueEmbedded];
-            
-            if (vchBags.length > 0) {
-                inBags.push(...vchBags);
-            } else if (vch.bagCount || vch.totalWeight) {
-                fallbackCount += Number(vch.bagCount || 0);
-                fallbackWeight += Number(vch.totalWeight || vch.qty || 0);
-            }
-        });
-
-        // 3. Filter Remaining Bags
-        const remainingBags = inBags.filter(b => {
-            const bNo = String(b.bagNo || '').toLowerCase();
-            return !soldBagNos.has(bNo) && b.status !== 'sold';
-        });
-
-        const count = remainingBags.length + fallbackCount;
-        const weight = remainingBags.reduce((acc, b) => acc + Number(b.qty || 0), 0) + fallbackWeight;
-
-        return { count, weight };
-    }, [stockJournals, allJumboBags]);
     const [currency_manager, setCurrencyManager] = useState(false);
     const [modalStack, setModalStack] = useState([]);
 
@@ -4942,68 +4995,6 @@ export default function App() {
     const [cloudSyncStatus, setCloudSyncStatus] = useState({ state: 'offline', progress: 0, total: 0, message: '' });
     const [syncPulse, setSyncPulse] = useState(false);
     const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
-
-    useEffect(() => {
-        if (activeModal !== 'packaging_smart_report') {
-            setPackagingLaunchView(null);
-        }
-    }, [activeModal]);
-
-    useEffect(() => {
-        const targetUid = dataOwnerId || user?.uid;
-        if (!targetUid) {
-            setAllJumboBags([]);
-            return;
-        }
-
-        const uidCandidates = [...new Set([dataOwnerId, user?.uid, activeCompanyId].filter(Boolean))];
-        if (!uidCandidates.length) {
-            setAllJumboBags([]);
-            return;
-        }
-
-        let disposed = false;
-        const bagBuckets = new Map();
-
-        const recompute = () => {
-            if (disposed) return;
-            const mergedBags = new Map();
-            bagBuckets.forEach(docsMap => docsMap.forEach((row, id) => mergedBags.set(id, row)));
-            setAllJumboBags([...mergedBags.values()]);
-        };
-
-        const makeBucketKey = (scope, field, uid) => `${scope}:${field}:${uid}`;
-
-        const unsubs = uidCandidates.flatMap(uid => [
-            // Bags
-            ...['userId', 'ownerId', 'companyId'].map(field => onSnapshot(
-                query(collection(db, 'jumbo_bags'), where(field, '==', uid)),
-                (snap) => {
-                    const docsMap = new Map();
-                    snap.docs.forEach(d => docsMap.set(d.id, { id: d.id, ...d.data() }));
-                    bagBuckets.set(makeBucketKey('bags', field, uid), docsMap);
-                    recompute();
-                },
-                (err) => console.warn(`Ready bags ${field} snapshot failed:`, err)
-            )),
-            // Fallback for jumbo_bags (matches Modal's logic for orphan/legacy data)
-            onSnapshot(
-                query(collection(db, 'jumbo_bags'), limit(5000)),
-                (snap) => {
-                    const docsMap = new Map();
-                    snap.docs.forEach(d => docsMap.set(d.id, { id: d.id, ...d.data() }));
-                    bagBuckets.set('bags:fallback', docsMap);
-                    recompute();
-                }
-            )
-        ]);
-
-        return () => {
-            disposed = true;
-            unsubs.forEach(unsub => unsub && unsub());
-        };
-    }, [dataOwnerId, user?.uid]);
-
 
 
     // Handle Cloud Sync Status updates
@@ -5049,6 +5040,7 @@ export default function App() {
         // Re-trigger auth and sync sequence
         try {
             startLiveSync(activeCompanyId);
+            triggerCompanySyncNow(activeCompanyId, 'manual-sync-button');
             setTimeout(() => {
                 setToast({ type: 'success', title: 'Sync Triggered', message: 'Cloud listeners have been refreshed.' });
             }, 1000);
@@ -5149,6 +5141,7 @@ export default function App() {
                 if (!syncInitializedRef.current[activeCompanyId]) {
                     syncInitializedRef.current[activeCompanyId] = true;
                     startLiveSync(activeCompanyId);
+                    triggerCompanySyncNow(activeCompanyId, 'active-company-init');
                 }
             }
 
@@ -5183,6 +5176,47 @@ export default function App() {
             setDataOwnerId(null);
         }
     }, [activeCompanyId, user?.email, subUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        let isMounted = true;
+
+        if (!activeCompanyId) {
+            stopAllCompanySyncSchedulers().catch(() => {});
+            return undefined;
+        }
+
+        (async () => {
+            try {
+                const master = await getMasterDB();
+                const coDoc = await master.companies.findOne({ selector: { id: activeCompanyId } }).exec();
+                if (!isMounted || !coDoc) return;
+
+                const company = typeof coDoc.toJSON === 'function' ? coDoc.toJSON() : coDoc;
+                if (isBackgroundSyncEnabled(company)) {
+                    await startCompanySyncScheduler({
+                        id: company.id,
+                        name: company.name,
+                        settings: company.settings || {},
+                    });
+                } else {
+                    await stopCompanySyncScheduler(activeCompanyId);
+                }
+            } catch (err) {
+                console.warn('[SYNC] Failed to initialize scheduler for active company:', activeCompanyId, err);
+            }
+        })();
+
+        return () => {
+            isMounted = false;
+            stopCompanySyncScheduler(activeCompanyId).catch(() => {});
+        };
+    }, [activeCompanyId]);
+
+    useEffect(() => {
+        return () => {
+            stopAllCompanySyncSchedulers().catch(() => {});
+        };
+    }, []);
 
     // 2. Block UI if No Company Selected (REMOVED - now accessible via Management)
     // if (!activeCompanyId) {
@@ -5326,7 +5360,6 @@ export default function App() {
     const [lotStats, setLotStats] = useState({}); // &lt;--- ADD THIS
     const [calculatedCosts, setCalculatedCosts] = useState({});
     const [invoices, setInvoices] = useState([]);
-    const [invoicesLoaded, setInvoicesLoaded] = useState(false);
     const [vehicles, setVehicles] = useState([]); // <--- TRANSPORT STATE
     const [companyProfile, setCompanyProfile] = useState(null); // <--- COMPANY PROFILE STATE
     const [dashboardLogCount, setDashboardLogCount] = useState(0);
@@ -5337,71 +5370,6 @@ export default function App() {
     useEffect(() => { accountsRef.current = accounts; }, [accounts]);
     useEffect(() => { partiesRef.current = parties; }, [parties]);
     useEffect(() => { productsRef.current = products; }, [products]);
-
-
-    // ✅ AUTOMATIC SELF-HEALING FOR ORPHANED SOLD JUMBO BAGS
-    useEffect(() => {
-        if (!allJumboBags || allJumboBags.length === 0 || !invoicesLoaded) return;
-
-        const checkAndHealOrphans = async () => {
-            const soldBags = allJumboBags.filter(b => b.status === 'sold');
-            if (soldBags.length === 0) return;
-
-            const orphans = [];
-            for (const bag of soldBags) {
-                const bSalId = String(bag.salesId || '');
-                const bSalRef = String(bag.salesRefNo || '').toLowerCase();
-                const bVchId = String(bag.voucherId || '');
-                const bVchRef = String(bag.voucherRefNo || '').toLowerCase();
-
-                // 1. If it has absolutely no connection fields, it's an orphan
-                if (!bSalId && !bSalRef && !bVchId && !bVchRef) {
-                    orphans.push(bag);
-                    continue;
-                }
-
-                // 2. Otherwise, check if there is any matching sales invoice in our loaded invoices list
-                const hasMatchingInvoice = invoices.some(inv => {
-                    const invId = String(inv.id || '');
-                    const invRef = String(inv.refNo || '').toLowerCase();
-                    
-                    return (bSalId && bSalId === invId) ||
-                           (bSalRef && bSalRef === invRef) ||
-                           (bVchId && bVchId === invId) ||
-                           (bVchRef && bVchRef === invRef);
-                });
-
-                if (!hasMatchingInvoice) {
-                    orphans.push(bag);
-                }
-            }
-
-            if (orphans.length === 0) return;
-
-            console.log(`[Self-Healing] Detected ${orphans.length} orphaned sold bags. Reverting them...`);
-            for (const bag of orphans) {
-                try {
-                    console.log(`[Self-Healing] Reverting orphan bag #${bag.bagNo} (Ref: ${bag.salesRefNo || bag.voucherRefNo || 'None'})`);
-                    await fUpdateDoc(doc(db, 'jumbo_bags', bag.id), {
-                        status: 'in_stock',
-                        salesId: deleteField(),
-                        soldDate: deleteField(),
-                        salesRefNo: deleteField(),
-                        weightVariance: deleteField(),
-                        varianceNote: deleteField()
-                    });
-                } catch (err) {
-                    console.warn(`[Self-Healing] Failed to heal bag ${bag.id}:`, err);
-                }
-            }
-        };
-
-        const timer = setTimeout(() => {
-            checkAndHealOrphans();
-        }, 3000);
-
-        return () => clearTimeout(timer);
-    }, [allJumboBags, invoices, invoicesLoaded]);
 
 
     useEffect(() => {
@@ -5656,7 +5624,7 @@ export default function App() {
                     setCurrentRole(null);
 
                     // 🧹 CLEAR DATA ON LOGOUT (Security Fix)
-                    setInvoices([]); setInvoicesLoaded(false); setPayments([]); setJournalVouchers([]); setStockJournals([]); setProducts([]); setParties([]); setAccounts([]); setExpenses([]); setAttendanceRecords([]); setVehicles([]);
+                    setInvoices([]); setPayments([]); setJournalVouchers([]); setStockJournals([]); setProducts([]); setParties([]); setAccounts([]); setExpenses([]); setAttendanceRecords([]); setVehicles([]);
                     setCompanyProfile(null); setUserData(null);
                 }
             }
@@ -5668,21 +5636,6 @@ export default function App() {
     // 2. Data Subscription
     useEffect(() => {
         if (!dataOwnerId || (!user && !window.isGuestMode)) return;
-
-        // Reset global states when switching companies/users to prevent data bleeding
-        setStockJournals([]);
-        setInvoices([]);
-        setInvoicesLoaded(false);
-        setJournalVouchers([]);
-        setPayments([]);
-        setAllJumboBags([]);
-        setProducts([]);
-        setParties([]);
-        setAccounts([]);
-        setExpenses([]);
-        setAttendanceRecords([]);
-        setVehicles([]);
-
         const uid = dataOwnerId; // The Company Owner's ID
         const currentUserId = user.uid; // The Logged-in User's ID
 
@@ -5785,29 +5738,17 @@ export default function App() {
         });
 
         // --- TRANSACTIONS (Filtered for Data Entry 1) ---
-        const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (payments):", err));
-        const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => setJournalVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (journal_vouchers):", err));
+        const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => setPayments(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (payments):", err));
+        const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => setJournalVouchers(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (journal_vouchers):", err));
 
         // ✅ ADD THIS LINE to fetch Stock Journals globally
-        const uidCandidates = [...new Set([uid, currentUserId, activeCompanyId].filter(Boolean))];
-        const journalUnsubs = uidCandidates.flatMap(targetUid => ['userId', 'ownerId'].map(field => {
-            const q = query(collection(db, 'stock_journals'), where(field, '==', targetUid));
-            return onSnapshot(q, (snap) => {
-                const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                setStockJournals(prev => {
-                    const merged = new Map(prev.map(j => [j.id, j]));
-                    docs.forEach(d => merged.set(d.id, d));
-                    return [...merged.values()];
-                });
-            }, (err) => console.error(`Snapshot error (stock_journals ${field} for ${targetUid}):`, err));
-        }));
-        const unsubStockJournals = () => journalUnsubs.forEach(u => u());
+        const unsubStockJournals = onSnapshot(getTxQuery("stock_journals"), (snap) => setStockJournals(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (stock_journals):", err));
 
         // For Invoices, we need specific logic for stats even if filtered
         // But for Data Entry 1 viewing, we filter the list
         const unsubInvoices = onSnapshot(getTxQuery("invoices"), (snap) => {
-            setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-            setInvoicesLoaded(true);
+            const activeInvoices = filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+            setInvoices(activeInvoices);
 
             // Always calculate stats regardless of role to ensure consistent dashboard view
             {
@@ -5815,8 +5756,7 @@ export default function App() {
                 const lastSales = {};
                 const tempLotStats = {};
 
-                snap.docs.forEach(doc => {
-                    const d = doc.data();
+                activeInvoices.forEach(d => {
 
                     if (d.items) {
                         d.items.forEach(item => {
@@ -6204,7 +6144,7 @@ export default function App() {
                 idleMonitorIntervalRef.current = null;
             }
         };
-    }, [user, currentRole, subUser, performLogout, IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY, dataOwnerId, activeCompanyId]);
+    }, [user, currentRole, subUser, performLogout, IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY]);
 
     const handleChangePassword = async () => {
         const newPassword = prompt("Enter new password (min 6 chars):");
@@ -6958,29 +6898,40 @@ export default function App() {
                         const bagBatch = writeBatch(db);
                         let bagCount = 0;
                         const docRef = docData.refNo;
-                        const bagQueries = [
-                            getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))),
-                            getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))),
-                            getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))),
-                            getDocs(query(collection(db, 'jumbo_bags'), where('voucherId', '==', id))),
-                        ];
-                        if (docRef) {
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', docRef))));
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', docRef))));
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', docRef))));
-                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', docRef))));
+                        const isSalesVoucher = type === 'sales' || type === 'sale';
+
+                        const bagQueries = [];
+                        if (isSalesVoucher) {
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
+                            if (docRef) {
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', docRef))));
+                            }
+                        } else {
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
+                            bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
+                            if (docRef) {
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', docRef))));
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', docRef))));
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', docRef))));
+                                bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('refNo', '==', docRef))));
+                            }
                         }
+
                         const bagResults = await Promise.all(bagQueries);
-                        const isSalesDelete = String(type || '').toLowerCase() === 'sales' || String(type || '').toLowerCase() === 'credit_note';
-                        bagResults.forEach((sn, idx) => {
+                        const processedBagIds = new Set();
+
+                        bagResults.forEach((sn) => {
                             if (sn.empty) return;
                             sn.docs.forEach(d => {
-                                if (isSalesDelete) {
+                                if (processedBagIds.has(d.id)) return;
+                                processedBagIds.add(d.id);
+
+                                if (isSalesVoucher) {
                                     bagBatch.update(d.ref, { 
                                         status: 'in_stock', 
                                         salesId: deleteField(), 
+                                        salesRefNo: deleteField(), 
                                         soldDate: deleteField(),
-                                        salesRefNo: deleteField(),
                                         weightVariance: deleteField(),
                                         varianceNote: deleteField()
                                     });
@@ -6993,12 +6944,8 @@ export default function App() {
                         if (bagCount > 0) await bagBatch.commit();
                     } catch (bagErr) { console.warn('Bulk-delete bag sync failed for', id, bagErr); }
 
-                    await deleteDoc(doc(db, collectionName, id));
-
-                    // Clean up Reusable Jumbo Bags history
-                    if (String(type || '').toLowerCase() === 'manufacturing' || String(type || '').toLowerCase() === 'stock_journal') {
-                        await cleanReusableBagsHistory(id, docData.refNo, db, dataOwnerId || user.uid);
-                    }
+                    // Fix: Use the 'col' variable which was accurately resolved by tryFindDocWithFallback
+                    await deleteDoc(doc(db, col, id));
 
                     await addDoc(collection(db, 'audit_logs'), {
                         date: serverTimestamp(),
@@ -7024,39 +6971,6 @@ export default function App() {
         } catch (error) {
             setToast({ type: 'error', title: 'Bulk Delete Error', message: error.message });
             return false;
-        }
-    };
-
-    const cleanReusableBagsHistory = async (voucherId, voucherRefNo, db, targetUid) => {
-        try {
-            const qReusable = query(collection(db, 'reusable_jumbo_bags'));
-            const snapReusable = await getDocs(qReusable);
-            for (const d of snapReusable.docs) {
-                const rbData = d.data();
-                if (Array.isArray(rbData.usageHistory)) {
-                    const originalLength = rbData.usageHistory.length;
-                    const nextHistory = rbData.usageHistory.filter(h => 
-                        String(h.stockJournalId) !== String(voucherId) && 
-                        (!voucherRefNo || String(h.manufacturingRefNo).toLowerCase() !== String(voucherRefNo).toLowerCase())
-                    );
-                    if (nextHistory.length !== originalLength) {
-                        const nextRefillCount = nextHistory.reduce((sum, h) => sum + Number(h.fillCount || 1), 0);
-                        const nextTotalWeight = nextHistory.reduce((sum, h) => sum + Number(h.qty || 0), 0);
-                        const lastEntry = nextHistory[nextHistory.length - 1];
-                        
-                        await updateDoc(d.ref, {
-                            usageHistory: nextHistory,
-                            refillCount: nextRefillCount,
-                            totalWeight: nextTotalWeight,
-                            lastDate: lastEntry ? (lastEntry.date || '') : '',
-                            lastRefNo: lastEntry ? (lastEntry.manufacturingRefNo || '') : '',
-                            lastStockJournalId: lastEntry ? (lastEntry.stockJournalId || '') : ''
-                        });
-                    }
-                }
-            }
-        } catch (err) {
-            console.warn("Failed to clean up reusable jumbo bag history:", err);
         }
     };
 
@@ -7119,37 +7033,40 @@ export default function App() {
                 const batch = writeBatch(db);
                 let count = 0;
                 const ref = docData.refNo;
+                const isSalesVoucher = type === 'sales' || type === 'sale';
 
-                // 1. Find bags linked by Document ID
-                const qSjId = query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id));
-                const qPurId = query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id));
-                const qSalId = query(collection(db, 'jumbo_bags'), where('salesId', '==', id));
-                const qVchId = query(collection(db, 'jumbo_bags'), where('voucherId', '==', id));
-
-                // 2. Find bags linked by Reference Number (Support for older records)
-                const qSjRef = ref ? query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', ref)) : null;
-                const qPurRef = ref ? query(collection(db, 'jumbo_bags'), where('purchaseId', '==', ref)) : null;
-                const qSalRef = ref ? query(collection(db, 'jumbo_bags'), where('salesId', '==', ref)) : null;
-                const qVchRef = ref ? query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', ref)) : null;
-
-                const queries = [getDocs(qSjId), getDocs(qPurId), getDocs(qSalId), getDocs(qVchId)];
-                if (qSjRef) queries.push(getDocs(qSjRef));
-                if (qPurRef) queries.push(getDocs(qPurRef));
-                if (qSalRef) queries.push(getDocs(qSalRef));
-                if (qVchRef) queries.push(getDocs(qVchRef));
+                const queries = [];
+                if (isSalesVoucher) {
+                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
+                    if (ref) {
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', ref))));
+                    }
+                } else {
+                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
+                    queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
+                    if (ref) {
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', ref))));
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', ref))));
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', ref))));
+                        queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('refNo', '==', ref))));
+                    }
+                }
 
                 const results = await Promise.all(queries);
-                const isSalesDelete = String(type || '').toLowerCase() === 'sales' || String(type || '').toLowerCase() === 'credit_note';
+                const processedBagIds = new Set();
                 
-                results.forEach((sn, idx) => {
+                results.forEach((sn) => {
                     if (sn.empty) return;
                     sn.docs.forEach(d => {
-                        if (isSalesDelete) { // Sales Reversal
+                        if (processedBagIds.has(d.id)) return;
+                        processedBagIds.add(d.id);
+                        
+                        if (isSalesVoucher) { // Sales Reversal
                             batch.update(d.ref, { 
                                 status: 'in_stock', 
                                 salesId: deleteField(), 
+                                salesRefNo: deleteField(), 
                                 soldDate: deleteField(),
-                                salesRefNo: deleteField(),
                                 weightVariance: deleteField(),
                                 varianceNote: deleteField()
                             });
@@ -7170,11 +7087,6 @@ export default function App() {
 
             // DELETE MAIN DOC
             await deleteDoc(doc(db, collectionName, id));
-
-            // Clean up Reusable Jumbo Bags history
-            if (String(type || '').toLowerCase() === 'manufacturing' || String(type || '').toLowerCase() === 'stock_journal') {
-                await cleanReusableBagsHistory(id, docData.refNo, db, dataOwnerId || user.uid);
-            }
 
             // 3. Log the Deletion
             await addDoc(collection(db, 'audit_logs'), {
@@ -7919,6 +7831,128 @@ export default function App() {
     const handleRecalculateExpenses = (skip = false) => handleRecalculateSystem('expenses', skip);
     const handleRecalculateCapital = (skip = false) => handleRecalculateSystem('capital', skip);
     const handleRecalculateAll = () => handleRecalculateSystem('all');
+
+    // --- JUMBO BAGS RECALCULATE & CLEANUP ---
+    const handleRecalculateJumboBags = async () => {
+        if (!user) return;
+        const ownerUid = dataOwnerId || user.uid;
+        setIsRecalculating(true);
+        setToast({ type: 'info', title: 'Jumbo Bags Cleanup', message: 'Scanning and cleaning Jumbo Bag records...' });
+
+        try {
+            const db = getFirestore();
+            const uidCandidates = [...new Set([dataOwnerId, user.uid].filter(Boolean))];
+
+            // 1. Fetch all stock_journals for this owner
+            const sjSnaps = await Promise.all(
+                uidCandidates.flatMap(uid =>
+                    ['userId', 'ownerId'].map(field =>
+                        getDocs(query(collection(db, 'stock_journals'), where(field, '==', uid)))
+                    )
+                )
+            );
+            const sjMap = new Map();
+            sjSnaps.forEach(snap => snap.docs.forEach(d => sjMap.set(d.id, { id: d.id, ...d.data() })));
+            const activeJournals = [...sjMap.values()].filter(
+                sj => !sj.isDeleted && sj.status !== 'deleted' && sj.status !== 'bulk_deleted'
+            );
+            const activeJournalIds = new Set(activeJournals.map(sj => String(sj.id)));
+            const activeJournalRefs = new Set(activeJournals.map(sj => (sj.refNo || '').toLowerCase()).filter(Boolean));
+
+            // 2. Fetch all bags (all ownership fields)
+            const bagSnaps = await Promise.all(
+                uidCandidates.flatMap(uid =>
+                    ['userId', 'ownerId', 'companyId'].map(field =>
+                        getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid)))
+                    )
+                )
+            );
+            const bagMap = new Map();
+            bagSnaps.forEach(snap => snap.docs.forEach(d => bagMap.set(d.id, { id: d.id, ref: d.ref, ...d.data() })));
+            const allBags = [...bagMap.values()];
+
+            let deletedCount = 0;
+            let fixedStatusCount = 0;
+            const batchOps = [];
+
+            for (const bag of allBags) {
+                // Case A: Bag is explicitly marked deleted — hard delete from Firestore
+                if (bag.isDeleted || bag.status === 'deleted' || bag.status === 'bulk_deleted') {
+                    batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
+                    deletedCount++;
+                    continue;
+                }
+
+                // Case B: Bag is linked to a journal that was deleted — mark bag as deleted
+                const linkedJournalId = String(bag.stockJournalId || bag.linkedStockJournalId || bag.voucherId || bag.originId || '');
+                const linkedJournalRef = (bag.stockJournalRefNo || bag.voucherRefNo || '').toLowerCase();
+
+                const journalExists =
+                    (linkedJournalId && activeJournalIds.has(linkedJournalId)) ||
+                    (linkedJournalRef && activeJournalRefs.has(linkedJournalRef));
+
+                // Only auto-delete if the bag has a journal link but the journal is gone
+                if (linkedJournalId && !journalExists && bag.status !== 'sold') {
+                    batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
+                    deletedCount++;
+                    continue;
+                }
+
+                // Case C: Fix bags that are marked sold but the sale voucher is deleted
+                // (bag.salesId / bag.salesRefNo points to a non-existent voucher)
+                if (bag.status === 'sold') {
+                    const saleId = String(bag.salesId || '');
+                    const saleRef = (bag.salesRefNo || '').toLowerCase();
+                    // Fetch sale vouchers to check existence
+                    // We only reset if we can detect the sale is gone
+                    // This is done via a quick check against known invoice collections
+                    if (saleId) {
+                        try {
+                            const saleDoc = await getDoc(doc(db, 'invoices', saleId));
+                            if (!saleDoc.exists()) {
+                                // Sale voucher gone — reset bag status back to in_stock
+                                batchOps.push({
+                                    type: 'update',
+                                    ref: doc(db, 'jumbo_bags', bag.id),
+                                    data: {
+                                        status: 'in_stock',
+                                        soldDate: null,
+                                        salesId: null,
+                                        salesRefNo: null,
+                                        soldTo: null
+                                    }
+                                });
+                                fixedStatusCount++;
+                            }
+                        } catch (_) { /* ignore permission errors */ }
+                    }
+                }
+            }
+
+            // Execute all batch operations (Firestore has 500 limit per batch)
+            const chunkSize = 400;
+            for (let i = 0; i < batchOps.length; i += chunkSize) {
+                const chunk = batchOps.slice(i, i + chunkSize);
+                const batch = writeBatch(db);
+                chunk.forEach(op => {
+                    if (op.type === 'delete') batch.delete(op.ref);
+                    else if (op.type === 'update') batch.update(op.ref, op.data);
+                });
+                await batch.commit();
+            }
+
+            setToast({
+                type: 'success',
+                title: 'Jumbo Bags Cleanup Complete',
+                message: `Removed ${deletedCount} deleted/orphaned bag(s). Fixed ${fixedStatusCount} status mismatch(es).`
+            });
+        } catch (e) {
+            console.error('Jumbo Bags recalculate error:', e);
+            setToast({ type: 'error', title: 'Cleanup Failed', message: e.message });
+        } finally {
+            setIsRecalculating(false);
+        }
+    };
     const handleRecalculateStockLocal = (skip = false) => handleRecalculateSystem('products', skip);
 
     // --- SYSTEM SCAN LOGIC ---
@@ -8053,6 +8087,158 @@ export default function App() {
             setToast({ type: 'error', title: 'Start', message: `Found & Logged ${batchLogs.length} anomalies.` });
         } else {
             setToast({ type: 'success', title: 'Clean', message: 'No anomalies found.' });
+        }
+    };
+
+    const handlePurgeSoftDeletedVouchers = async () => {
+        if (!user) return;
+        const ownerUid = dataOwnerId || user.uid;
+
+        if (!window.confirm('⚠️ PURGE SOFT-DELETED VOUCHERS\n\nThis will permanently remove soft-deleted voucher records from Firestore for this company/user scope. Audit logs will be kept. Proceed?')) {
+            return;
+        }
+
+        setToast({ type: 'loading', title: 'Purging...', message: 'Scanning for soft-deleted vouchers and cleanup records...' });
+
+        const voucherCollections = [
+            { name: 'invoices', fields: ['userId', 'ownerId'] },
+            { name: 'payments', fields: ['userId', 'ownerId'] },
+            { name: 'journal_vouchers', fields: ['userId', 'ownerId'] },
+            { name: 'stock_journals', fields: ['userId', 'ownerId'] },
+            { name: 'order_vouchers', fields: ['userId', 'ownerId'] },
+            { name: 'jumbo_bags', fields: ['userId', 'ownerId', 'companyId'] }
+        ];
+
+        const isSoftDeleted = (docData = {}) => {
+            const status = String(docData.status || '').trim().toLowerCase();
+            return (
+                docData.isDeleted === true ||
+                docData.deleted === true ||
+                docData.is_deleted === true ||
+                status === 'deleted' ||
+                status === 'bulk_deleted'
+            );
+        };
+
+        const fetchDocsForCollection = async (colName, fields) => {
+            const snapMap = new Map();
+            for (const field of fields) {
+                try {
+                    const snap = await getDocs(query(collection(db, colName), where(field, '==', ownerUid)));
+                    snap.docs.forEach((d) => {
+                        snapMap.set(d.id, { id: d.id, ref: d.ref, ...d.data() });
+                    });
+                } catch (err) {
+                    console.warn(`Purging scan failed for ${colName}.${field}`, err);
+                }
+            }
+            return [...snapMap.values()].filter((d) => isSoftDeleted(d));
+        };
+
+        const cleanLinkedBags = async (voucher) => {
+            const colName = voucher?.collectionName;
+            const ref = voucher?.refNo || '';
+            const id = voucher?.id || '';
+            if (!colName) return 0;
+
+            try {
+                const bagQueries = [];
+                const isSalesVoucher = colName === 'invoices' && String(voucher?.type || '').toLowerCase() === 'sales';
+
+                if (isSalesVoucher) {
+                    if (id) bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', id))));
+                    if (ref) bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', ref))));
+                } else if (colName === 'invoices' || colName === 'stock_journals') {
+                    if (id) {
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
+                    }
+                    if (ref) {
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalRefNo', '==', ref))));
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('voucherRefNo', '==', ref))));
+                        bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseRefNo', '==', ref))));
+                    }
+                }
+
+                if (bagQueries.length === 0) return 0;
+
+                const bagSnaps = await Promise.all(bagQueries);
+                const seenBagIds = new Set();
+                const batch = writeBatch(db);
+                let bagOps = 0;
+
+                bagSnaps.forEach((sn) => {
+                    sn.docs.forEach((d) => {
+                        if (seenBagIds.has(d.id)) return;
+                        seenBagIds.add(d.id);
+                        if (isSalesVoucher) {
+                            batch.update(d.ref, {
+                                status: 'in_stock',
+                                salesId: deleteField(),
+                                salesRefNo: deleteField(),
+                                soldDate: deleteField(),
+                                weightVariance: deleteField(),
+                                varianceNote: deleteField()
+                            });
+                        } else {
+                            batch.delete(d.ref);
+                        }
+                        bagOps++;
+                    });
+                });
+
+                if (bagOps > 0) await batch.commit();
+                return bagOps;
+            } catch (err) {
+                console.warn('Linked bag cleanup failed during purge:', err);
+                return 0;
+            }
+        };
+
+        try {
+            const targetsByCollection = await Promise.all(
+                voucherCollections.map(async ({ name, fields }) => ({
+                    name,
+                    rows: await fetchDocsForCollection(name, fields)
+                }))
+            );
+
+            let deletedCount = 0;
+            let bagCleanupCount = 0;
+
+            for (const bucket of targetsByCollection) {
+                if (!bucket.rows.length) continue;
+
+                for (let i = 0; i < bucket.rows.length; i += 400) {
+                    const chunk = bucket.rows.slice(i, i + 400);
+                    const batch = writeBatch(db);
+
+                    chunk.forEach((row) => {
+                        batch.delete(doc(db, bucket.name, row.id));
+                    });
+
+                    await batch.commit();
+                    deletedCount += chunk.length;
+
+                    for (const row of chunk) {
+                        bagCleanupCount += await cleanLinkedBags({
+                            collectionName: bucket.name,
+                            id: row.id,
+                            refNo: row.refNo || row.invoiceNo || row.voucherNo || row.name || '',
+                            type: row.type
+                        });
+                    }
+                }
+            }
+
+            setToast({
+                type: 'success',
+                title: 'Purge Complete',
+                message: `Removed ${deletedCount} soft-deleted voucher record(s)${bagCleanupCount ? ` and cleaned ${bagCleanupCount} linked bag record(s)` : ''}.`
+            });
+        } catch (error) {
+            console.error('Soft-deleted purge failed:', error);
+            setToast({ type: 'error', title: 'Purge Failed', message: error.message });
         }
     };
 
@@ -9112,7 +9298,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">V2.6.5</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.3</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -9435,7 +9621,7 @@ export default function App() {
                                     <MenuButton
                                         label="Packaging Smart Report"
                                         shortcut="P"
-                                        onClick={() => { setPackagingLaunchView(null); setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
+                                        onClick={() => { setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
                                         className="text-[#005994] font-black"
                                     />
                                     <MenuButton
@@ -9631,33 +9817,6 @@ export default function App() {
                             title="View Log History"
                         >
                             Logs: <span className="font-black text-[#005994]">{displayLogCount}</span>
-                        </button>
-                    </div>
-
-                    <div className="px-4 pb-2">
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setPackagingLaunchView({ detail: 'ready_stock', subTab: 'remaining', mode: 'summary' });
-                                setActiveModal('packaging_smart_report');
-                            }}
-                            className="w-full md:w-[420px] flex items-center justify-between gap-3 rounded-lg border border-blue-100 bg-[#f6fbff] px-3 py-2 text-left hover:bg-[#edf7ff] transition-colors"
-                            title="Open remaining jumbo bags balance"
-                        >
-                            <div className="flex items-center gap-2">
-                                <Box size={15} className="text-[#005994]" />
-                                <span className="text-[11px] font-black uppercase tracking-tight text-[#1e3264]">
-                                    Remaining Bags Stock
-                                </span>
-                            </div>
-                            <div className="flex flex-col items-end leading-none">
-                                <span className="text-[13px] font-black text-[#00457c] font-mono">
-                                    {readyDispatchBags.count} BAGS
-                                </span>
-                                <span className="text-[9px] font-black text-[#0b8f5d] uppercase tracking-tight">
-                                    {formatQty(readyDispatchBags.weight)} {units.find(u => u.isBase)?.symbol || 'kg'}
-                                </span>
-                            </div>
                         </button>
                     </div>
 
@@ -10456,6 +10615,7 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
+                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -10500,6 +10660,7 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
+                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -10653,17 +10814,13 @@ export default function App() {
 
             <PackagingSmartReportModal
                 isOpen={activeModal === 'packaging_smart_report'}
-                onClose={() => {
-                    setPackagingLaunchView(null);
-                    handleCloseModal();
-                }}
+                onClose={handleCloseModal}
                 user={user}
                 subUser={subUser}
                 dataOwnerId={dataOwnerId}
                 products={products}
                 units={units}
                 currencySymbol={currencySymbol}
-                launchView={packagingLaunchView}
             />
 
             {/* Simple List Modals - WITH SAFETY CHECKS */}
@@ -10702,6 +10859,7 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onItemClick={handlePartyItemClick}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
             />
 
             {/* 3. PAYABLES (Creditors) */}
@@ -10720,6 +10878,7 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onItemClick={handlePartyItemClick}
                 currencySymbol={currencySymbol}
+                hideF1Detl={true}
             />
 
             {/* --- CUSTOMERS REGISTER (Ledger closing balances by date) --- */}
@@ -11367,7 +11526,7 @@ export default function App() {
                     else if (type === 'tax_register') setActiveModal('tax_register');
                     else if (type === 'capital_list') setActiveModal('capital_accounts');
                     else if (type === 'asset_list') setActiveModal('asset_accounts');
-                    else if (type === 'bag_inventory') setActiveModal('packaging_smart_report');
+                    else if (type === 'bag_inventory') setActiveModal('bag_inventory');
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -11435,6 +11594,7 @@ export default function App() {
                     onShowCreditNoteRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('credit_note_register'); }}
                     onShowStockInventory={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('stock_inventory'); }}
                     onShowPieceInventory={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('piece_inventory'); }}
+                    onShowBagInventory={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('bag_inventory'); }}
                     onShowLotDetail={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('lot_list'); }}
                     onShowCashierRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('cashier_register'); }}
                     onShowCustomerRegister={() => { setModalStack(s => [...s, 'registers_dashboard']); setActiveModal('customer_register'); }}
@@ -11462,6 +11622,7 @@ export default function App() {
                     onRecalculateAccounts={handleRecalculateAccounts}
                     onRecalculateExpenses={handleRecalculateExpenses}
                     onRecalculateCapital={handleRecalculateCapital}
+                    onRecalculateJumboBags={handleRecalculateJumboBags}
                     onInstall={handleInstallClick}
                     onBackup={handleBackup}
                     onRestore={handleRestore}
@@ -11526,6 +11687,7 @@ export default function App() {
                 effectiveName={effectiveName}
                 dataOwnerId={dataOwnerId}
                 onScan={handleRunSystemScan}
+                onPurgeSoftDeleted={handlePurgeSoftDeletedVouchers}
                 accounts={accounts}
                 parties={parties}
                 expenses={expenses}
@@ -11613,6 +11775,20 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 products={products}
             />
+            {/* NEW BAG WISE INVENTORY */}
+            <BagWiseInventoryModal
+                {...getModalState('bag_inventory')}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                subUser={subUser}
+                effectiveName={effectiveName}
+                dataOwnerId={dataOwnerId}
+                products={products}
+                globalDateCmd={globalDateCmd}
+                onDateCmdProcessed={handleDateCmdProcessed}
+                onOpenVoucher={handleViewTransaction}
+            />
 
             {/* ✅ RESTORE THIS MISSING LEDGER MODAL */}
             <LedgerModal
@@ -11629,11 +11805,14 @@ export default function App() {
                 userRole={currentRole}
                 subUsers={subUsers}
                 parties={parties}
+                partiesRef={partiesRef}
                 products={products}
+                productsRef={productsRef}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts} // <--- PASS PROP
                 incomeAccounts={incomeAccounts} // <--- PASS PROP (for LedgerModal)
                 accounts={accounts}
+                accountsRef={accountsRef}
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
                 taxRates={taxRates}
@@ -11725,7 +11904,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in V2.6.5</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.3</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -12296,6 +12475,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             const result = await makeCompanyLive(co.id, co.name, null, liveStats);
             if (result.success) {
                 startLiveSync(co.id);
+                triggerCompanySyncNow(co.id, 'make-live-complete');
                 const freshList = await listCompanies();
                 const withStats = await Promise.all(freshList.map(async (c) => {
                     const stats = (dataOwnerId && c.id === dataOwnerId && currentStats)
@@ -12443,10 +12623,19 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                 updatedBy: user.email
             };
 
-            // Use local setDoc instead of Cloud Function for offline company management
-            await setDoc(doc(db, "companies", dataOwnerId), data);
+            // Update RxDB directly so settings persist locally immediately
+            try {
+                const master = await getMasterDB();
+                const targetDoc = await master.companies.findOne({ selector: { id: dataOwnerId } }).exec();
+                if (targetDoc) {
+                    await targetDoc.patch(data);
+                }
+            } catch (err) { console.warn("Failed to patch RxDB settings:", err); }
 
             if (onUpdateProfile) onUpdateProfile(data); // Immediate UI update
+
+            // Background save to Firebase (doesn't block UI if offline)
+            setDoc(doc(db, "companies", dataOwnerId), data).catch(e => console.warn("Firebase save queued/failed:", e));
 
             // Refresh companies list so the sidebar/selector shows the new name
             const list = await listCompanies();
@@ -12497,7 +12686,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                         </div>
                         <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Company Name</label>
-                            <input autoFocus type="text" required placeholder="e.g. My Great Company Ltd." className="w-full p-2 border rounded focus:ring-2 ring-blue-500 outline-none" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+                            <input autoFocus type="text" required placeholder="e.g. My Great Company Ltd." className="w-full p-2 border rounded focus:ring-2 ring-blue-500 outline-none" value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} />
                         </div>
                         <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Full Address</label>
@@ -14060,7 +14249,7 @@ const AttendanceModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, s
 
 // --- UPDATED INVOICE MODAL (With Container/Seal/Other Ref) ---
 const InvoiceModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances } = props;
+    const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances, stockJournals } = props;
     const companyBanks = companyProfile?.banks || [];
     const headerScrollRef = useRef(null);
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
@@ -14075,7 +14264,7 @@ const InvoiceModal = (props) => {
         // New Shipping Details
         portOfLoading: '', portOfDischarge: '',
         vesselName: '', voyageNo: '',
-        countryOfOrigin: 'UNITED ARAB EMIRATES',
+        countryOfOrigin: '',
         finalDestination: '',
         buyerName: '', buyerAddress: '',
         consigneeName: '', consigneeAddress: '',
@@ -14171,6 +14360,7 @@ const InvoiceModal = (props) => {
     const [jumboBags, setJumboBags] = useState([]);
     const [showJumboEntry, setShowJumboEntry] = useState(false);
     const [showJumboSelection, setShowJumboSelection] = useState(false); // For Sales
+    const [showGlobalBagManager, setShowGlobalBagManager] = useState(false); // Global bags edit modal
     const [activeBagRowIndex, setActiveBagRowIndex] = useState(null); // Track which row is selecting bags
     const [activeBagProduct, setActiveBagProduct] = useState(null); // Track product being selected
     const [availableBags, setAvailableBags] = useState([]); // For Sales selection
@@ -14180,6 +14370,20 @@ const InvoiceModal = (props) => {
 
     // ✅ Store bag counts per product for UI Display
     const [productsBagMap, setProductsBagMap] = useState({});
+    const [allRemainingBagsMemo, setAllRemainingBagsMemo] = useState([]);
+
+    // Sync jumboBags state dynamically for sales vouchers to keep bottom panel in live sync
+    useEffect(() => {
+        if (isOpen && voucherType === 'sales' && formData.packingType === 'bags') {
+            const consolidatedBags = [];
+            items.forEach(item => {
+                if (item.selectedBags && item.selectedBags.length > 0) {
+                    consolidatedBags.push(...item.selectedBags);
+                }
+            });
+            setJumboBags(consolidatedBags);
+        }
+    }, [items, isOpen, voucherType, formData.packingType]);
 
     // Fetch Company Images for Printing
     useEffect(() => {
@@ -14220,23 +14424,68 @@ const InvoiceModal = (props) => {
         }
     }, [isOpen, showInvoiceOptions, dataOwnerId, user]);
 
-    // Fetch In-Stock Bags Count when Sales Voucher is open
+    // Fetch remaining (unsold) bag counts when Sales Voucher is open
     useEffect(() => {
         if (isOpen && voucherType === 'sales') {
-            const targetUid = dataOwnerId || user.uid;
-            // Fetch ALL in_stock bags to aggregate counts
-            const q = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'));
-            const unsub = onSnapshot(q, (snap) => {
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            const bagCache = {};
+            const salesInvoiceCache = {};
+            let salesInvoicePool = [];
+
+            const recomputeBagMap = () => {
+                const merged = new Map();
+                Object.values(bagCache).forEach((list) => {
+                    list.forEach((b) => merged.set(b.id, b));
+                });
+
+                const globalBags = [...merged.values()];
+                const finalRemaining = deriveRemainingBags({
+                    globalBags,
+                    stockJournals: stockJournals || [],
+                    soldInvoiceBagPool: salesInvoicePool
+                });
+                
+                setAllRemainingBagsMemo(finalRemaining);
+
                 const map = {};
-                snap.forEach(d => {
-                    const pid = d.data().productId;
-                    if (pid) map[pid] = (map[pid] || 0) + 1; // Count bags
+                finalRemaining.forEach((b) => {
+                    const pid = b.productId;
+                    if (pid) map[pid] = (map[pid] || 0) + 1;
                 });
                 setProductsBagMap(map);
+            };
+
+            const unsubs = uidCandidates.flatMap((uid) => {
+                return ['userId', 'ownerId', 'companyId'].map((field) => {
+                    const q = query(collection(db, 'jumbo_bags'), where(field, '==', uid));
+                    return onSnapshot(q, (snap) => {
+                        bagCache[`${uid}-${field}`] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                        recomputeBagMap();
+                    }, (err) => {
+                        console.warn(`Sales bag count sync error (${field}):`, err);
+                    });
+                });
             });
-            return () => unsub();
+
+            const invoiceUnsubs = uidCandidates.map((uid) => {
+                const qInv = query(collection(db, 'invoices'), where('userId', '==', uid), where('type', '==', 'sales'));
+                return onSnapshot(qInv, (snap) => {
+                    const salesInvoicesForUid = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                    salesInvoiceCache[uid] = buildSoldInvoiceBagPoolFromInvoices(salesInvoicesForUid);
+                    salesInvoicePool = Object.values(salesInvoiceCache).flat();
+                    recomputeBagMap();
+                }, (err) => {
+                    console.warn('Sales invoice bag snapshot sync error:', err);
+                });
+            });
+
+            return () => {
+                invoiceUnsubs.forEach((unsub) => unsub());
+                unsubs.forEach((unsub) => unsub());
+            };
         } else {
             setProductsBagMap({});
+            setAllRemainingBagsMemo([]);
         }
     }, [isOpen, voucherType, dataOwnerId, user]);
 
@@ -14295,7 +14544,7 @@ const InvoiceModal = (props) => {
                     portOfDischarge: initialData.portOfDischarge || '',
                     vesselName: initialData.vesselName || '',
                     voyageNo: initialData.voyageNo || '',
-                    countryOfOrigin: initialData.countryOfOrigin || 'UNITED ARAB EMIRATES',
+                    countryOfOrigin: initialData.countryOfOrigin || '',
                     finalDestination: initialData.finalDestination || '',
                     buyerName: initialData.buyerName || '',
                     buyerAddress: initialData.buyerAddress || '',
@@ -14350,22 +14599,83 @@ const InvoiceModal = (props) => {
                     setAdjustAdvRef(null); setAdjustAdvAmount('');
                 }
                 if (initialData.lotId) { setLotId(initialData.lotId); }
-                if (initialData.jumboBags && Array.isArray(initialData.jumboBags)) {
-                    setJumboBags(initialData.jumboBags);
+                // ✅ Instant Render + Background Firestore Sync Loader
+                // 1. Instantly load and map bags from the embedded invoice snapshot so they render in the UI immediately without any query delay
+                const embeddedBags = initialData.soldBags || initialData.jumboBags || [];
+                if (embeddedBags.length > 0) {
+                    setJumboBags(embeddedBags);
                     setJumboEnabled(true);
-                } else {
-                    // ✅ FALLBACK: Fetch Bags from DB if not passed in proper object
-                    const field = (initialData.type || type) === 'purchase' ? 'purchaseId' : ((initialData.type || type) === 'sales' ? 'salesId' : null);
-                    if (field && initialData.id) {
-                        const q = query(collection(db, 'jumbo_bags'), where(field, '==', initialData.id));
-                        getDocs(q).then(snap => {
-                            if (!snap.empty) {
-                                const loaded = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                                setJumboBags(loaded);
-                                if ((initialData.type || type) === 'purchase') setJumboEnabled(true);
+                    setItems(prevItems => {
+                        return prevItems.map(item => {
+                            const rowBags = embeddedBags.filter(b => b.productId === item.productId);
+                            return {
+                                ...item,
+                                selectedBags: rowBags
+                            };
+                        });
+                    });
+                }
+
+                // 2. Query Firestore in the background to fetch full bag documents with real IDs (maintaining transactional integrity on save)
+                // ⚠️ IMPORTANT: NEVER call updateItemsAndBags with an empty array when embedded bags exist,
+                // otherwise Phase 1 loaded bags will be wiped out (see Firestore 404/400 channel bug)
+                if (initialData.id) {
+                    const isSales = (initialData.type || type) === 'sales';
+                    const field = isSales ? 'salesId' : 'purchaseId';
+                    
+                    const updateItemsAndBags = (loaded) => {
+                        // 🛡️ GUARD: Never overwrite with empty when embedded bags were successfully loaded
+                        if (loaded.length === 0 && embeddedBags.length > 0) {
+                            console.warn("Background bag query returned empty but embedded bags exist — keeping Phase 1 loaded bags.");
+                            return;
+                        }
+                        setJumboBags(loaded);
+                        setJumboEnabled(true);
+                        setItems(prevItems => {
+                            return prevItems.map(item => {
+                                const rowBags = loaded.filter(b => b.productId === item.productId);
+                                return {
+                                    ...item,
+                                    selectedBags: rowBags
+                                };
+                            });
+                        });
+                    };
+
+                    const q = query(collection(db, 'jumbo_bags'), where(field, '==', initialData.id));
+                    getDocs(q).then(snap => {
+                        let loaded = [];
+                        if (!snap.empty) {
+                            loaded = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        }
+                        
+                        // Fallback: If standard query didn't find all bags, but we have embedded bags, query them by bagNo!
+                        if (loaded.length < embeddedBags.length && embeddedBags.length > 0) {
+                            const bagNos = embeddedBags.map(b => b.bagNo).filter(Boolean);
+                            if (bagNos.length > 0) {
+                                const qFallback = query(collection(db, 'jumbo_bags'), where('bagNo', 'in', bagNos.slice(0, 30)));
+                                getDocs(qFallback).then(snapFallback => {
+                                    const fallbackLoaded = snapFallback.docs.map(d => ({ id: d.id, ...d.data() }));
+                                    const merged = [...loaded];
+                                    fallbackLoaded.forEach(fb => {
+                                        if (!merged.some(m => m.id === fb.id)) {
+                                            merged.push(fb);
+                                        }
+                                    });
+                                    updateItemsAndBags(merged);
+                                }).catch(err => {
+                                    console.warn("Fallback bag query error (bags preserved from Phase 1):", err);
+                                });
+                                return;
                             }
-                        }).catch(err => console.error("Error fetching linked bags:", err));
-                    }
+                        }
+                        
+                        if (loaded.length > 0) {
+                            updateItemsAndBags(loaded);
+                        } else if (embeddedBags.length > 0) {
+                            console.warn("Background bag query returned 0 results — keeping Phase 1 embedded bags.");
+                        }
+                    }).catch(err => console.warn("Error fetching and mapping bags (bags preserved from Phase 1):", err));
                 }
             } else {
                 setVoucherType(type);
@@ -14388,7 +14698,7 @@ const InvoiceModal = (props) => {
                     packingType: 'loose',
                     portOfLoading: '', portOfDischarge: '',
                     vesselName: '', voyageNo: '',
-                    countryOfOrigin: 'UNITED ARAB EMIRATES',
+                    countryOfOrigin: '',
                     finalDestination: '',
                     buyerName: '', buyerAddress: '',
                     consigneeName: '', consigneeAddress: '',
@@ -14416,45 +14726,9 @@ const InvoiceModal = (props) => {
                 if (initialData.salesExpenseMode) setSalesExpenseMode(initialData.salesExpenseMode);
             }
 
-            // LOAD JUMBO FLAGS: Use embedded snapshot first, fallback to DB query
-            if (initialData?.jumboEnabled || initialData?.packingType === 'bags') {
-                setJumboEnabled(true);
-                const loadedType = (initialData.type || type);
-                
-                if (loadedType === 'sales' && initialData.id) {
-                    // For sales, always fetch from Firestore to get the real document IDs of sold bags
-                    const qBags = query(collection(db, 'jumbo_bags'), where('salesId', '==', initialData.id));
-                    getDocs(qBags).then(snap => {
-                        const fetchedBags = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                        setJumboBags(fetchedBags);
-                        
-                        // Map bags to their respective items row selectedBags
-                        setItems(prevItems => {
-                            return prevItems.map(item => {
-                                if (!item.productId) return item;
-                                const rowBags = fetchedBags.filter(b => b.productId === item.productId);
-                                return {
-                                    ...item,
-                                    selectedBags: rowBags
-                                };
-                            });
-                        });
-                    }).catch(console.error);
-                } else {
-                    // For purchase: use jumboBags
-                    const embeddedBags = initialData.jumboBags;
-                    if (Array.isArray(embeddedBags) && embeddedBags.length > 0) {
-                        setJumboBags(embeddedBags);
-                    } else if (initialData.id) {
-                        const qBags = query(collection(db, 'jumbo_bags'), where('purchaseId', '==', initialData.id));
-                        getDocs(qBags).then(snap => {
-                            setJumboBags(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                        }).catch(console.error);
-                    }
-                }
-            } else {
-                setJumboEnabled(false);
-                setJumboBags([]);
+            // Decoupled secondary loader: handled dynamically above with full mapping
+            if (initialData) {
+                setJumboEnabled(!!initialData.jumboEnabled || initialData.packingType === 'bags');
             }
         }
     }, [isOpen, initialData, type]);
@@ -14531,17 +14805,12 @@ const InvoiceModal = (props) => {
             newItems[index].pieces = '';
             newItems[index].total = '';
 
-            // Trigger Fetch & Open Modal
-            const targetUid = dataOwnerId || user.uid;
-            const qAvail = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'), where('productId', '==', value));
-            getDocs(qAvail).then(snap => {
-                const avail = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                // If editing, merge old bags if any (though usually we start fresh or load existing)
-                setAvailableBags(avail);
-                setActiveBagRowIndex(index);
-                setActiveBagProduct({ id: value, name: products.find(p => p.id === value)?.name });
-                setShowJumboSelection(true);
-            });
+            // Use the in-memory bags to avoid a slow refetch and ensure embedded bags are included
+            const avail = allRemainingBagsMemo.filter(b => b.productId === value);
+            setAvailableBags(avail);
+            setActiveBagRowIndex(index);
+            setActiveBagProduct({ id: value, name: products.find(p => p.id === value)?.name });
+            setShowJumboSelection(true);
         }
 
         setItems(newItems);
@@ -14674,7 +14943,15 @@ const InvoiceModal = (props) => {
                     let consolidatedBags = [];
                     items.forEach(item => {
                         if (item.selectedBags && item.selectedBags.length > 0) {
-                            consolidatedBags.push(...item.selectedBags);
+                            // Automatically recover missing bag IDs from the in-memory allRemainingBagsMemo pool
+                            const mapped = item.selectedBags.map(b => {
+                                if (!b.id && b.bagNo) {
+                                    const match = allRemainingBagsMemo.find(rm => rm.bagNo === b.bagNo);
+                                    if (match) return { ...b, id: match.id };
+                                }
+                                return b;
+                            });
+                            consolidatedBags.push(...mapped);
                         }
                     });
 
@@ -14722,8 +14999,9 @@ const InvoiceModal = (props) => {
         if (paymentTerms === 'advance' && !adjustAdvRef?.refNo) return alert('⚠️ Please select an Advance Ref No. before saving.');
 
         const targetUid = dataOwnerId || user.uid;
-        if (await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! This Ref No exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! This Ref No exists in another transaction (${duplicateCol}).`);
         }
 
         /*
@@ -14862,10 +15140,10 @@ const InvoiceModal = (props) => {
                     bagCount: finalJumboBags.length,
                     // ✅ EMBED BAG SNAPSHOT so details load instantly when voucher is re-opened
                     jumboBags: voucherType === 'purchase' && finalJumboBags.length > 0
-                        ? finalJumboBags.map(b => ({ bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
+                        ? finalJumboBags.map(b => ({ id: b.id || '', bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
                         : (initialData?.jumboBags || []),
                     soldBags: voucherType === 'sales' && finalJumboBags.length > 0
-                        ? finalJumboBags.map(b => ({ bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
+                        ? finalJumboBags.map(b => ({ id: b.id || '', bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
                         : (initialData?.soldBags || []),
                     paymentTerms: paymentTerms === 'today' ? formData.date
                         : paymentTerms === 'advance' ? formData.date
@@ -14894,9 +15172,14 @@ const InvoiceModal = (props) => {
                                 productId: b.productId,
                                 qty: Number(b.qty),
                                 purchaseId: invoiceRef.id,
+                                purchaseRefNo: formData.refNo || '',
+                                voucherRefNo: formData.refNo || '',
+                                source: 'purchase',
                                 date: formData.date,
                                 status: 'in_stock',
                                 userId: targetUid,
+                                ownerId: targetUid,
+                                companyId: targetUid,
                                 createdAt: serverTimestamp()
                             });
                         }
@@ -14907,15 +15190,41 @@ const InvoiceModal = (props) => {
                         await transaction.update(doc(db, 'jumbo_bags', bid), {
                             status: 'in_stock',
                             salesId: deleteField(),
-                            soldDate: deleteField(),
                             salesRefNo: deleteField(),
-                            weightVariance: deleteField(),
-                            varianceNote: deleteField()
+                            soldDate: deleteField()
                         });
                     }
 
                     // 2. Mark New Selection as Sold & Handle Weight Variance
                     if (finalJumboBags.length > 0) {
+                        const selectedBagIds = new Set();
+                        for (const b of finalJumboBags) {
+                            if (!b?.id) {
+                                throw new Error('Invalid bag selection detected. Please re-open bag picker and try again.');
+                            }
+                            if (selectedBagIds.has(b.id)) {
+                                throw new Error(`Duplicate bag selected in voucher: ${b.bagNo || b.id}`);
+                            }
+                            selectedBagIds.add(b.id);
+
+                            const bagRef = doc(db, 'jumbo_bags', b.id);
+                            const bagSnap = await transaction.get(bagRef);
+                            if (!bagSnap.exists()) {
+                                console.warn(`Selected bag not found: ${b.bagNo || b.id}. Skipping.`);
+                                continue;
+                            }
+
+                            const bagData = bagSnap.data() || {};
+                            const soldElsewhere = bagData.status === 'sold' && bagData.salesId && bagData.salesId !== invoiceRef.id;
+                            if (soldElsewhere) {
+                                throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} is already sold in another voucher.`);
+                            }
+
+                            if (bagData.productId && b.productId && bagData.productId !== b.productId) {
+                                throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} does not belong to selected item.`);
+                            }
+                        }
+
                         // Group bags by product to calculate variance per item
                         const bagsByProduct = finalJumboBags.reduce((acc, b) => {
                             if (!acc[b.productId]) acc[b.productId] = [];
@@ -15640,6 +15949,32 @@ const InvoiceModal = (props) => {
                                                 </div>
                                             </div>
 
+                                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1 pt-2">Export / Transport Details</h4>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Contract No</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.contractNo} onChange={e => setFormData({ ...formData, contractNo: e.target.value })} />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Place of Delivery</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.placeOfDelivery} onChange={e => setFormData({ ...formData, placeOfDelivery: e.target.value })} />
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2 mt-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Mode of Transport</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.modeOfTransport} onChange={e => setFormData({ ...formData, modeOfTransport: e.target.value })} />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Payment Terms</label>
+                                                    <input type="text" className="w-full p-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-50 uppercase" value={formData.paymentTerms} onChange={e => setFormData({ ...formData, paymentTerms: e.target.value })} />
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1 mt-2">
+                                                <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Bank Details (Override)</label>
+                                                <textarea className="w-full p-2 border border-slate-200 rounded-xl text-[10px] font-bold text-slate-700 bg-slate-50 h-16 resize-none" value={formData.bankDetailsOverride} onChange={e => setFormData({ ...formData, bankDetailsOverride: e.target.value })} placeholder="Leave blank to use selected 'Our Bank' below..." />
+                                            </div>
+
                                             <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1 pt-2">Buyer / Consignee Overrides</h4>
                                             <div className="space-y-1">
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase px-1 text-blue-600">Consignee (If different from Party)</label>
@@ -15760,52 +16095,19 @@ const InvoiceModal = (props) => {
                                                 {(item.productId && voucherType === 'sales' && formData.packingType === 'bags') && (
                                                     <button
                                                         type="button"
-                                                        onClick={async () => {
+                                                        onClick={() => {
                                                             setActiveBagRowIndex(index);
-                                                            setActiveBagProduct(products.find(p => p.id === item.productId) || { id: item.productId, name: 'Unknown' });
-                                                            
-                                                            // FETCH AVAILABLE BAGS FOR THIS PRODUCT
-                                                            const targetUid = dataOwnerId || user.uid;
-                                                            // 1. Fetch available in stock bags for this product
-                                                            const qAvail = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), where('status', '==', 'in_stock'), where('productId', '==', item.productId));
-                                                            const snapAvail = await getDocs(qAvail);
-                                                            const availBags = snapAvail.docs.map(d => ({ id: d.id, ...d.data() }));
-
-                                                            // 2. Merge with already selected bags in memory or sold in DB
-                                                            const bagMap = new Map();
-                                                            availBags.forEach(b => bagMap.set(b.id, b));
-                                                            
-                                                            // Add currently selected bags in memory for this row
-                                                            if (item.selectedBags && Array.isArray(item.selectedBags)) {
-                                                                item.selectedBags.forEach(b => bagMap.set(b.id, b));
-                                                            }
-
-                                                            // Add sold bags from DB if editing
-                                                            if (initialData?.id) {
-                                                                const qSold = query(collection(db, 'jumbo_bags'), where('salesId', '==', initialData.id), where('productId', '==', item.productId));
-                                                                const snapSold = await getDocs(qSold);
-                                                                const soldBags = snapSold.docs.map(d => ({ id: d.id, ...d.data() }));
-                                                                soldBags.forEach(b => bagMap.set(b.id, b));
-                                                            }
-
-                                                            setAvailableBags(Array.from(bagMap.values()));
+                                                            setActiveBagProduct(item.productId);
+                                                            const avail = allRemainingBagsMemo.filter(b => b.productId === item.productId);
+                                                            setAvailableBags(avail);
                                                             setShowJumboSelection(true);
                                                         }}
                                                         className="mt-2 relative z-10 flex items-center gap-1 text-[9px] font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200 hover:bg-orange-100 transition-colors w-fit shadow-sm"
                                                     >
                                                         <ShoppingBag size={10} />
-                                                        {(() => {
-                                                            const countSelected = (jumboBags || []).filter(b => b.productId === item.productId).length;
-                                                            const availToAdd = productsBagMap[item.productId] || 0;
-                                                            if (countSelected > 0) {
-                                                                if (initialData?.id) {
-                                                                    if (availToAdd > 0) return 'addmore ';
-                                                                    return 'zero bags available';
-                                                                }
-                                                                return `${countSelected} Bags Selected`;
-                                                            }
-                                                            return 'Select Bags / Scan';
-                                                        })()}
+                                                        {(jumboBags || []).filter(b => b.productId === item.productId).length > 0
+                                                            ? 'Edit Bags'
+                                                            : 'Select Bags / Scan'}
                                                     </button>
                                                 )}
                                             </td>
@@ -16035,11 +16337,23 @@ const InvoiceModal = (props) => {
                         {/* BAG DETAILS SUMMARY (shown when bags are allocated/selected) */}
                         {jumboBags && jumboBags.length > 0 && (
                             <div className="mx-1 mb-2 p-2 bg-amber-50 border border-amber-200 rounded-xl relative overflow-hidden">
-                                <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-amber-200">
-                                    <div className="p-1 bg-amber-100 rounded text-amber-600"><Box size={12} /></div>
-                                    <span className="text-[10px] font-black text-amber-800 uppercase tracking-wide">
-                                        {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} — {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
-                                    </span>
+                                <div className="flex items-center justify-between gap-2 mb-1.5 pb-1.5 border-b border-amber-200">
+                                    <div className="flex items-center gap-2">
+                                        <div className="p-1 bg-amber-100 rounded text-amber-600"><Box size={12} /></div>
+                                        <span className="text-[10px] font-black text-amber-800 uppercase tracking-wide">
+                                            {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} — {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
+                                        </span>
+                                    </div>
+                                    {voucherType === 'sales' && formData.packingType === 'bags' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowGlobalBagManager(true)}
+                                            className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-md transition-all active:scale-95 flex items-center gap-1 shadow-sm"
+                                        >
+                                            <Edit size={10} />
+                                            <span>Edit / Add</span>
+                                        </button>
+                                    )}
                                 </div>
                                 <div className="flex flex-wrap gap-x-6 gap-y-1.5 max-h-20 overflow-y-auto custom-scrollbar">
                                     {jumboBags.map((bag, idx) => {
@@ -16155,7 +16469,7 @@ const InvoiceModal = (props) => {
                             row.selectedBags = selectedBags;
                             const totalWeight = round3(selectedBags.reduce((sum, b) => sum + Number(b.qty), 0));
                             row.quantity = totalWeight; // Auto-fill Qty
-                            row.pieces = selectedBags.length; // Auto-fill Pieces (Bag Count)
+                            // row.pieces = selectedBags.length; // Decoupled: Auto-fill Pieces disabled by user request
 
                             // Recalculate Total
                             const rate = Number(row.rate) || 0;
@@ -16169,12 +16483,18 @@ const InvoiceModal = (props) => {
                     }}
                     items={items} // Not strictly needed for single-row mode but kept for compat
                     products={products}
-                    initialSelectedIds={
-                        (items[activeBagRowIndex]?.selectedBags && items[activeBagRowIndex]?.selectedBags.length > 0)
-                            ? items[activeBagRowIndex]?.selectedBags?.map(b => b.id)
-                            : (jumboBags || []).filter(b => b.productId === items[activeBagRowIndex]?.productId).map(b => b.id || b.bagNo)
-                    }
-                    targetProductId={activeBagProduct?.id || activeBagProduct} // Filter visual
+                    initialSelectedIds={items[activeBagRowIndex]?.selectedBags?.map(b => b.id) || []} // Pre-select if re-opening
+                    targetProductId={activeBagProduct?.id} // Filter visual
+                />
+
+                <GlobalBagManagerModal
+                    isOpen={showGlobalBagManager}
+                    onClose={() => setShowGlobalBagManager(false)}
+                    items={items}
+                    setItems={setItems}
+                    products={products}
+                    allRemainingBagsMemo={allRemainingBagsMemo}
+                    round3={round3}
                 />
 
                 {/* ✅ Sales Expense Mode Selection Modal */}
@@ -16274,7 +16594,8 @@ const InvoiceModal = (props) => {
                                                 { id: 'invoice', templateId: 'invoice', name: voucherType === 'purchase' ? 'Purchase Bill' : 'Invoice', enabled: true },
                                                 { id: 'packing_list', templateId: 'packing_list', name: 'Packing List', enabled: true },
                                                 { id: 'bill_of_exchange', templateId: 'bill_of_exchange', name: 'Bill of Exch', enabled: true },
-                                                { id: 'bank_application', templateId: 'bank_application', name: 'Bank Letter', enabled: true }
+                                                { id: 'bank_application', templateId: 'bank_application', name: 'Bank Letter', enabled: true },
+                                                { id: 'export_invoice', templateId: 'export_invoice', name: 'Export Invoice', enabled: true }
                                             ]).filter(d => d.enabled).map(docType => (
                                                 <button
                                                     key={docType.id}
@@ -16570,6 +16891,7 @@ const InvoiceModal = (props) => {
                                                     else if (config.templateId === 'packing_list') combinedDoc = await generatePackingListPDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bill_of_exchange') combinedDoc = await generateBillOfExchangePDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bank_application') combinedDoc = await generateBankApplicationPDF(configData, 'return', combinedDoc);
+                                                    else if (config.templateId === 'export_invoice') combinedDoc = await generateExportInvoicePDF(configData, 'return', combinedDoc);
                                                 }
                                                 if (combinedDoc) window.open(combinedDoc.output('bloburl'), '_blank');
                                             } else {
@@ -16579,6 +16901,8 @@ const InvoiceModal = (props) => {
                                                     generateBillOfExchangePDF(rawData, 'preview');
                                                 } else if (printOptions.documentType === 'bank_application') {
                                                     generateBankApplicationPDF(rawData, 'preview');
+                                                } else if (printOptions.documentType === 'export_invoice') {
+                                                    generateExportInvoicePDF(rawData, 'preview');
                                                 } else {
                                                     generateInvoicePDF(rawData, 'preview');
                                                 }
@@ -16639,6 +16963,7 @@ const InvoiceModal = (props) => {
                                                     else if (config.templateId === 'packing_list') combinedDoc = await generatePackingListPDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bill_of_exchange') combinedDoc = await generateBillOfExchangePDF(configData, 'return', combinedDoc);
                                                     else if (config.templateId === 'bank_application') combinedDoc = await generateBankApplicationPDF(configData, 'return', combinedDoc);
+                                                    else if (config.templateId === 'export_invoice') combinedDoc = await generateExportInvoicePDF(configData, 'return', combinedDoc);
                                                 }
                                                 if (combinedDoc) combinedDoc.save(`All_Docs_${rawData.invoiceNo || 'Draft'}.pdf`);
                                             } else {
@@ -16648,6 +16973,8 @@ const InvoiceModal = (props) => {
                                                     generateBillOfExchangePDF(rawData);
                                                 } else if (printOptions.documentType === 'bank_application') {
                                                     generateBankApplicationPDF(rawData);
+                                                } else if (printOptions.documentType === 'export_invoice') {
+                                                    generateExportInvoicePDF(rawData);
                                                 } else {
                                                     generateInvoicePDF(rawData);
                                                 }
@@ -16901,7 +17228,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
 
         // LOAD INITIAL BAGS IF PROVIDED (EDIT MODE)
         if (initialBags && initialBags.length > 0) {
-            setBags(initialBags);
+            setBags(initialBags.map(b => ({ ...b, id: b.id || (Date.now() + Math.random()) })));
             // "Real" bag seed logic: Find max numeric bagNo in THIS list
             const maxNumericBagNo = initialBags.reduce((max, b) => {
                 let num = 0;
@@ -17182,16 +17509,8 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
 
 
 
-    const handleUpdateBag = (index, field, value) => {
-        setBags(prev => {
-            const next = [...prev];
-            next[index] = { ...next[index], [field]: value };
-            return next;
-        });
-    };
-
-    const handleRemoveBag = (index) => {
-        setBags(prev => prev.filter((_, i) => i !== index));
+    const handleRemoveBag = (id) => {
+        setBags(prev => prev.filter(b => b.id !== id));
     };
 
     const handleFinish = () => {
@@ -17218,7 +17537,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
                 <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
                     <div className="flex items-center gap-3">
-                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> Jumbo Bag Allocation</h2>
+                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> FILLING JUMBO BAG ALLOCATION AREA</h2>
                         <span className="px-2 py-1 rounded bg-blue-500/20 border border-blue-300/30 text-[10px] font-black uppercase tracking-wider text-blue-100">
                             Ref No: {voucherRefNo?.trim() || 'N/A'}
                         </span>
@@ -17300,38 +17619,18 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                         </thead>
                         <tbody className="divide-y">
                             {bags.map((b, i) => (
-                                <tr key={b.id || `bag-${i}`} className="hover:bg-slate-50">
-                                    <td className="p-2 text-xs font-bold text-slate-400">{i + 1}</td>
-                                    <td className="p-2">
-                                        <input 
-                                            className={`font-mono font-bold text-lg bg-transparent border border-transparent hover:border-slate-300 focus:border-blue-500 rounded px-1 w-full outline-none transition-colors ${b.isReusable ? 'text-emerald-700' : ''}`}
-                                            value={b.bagNo} 
-                                            onChange={e => handleUpdateBag(i, 'bagNo', e.target.value.toUpperCase())} 
-                                        />
+                                <tr key={b.id || `${b.bagNo}-${b.productId}-${i}`} className={b.isReusable ? "bg-emerald-50 hover:bg-emerald-100 border-b border-emerald-100" : "hover:bg-slate-50"}>
+                                    <td className={`p-2 text-xs font-bold ${b.isReusable ? 'text-emerald-500' : 'text-slate-400'}`}>{i + 1}</td>
+                                    <td className={`p-2 font-mono font-bold text-lg flex items-center gap-1 ${b.isReusable ? 'text-emerald-700' : ''}`}>
+                                        {b.isReusable && <Recycle size={14} className="text-emerald-600" />}
+                                        {b.bagNo}
                                     </td>
-                                    <td className="p-2">
-                                        <select 
-                                            className="bg-transparent border border-transparent hover:border-slate-300 focus:border-blue-500 rounded px-1 w-full outline-none transition-colors" 
-                                            value={b.productId} 
-                                            onChange={e => handleUpdateBag(i, 'productId', e.target.value)}
-                                        >
-                                            {producedItems.map(p => (
-                                                <option key={p.productId} value={p.productId}>{p.productName}</option>
-                                            ))}
-                                        </select>
-                                    </td>
-                                    <td className="p-2">
-                                        <input 
-                                            type="number"
-                                            className="text-right font-bold bg-transparent border border-transparent hover:border-slate-300 focus:border-blue-500 rounded px-1 w-24 outline-none float-right transition-colors" 
-                                            value={b.qty} 
-                                            onChange={e => handleUpdateBag(i, 'qty', e.target.value)} 
-                                        />
-                                    </td>
-                                    <td className="p-2 text-center text-red-400 cursor-pointer" onClick={() => handleRemoveBag(i)}><X size={16} /></td>
+                                    <td className={`p-2 ${b.isReusable ? 'text-emerald-800 font-medium' : ''}`}>{producedItems.find(p => p.productId === b.productId)?.productName}</td>
+                                    <td className={`p-2 text-right font-bold ${b.isReusable ? 'text-emerald-700' : ''}`}>{b.qty}</td>
+                                    <td className="p-2 text-center text-red-400 cursor-pointer" onClick={() => handleRemoveBag(b.id)}><X size={16} /></td>
                                 </tr>
                             ))}
-                            {bags.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-400">No bags allocated yet.</td></tr>}
+                            {bags.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400">No bags allocated yet.</td></tr>}
                         </tbody>
                     </table>
                 </div>
@@ -17393,9 +17692,6 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
     const totalSelectedQty = availableBags.filter(b => selectedIds.has(b.id)).reduce((s, b) => s + Number(b.qty), 0);
     const countSelected = selectedIds.size;
 
-    // Count how many bags of this item are available to select that are NOT already selected
-    const unselectedAvailable = filtered.filter(b => b.status === 'in_stock' && !selectedIds.has(b.id));
-
     return (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95">
@@ -17406,14 +17702,6 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                     </div>
                     <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full transition-colors"><X size={20} /></button>
                 </div>
-
-                {/* ⚠️ Warning banner when zero bags available to add more */}
-                {unselectedAvailable.length === 0 && (
-                    <div className="mx-4 mt-4 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wide flex items-center gap-2">
-                        <span>⚠️</span>
-                        <span>zero bags available to add more</span>
-                    </div>
-                )}
 
                 <div className="p-4 bg-slate-100 border-b flex gap-4 items-center">
                     <div className="flex-1 relative">
@@ -17459,6 +17747,7 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                                 {!targetProductId && <th className="p-3">Product</th>}
                                 <th className="p-3 text-right">Quantity</th>
                                 <th className="p-3">Date</th>
+                                <th className="p-3">Mfg Vch Ref</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -17477,6 +17766,7 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
                                     </td>}
                                     <td className="p-3 text-right font-black text-slate-900 text-lg">{bag.qty} <span className="text-xs text-slate-400 font-normal">kg</span></td>
                                     <td className="p-3 text-[10px] text-slate-400 font-bold">{bag.date}</td>
+                                    <td className="p-3 text-xs font-bold text-indigo-600 bg-indigo-50/30 rounded border border-indigo-100/50">{bag.stockJournalRefNo || bag.voucherRefNo || '-'}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -17492,6 +17782,256 @@ const JumboBagSelectionModal = ({ isOpen, onClose, availableBags, onSave, items,
         </div>
     );
 };
+
+// --- GLOBAL BAG MANAGER MODAL (For Sales) ---
+function GlobalBagManagerModal({
+    isOpen,
+    onClose,
+    items,
+    setItems,
+    products,
+    allRemainingBagsMemo,
+    round3
+}) {
+    const [showAddView, setShowAddView] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+
+    if (!isOpen) return null;
+
+    // Get active products currently in the items array (with a valid productId)
+    const activeProductIds = new Set(items.map(i => i.productId).filter(Boolean));
+
+    // Get selected bags from items
+    const selectedBags = items.flatMap(i => (i.selectedBags || []).map(b => ({
+        ...b,
+        itemRowKey: i._rowKey,
+        itemProductName: products.find(p => p.id === i.productId)?.name || 'Item'
+    })));
+
+    // Remaining available bags strictly filtered by active products inside items
+    const remainingBags = allRemainingBagsMemo.filter(b => {
+        if (!activeProductIds.has(b.productId)) return false;
+        
+        // Exclude already selected bags
+        const isAlreadySelected = items.some(i => i.selectedBags?.some(sb => sb.id === b.id));
+        if (isAlreadySelected) return false;
+
+        if (searchTerm) {
+            const s = searchTerm.toLowerCase();
+            const pName = products.find(p => p.id === b.productId)?.name || '';
+            return String(b.bagNo || '').toLowerCase().includes(s) || pName.toLowerCase().includes(s);
+        }
+        return true;
+    });
+
+    const handleRemoveBag = (bagId) => {
+        const targetRowIndex = items.findIndex(item => item.selectedBags?.some(b => b.id === bagId));
+        if (targetRowIndex !== -1) {
+            const newItems = [...items];
+            const row = { ...newItems[targetRowIndex] };
+            row.selectedBags = (row.selectedBags || []).filter(b => b.id !== bagId);
+            const totalWeight = round3(row.selectedBags.reduce((sum, b) => sum + Number(b.qty), 0));
+            row.quantity = totalWeight;
+            const rate = Number(row.rate) || 0;
+            row.total = round3(totalWeight * rate);
+            newItems[targetRowIndex] = row;
+            setItems(newItems);
+        }
+    };
+
+    const handleAddBag = (bag) => {
+        const targetRowIndex = items.findIndex(item => item.productId === bag.productId);
+        if (targetRowIndex !== -1) {
+            const newItems = [...items];
+            const row = { ...newItems[targetRowIndex] };
+            const currentBags = row.selectedBags ? [...row.selectedBags] : [];
+            if (!currentBags.some(b => b.id === bag.id)) {
+                currentBags.push(bag);
+                row.selectedBags = currentBags;
+                const totalWeight = round3(currentBags.reduce((sum, b) => sum + Number(b.qty), 0));
+                row.quantity = totalWeight;
+                const rate = Number(row.rate) || 0;
+                row.total = round3(totalWeight * rate);
+                newItems[targetRowIndex] = row;
+                setItems(newItems);
+            }
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-100">
+                
+                {/* Header */}
+                <div className="px-6 py-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex justify-between items-center shrink-0 shadow-md">
+                    <div>
+                        <h2 className="text-lg font-black uppercase tracking-wider flex items-center gap-2">
+                            <Box size={20} className="text-amber-400" />
+                            <span>Jumbo Bag Manager</span>
+                        </h2>
+                        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                            {showAddView ? 'Add Remaining Available Bags' : `Currently Selected: ${selectedBags.length} Bags`}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setShowAddView(!showAddView);
+                                setSearchTerm('');
+                            }}
+                            className={`px-3 py-1.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5 shadow-sm border ${
+                                showAddView 
+                                ? 'bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600'
+                                : 'bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 shadow-emerald-950/20'
+                            }`}
+                        >
+                            {showAddView ? (
+                                <>
+                                    <X size={12} />
+                                    <span>Back to list</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Plus size={12} strokeWidth={3} />
+                                    <span>Add Bags</span>
+                                </>
+                            )}
+                        </button>
+                        <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full transition-colors"><X size={20} /></button>
+                    </div>
+                </div>
+
+                {/* Subheader Search (only shown when adding bags) */}
+                {showAddView && (
+                    <div className="p-4 bg-slate-50 border-b flex gap-3 items-center shrink-0">
+                        <div className="flex-1 relative">
+                            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                            <input
+                                type="text"
+                                placeholder="Search remaining bags by number or product..."
+                                className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-xl shadow-inner font-bold text-slate-700 bg-white focus:outline-none focus:border-blue-400 transition-all text-xs"
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* Content Area */}
+                <div className="flex-1 overflow-y-auto p-6 min-h-[250px] custom-scrollbar bg-slate-50/50">
+                    {showAddView ? (
+                        /* ADD BAGS VIEW */
+                        <div className="space-y-3">
+                            {remainingBags.map((bag, i) => (
+                                <div key={bag.id || i} className="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:border-emerald-200 hover:shadow-md transition-all group animate-in slide-in-from-bottom-2 duration-200">
+                                    <div className="flex items-center gap-4">
+                                        <div className="bg-slate-100 w-10 h-10 rounded-xl flex items-center justify-center text-slate-500 font-mono font-black text-sm border border-slate-200/50">
+                                            #{bag.bagNo}
+                                        </div>
+                                        <div>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">
+                                                {products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}
+                                            </h4>
+                                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5 flex items-center gap-1.5">
+                                                <span>Weight:</span>
+                                                <span className="text-blue-600 font-black">{Number(bag.qty || 0).toFixed(3)} kg</span>
+                                                {bag.date && (
+                                                    <>
+                                                        <span className="text-slate-300">•</span>
+                                                        <span>{bag.date}</span>
+                                                    </>
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleAddBag(bag)}
+                                        className="bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white px-4 h-9 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all border border-emerald-100 hover:border-emerald-600 active:scale-95 flex items-center gap-1 shadow-sm"
+                                    >
+                                        <Plus size={12} strokeWidth={3} />
+                                        <span>Add</span>
+                                    </button>
+                                </div>
+                            ))}
+                            {remainingBags.length === 0 && (
+                                <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 p-8 shadow-sm">
+                                    <Package size={40} className="mx-auto text-slate-300 mb-2" />
+                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No remaining available bags found</p>
+                                    <p className="text-slate-400 text-[10px] mt-1">Only bags for items currently added in the voucher are listed.</p>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        /* CURRENTLY SELECTED BAGS LIST */
+                        <div className="space-y-3">
+                            {selectedBags.map((bag, i) => (
+                                <div key={bag.id || i} className="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all group animate-in slide-in-from-bottom-2 duration-200">
+                                    <div className="flex items-center gap-4">
+                                        <div className="bg-amber-50 w-10 h-10 rounded-xl flex items-center justify-center text-amber-700 font-mono font-black text-sm border border-amber-100">
+                                            #{bag.bagNo}
+                                        </div>
+                                        <div>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">{bag.itemProductName}</h4>
+                                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5 flex items-center gap-1.5">
+                                                <span>Weight:</span>
+                                                <span className="text-amber-700 font-black">{Number(bag.qty || 0).toFixed(3)} kg</span>
+                                                {bag.date && (
+                                                    <>
+                                                        <span className="text-slate-300">•</span>
+                                                        <span>{bag.date}</span>
+                                                    </>
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleRemoveBag(bag.id)}
+                                        className="bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white px-3.5 h-9 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all border border-rose-100 hover:border-rose-600 active:scale-95 flex items-center gap-1 shadow-sm"
+                                    >
+                                        <Trash2 size={12} />
+                                        <span>Remove</span>
+                                    </button>
+                                </div>
+                            ))}
+                            {selectedBags.length === 0 && (
+                                <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 p-8 shadow-sm">
+                                    <Box size={40} className="mx-auto text-slate-300 mb-2" />
+                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No bags linked to this voucher yet</p>
+                                    <p className="text-slate-400 text-[10px] mt-1">Click the + Add Bags button at the top right to link available bags.</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Footer Summary */}
+                {!showAddView && selectedBags.length > 0 && (
+                    <div className="px-6 py-4 bg-slate-100 border-t flex justify-between items-center shrink-0">
+                        <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
+                            Total Bags Summary
+                        </span>
+                        <div className="flex items-center gap-6">
+                            <div className="text-right">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">Bag Count</span>
+                                <span className="text-sm font-black text-slate-800">{selectedBags.length} Bags</span>
+                            </div>
+                            <div className="text-right">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">Total Net Weight</span>
+                                <span className="text-sm font-black text-blue-600 font-mono">
+                                    {selectedBags.reduce((sum, b) => sum + Number(b.qty || 0), 0).toFixed(3)} kg
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
 
 const StockJournalModal = (props) => {
     const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
@@ -17517,6 +18057,7 @@ const StockJournalModal = (props) => {
     const [saving, setSaving] = useState(false); 
     const [showDateModal, setShowDateModal] = useState(false);
     const [showAutoCalcPanel, setShowAutoCalcPanel] = useState(false);
+    const [isAutoCalcFullView, setIsAutoCalcFullView] = useState(false);
     const [autoCalcView, setAutoCalcView] = useState('list');
     const [autoCalcForm, setAutoCalcForm] = useState(createAutoCalcBomForm());
     const [autoCalcSaving, setAutoCalcSaving] = useState(false);
@@ -18252,13 +18793,16 @@ const StockJournalModal = (props) => {
                 const strictBags = finalJumboBags.filter(b => !b?.isReusable);
                 const internalBagNos = strictBags.map(b => normalizeBagNo(b.bagNo)).filter(Boolean);
                 if (new Set(internalBagNos).size !== internalBagNos.length) {
-                    alert(`❌ INTERNAL DUPLICATE: You have entered the same Bag Number multiple times in this voucher. Please ensure each bag has a unique number.`);
+                    alert(`❌ INTERNAL DUPLICATE: You have entered the same non-reusable Bag Number multiple times in this voucher. Please ensure each bag has a unique number.`);
                     setSaving(false);
                     return;
                 }
 
                 const bagNumbers = [...new Set(internalBagNos)];
-                for (const bNo of bagNumbers) {
+                const existingBagNos = (initialData?.jumboBags || []).map(b => normalizeBagNo(b.bagNo));
+                const bagNumbersToCheckInDb = bagNumbers.filter(bNo => !existingBagNos.includes(bNo));
+
+                for (const bNo of bagNumbersToCheckInDb) {
                     const bLower = bNo.toLowerCase();
                     const searchArray = [bNo, `#${bNo}`, bLower, `#${bLower}`];
                     const belongsToTarget = (data) => {
@@ -18287,15 +18831,10 @@ const StockJournalModal = (props) => {
                         }
                     }
 
-                    const otherDocs = matchedDocs.filter(d => {
-                        const docId = d.data().stockJournalId || d.data().purchaseId || d.data().voucherId;
-                        return docId !== initialData?.id;
-                    });
+                    const otherDocs = matchedDocs.filter(d => d.data().stockJournalId !== initialData?.id);
                     
                     if (otherDocs.length > 0) {
-                        const existingData = otherDocs[0].data();
-                        const conflictRef = existingData.stockJournalRefNo || existingData.voucherRefNo || existingData.purchaseRefNo || "Unknown Voucher";
-                        alert(`❌ DUPLICATE BAG: Bag #${bNo} is already used in another voucher (Ref: ${conflictRef}).\n\nRefill is NOT allowed for this bag number.`);
+                        alert(`❌ DUPLICATE BAG: Bag #${bNo} is already used in another voucher.\n\nReuse is NOT allowed for this bag number.`);
                         setSaving(false);
                         return;
                     }
@@ -18307,6 +18846,37 @@ const StockJournalModal = (props) => {
             let bagsToDelete = [];
             let statusPreservationMap = {}; // Map of bagNo -> current status/sales data
 
+            let orphanedJvId = null;
+            if (initialData?.id) {
+                const qOld = query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', initialData.id));
+                const snapOld = await getDocs(qOld);
+                bagsToDelete = snapOld.docs.map(d => d.id);
+                
+                // Preserve status for bags that might have been sold
+                snapOld.forEach(docSnap => {
+                    const d = docSnap.data();
+                    if (d.bagNo) {
+                        const normalized = String(d.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                        if (!normalized) return;
+                        statusPreservationMap[normalized] = {
+                            status: d.status || 'in_stock',
+                            salesId: d.salesId || null,
+                            salesRefNo: d.salesRefNo || null,
+                            soldDate: d.soldDate || null
+                        };
+                    }
+                });
+
+                // CHECK FOR ORPHANED JV (from older saves)
+                if (initialData?.id && !initialData.expenseJournalId) {
+                    const qJvRef = query(collection(db, 'journal_vouchers'), where('refNo', '==', `${initialData.refNo || refNo}-Exp`));
+                    const snapJvRef = await getDocs(qJvRef);
+                    if (!snapJvRef.empty) orphanedJvId = snapJvRef.docs[0].id;
+                }
+            }
+
+            const targetUidForQuery = dataOwnerId || user?.uid;
+            
             // For reusable refills, update existing bag weight instead of creating a new bag row.
             const reusableGroupedByNo = finalJumboBags
                 .filter(b => b?.isReusable && b?.bagNo)
@@ -18330,20 +18900,20 @@ const StockJournalModal = (props) => {
             const reusableBagNos = Object.keys(reusableGroupedByNo);
             const existingReusableInventoryMap = {};
 
-            if (reusableBagNos.length > 0) {
+            if (reusableBagNos.length > 0 && targetUidForQuery) {
                 try {
                     let invSnap;
                     try {
                         invSnap = await getDocs(query(
                             collection(db, 'jumbo_bags'),
-                            where('userId', '==', targetUid),
+                            where('userId', '==', targetUidForQuery),
                             where('status', '==', 'in_stock'),
                             limit(10000)
                         ));
                     } catch (e) {
                         invSnap = await getDocs(query(
                             collection(db, 'jumbo_bags'),
-                            where('userId', '==', targetUid),
+                            where('userId', '==', targetUidForQuery),
                             limit(10000)
                         ));
                     }
@@ -18361,46 +18931,11 @@ const StockJournalModal = (props) => {
                 }
             }
 
-            let orphanedJvId = null;
-            if (initialData?.id) {
-                const qOld1 = query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', initialData.id));
-                const qOld2 = query(collection(db, 'jumbo_bags'), where('voucherId', '==', initialData.id));
-                
-                const [snapOld1, snapOld2] = await Promise.all([getDocs(qOld1), getDocs(qOld2)]);
-                const allOldDocs = [...snapOld1.docs, ...snapOld2.docs];
-                
-                // Remove duplicates if any
-                const uniqueOldDocs = Array.from(new Set(allOldDocs.map(d => d.id)))
-                                         .map(id => allOldDocs.find(d => d.id === id));
-
-                bagsToDelete = uniqueOldDocs.map(d => d.id);
-                
-                // Preserve status for bags that might have been sold
-                uniqueOldDocs.forEach(docSnap => {
-                    const d = docSnap.data();
-                    if (d.bagNo) {
-                        statusPreservationMap[d.bagNo] = {
-                            status: d.status || 'in_stock',
-                            salesId: d.salesId || null,
-                            soldDate: d.soldDate || null
-                        };
-                    }
-                });
-
-                // CHECK FOR ORPHANED JV (from older saves)
-                if (initialData?.id && !initialData.expenseJournalId) {
-                    const qJvRef = query(collection(db, 'journal_vouchers'), where('refNo', '==', `${initialData.refNo || refNo}-Exp`));
-                    const snapJvRef = await getDocs(qJvRef);
-                    if (!snapJvRef.empty) orphanedJvId = snapJvRef.docs[0].id;
-                }
-            }
-
-                let savedJournalId = initialData?.id || null;
-
+            let savedJournalId = null;
             await runTransaction(db, async (transaction) => {
                 const journalRef = initialData?.id ? doc(db, 'stock_journals', initialData.id) : doc(collection(db, 'stock_journals'));
                 const targetUid = dataOwnerId || user.uid;
-                    savedJournalId = journalRef.id;
+                savedJournalId = journalRef.id;
 
                 if (initialData?.id) {
                     await transaction.get(journalRef); 
@@ -18454,7 +18989,13 @@ const StockJournalModal = (props) => {
                     jumboEnabled: jumboEnabled || false,
                     bagCount: finalJumboBags.filter(b => !b?.isReusable).length,
                     // ✅ EMBED BAG SNAPSHOT so they load instantly when voucher is re-opened
-                    jumboBags: finalJumboBags.map(b => ({ bagNo: b.bagNo, productId: b.productId, qty: round3(b.qty) })),
+                    jumboBags: finalJumboBags.map(b => ({ 
+                        id: b.id || (Date.now() + Math.random()), 
+                        bagNo: b.bagNo, 
+                        productId: b.productId, 
+                        qty: round3(b.qty),
+                        isReusable: !!b.isReusable
+                    })),
                     productionStaffIds: productionStaffIds || [],
                     userId: targetUid,
                     updatedAt: serverTimestamp(),
@@ -18484,9 +19025,10 @@ const StockJournalModal = (props) => {
                             sourceId: journalRef.id, // For general source tracking
                             source: 'production',    // Forces BLUE tag in reports
                             date: date,
-                            allowMultiFilling: !!b.isReusable,
+                            allowMultiFilling: false,
                             status: preserved.status || 'in_stock',
                             salesId: preserved.salesId || null,
+                            salesRefNo: preserved.salesRefNo || null,
                             soldDate: preserved.soldDate || null,
                             userId: targetUid,
                             ownerId: targetUid,
@@ -18548,9 +19090,8 @@ const StockJournalModal = (props) => {
 
             // Save reusable bag refill details so each reusable bag keeps manufacturing history.
             const reusableRows = finalJumboBags.filter(b => b?.isReusable && b?.bagNo);
-            let reusableConflictResolved = false;
-            let reusableConflictUnresolved = 0;
-            if (reusableRows.length > 0) {
+            const targetUidForHistory = dataOwnerId || user?.uid;
+            if (reusableRows.length > 0 && targetUidForHistory) {
                 const grouped = reusableRows.reduce((acc, row) => {
                     const key = String(row.bagNo || '').replace(/^#/, '').trim().toUpperCase();
                     if (!key) return acc;
@@ -18560,113 +19101,59 @@ const StockJournalModal = (props) => {
                 }, {});
 
                 for (const [bagNo, rows] of Object.entries(grouped)) {
-                    let snap = await getDocs(query(
-                        collection(db, 'reusable_jumbo_bags'),
-                        where('ownerId', '==', targetUid),
-                        where('bagNo', '==', bagNo),
-                        limit(1)
-                    ));
-
-                    if (snap.empty) {
-                        snap = await getDocs(query(
+                    try {
+                        let snap = await getDocs(query(
                             collection(db, 'reusable_jumbo_bags'),
-                            where('userId', '==', targetUid),
+                            where('ownerId', '==', targetUidForHistory),
                             where('bagNo', '==', bagNo),
                             limit(1)
                         ));
-                    }
 
-                    if (snap.empty) continue;
-
-                    const totalQty = rows.reduce((s, r) => s + Number(r.qty || 0), 0);
-                    const usageEntry = {
-                        date: date || '',
-                        manufacturingRefNo: refNo || '',
-                        stockJournalId: savedJournalId || '',
-                        qty: round3(totalQty),
-                        fillCount: rows.length,
-                        productIds: [...new Set(rows.map(r => r.productId).filter(Boolean))],
-                        productNames: [...new Set(rows
-                            .map(r => products.find(p => p.id === r.productId)?.name)
-                            .filter(Boolean)
-                        )],
-                        createdAtIso: new Date().toISOString()
-                    };
-
-                    const rbDocId = snap.docs[0].id;
-                    let updated = false;
-                    let hadConflict = false;
-
-                    // RxDB may throw CONFLICT on stale revisions; re-read latest doc and retry merge.
-                    for (let attempt = 0; attempt < 5; attempt++) {
-                        try {
-                            const latestRef = doc(db, 'reusable_jumbo_bags', rbDocId);
-                            const latestSnap = await getDoc(latestRef);
-                            const rbData = latestSnap.exists() ? (latestSnap.data() || {}) : {};
-
-                            const existingHistory = Array.isArray(rbData.usageHistory) ? rbData.usageHistory : [];
-                            const alreadyExists = existingHistory.some(h =>
-                                String(h.createdAtIso || '') === String(usageEntry.createdAtIso) ||
-                                (
-                                    String(h.manufacturingRefNo || '').toLowerCase() === String(usageEntry.manufacturingRefNo || '').toLowerCase() &&
-                                    String(h.date || '') === String(usageEntry.date || '') &&
-                                    Number(h.qty || 0) === Number(usageEntry.qty || 0)
-                                )
-                            );
-
-                            const nextHistory = alreadyExists ? existingHistory : [...existingHistory, usageEntry];
-                            const nextRefillCount = nextHistory.reduce((sum, h) => sum + Number(h.fillCount || 1), 0);
-                            const nextTotalWeight = round3(nextHistory.reduce((sum, h) => sum + Number(h.qty || 0), 0));
-
-                            await updateDoc(latestRef, {
-                                lastDate: date || '',
-                                lastRefNo: refNo || '',
-                                lastStockJournalId: savedJournalId || '',
-                                refillCount: nextRefillCount,
-                                totalWeight: nextTotalWeight,
-                                usageHistory: nextHistory
-                            });
-
-                            updated = true;
-                            break;
-                        } catch (e) {
-                            const msg = String(e?.message || e || '');
-                            if (msg.includes('CONFLICT')) {
-                                hadConflict = true;
-                                if (attempt === 4) {
-                                    console.warn('Reusable bag update conflict after retries:', bagNo, e);
-                                }
-                                continue;
-                            }
-                            throw e;
+                        if (snap.empty) {
+                            snap = await getDocs(query(
+                                collection(db, 'reusable_jumbo_bags'),
+                                where('userId', '==', targetUidForHistory),
+                                where('bagNo', '==', bagNo),
+                                limit(1)
+                            ));
                         }
-                    }
 
-                    if (!updated) {
-                        reusableConflictUnresolved += 1;
-                        console.warn('Skipping reusable bag metadata update due to repeated conflicts:', bagNo);
-                    } else if (hadConflict) {
-                        reusableConflictResolved = true;
+                        if (snap.empty) continue;
+
+                        const totalQty = rows.reduce((s, r) => s + Number(r.qty || 0), 0);
+                        const usageEntry = {
+                            date: date || '',
+                            manufacturingRefNo: refNo || '',
+                            stockJournalId: savedJournalId || '',
+                            qty: round3(totalQty),
+                            fillCount: rows.length,
+                            productIds: [...new Set(rows.map(r => r.productId).filter(Boolean))],
+                            productNames: [...new Set(rows
+                                .map(r => products.find(p => p.id === r.productId)?.name)
+                                .filter(Boolean)
+                            )],
+                            createdAtIso: new Date().toISOString()
+                        };
+
+                        const rbDocId = snap.docs[0].id;
+                        const rbRef = doc(db, 'reusable_jumbo_bags', rbDocId);
+                        
+                        await updateDoc(rbRef, {
+                            usageHistory: arrayUnion(usageEntry),
+                            lastUsedDate: date || '',
+                            lastUsedRefNo: refNo || '',
+                            totalRefillWeight: increment(totalQty),
+                            refillCount: increment(rows.length),
+                            updatedAt: serverTimestamp()
+                        });
+                    } catch (e) {
+                        console.warn(`Failed to update history for reusable bag ${bagNo}`, e);
                     }
                 }
             }
 
             if (onUpdateDate) onUpdateDate(date);
-            if (reusableConflictUnresolved > 0) {
-                showToast({
-                    type: 'warning',
-                    title: 'Saved With Sync Warning',
-                    message: `Journal saved, but ${reusableConflictUnresolved} reusable bag update(s) are still syncing. Please refresh once.`
-                });
-            } else if (reusableConflictResolved) {
-                showToast({
-                    type: 'success',
-                    title: 'Saved (Sync Retry)',
-                    message: 'Journal saved successfully. Reusable bag sync conflict was auto-resolved.'
-                });
-            } else {
-                showToast({ type: 'success', title: 'Saved!', message: 'Journal Saved Successfully' });
-            }
+            showToast({ type: 'success', title: 'Saved!', message: 'Journal Saved Successfully' });
             onClose();
 
             if (!initialData) {
@@ -18818,16 +19305,8 @@ const StockJournalModal = (props) => {
                             )}
                         </div>
                     )}
-                    <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5 bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20" title="Total Weight">
-                            <span className="text-sky-300/70 text-[9px]">WT:</span>
-                            <span 
-                                key={rows.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0)} 
-                                className="text-sky-100 font-black text-[12px] animate-[pulse_0.5s_ease-in-out]"
-                            >
-                                {rows.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0).toFixed(3)}
-                            </span>
-                        </div>
+                    <div className="flex items-center gap-2">
+                        <span className="text-white/40">{color === 'red' ? 'NET CONSUMED' : 'NET PRODUCED'}:</span>
                         <span className={`text-lg ${color === 'red' ? 'text-rose-400' : 'text-emerald-400'} font-black`}>
                             {currencySymbol} {format3(color === 'red' ? consumedTotal : rows.reduce((sum, item) => sum + (Number(item.total) || 0), 0))}
                         </span>
@@ -19118,7 +19597,11 @@ const StockJournalModal = (props) => {
                     </div>
 
                     {showAutoCalcPanel && (
-                        <div className="absolute right-0 top-14 z-20 flex h-[calc(100%-56px)] w-full md:w-[470px] max-w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                        <div className={`absolute z-20 flex flex-col overflow-hidden bg-white transition-all duration-300 ${
+                            isAutoCalcFullView 
+                            ? "inset-0 h-full w-full rounded-2xl animate-in zoom-in-95 duration-200" 
+                            : "right-0 top-14 h-[calc(100%-56px)] w-full md:w-[470px] max-w-full rounded-2xl border border-slate-200 shadow-2xl animate-in slide-in-from-right duration-250"
+                        }`}>
                             <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-900 px-4 py-3 text-white">
                                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/20 text-blue-300">
                                     <Zap size={16} />
@@ -19127,6 +19610,9 @@ const StockJournalModal = (props) => {
                                     <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Auto Calc BOM</div>
                                     <div className="text-sm font-black">Batch Rule Workspace</div>
                                 </div>
+                                <button type="button" onClick={() => setIsAutoCalcFullView(!isAutoCalcFullView)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white" title={isAutoCalcFullView ? "Exit Fullscreen" : "Fullscreen"}>
+                                    {isAutoCalcFullView ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                                </button>
                                 <button type="button" onClick={() => setShowAutoCalcPanel(false)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white">
                                     <X size={16} />
                                 </button>
@@ -19306,7 +19792,8 @@ const StockJournalModal = (props) => {
                                         )}
 
                                         {autoCalcRecords.length > 0 && (
-                                            <div className="overflow-hidden rounded-2xl border border-slate-200">
+                                            <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                                                <div className="min-w-[1050px]">
                                                 <div className="grid grid-cols-[58px_1.2fr_70px_1.4fr_90px_1fr_90px_1.2fr_90px_70px] bg-slate-900 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white/70">
                                                     <div>S.No.</div>
                                                     <div>Item Produced</div>
@@ -19342,6 +19829,7 @@ const StockJournalModal = (props) => {
                                                         </div>
                                                     ))}
                                                 </div>
+                                            </div>
                                             </div>
                                         )}
                                     </div>
@@ -19493,20 +19981,33 @@ const StockJournalModal = (props) => {
                                 <div className="p-1.5 bg-orange-100 rounded-lg text-orange-600 shadow-sm">
                                     <Box size={14} />
                                 </div>
-                                <span className="text-[11px] font-black text-slate-700 uppercase tracking-[0.15em]">{jumboBags.length} BAGS ALLOCATED</span>
+                                <span className="text-[11px] font-black text-slate-700 uppercase tracking-[0.15em]">
+                                    {(() => {
+                                        const reusableCount = jumboBags.filter(b => b.isReusable).length;
+                                        const regularCount = jumboBags.length - reusableCount;
+                                        if (reusableCount > 0) {
+                                            return `${reusableCount} REUSABLE BAGS USED AND ${regularCount} FULL BAGS FILLED`;
+                                        }
+                                        return `${jumboBags.length} BAGS ALLOCATED`;
+                                    })()}
+                                </span>
                                 <button type="button" onClick={() => setShowJumboEntry(true)} className="ml-auto text-[10px] font-black text-blue-600 uppercase tracking-widest hover:text-blue-800 flex items-center gap-1.5 transition-colors bg-white px-3 py-1 rounded-full border border-blue-100 hover:border-blue-400">
                                     <Plus size={11} /> Edit Details
                                 </button>
                             </div>
                             <div className="flex flex-wrap gap-x-8 gap-y-2.5 px-0.5 relative z-10 max-h-24 overflow-y-auto custom-scrollbar">
                                 {jumboBags.map((bag, idx) => (
-                                    <div key={idx} className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-slate-50 shadow-sm hover:border-blue-200 transition-all group">
-                                        <span className="text-[11px] font-black text-slate-400 group-hover:text-blue-500 transition-colors uppercase tracking-[0.1em] font-mono">#{bag.bagNo}</span>
+                                    <div key={idx} className={`flex items-center gap-2 px-2 py-1 rounded border ${bag.isReusable ? 'bg-emerald-50 border-emerald-200 hover:border-emerald-400 shadow-emerald-100' : 'bg-white border-slate-50 hover:border-blue-200'} shadow-sm transition-all group`}>
+                                        {bag.isReusable ? (
+                                            <span className="flex items-center gap-1 text-[11px] font-black text-emerald-600 transition-colors uppercase tracking-[0.1em] font-mono"><Recycle size={11} />#{bag.bagNo}</span>
+                                        ) : (
+                                            <span className="text-[11px] font-black text-slate-400 group-hover:text-blue-500 transition-colors uppercase tracking-[0.1em] font-mono">#{bag.bagNo}</span>
+                                        )}
                                         <div className="flex flex-col">
-                                            <span className="text-[10px] font-black text-slate-800 uppercase leading-none mb-0.5">{products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}</span>
+                                            <span className={`text-[10px] font-black uppercase leading-none mb-0.5 ${bag.isReusable ? 'text-emerald-800' : 'text-slate-800'}`}>{products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}</span>
                                             <div className="flex items-center gap-1">
-                                                <span className="text-[11px] font-black text-orange-700 tracking-tight">{format3(bag.qty)}</span>
-                                                <span className="text-[8px] font-bold text-slate-400 uppercase">kg</span>
+                                                <span className={`text-[11px] font-black tracking-tight ${bag.isReusable ? 'text-emerald-700' : 'text-orange-700'}`}>{format3(bag.qty)}</span>
+                                                <span className={`text-[8px] font-bold uppercase ${bag.isReusable ? 'text-emerald-500' : 'text-slate-400'}`}>kg</span>
                                             </div>
                                         </div>
                                     </div>
@@ -19643,7 +20144,7 @@ const HideCol = ({ name, id, onHide, color = 'inherit' }) => (
 );
 
 // --- UPDATED LEDGER MODAL (With Collapsible Tools & Persistent Header) ---
-const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, products, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
+const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
 
     // Filters
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
@@ -20039,13 +20540,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         // ✅ FIX: Get entity list early to access master opening values
         let entityList = [];
         switch (filter.type) {
-            case 'party': entityList = parties; break;
-            case 'account': entityList = accounts; break;
+            case 'party': entityList = (partiesRef?.current?.length > 0) ? partiesRef.current : parties; break;
+            case 'account': entityList = (accountsRef?.current?.length > 0) ? accountsRef.current : accounts; break;
             case 'expense': entityList = expenses; break;
             case 'direct_expense': entityList = directExpenseAccounts; break;
             case 'capital': entityList = capitalAccounts; break;
             case 'asset': entityList = assetAccounts; break;
-            case 'item': entityList = products; break;
+            case 'item': entityList = (productsRef?.current?.length > 0) ? productsRef.current : products; break;
             case 'income': entityList = incomeAccounts; break;
             case 'tax': entityList = taxRates; break;
         }
@@ -20307,7 +20808,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         if (activeFilter.startDate) dateConstraints.push(where('date', '>=', activeFilter.startDate));
         if (activeFilter.endDate) dateConstraints.push(where('date', '<=', activeFilter.endDate));
 
-        const baseConstraints = [...dateConstraints];
+        const baseConstraints = [where('userId', '==', targetUid), ...dateConstraints];
 
         // Recalculate Logic (Runs when any snapshot fires)
         const recalculate = () => {
@@ -21046,13 +21547,19 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const r = q > 0 ? (totalItemVal / q) : 0;
 
                         // Check Invoice Type consistency
-                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.vchType);
-                        if (t.amountIn > 0) {
-                            dQtyIn = q; dRateIn = r;
-                            qtyInTotal += q;
+                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.type);
+                        const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(t.type);
+                        
+                        const baseSign = isInward ? 1 : -1;
+                        let signedFlow = (t.amountIn || t.amountOut || 0) * baseSign;
+                        if (signedFlow === 0) signedFlow = q * baseSign;
+
+                        if (signedFlow >= 0) {
+                            dQtyIn = Math.abs(q); dRateIn = r;
+                            qtyInTotal += Math.abs(q);
                         } else {
-                            dQtyOut = q; dRateOut = r;
-                            qtyOutTotal += q;
+                            dQtyOut = Math.abs(q); dRateOut = r;
+                            qtyOutTotal += Math.abs(q);
                         }
                     }
                 }
@@ -23370,8 +23877,9 @@ const PaymentModal = (props) => {
         if (baseAmount <= 0) return alert("Total amount must be greater than 0");
         if (splits.every(s => !s.targetId)) return alert("Please select at least one receiver / account.");
         if (type === 'contra' && accountId === singleId) return alert("Source and Target accounts cannot be the same!");
-        const untaggedPartyRows = splits.filter(s => s.category === 'party' && s.targetId && !s.paymentAgainst);
-        if (untaggedPartyRows.length > 0) return alert(`⚠️ "Payment Against" is mandatory for Party/Customer rows. Please tag ${untaggedPartyRows.length > 1 ? 'all ' + untaggedPartyRows.length + ' party rows' : 'the party row'} before saving.`);
+        // ⚡ Optional Payment Against: User can leave it empty if they wish. Mandatory check disabled by request.
+        // const untaggedPartyRows = splits.filter(s => s.category === 'party' && s.targetId && !s.paymentAgainst);
+        // if (untaggedPartyRows.length > 0) return alert(`⚠️ "Payment Against" is mandatory...`);
 
         // 🔒 Mandatory Ref No. for advance/loan rows
         for (const s of splits) {
@@ -23398,8 +23906,9 @@ const PaymentModal = (props) => {
 
         // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        if (await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! Exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! Exists in another transaction (${duplicateCol}).`);
         }
 
         setSaving(true);
@@ -24072,7 +24581,7 @@ const PaymentModal = (props) => {
                                                             ? `Our Loan · ${row.advRefNo || '⚠ Set Ref No.'}`
                                                             : row.paymentAgainst === 'their-loan'
                                                             ? `Their Loan · ${row.advRefNo || '⚠ Set Ref No.'}`
-                                                            : '+ Set Payment Against? (Required)'}
+                                                            : '+ Set Payment Against?'}
                                                     </button>
                                                 )}
                                             </td>
@@ -24834,8 +25343,9 @@ const JournalVoucherModal = (props) => {
 
         // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        if (await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! Exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! Exists in another transaction (${duplicateCol}).`);
         }
 
         setSaving(true);
@@ -25092,13 +25602,14 @@ const JournalVoucherModal = (props) => {
                     <div className="w-px h-5 bg-white/10 mx-1"></div>
 
                     {/* 2. REFERENCE NUMBER */}
-                    <div className="flex items-center min-w-[90px] h-[23px]">
-                        <div className="flex items-center gap-1 w-full h-full">
+                    <div className="flex flex-col justify-center min-w-[90px]">
+                        <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">JV Ref No.</span>
+                        <div className="flex items-center gap-1">
                             <input
                                 ref={refNoRef}
                                 type="text"
-                                placeholder="JV REF NO."
-                                className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none placeholder:text-white/40 w-24 uppercase disabled:opacity-50 disabled:cursor-not-allowed h-full"
+                                placeholder="JV-001"
+                                className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none placeholder:text-white/20 w-24 uppercase disabled:opacity-50 disabled:cursor-not-allowed"
                                 value={refNo}
                                 onChange={e => setRefNo(e.target.value)}
                                 onKeyDown={e => { if (e.key === 'Enter') dateRef.current?.focus(); }}
@@ -25485,22 +25996,29 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
             const qInvConstraints = [where('userId', '==', targetUid)];
             const qMfgConstraints = [where('userId', '==', targetUid)];
-            const qBagConstraints = [where('userId', '==', targetUid)];
 
             const qInv = query(collection(db, 'invoices'), ...qInvConstraints);
             const qMfg = query(collection(db, 'stock_journals'), ...qMfgConstraints);
-            const qBags = query(collection(db, 'jumbo_bags'), ...qBagConstraints);
 
-            const [invSnap, mfgSnap, bagSnap] = await Promise.all([
-                getDocs(qInv), getDocs(qMfg), getDocs(qBags)
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+            const bagFetches = uidCandidates.flatMap((uid) =>
+                ['userId', 'ownerId', 'companyId'].map((field) =>
+                    getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid)))
+                )
+            );
+
+            const [invSnap, mfgSnap, ...bagSnaps] = await Promise.all([
+                getDocs(qInv), getDocs(qMfg), ...bagFetches
             ]);
 
             const itemMap = {};
             products.forEach(p => {
                 const basePurchaseRate = Number(p.purchasePrice || 0);
-                const openingQty = Number(p.openingStock || 0);
-                const openingVal = Number(p.openingBalance || 0);
-                const openingRate = openingQty !== 0 ? Math.abs(openingVal / openingQty) : basePurchaseRate;
+                // Keep Stock Summary aligned with Item Ledger totals by deriving opening
+                // from transaction history (date < from) instead of master opening stock.
+                const openingQty = 0;
+                const openingVal = 0;
+                const openingRate = basePurchaseRate;
 
                 itemMap[p.id] = {
                     id: p.id, name: p.name,
@@ -25530,35 +26048,28 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 };
             });
 
-            // ✅ IMPROVED: Count Available Bags using Intelligence Logic (Cross-referencing sold status)
-            const allBagsGlobal = bagSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-            const soldBagNos = new Set(allBagsGlobal.filter(b => b.status === 'sold').map(b => String(b.bagNo || '').toLowerCase()));
-
-            mfgSnap.forEach(doc => {
-                const vch = doc.data();
-                if (vch.date > endDate) return;
-
-                // Extract all produced bags from voucher (fallback logic for unsynced data)
-                const vchBags = [
-                    ...(Array.isArray(vch.jumboBags) ? vch.jumboBags : []),
-                    ...(Array.isArray(vch.jumbo_bags) ? vch.jumbo_bags : []),
-                    ...(Array.isArray(vch.producedBags) ? vch.producedBags : []),
-                    ...(Array.isArray(vch.produced) ? vch.produced.flatMap(p => (Array.isArray(p.jumboBags) ? p.jumboBags : Array.isArray(p.jumbo_bags) ? p.jumbo_bags : [])) : [])
-                ].filter(jb => jb && typeof jb === 'object');
-
-                const seenInVch = new Set();
-                vchBags.forEach(b => {
-                    const bagNo = String(b.bagNo || '').toLowerCase();
-                    const pId = b.productId;
-                    if (pId && itemMap[pId] && !seenInVch.has(bagNo)) {
-                        const isSoldGlobal = soldBagNos.has(bagNo);
-                        const isSoldLocal = b.status === 'sold';
-                        if (!isSoldGlobal && !isSoldLocal) {
-                            itemMap[pId].bagCount++;
-                            seenInVch.add(bagNo);
-                        }
-                    }
+            const mergedBagMap = new Map();
+            bagSnaps.forEach((snap) => {
+                snap.forEach((d) => {
+                    mergedBagMap.set(String(d.id), { id: d.id, ...d.data() });
                 });
+            });
+            const globalBags = [...mergedBagMap.values()];
+
+            const allInvoices = filterActiveVouchers(invSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+            const soldInvoiceBagPool = buildSoldInvoiceBagPoolFromInvoices(allInvoices);
+            const stockJournalsFromSnap = filterActiveVouchers(mfgSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })));
+
+            const remainingBags = deriveRemainingBags({
+                globalBags,
+                stockJournals: stockJournalsFromSnap,
+                soldInvoiceBagPool
+            });
+
+            remainingBags.forEach((b) => {
+                if (itemMap[b.productId]) {
+                    itemMap[b.productId].bagCount++;
+                }
             });
 
             const getFifoValue = (layers) => layers.reduce((s, l) => s + (Number(l.qty || 0) * Number(l.rate || 0)), 0);
@@ -25630,8 +26141,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             const movements = [];
             let movementSeq = 0;
 
-            invSnap.forEach(doc => {
-                const d = doc.data();
+            allInvoices.forEach(d => {
                 if (selectedLoc && d.locationId !== selectedLoc) return;
 
                 const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
@@ -25639,25 +26149,59 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 if (!isInward && !isOutward) return;
 
                 (d.items || []).forEach(item => {
-                    const qty = Number(item.quantity || 0);
-                    const rate = Number(item.rate || 0);
-                    if (!item.productId || qty <= 0) return;
-                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate, type: isInward ? 'in' : 'out' });
+                    const qtyRaw = Number(item.quantity || 0);
+                    const rateRaw = Number(item.rate || 0);
+                    const rate = Math.abs(rateRaw);
+                    if (!item.productId || qtyRaw === 0) return;
+
+                    // Keep behavior consistent with Item Ledger:
+                    // negative line amounts (qty*rate) reverse voucher direction,
+                    // and if amount is zero, signed qty decides.
+                    const baseSign = isInward ? 1 : -1;
+                    let signedFlow = qtyRaw * rateRaw * baseSign;
+                    if (signedFlow === 0) signedFlow = qtyRaw * baseSign;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate,
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
             });
 
-            mfgSnap.forEach(doc => {
-                const d = doc.data();
+            stockJournalsFromSnap.forEach(d => {
                 if (selectedLoc && d.locationId !== selectedLoc) return;
                 (d.produced || []).forEach(item => {
-                    const qty = Number(item.quantity || 0);
-                    if (!item.productId || qty <= 0) return;
-                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate: Number(item.rate || 0), type: 'in' });
+                    const qtyRaw = Number(item.quantity || 0);
+                    if (!item.productId || qtyRaw === 0) return;
+                    const rateRaw = Number(item.rate || 0);
+                    let signedFlow = qtyRaw * rateRaw;
+                    if (signedFlow === 0) signedFlow = qtyRaw;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate: Math.abs(rateRaw),
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
                 (d.consumed || []).forEach(item => {
-                    const qty = Number(item.quantity || 0);
-                    if (!item.productId || qty <= 0) return;
-                    movements.push({ seq: movementSeq++, date: d.date, productId: item.productId, qty, rate: Number(item.rate || 0), type: 'out' });
+                    const qtyRaw = Number(item.quantity || 0);
+                    if (!item.productId || qtyRaw === 0) return;
+                    const rateRaw = Number(item.rate || 0);
+                    let signedFlow = -(qtyRaw * rateRaw);
+                    if (signedFlow === 0) signedFlow = -qtyRaw;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate: Math.abs(rateRaw),
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
             });
 
@@ -26122,7 +26666,19 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} title={`${currentGroupFilter || "Stock Summary"} [${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}]`} centerTitle={true} maxWidth="max-w-[98vw]" defaultMaximized={true} headerClassName="!p-0 !h-[25px] flex items-center" titleClassName="!text-black font-black !text-[12px] uppercase">
+        <Modal
+            isOpen={isOpen}
+            onClose={onClose}
+            onBack={onBack}
+            zIndex={zIndex}
+            title={`${currentGroupFilter || "Stock Summary"} [${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}]`}
+            centerTitle={true}
+            maxWidth="max-w-[98vw]"
+            defaultMaximized={true}
+            noContentScroll={true}
+            headerClassName="!h-[22px] !p-0 px-2 flex items-center"
+            titleClassName="!text-[13px] !leading-none"
+        >
             <div className="space-y-0 h-[88vh] flex flex-col bg-[#fcf6ea]"> {/* ✅ Tally Tan Background */}
 
                 {/* 1. TOOLBAR */}
@@ -26275,7 +26831,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 )}
 
                 {/* 2 & 3: UNIFIED SCROLL CONTAINER (For Mobile Views) */}
-                <div className="flex-1 overflow-auto relative z-10 no-scrollbar">
+                <div className="flex-1 overflow-auto relative z-10 stock-summary-scrollbar">
                     {/* The "Zoomable & Unified Scroll" Wrapper */}
                     <div
                         style={{
@@ -26349,10 +26905,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                                         <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: `${level * 16}px` }}>
                                                             <span className="shrink-0">{isExpanded ? <ChevronDown size={14} className="text-blue-800" /> : <ChevronRight size={14} className="text-slate-600" />}</span>
                                                             <span className="uppercase tracking-widest flex-1 min-w-0" style={getTallyShrinkStyle(row.name, true)}>{row.name}</span>
-                                                            <div className="flex flex-col items-end ml-auto shrink-0 leading-none">
-                                                                <span className="text-[8px] text-slate-500 font-normal">({row.itemCount})</span>
-                                                                {row.bagCount > 0 && <span className="text-orange-600 text-[9px] font-black">{row.bagCount} BAGS</span>}
-                                                            </div>
+                                                            <span className="text-[8px] text-slate-500 ml-auto shrink-0 font-normal">({row.itemCount})</span>
                                                         </div>
                                                     </td>
                                                     {showOpn && !hiddenCols.has('opn') && renderGroupCell(row.openingQty, row.openingVal, 'text-slate-600', 'opn')}
@@ -26434,7 +26987,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     const [isSearchVisible, setIsSearchVisible] = useState(false);
     const [focusedRowIdx, setFocusedRowIdx] = useState(-1);
     const focusedRowRef = useRef(null);
-    const itemsPerPage = 60;
+    const itemsPerPage = 50;
 
     const [showDateMenu, setShowDateMenu] = useState(false);
     const [isDateOpen, setIsDateOpen] = useState(false);
@@ -27002,6 +27555,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         totalQty: filteredData.reduce((sum, item) => sum + (item.qty || 0), 0),
         totalBags: filteredData.reduce((sum, item) => sum + (Number(item.bagCount) || 0), 0)
     };
+    const shouldStretchListToBottom = title === 'Payables Breakdown' || title === 'Receivables Breakdown' || registerType === 'manufacturing';
 
     const downloadExcel = async () => {
         try {
@@ -27173,7 +27727,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     };
 
     const HeaderTitle = (
-        <div className="flex items-center w-full gap-2 lg:gap-4 no-drag overflow-hidden lg:overflow-visible pr-8">
+        <div className="flex items-center h-[28px] w-full gap-2 lg:gap-4 no-drag overflow-hidden lg:overflow-visible pr-8">
             <div className="flex items-center gap-2 shrink-0 border-r border-slate-200 pr-3 mr-1">
                 <span className="font-black text-slate-800 tracking-tight text-sm lg:text-base truncate max-w-[120px] lg:max-w-none">{title}</span>
                 <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded font-black text-slate-500 border border-slate-200">{filteredData.length}</span>
@@ -27242,14 +27796,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
             {/* SUMMARIES IN HEADER */}
             <div className="flex-1 flex items-center justify-center gap-4 lg:gap-8 min-w-0">
-                {registerType === 'manufacturing' ? (
-                    <div className="flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-100 rounded-md shrink-0">
-                        <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest hidden lg:inline">Consumption</span>
-                        <span className="text-[11px] lg:text-xs font-black text-amber-700">
-                             {Number(filteredData.reduce((sum, i) => sum + (i.amt || 0), 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </span>
-                    </div>
-                ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
+                {registerType === 'manufacturing' ? null : ['payment', 'receipt', 'contra'].includes(registerType) ? (
                     <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 border border-blue-100 rounded-md shrink-0 truncate max-w-[150px] lg:max-w-none">
                         <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest hidden lg:inline">
                             {registerType === 'payment' ? 'Grand Total Out' : registerType === 'receipt' ? 'Grand Total In' : 'Total Transferred'}
@@ -27377,6 +27924,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={HeaderTitle} maxWidth={registerType === 'manufacturing' ? "max-w-6xl" : "max-w-4xl"} defaultMaximized={true}>
+            <div className={`flex min-h-0 flex-col ${shouldStretchListToBottom ? 'h-[85vh] lg:h-[88vh]' : ''}`}>
 
             {/* --- SUMMARY STRIP REMOVED - MOVED TO HEADER --- */}
 
@@ -27438,7 +27986,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             )}
 
             {/* --- THEMED TABLE HEADER --- */}
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-white mb-2">
+            <div className={`border border-slate-200 rounded-xl overflow-y-auto shadow-inner bg-white ${shouldStretchListToBottom ? 'flex-1 min-h-0 mb-0 h-full' : 'max-h-[65vh] mb-2'}`}>
                 <table className="w-full text-left text-sm border-collapse">
                     <thead className="bg-[#1e293b] text-white font-bold uppercase text-[10px] sticky top-0 z-20 shadow-md">
                         {registerType === 'manufacturing' ? (
@@ -27460,7 +28008,14 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         <span className="text-[9px]">Weight</span>
                                     </div>
                                 } align="right" className="border-r border-white/5" />
-                                <Th col="amount" label="Value" align="right" />
+                                <Th col="amount" label={
+                                    <div className="flex flex-col items-end">
+                                        <span className="text-[23px] text-white font-bold tracking-tighter leading-none mb-1">
+                                            {Number(filteredData.reduce((sum, i) => sum + (i.amt || 0), 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        </span>
+                                        <span className="text-[9px]">Value</span>
+                                    </div>
+                                } align="right" />
                             </tr>
                         ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
                             <tr>
@@ -27836,6 +28391,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     </div>
                 </div>
             )}
+            </div>
             {createPortal(
                 <ChangeDateModal
                     isOpen={isDateOpen}
@@ -28371,7 +28927,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             jvSnap.forEach(doc => {
                 const d = doc.data();
                 const amt = safeNum(d.amount);
-                const isMfg = !!d.linkedStockJournalId;
+                const isMfg = !!d.linkedStockJournalId || String(d.narration || '').startsWith('Expenses for Mfg');
 
                 if (!(d.date >= range.from && d.date <= range.to)) return;
 
@@ -28385,8 +28941,10 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     }
                 };
 
-                if (d.isMulti && d.rows) {
+                if (d.rows && d.rows.length > 0) {
                     d.rows.forEach(r => {
+                        // For Mfg JVs, the debit side is typically absorbed into production, so we skip adding it to normal P&L expenses.
+                        // However, the credit side (e.g., allocating from an indirect expense) must be processed to reduce the expense balance.
                         if (isMfg && r.type === 'dr' && r.category === 'expense') return;
                         processLine(r.category, r.aid || r.id, r.amount, r.type === 'dr');
                     });
@@ -30277,6 +30835,8 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
         if (taxRates) taxRates.forEach(t => list.push({ ...t, type: 'tax', typeLabel: 'Tax' }));
         if (assetAccounts) assetAccounts.forEach(a => list.push({ ...a, type: 'asset', typeLabel: 'Asset' }));
         if (accounts) accounts.forEach(a => list.push({ ...a, type: 'account', typeLabel: 'Cash/Bank' }));
+        // Add Static Reports
+        list.push({ id: 'bag_inventory_report', name: 'Bag Wise Inventory', type: 'report', typeLabel: 'Report', reportType: 'bag_inventory' });
 
         if (capitalAccounts) capitalAccounts.forEach(c => list.push({ ...c, type: 'capital', typeLabel: 'Capital' }));
         return list;
