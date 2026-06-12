@@ -150,9 +150,10 @@ export default function App() {
     <Layout company={company} subUser={subUser} onLogout={handleLogout}>
       <Routes>
         <Route path="/dashboard" element={<Dashboard company={company} subUser={subUser} />} />
-        <Route path="/daybook" element={<DaybookLive />} />
+        <Route path="/daybook" element={<DaybookLive subUser={subUser} />} />
         <Route path="/cash-bank-register" element={<CashBankRegister />} />
         <Route path="/profile" element={<Profile company={company} subUser={subUser} onRefresh={refreshCompany} />} />
+        <Route path="/voucher/edit/:voucherId" element={<CashierVoucher subUser={subUser} />} />
         <Route path="/voucher/:voucherType" element={<CashierVoucher subUser={subUser} />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

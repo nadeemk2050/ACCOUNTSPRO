@@ -184,3 +184,18 @@ export async function addContra(params) {
 export async function checkRefNo(refNo) {
   return callApi('check_ref_no', { refNo })
 }
+
+/** Get voucher details for edit */
+export async function getVoucher(voucherId) {
+  return callApi('get_voucher', { voucherId })
+}
+
+/** Update an existing voucher */
+export async function updateVoucher(voucherId, params) {
+  return callApi('edit_voucher', { voucherId, ...params }, 'POST')
+}
+
+/** Delete a voucher with password protection */
+export async function deleteVoucher(voucherId, password, subUserId, userName) {
+  return callApi('delete_voucher', { voucherId, password, subUserId, userName }, 'POST')
+}

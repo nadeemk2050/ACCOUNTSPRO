@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { 
   BookOpen, RefreshCw, Search, Filter, ArrowUpDown, 
   Receipt, Wallet, Notebook, AlertCircle, Clock, 
   ChevronDown, ChevronUp, FileText, ChevronLeft, ChevronRight
 } from 'lucide-react'
-import { getDaybook, listAccounts, listLedgers } from '../api'
+import { getDaybook, listAccounts, listLedgers, deleteVoucher } from '../api'
 
 const TYPE_CONFIG = {
   invoices: { label: 'Invoice', icon: Receipt, color: 'text-blue-600', bg: 'bg-blue-100' },
@@ -21,8 +21,9 @@ const getTodayStr = () => {
   return `${year}-${month}-${day}`
 }
 
-export default function DaybookLive() {
+export default function DaybookLive({ subUser }) {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const registerType = searchParams.get('register') // 'payment', 'receipt', 'contra', or null
   const filterAccountName = searchParams.get('accountName') // Specific Cash/Bank account name if provided
 
@@ -156,14 +157,37 @@ export default function DaybookLive() {
         }
       })
 
+      const isExhaustive = limit === 'all' || freshList.length < limit
+
       if (cachedRaw) {
         try {
           const cached = JSON.parse(cachedRaw)
+          const oldestFresh = freshList[freshList.length - 1]
           cached.forEach(t => {
             const hasId = mergedMap.has(t.id)
             const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
             if (!hasId && !hasRefNo) {
-              mergedMap.set(t.id, t)
+              // Discard previously synced server-side transactions that are not in the fresh list
+              // if the fresh list is exhaustive or the transaction is newer than the oldest fresh transaction.
+              let isDeleted = false
+              const isServerId = t.id && t.id.length > 10
+              
+              if (isServerId) {
+                if (isExhaustive) {
+                  isDeleted = true
+                } else if (oldestFresh) {
+                  const dateCmp = (t.date || '').localeCompare(oldestFresh.date || '')
+                  if (dateCmp > 0) {
+                    isDeleted = true
+                  } else if (dateCmp === 0 && (t.syncTimestamp || 0) > (oldestFresh.syncTimestamp || 0)) {
+                    isDeleted = true
+                  }
+                }
+              }
+
+              if (!isDeleted) {
+                mergedMap.set(t.id, t)
+              }
             }
           })
         } catch (e) {}
@@ -183,6 +207,55 @@ export default function DaybookLive() {
         setError(err.message || 'Failed to load daybook')
       }
     } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDeleteVoucher = async (tx) => {
+    const pwd = prompt("Enter password to delete this voucher:")
+    if (pwd === null) return
+    if (pwd !== 'abcd') {
+      alert("Incorrect password!")
+      return
+    }
+
+    if (!window.confirm("Are you sure you want to permanently delete this voucher? This will revert all associated accounts and ledger balances.")) {
+      return
+    }
+
+    try {
+      setLoading(true)
+      await deleteVoucher(tx.id, pwd, subUser?.id, subUser?.name)
+
+      // Update cache in local storage first!
+      try {
+        const cacheKey = 'quickaccpro_cached_transactions'
+        const cachedRaw = localStorage.getItem(cacheKey)
+        if (cachedRaw) {
+          let cached = JSON.parse(cachedRaw)
+          // Find the deleted transaction to get its refNo and accountId for sibling deletion
+          const targetTx = cached.find(t => t.id === tx.id)
+          if (targetTx) {
+            // Remove the deleted transaction and any siblings (sharing same refNo, accountId, and type/subType)
+            cached = cached.filter(t => {
+              if (t.id === tx.id) return false
+              if (targetTx.type === 'payments' && targetTx.subType !== 'contra' && targetTx.refNo) {
+                // Sibling check
+                return !(t.type === 'payments' && t.refNo === targetTx.refNo && t.accountId === targetTx.accountId && t.subType === targetTx.subType)
+              }
+              return true
+            })
+            localStorage.setItem(cacheKey, JSON.stringify(cached))
+          }
+        }
+      } catch (e) {
+        console.error("Failed to update cache on deletion:", e)
+      }
+
+      alert("Voucher deleted successfully!")
+      loadData()
+    } catch (err) {
+      alert(err.message || "Failed to delete voucher")
       setLoading(false)
     }
   }
@@ -221,14 +294,37 @@ export default function DaybookLive() {
         }
       })
 
+      const isExhaustive = limit === 'all' || freshList.length < limit
+
       if (cachedRaw) {
         try {
           const cached = JSON.parse(cachedRaw)
+          const oldestFresh = freshList[freshList.length - 1]
           cached.forEach(t => {
             const hasId = mergedMap.has(t.id)
             const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
             if (!hasId && !hasRefNo) {
-              mergedMap.set(t.id, t)
+              // Discard previously synced server-side transactions that are not in the fresh list
+              // if the fresh list is exhaustive or the transaction is newer than the oldest fresh transaction.
+              let isDeleted = false
+              const isServerId = t.id && t.id.length > 10
+              
+              if (isServerId) {
+                if (isExhaustive) {
+                  isDeleted = true
+                } else if (oldestFresh) {
+                  const dateCmp = (t.date || '').localeCompare(oldestFresh.date || '')
+                  if (dateCmp > 0) {
+                    isDeleted = true
+                  } else if (dateCmp === 0 && (t.syncTimestamp || 0) > (oldestFresh.syncTimestamp || 0)) {
+                    isDeleted = true
+                  }
+                }
+              }
+
+              if (!isDeleted) {
+                mergedMap.set(t.id, t)
+              }
             }
           })
         } catch (e) {}
@@ -645,6 +741,7 @@ export default function DaybookLive() {
                   <th className="p-3 text-right">Debit (DHS)</th>
                   <th className="p-3 text-right">Credit (DHS)</th>
                   <th className="p-3 text-right">Value</th>
+                  <th className="p-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
@@ -668,6 +765,7 @@ export default function DaybookLive() {
                         {accountCurrentBalance >= 0 ? 'Dr' : 'Cr'}
                       </span>
                     </td>
+                    <td className="p-3"></td>
                   </tr>
                 )}
                 {paginated.map((tx, i) => {
@@ -733,6 +831,28 @@ export default function DaybookLive() {
                         <span className="text-[9px] text-slate-400 ml-1">
                           {tx.runningBalance >= 0 ? 'Dr' : 'Cr'}
                         </span>
+                      </td>
+                      <td className="p-3 text-center whitespace-nowrap">
+                        {tx.type === 'payments' ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            {tx.createdBy && subUser && tx.createdBy === subUser.id && (
+                              <button
+                                onClick={() => navigate('/voucher/edit/' + tx.id)}
+                                className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded text-[10px] transition-colors"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteVoucher(tx)}
+                              className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded text-[10px] transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
                       </td>
                     </tr>
                   )
@@ -845,6 +965,24 @@ export default function DaybookLive() {
                         {tx.status || 'active'}
                       </span>
                     </div>
+                    {tx.type === 'payments' && (
+                      <div className="col-span-2 flex items-center gap-2 pt-2 border-t border-slate-100 mt-2">
+                        {tx.createdBy && subUser && tx.createdBy === subUser.id && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); navigate('/voucher/edit/' + tx.id); }}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition-colors"
+                          >
+                            Edit Voucher
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteVoucher(tx); }}
+                          className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition-colors"
+                        >
+                          Delete Voucher
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

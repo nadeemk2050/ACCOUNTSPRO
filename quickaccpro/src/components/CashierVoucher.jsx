@@ -5,7 +5,7 @@ import {
   ChevronDown, RefreshCw, Hash, Calendar, FileText, Copy, X, Loader2,
   Receipt, Send, ArrowUpDown
 } from 'lucide-react'
-import { listAccounts, listLedgers, addPayment, addContra, checkRefNo } from '../api'
+import { listAccounts, listLedgers, addPayment, addContra, checkRefNo, getVoucher, updateVoucher } from '../api'
 import SearchableSelect from './SearchableSelect'
 
 const VOUCHER_TYPES = {
@@ -61,10 +61,11 @@ function saveVoucherToLocalCache(type, data) {
   }
 }
 
-export default function CashierVoucher() {
-  const { voucherType } = useParams()
+export default function CashierVoucher({ subUser }) {
+  const { voucherType, voucherId } = useParams()
+  const isEditMode = !!voucherId
   const navigate = useNavigate()
-  const type = voucherType || 'payment'
+  const [type, setType] = useState(voucherType || 'payment')
   const cfg = VOUCHER_TYPES[type] || VOUCHER_TYPES.payment
   const Icon = cfg.icon
 
@@ -88,6 +89,15 @@ export default function CashierVoucher() {
   // Payment/Receipt rows
   const [rows, setRows] = useState([{ ledgerId: '', ledgerCollection: 'parties', amount: '', narration: '' }])
 
+  const originalRefNo = useRef('')
+
+  // Sync type with route param in create mode
+  useEffect(() => {
+    if (!isEditMode && voucherType) {
+      setType(voucherType)
+    }
+  }, [voucherType, isEditMode])
+
   // Load accounts & ledgers
   useEffect(() => {
     loadData()
@@ -101,8 +111,35 @@ export default function CashierVoucher() {
         listAccounts(),
         listLedgers()
       ])
-      setAccounts(accData.accounts || [])
-      setLedgers(ledData.ledgers || [])
+      const accountsList = accData.accounts || []
+      const ledgersList = ledData.ledgers || []
+      setAccounts(accountsList)
+      setLedgers(ledgersList)
+
+      if (isEditMode) {
+        const res = await getVoucher(voucherId)
+        if (res.success && res.voucher) {
+          const v = res.voucher
+          setType(v.type)
+          setDate(v.date)
+          setRefNo(v.refNo)
+          originalRefNo.current = v.refNo
+          setAccountId(v.accountId)
+          setNarration(v.narration || '')
+
+          if (v.type === 'contra') {
+            setToAccountId(v.toAccountId)
+            setRows([{ ledgerId: '', ledgerCollection: 'parties', amount: String(v.amount), narration: '' }])
+          } else {
+            setRows(v.payments.map(p => ({
+              ledgerId: p.ledgerId,
+              ledgerCollection: p.ledgerCollection,
+              amount: String(p.amount),
+              narration: p.narration || ''
+            })))
+          }
+        }
+      }
     } catch (err) {
       setError(err.message || 'Failed to load data')
     } finally {
@@ -174,7 +211,7 @@ export default function CashierVoucher() {
     setSuccess('')
 
     // Validation
-    if (refNoExists) {
+    if (refNoExists && refNo !== originalRefNo.current) {
       setError(`Reference number "${refNo}" already exists. Please use a unique ref no.`)
       return
     }
@@ -192,66 +229,113 @@ export default function CashierVoucher() {
 
     setSaving(true)
     try {
-      if (type === 'contra') {
-        await addContra({
-          fromAccountId: accountId,
-          toAccountId: toAccountId,
-          amount: totalAmount,
-          date,
-          narration,
-          refNo
-        })
-        saveVoucherToLocalCache('contra', { accountId, toAccountId, amount: totalAmount, date, narration, refNo, accountsList: accounts })
-      } else {
-        const payments = rows
-          .filter(r => r.ledgerId && parseFloat(r.amount) > 0)
-          .map(r => {
-            const ledgerInfo = ledgers.find(l => l.id === r.ledgerId)
-            return {
-              ledgerId: r.ledgerId,
-              ledgerCollection: ledgerInfo?.collection || 'parties',
-              amount: parseFloat(r.amount),
-              narration: r.narration || narration,
-              category: 'normal'
-            }
-          })
-
-        const paymentType = type === 'receipt' ? 'in' : 'out'
-        
-        await addPayment({
-          accountId,
-          payments,
-          date,
-          narration,
-          refNo,
-          type: paymentType
-        })
-
-        // Cache each individual ledger payment row
-        payments.forEach(p => {
-          saveVoucherToLocalCache(type, {
+      if (isEditMode) {
+        if (type === 'contra') {
+          await updateVoucher(voucherId, {
             accountId,
+            toAccountId,
+            amount: totalAmount,
             date,
-            narration: p.narration || narration,
+            narration,
             refNo,
-            amount: p.amount,
-            partyName: ledgers.find(l => l.id === p.ledgerId)?.name || 'Party',
-            accountsList: accounts
+            type: 'contra',
+            subUserId: subUser?.id,
+            userName: subUser?.name
           })
-        })
-      }
+        } else {
+          const payments = rows
+            .filter(r => r.ledgerId && parseFloat(r.amount) > 0)
+            .map(r => {
+              const ledgerInfo = ledgers.find(l => l.id === r.ledgerId)
+              return {
+                ledgerId: r.ledgerId,
+                ledgerCollection: ledgerInfo?.collection || 'parties',
+                amount: parseFloat(r.amount),
+                narration: r.narration || narration,
+                category: 'normal'
+              }
+            })
 
-      setSuccess(`${cfg.label} voucher saved successfully!`)
-      
-      // Reset form for next entry
-      setTimeout(() => {
-        setRefNo(generateRefNo(type))
-        setRefManuallySet(false)
-        setRefNoExists(false)
-        setNarration('')
-        setRows([{ ledgerId: '', ledgerCollection: 'parties', amount: '', narration: '' }])
-        setSuccess('')
-      }, 1500)
+          const paymentType = type === 'receipt' ? 'in' : 'out'
+          
+          await updateVoucher(voucherId, {
+            accountId,
+            payments,
+            date,
+            narration,
+            refNo,
+            type: paymentType,
+            subUserId: subUser?.id,
+            userName: subUser?.name
+          })
+        }
+
+        setSuccess(`${cfg.label} voucher updated successfully!`)
+        setTimeout(() => {
+          navigate(-1)
+        }, 1500)
+      } else {
+        if (type === 'contra') {
+          await addContra({
+            fromAccountId: accountId,
+            toAccountId: toAccountId,
+            amount: totalAmount,
+            date,
+            narration,
+            refNo
+          })
+          saveVoucherToLocalCache('contra', { accountId, toAccountId, amount: totalAmount, date, narration, refNo, accountsList: accounts })
+        } else {
+          const payments = rows
+            .filter(r => r.ledgerId && parseFloat(r.amount) > 0)
+            .map(r => {
+              const ledgerInfo = ledgers.find(l => l.id === r.ledgerId)
+              return {
+                ledgerId: r.ledgerId,
+                ledgerCollection: ledgerInfo?.collection || 'parties',
+                amount: parseFloat(r.amount),
+                narration: r.narration || narration,
+                category: 'normal'
+              }
+            })
+
+          const paymentType = type === 'receipt' ? 'in' : 'out'
+          
+          await addPayment({
+            accountId,
+            payments,
+            date,
+            narration,
+            refNo,
+            type: paymentType
+          })
+
+          // Cache each individual ledger payment row
+          payments.forEach(p => {
+            saveVoucherToLocalCache(type, {
+              accountId,
+              date,
+              narration: p.narration || narration,
+              refNo,
+              amount: p.amount,
+              partyName: ledgers.find(l => l.id === p.ledgerId)?.name || 'Party',
+              accountsList: accounts
+            })
+          })
+        }
+
+        setSuccess(`${cfg.label} voucher saved successfully!`)
+        
+        // Reset form for next entry
+        setTimeout(() => {
+          setRefNo(generateRefNo(type))
+          setRefManuallySet(false)
+          setRefNoExists(false)
+          setNarration('')
+          setRows([{ ledgerId: '', ledgerCollection: 'parties', amount: '', narration: '' }])
+          setSuccess('')
+        }, 1500)
+      }
     } catch (err) {
       setError(err.message || 'Failed to save voucher')
     } finally {
@@ -299,8 +383,8 @@ export default function CashierVoucher() {
           <Icon size={20} className={cfg.color} />
         </div>
         <div>
-          <h1 className="text-lg font-bold text-slate-800">{cfg.label} Voucher</h1>
-          <p className="text-xs text-slate-500">Quick cash entry</p>
+          <h1 className="text-lg font-bold text-slate-800">{isEditMode ? 'Edit ' : ''}{cfg.label} Voucher</h1>
+          <p className="text-xs text-slate-500">{isEditMode ? 'Update existing entry' : 'Quick cash entry'}</p>
         </div>
       </div>
 
@@ -320,25 +404,27 @@ export default function CashierVoucher() {
       )}
 
       {/* Voucher Type Tabs */}
-      <div className="grid grid-cols-3 gap-1.5">
-        {Object.entries(VOUCHER_TYPES).map(([key, v]) => {
-          const TabIcon = v.icon
-          return (
-            <button
-              key={key}
-              onClick={() => navigate(`/voucher/${key}`)}
-              className={`flex flex-col items-center gap-1 py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all
-                ${type === key
-                  ? `${v.bg} ${v.color} shadow-sm`
-                  : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
-                }`}
-            >
-              <TabIcon size={16} />
-              {v.label}
-            </button>
-          )
-        })}
-      </div>
+      {!isEditMode && (
+        <div className="grid grid-cols-3 gap-1.5">
+          {Object.entries(VOUCHER_TYPES).map(([key, v]) => {
+            const TabIcon = v.icon
+            return (
+              <button
+                key={key}
+                onClick={() => navigate(`/voucher/${key}`)}
+                className={`flex flex-col items-center gap-1 py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all
+                  ${type === key
+                    ? `${v.bg} ${v.color} shadow-sm`
+                    : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                  }`}
+              >
+                <TabIcon size={16} />
+                {v.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Voucher Form */}
       <div className={`card border-2 ${cfg.border} space-y-4`}>

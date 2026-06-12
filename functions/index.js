@@ -931,6 +931,44 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
             const companyDoc = await db.collection('companies_live').doc(companyId).get();
             const companyName = companyDoc.exists ? (companyDoc.data().name || 'AccountsPro Company') : 'AccountsPro Company';
 
+            const logAuditActivity = async (actionType, docType, refNo, amount, voucherDate, docId, description, snapshotData) => {
+                try {
+                    const { subUserId, userName } = { ...req.query, ...req.body };
+                    const logId = crypto.randomBytes(12).toString('hex');
+                    const rawName = userName || 'QuickAccPro User';
+                    const subName = rawName.includes('(QAP)') ? rawName : `${rawName} (QAP)`;
+                    
+                    const logData = {
+                        date: admin.firestore.FieldValue.serverTimestamp(),
+                        ownerId: companyId,
+                        userId: subUserId || userId,
+                        userName: subName,
+                        action: actionType, // 'CREATED', 'UPDATED', 'DELETED'
+                        docType: docType,
+                        refNo: refNo || 'N/A',
+                        amount: Number(amount || 0),
+                        voucherDate: voucherDate || new Date().toISOString().split('T')[0],
+                        docId: docId,
+                        description: description,
+                        snapshotData: snapshotData ? (typeof snapshotData === 'string' ? snapshotData : JSON.stringify(snapshotData)) : ''
+                    };
+
+                    // Write to top-level audit_logs (so it's available via direct queries if needed)
+                    await db.collection('audit_logs').doc(logId).set(logData);
+
+                    // Write to nested records (so it syncs down to main AccountsPro desktop apps)
+                    await db.collection('companies_live').doc(companyId).collection('records').doc(logId).set({
+                        id: logId,
+                        collectionName: 'audit_logs',
+                        syncTimestamp: Date.now(),
+                        timestamp: Date.now(),
+                        data: logData
+                    });
+                } catch (logErr) {
+                    console.error('Audit log error:', logErr.message);
+                }
+            };
+
             const action = req.query.action || 'summary';
 
             if (action === 'validate_key') {
@@ -1413,35 +1451,25 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                     });
 
                     // Create audit log for contra (best-effort)
-                    try {
-                        const rawName = req.body?.userName || 'QuickAccPro User';
-                        const subName = rawName.includes('(QAP)') ? rawName : `${rawName} (QAP)`;
-                        const snapshot = {
-                            date: date || new Date().toISOString().split('T')[0],
-                            type: 'contra',
-                            refNo: refNo || 'N/A',
-                            amount: amt,
-                            accountId: fromAccountId,
-                            toAccountId: toAccountId,
-                            narration: narration || ''
-                        };
-                        await db.collection('audit_logs').add({
-                            date: admin.firestore.FieldValue.serverTimestamp(),
-                            ownerId: userId, // ✅ FIX: Use userId (owner UID) so it matches SystemLogModal query filter
-                            userId: subUserId || userId,
-                            userName: subName,
-                            action: 'CREATED',
-                            docType: 'Contra Voucher',
-                            refNo: refNo || 'N/A',
-                            amount: amt,
-                            voucherDate: date || new Date().toISOString().split('T')[0],
-                            docId: newId, // ✅ FIX: Match the actual voucher document ID
-                            description: `CREATED Contra Voucher: transfer of ${amt} via QuickAccPro`,
-                            snapshotData: JSON.stringify(snapshot)
-                        });
-                    } catch (logErr) {
-                        console.error('Audit log error:', logErr.message);
-                    }
+                    const snapshot = {
+                        date: date || new Date().toISOString().split('T')[0],
+                        type: 'contra',
+                        refNo: refNo || 'N/A',
+                        amount: amt,
+                        accountId: fromAccountId,
+                        toAccountId: toAccountId,
+                        narration: narration || ''
+                    };
+                    await logAuditActivity(
+                        'CREATED',
+                        'Contra Voucher',
+                        refNo || 'N/A',
+                        amt,
+                        date,
+                        newId,
+                        `CREATED Contra Voucher: transfer of ${amt} via QuickAccPro`,
+                        snapshot
+                    );
 
                     return res.json({ success: true });
                 } catch (error) {
@@ -1736,7 +1764,8 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                             status: d.status || 'active',
                             syncTimestamp: item.syncTimestamp || 0,
                             isMulti: d.isMulti || false,
-                            splits: splits
+                            splits: splits,
+                            createdBy: d.createdBy || ''
                         });
                     });
                 });
@@ -2108,9 +2137,6 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
 
                     // Create audit log (best-effort, outside transaction)
                     try {
-                        const rawName = userName || 'QuickAccPro User';
-                        const subName = rawName.includes('(QAP)') ? rawName : `${rawName} (QAP)`;
-                        
                         const firstPayment = payments[0] || {};
                         const snapshot = {
                             date: date || new Date().toISOString().split('T')[0],
@@ -2133,25 +2159,752 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                             }
                         }
 
-                        await db.collection('audit_logs').add({
-                            date: admin.firestore.FieldValue.serverTimestamp(),
-                            ownerId: userId, // ✅ FIX: Use userId (owner UID) so it matches SystemLogModal query filter
-                            userId: subUserId || userId,
-                            userName: subName,
-                            action: 'CREATED',
-                            docType: vtype === 'in' ? 'Receipt Voucher' : 'Payment Voucher',
-                            refNo: refNo || 'N/A',
-                            amount: totalVoucherAmount,
-                            voucherDate: date || new Date().toISOString().split('T')[0],
-                            docId: createdIds[0] || `quickaccpro-${refNo || Date.now()}`, // ✅ FIX: Match the first voucher's document ID
-                            description: `CREATED ${vtype === 'in' ? 'Receipt' : 'Payment'} Voucher: total of ${totalVoucherAmount} via QuickAccPro`,
-                            snapshotData: JSON.stringify(snapshot)
-                        });
+                        await logAuditActivity(
+                            'CREATED',
+                            vtype === 'in' ? 'Receipt Voucher' : 'Payment Voucher',
+                            refNo || 'N/A',
+                            totalVoucherAmount,
+                            date,
+                            createdIds[0] || `quickaccpro-${refNo || Date.now()}`,
+                            `CREATED ${vtype === 'in' ? 'Receipt' : 'Payment'} Voucher: total of ${totalVoucherAmount} via QuickAccPro`,
+                            snapshot
+                        );
                     } catch (logErr) {
                         console.error('Audit log error:', logErr.message);
                     }
 
                     return res.json({ success: true });
+                } catch (error) {
+                    return res.status(400).json({ error: error.message });
+                }
+            }
+
+            if (action === 'get_voucher') {
+                const voucherId = req.query.voucherId || req.body?.voucherId;
+                if (!voucherId) return res.status(400).json({ error: 'Voucher ID is required' });
+
+                const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
+                const doc = await recordsCol.doc(voucherId).get();
+                if (!doc.exists) {
+                    return res.status(404).json({ error: 'Voucher not found' });
+                }
+
+                const docData = doc.data();
+                const recordData = docData.data || {};
+
+                if (docData.collectionName === 'payments' && recordData.type !== 'contra' && recordData.refNo) {
+                    // Group sibling payment rows sharing same refNo and accountId
+                    const siblingSnap = await recordsCol
+                        .where('collectionName', '==', 'payments')
+                        .where('data.refNo', '==', recordData.refNo)
+                        .where('data.accountId', '==', recordData.accountId)
+                        .get();
+                    
+                    const siblings = [];
+                    siblingSnap.forEach(sDoc => {
+                        const sData = sDoc.data().data || {};
+                        if (sData.type === recordData.type) {
+                            siblings.push({
+                                docId: sDoc.id,
+                                ...sData
+                            });
+                        }
+                    });
+
+                    return res.json({ 
+                        success: true, 
+                        isMulti: siblings.length > 1,
+                        voucher: {
+                            id: voucherId,
+                            type: recordData.type === 'in' ? 'receipt' : 'payment',
+                            accountId: recordData.accountId,
+                            date: recordData.date,
+                            refNo: recordData.refNo,
+                            narration: recordData.description,
+                            createdBy: recordData.createdBy,
+                            payments: siblings.map(s => {
+                                let ledgerCollection = 'parties';
+                                let ledgerId = s.partyId;
+                                if (s.expenseId) {
+                                    ledgerCollection = 'expenses';
+                                    ledgerId = s.expenseId;
+                                } else if (s.assetId) {
+                                    ledgerCollection = 'asset_accounts';
+                                    ledgerId = s.assetId;
+                                }
+                                return {
+                                    docId: s.docId,
+                                    ledgerId,
+                                    ledgerCollection,
+                                    amount: s.amount,
+                                    narration: s.description || '',
+                                    againstId: s.againstId || null,
+                                    againstRef: s.againstRef || null
+                                };
+                            })
+                        }
+                    });
+                } else {
+                    return res.json({
+                        success: true,
+                        isMulti: false,
+                        voucher: {
+                            id: voucherId,
+                            type: recordData.type,
+                            accountId: recordData.accountId,
+                            toAccountId: recordData.toAccountId,
+                            amount: recordData.amount,
+                            date: recordData.date,
+                            refNo: recordData.refNo,
+                            narration: recordData.description,
+                            createdBy: recordData.createdBy
+                        }
+                    });
+                }
+            }
+
+            if (action === 'delete_voucher') {
+                const { voucherId, password, subUserId, userName } = { ...req.query, ...req.body };
+                if (!voucherId || !password) {
+                    return res.status(400).json({ error: 'Missing required fields: voucherId, password' });
+                }
+
+                if (password !== 'abcd') {
+                    return res.status(403).json({ error: 'Incorrect password.' });
+                }
+
+                const db = admin.firestore();
+                const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
+
+                try {
+                    const primaryDoc = await recordsCol.doc(voucherId).get();
+                    if (!primaryDoc.exists) {
+                        return res.status(404).json({ error: 'Voucher not found.' });
+                    }
+
+                    const primaryData = primaryDoc.data();
+                    const voucherData = primaryData.data || {};
+
+                    const oldVouchers = [];
+                    if (primaryData.collectionName === 'payments' && voucherData.type !== 'contra' && voucherData.refNo) {
+                        const siblingSnap = await recordsCol
+                            .where('collectionName', '==', 'payments')
+                            .where('data.refNo', '==', voucherData.refNo)
+                            .where('data.accountId', '==', voucherData.accountId)
+                            .get();
+                        
+                        siblingSnap.forEach(sDoc => {
+                            const sData = sDoc.data().data || {};
+                            if (sData.type === voucherData.type) {
+                                oldVouchers.push({
+                                    id: sDoc.id,
+                                    data: sData
+                                });
+                            }
+                        });
+                    } else {
+                        oldVouchers.push({
+                            id: voucherId,
+                            data: voucherData
+                        });
+                    }
+
+                    await db.runTransaction(async (transaction) => {
+                        for (const oldVch of oldVouchers) {
+                            const oId = oldVch.id;
+                            const oData = oldVch.data;
+                            const amt = Number(oData.amount || 0);
+
+                            if (oData.type === 'contra') {
+                                transaction.update(recordsCol.doc(oData.accountId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(amt),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+                                transaction.update(recordsCol.doc(oData.toAccountId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(-amt),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                const fromAccDoc = await db.collection('accounts').doc(oData.accountId).get();
+                                let topFromAccountId = fromAccDoc.exists ? oData.accountId : null;
+                                if (!topFromAccountId) {
+                                    const nestedFrom = await recordsCol.doc(oData.accountId).get();
+                                    const name = nestedFrom.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) topFromAccountId = q.docs[0].id;
+                                    }
+                                }
+
+                                const toAccDoc = await db.collection('accounts').doc(oData.toAccountId).get();
+                                let topToAccountId = toAccDoc.exists ? oData.toAccountId : null;
+                                if (!topToAccountId) {
+                                    const nestedTo = await recordsCol.doc(oData.toAccountId).get();
+                                    const name = nestedTo.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) topToAccountId = q.docs[0].id;
+                                    }
+                                }
+
+                                if (topFromAccountId) {
+                                    transaction.update(db.collection('accounts').doc(topFromAccountId), {
+                                        'balance': admin.firestore.FieldValue.increment(amt), 'timestamp': Date.now()
+                                    });
+                                }
+                                if (topToAccountId) {
+                                    transaction.update(db.collection('accounts').doc(topToAccountId), {
+                                        'balance': admin.firestore.FieldValue.increment(-amt), 'timestamp': Date.now()
+                                    });
+                                }
+                            } else {
+                                const vtype = oData.type;
+                                const ledgerMultiplier = vtype === 'in' ? -1 : 1;
+                                const bankMultiplier = vtype === 'in' ? 1 : -1;
+
+                                let ledgerCollection = 'parties';
+                                let ledgerId = oData.partyId;
+                                if (oData.expenseId) {
+                                    ledgerCollection = 'expenses';
+                                    ledgerId = oData.expenseId;
+                                } else if (oData.assetId) {
+                                    ledgerCollection = 'asset_accounts';
+                                    ledgerId = oData.assetId;
+                                }
+
+                                transaction.update(recordsCol.doc(ledgerId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(-amt * ledgerMultiplier),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                const topLedgerCol = ledgerCollection === 'parties' ? 'parties' : 
+                                                   ledgerCollection === 'expenses' ? 'expenses' : 
+                                                   ledgerCollection === 'asset_accounts' ? 'accounts' : null;
+                                
+                                if (topLedgerCol) {
+                                    let topLedgerId = null;
+                                    const ledDoc = await db.collection(topLedgerCol).doc(ledgerId).get();
+                                    if (ledDoc.exists) { topLedgerId = ledgerId; }
+                                    else {
+                                        const nestedLedger = await recordsCol.doc(ledgerId).get();
+                                        const name = nestedLedger.data()?.data?.name;
+                                        if (name) {
+                                            const q = await db.collection(topLedgerCol).where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                            if (!q.empty) topLedgerId = q.docs[0].id;
+                                        }
+                                    }
+
+                                    if (topLedgerId) {
+                                        transaction.update(db.collection(topLedgerCol).doc(topLedgerId), {
+                                            'balance': admin.firestore.FieldValue.increment(-amt * ledgerMultiplier),
+                                            'timestamp': Date.now()
+                                        });
+                                    }
+                                }
+
+                                if (oData.againstId) {
+                                    transaction.update(recordsCol.doc(oData.againstId), {
+                                        'data.paidAmount': admin.firestore.FieldValue.increment(-amt),
+                                        'data.remainingAmount': admin.firestore.FieldValue.increment(amt),
+                                        'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                    });
+
+                                    let topInvoiceId = null;
+                                    const invDoc = await db.collection('invoices').doc(oData.againstId).get();
+                                    if (invDoc.exists) { topInvoiceId = oData.againstId; }
+                                    else if (oData.againstRef) {
+                                        const q = await db.collection('invoices')
+                                            .where('userId', '==', companyId)
+                                            .where('refNo', '==', oData.againstRef)
+                                            .limit(1).get();
+                                        if (!q.empty) topInvoiceId = q.docs[0].id;
+                                    }
+
+                                    if (topInvoiceId) {
+                                        transaction.update(db.collection('invoices').doc(topInvoiceId), {
+                                            'paidAmount': admin.firestore.FieldValue.increment(-amt),
+                                            'remainingAmount': admin.firestore.FieldValue.increment(amt),
+                                            'timestamp': Date.now()
+                                        });
+                                    }
+                                }
+
+                                transaction.update(recordsCol.doc(oData.accountId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(-amt * bankMultiplier),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                let topAccountId = null;
+                                const accDoc = await db.collection('accounts').doc(oData.accountId).get();
+                                if (accDoc.exists) { topAccountId = oData.accountId; }
+                                else {
+                                    const nestedAcc = await recordsCol.doc(oData.accountId).get();
+                                    const name = nestedAcc.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) topAccountId = q.docs[0].id;
+                                    }
+                                }
+
+                                if (topAccountId) {
+                                    transaction.update(db.collection('accounts').doc(topAccountId), {
+                                        'balance': admin.firestore.FieldValue.increment(-amt * bankMultiplier), 'timestamp': Date.now()
+                                    });
+                                }
+                            }
+
+                            transaction.set(recordsCol.doc(oId), {
+                                id: oId,
+                                deleted: true,
+                                syncTimestamp: Date.now()
+                            });
+                            transaction.delete(db.collection('payments').doc(oId));
+                        }
+                    });
+
+                    await logAuditActivity(
+                        'DELETED',
+                        voucherData.type === 'contra' ? 'Contra Voucher' : (voucherData.type === 'in' ? 'Receipt Voucher' : 'Payment Voucher'),
+                        voucherData.refNo || 'N/A',
+                        voucherData.amount || 0,
+                        voucherData.date,
+                        voucherId,
+                        `DELETED ${voucherData.type === 'contra' ? 'Contra' : (voucherData.type === 'in' ? 'Receipt' : 'Payment')} Voucher: ref ${voucherData.refNo || 'N/A'}, amount ${voucherData.amount} via QuickAccPro`,
+                        voucherData
+                    );
+
+                    return res.json({ success: true });
+                } catch (error) {
+                    return res.status(400).json({ error: error.message });
+                }
+            }
+
+            if (action === 'edit_voucher') {
+                let { voucherId, accountId, payments, date, narration, refNo, subUserId, type, userName, toAccountId, amount } = { ...req.query, ...req.body };
+                if (!voucherId) {
+                    return res.status(400).json({ error: 'Missing required field: voucherId' });
+                }
+
+                if (typeof payments === 'string') {
+                    try { payments = JSON.parse(payments); } catch (e) { }
+                }
+
+                const db = admin.firestore();
+                const recordsCol = db.collection('companies_live').doc(companyId).collection('records');
+
+                try {
+                    const primaryDoc = await recordsCol.doc(voucherId).get();
+                    if (!primaryDoc.exists) {
+                        return res.status(404).json({ error: 'Voucher not found.' });
+                    }
+
+                    const primaryData = primaryDoc.data();
+                    const oldVoucherData = primaryData.data || {};
+
+                    if (oldVoucherData.createdBy !== subUserId && oldVoucherData.createdBy !== userId) {
+                        return res.status(403).json({ error: 'You are only authorized to edit your own created vouchers.' });
+                    }
+
+                    const oldVouchers = [];
+                    if (primaryData.collectionName === 'payments' && oldVoucherData.type !== 'contra' && oldVoucherData.refNo) {
+                        const siblingSnap = await recordsCol
+                            .where('collectionName', '==', 'payments')
+                            .where('data.refNo', '==', oldVoucherData.refNo)
+                            .where('data.accountId', '==', oldVoucherData.accountId)
+                            .get();
+                        
+                        siblingSnap.forEach(sDoc => {
+                            const sData = sDoc.data().data || {};
+                            if (sData.type === oldVoucherData.type) {
+                                oldVouchers.push({
+                                    id: sDoc.id,
+                                    data: sData
+                                });
+                            }
+                        });
+                    } else {
+                        oldVouchers.push({
+                            id: voucherId,
+                            data: oldVoucherData
+                        });
+                    }
+
+                    const topInvoiceIds = {};
+                    if (type !== 'contra' && payments) {
+                        for (const p of payments) {
+                            if (p.againstId && p.againstRef) {
+                                const q = await db.collection('invoices')
+                                    .where('userId', '==', companyId)
+                                    .where('refNo', '==', p.againstRef)
+                                    .limit(1).get();
+                                if (!q.empty) topInvoiceIds[p.againstId] = q.docs[0].id;
+                            }
+                        }
+                    }
+
+                    const topPartyIds = {};
+                    if (type !== 'contra' && payments) {
+                        for (const p of payments) {
+                            if (p.ledgerId) {
+                                const d = await db.collection('parties').doc(p.ledgerId).get();
+                                if (d.exists) { topPartyIds[p.ledgerId] = p.ledgerId; }
+                                else {
+                                    const nestedLedger = await recordsCol.doc(p.ledgerId).get();
+                                    const name = nestedLedger.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('parties').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) topPartyIds[p.ledgerId] = q.docs[0].id;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let topAccountId = null;
+                    const accDoc = await db.collection('accounts').doc(accountId).get();
+                    if (accDoc.exists) { topAccountId = accountId; }
+                    else {
+                        const nestedAcc = await recordsCol.doc(accountId).get();
+                        const name = nestedAcc.data()?.data?.name;
+                        if (name) {
+                            const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                            if (!q.empty) topAccountId = q.docs[0].id;
+                        }
+                    }
+
+                    let topToAccountId = null;
+                    if (type === 'contra' && toAccountId) {
+                        const toAccDoc = await db.collection('accounts').doc(toAccountId).get();
+                        if (toAccDoc.exists) { topToAccountId = toAccountId; }
+                        else {
+                            const nestedAcc = await recordsCol.doc(toAccountId).get();
+                            const name = nestedAcc.data()?.data?.name;
+                            if (name) {
+                                const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                if (!q.empty) topToAccountId = q.docs[0].id;
+                            }
+                        }
+                    }
+
+                    const createdIds = [];
+                    let totalVoucherAmount = 0;
+
+                    await db.runTransaction(async (transaction) => {
+                        for (const oldVch of oldVouchers) {
+                            const oId = oldVch.id;
+                            const oData = oldVch.data;
+                            const oAmt = Number(oData.amount || 0);
+
+                            if (oData.type === 'contra') {
+                                transaction.update(recordsCol.doc(oData.accountId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(oAmt),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+                                transaction.update(recordsCol.doc(oData.toAccountId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(-oAmt),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                const fromAccDoc = await db.collection('accounts').doc(oData.accountId).get();
+                                let oldTopFrom = fromAccDoc.exists ? oData.accountId : null;
+                                if (!oldTopFrom) {
+                                    const nestedFrom = await recordsCol.doc(oData.accountId).get();
+                                    const name = nestedFrom.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) oldTopFrom = q.docs[0].id;
+                                    }
+                                }
+
+                                const toAccDoc = await db.collection('accounts').doc(oData.toAccountId).get();
+                                let oldTopTo = toAccDoc.exists ? oData.toAccountId : null;
+                                if (!oldTopTo) {
+                                    const nestedTo = await recordsCol.doc(oData.toAccountId).get();
+                                    const name = nestedTo.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) oldTopTo = q.docs[0].id;
+                                    }
+                                }
+
+                                if (oldTopFrom) {
+                                    transaction.update(db.collection('accounts').doc(oldTopFrom), {
+                                        'balance': admin.firestore.FieldValue.increment(oAmt), 'timestamp': Date.now()
+                                    });
+                                }
+                                if (oldTopTo) {
+                                    transaction.update(db.collection('accounts').doc(oldTopTo), {
+                                        'balance': admin.firestore.FieldValue.increment(-oAmt), 'timestamp': Date.now()
+                                    });
+                                }
+                            } else {
+                                const oMultiplier = oData.type === 'in' ? -1 : 1;
+                                const oBankMultiplier = oData.type === 'in' ? 1 : -1;
+
+                                let oldLedgerCol = 'parties';
+                                let oldLedgerId = oData.partyId;
+                                if (oData.expenseId) {
+                                    oldLedgerCol = 'expenses';
+                                    oldLedgerId = oData.expenseId;
+                                } else if (oData.assetId) {
+                                    oldLedgerCol = 'asset_accounts';
+                                    oldLedgerId = oData.assetId;
+                                }
+
+                                transaction.update(recordsCol.doc(oldLedgerId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(-oAmt * oMultiplier),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                const topCol = oldLedgerCol === 'parties' ? 'parties' : 
+                                               oldLedgerCol === 'expenses' ? 'expenses' : 
+                                               oldLedgerCol === 'asset_accounts' ? 'accounts' : null;
+                                
+                                if (topCol) {
+                                    let oldTopLedgerId = null;
+                                    const ledDoc = await db.collection(topCol).doc(oldLedgerId).get();
+                                    if (ledDoc.exists) { oldTopLedgerId = oldLedgerId; }
+                                    else {
+                                        const nestedLedger = await recordsCol.doc(oldLedgerId).get();
+                                        const name = nestedLedger.data()?.data?.name;
+                                        if (name) {
+                                            const q = await db.collection(topCol).where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                            if (!q.empty) oldTopLedgerId = q.docs[0].id;
+                                        }
+                                    }
+
+                                    if (oldTopLedgerId) {
+                                        transaction.update(db.collection(topCol).doc(oldTopLedgerId), {
+                                            'balance': admin.firestore.FieldValue.increment(-oAmt * oMultiplier),
+                                            'timestamp': Date.now()
+                                        });
+                                    }
+                                }
+
+                                if (oData.againstId) {
+                                    transaction.update(recordsCol.doc(oData.againstId), {
+                                        'data.paidAmount': admin.firestore.FieldValue.increment(-oAmt),
+                                        'data.remainingAmount': admin.firestore.FieldValue.increment(oAmt),
+                                        'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                    });
+
+                                    let oldTopInvId = null;
+                                    const invDoc = await db.collection('invoices').doc(oData.againstId).get();
+                                    if (invDoc.exists) { oldTopInvId = oData.againstId; }
+                                    else if (oData.againstRef) {
+                                        const q = await db.collection('invoices')
+                                            .where('userId', '==', companyId)
+                                            .where('refNo', '==', oData.againstRef)
+                                            .limit(1).get();
+                                        if (!q.empty) oldTopInvId = q.docs[0].id;
+                                    }
+
+                                    if (oldTopInvId) {
+                                        transaction.update(db.collection('invoices').doc(oldTopInvId), {
+                                            'paidAmount': admin.firestore.FieldValue.increment(-oAmt),
+                                            'remainingAmount': admin.firestore.FieldValue.increment(oAmt),
+                                            'timestamp': Date.now()
+                                        });
+                                    }
+                                }
+
+                                transaction.update(recordsCol.doc(oData.accountId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(-oAmt * oBankMultiplier),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                let oldTopAccountId = null;
+                                const accDoc = await db.collection('accounts').doc(oData.accountId).get();
+                                if (accDoc.exists) { oldTopAccountId = oData.accountId; }
+                                else {
+                                    const nestedAcc = await recordsCol.doc(oData.accountId).get();
+                                    const name = nestedAcc.data()?.data?.name;
+                                    if (name) {
+                                        const q = await db.collection('accounts').where('userId', '==', companyId).where('name', '==', name).limit(1).get();
+                                        if (!q.empty) oldTopAccountId = q.docs[0].id;
+                                    }
+                                }
+
+                                if (oldTopAccountId) {
+                                    transaction.update(db.collection('accounts').doc(oldTopAccountId), {
+                                        'balance': admin.firestore.FieldValue.increment(-oAmt * oBankMultiplier), 'timestamp': Date.now()
+                                    });
+                                }
+                            }
+
+                            transaction.set(recordsCol.doc(oId), {
+                                id: oId,
+                                deleted: true,
+                                syncTimestamp: Date.now()
+                            });
+                            transaction.delete(db.collection('payments').doc(oId));
+                        }
+
+                        if (type === 'contra') {
+                            const amt = Number(amount);
+                            totalVoucherAmount = amt;
+
+                            transaction.update(recordsCol.doc(accountId), {
+                                'data.balance': admin.firestore.FieldValue.increment(-amt),
+                                'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                            });
+                            transaction.update(recordsCol.doc(toAccountId), {
+                                'data.balance': admin.firestore.FieldValue.increment(amt),
+                                'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                            });
+
+                            if (topAccountId) {
+                                transaction.update(db.collection('accounts').doc(topAccountId), {
+                                    'balance': admin.firestore.FieldValue.increment(-amt), 'timestamp': Date.now()
+                                });
+                            }
+                            if (topToAccountId) {
+                                transaction.update(db.collection('accounts').doc(topToAccountId), {
+                                    'balance': admin.firestore.FieldValue.increment(amt), 'timestamp': Date.now()
+                                });
+                            }
+
+                            const newId = voucherId;
+                            createdIds.push(newId);
+                            const contraData = {
+                                type: 'contra',
+                                accountId: accountId,
+                                toAccountId: toAccountId,
+                                amount: amt,
+                                date: date || new Date().toISOString().split('T')[0],
+                                description: narration || '',
+                                refNo: refNo || '',
+                                userId: companyId,
+                                createdBy: subUserId || userId,
+                                status: 'active',
+                                version: 'v2'
+                            };
+
+                            transaction.set(recordsCol.doc(newId), {
+                                id: newId, collectionName: 'payments', syncTimestamp: Date.now(), timestamp: Date.now(), data: contraData
+                            });
+                            transaction.set(db.collection('payments').doc(newId), {
+                                ...contraData, id: newId, timestamp: Date.now()
+                            });
+                        } else {
+                            const vtype = type === 'receipt' ? 'in' : 'out';
+                            const ledgerMultiplier = vtype === 'in' ? -1 : 1;
+                            const bankMultiplier = vtype === 'in' ? 1 : -1;
+
+                            let isFirst = true;
+                            for (const p of payments) {
+                                const { ledgerId, ledgerCollection, amount: pAmt, againstId, againstRef, category } = p;
+                                const amt = Number(pAmt);
+                                totalVoucherAmount += amt;
+
+                                transaction.update(recordsCol.doc(ledgerId), {
+                                    'data.balance': admin.firestore.FieldValue.increment(amt * ledgerMultiplier),
+                                    'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                });
+
+                                const topId = topPartyIds[ledgerId];
+                                const topLedgerCol = ledgerCollection === 'parties' ? 'parties' : 
+                                                   ledgerCollection === 'expenses' ? 'expenses' : 
+                                                   ledgerCollection === 'asset_accounts' ? 'accounts' : null;
+                                
+                                if (topLedgerCol && topId) {
+                                    transaction.update(db.collection(topLedgerCol).doc(topId), {
+                                        'balance': admin.firestore.FieldValue.increment(amt * ledgerMultiplier),
+                                        'timestamp': Date.now()
+                                    });
+                                }
+
+                                if (againstId) {
+                                    transaction.update(recordsCol.doc(againstId), {
+                                        'data.paidAmount': admin.firestore.FieldValue.increment(amt),
+                                        'data.remainingAmount': admin.firestore.FieldValue.increment(-amt),
+                                        'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                                    });
+
+                                    const tInvId = topInvoiceIds[againstId];
+                                    if (tInvId) {
+                                        transaction.update(db.collection('invoices').doc(tInvId), {
+                                            'paidAmount': admin.firestore.FieldValue.increment(amt),
+                                            'remainingAmount': admin.firestore.FieldValue.increment(-amt),
+                                            'timestamp': Date.now()
+                                        });
+                                    }
+                                }
+
+                                const newId = isFirst ? voucherId : crypto.randomBytes(12).toString('hex');
+                                createdIds.push(newId);
+                                isFirst = false;
+
+                                const targetKey = ledgerCollection === 'parties' ? 'partyId' : ledgerCollection === 'expenses' ? 'expenseId' : 'assetId';
+                                const targetCategory = ledgerCollection === 'parties' ? 'party' : ledgerCollection === 'expenses' ? 'expense' : 'asset';
+
+                                const paymentData = {
+                                    type: vtype === 'in' ? 'in' : 'out', 
+                                    transactionCategory: targetCategory,
+                                    accountId: accountId,
+                                    [targetKey]: ledgerId,
+                                    amount: amt,
+                                    date: date || new Date().toISOString().split('T')[0],
+                                    description: narration || '',
+                                    refNo: refNo || '',
+                                    againstId: againstId || null,
+                                    againstRef: againstRef || null,
+                                    invoiceId: againstId || null,
+                                    invoiceRef: againstRef || null,
+                                    billId: againstId || null,
+                                    billRef: againstRef || null,
+                                    isAgainstRef: !!againstId,
+                                    paymentAgainst: againstId ? { id: againstId, ref: againstRef, amount: amt } : null,
+                                    paymentCategory: category || 'normal',
+                                    isMulti: payments.length > 1,
+                                    userId: companyId,
+                                    createdBy: subUserId || userId,
+                                    status: 'active',
+                                    version: 'v2',
+                                    apiSource: 'accpro-multi-pay'
+                                };
+
+                                transaction.set(recordsCol.doc(newId), {
+                                    id: newId, collectionName: 'payments', syncTimestamp: Date.now(), timestamp: Date.now(), data: paymentData
+                                });
+                                transaction.set(db.collection('payments').doc(newId), {
+                                    ...paymentData, id: newId, timestamp: Date.now()
+                                });
+                            }
+
+                            transaction.update(recordsCol.doc(accountId), {
+                                'data.balance': admin.firestore.FieldValue.increment(totalVoucherAmount * bankMultiplier),
+                                'syncTimestamp': Date.now(), 'timestamp': Date.now()
+                            });
+
+                            if (topAccountId) {
+                                transaction.update(db.collection('accounts').doc(topAccountId), {
+                                    'balance': admin.firestore.FieldValue.increment(totalVoucherAmount * bankMultiplier), 'timestamp': Date.now()
+                                });
+                            }
+                        }
+                    });
+
+                    await logAuditActivity(
+                        'UPDATED',
+                        type === 'contra' ? 'Contra Voucher' : (type === 'receipt' ? 'Receipt Voucher' : 'Payment Voucher'),
+                        refNo || 'N/A',
+                        totalVoucherAmount,
+                        date,
+                        voucherId,
+                        `UPDATED ${type === 'contra' ? 'Contra' : (type === 'receipt' ? 'Receipt' : 'Payment')} Voucher: total of ${totalVoucherAmount} via QuickAccPro`,
+                        {
+                            date: date || new Date().toISOString().split('T')[0],
+                            type: type,
+                            refNo: refNo || 'N/A',
+                            amount: totalVoucherAmount,
+                            accountId: accountId,
+                            narration: narration || ''
+                        }
+                    );
+
+                    return res.json({ success: true });
+
                 } catch (error) {
                     return res.status(400).json({ error: error.message });
                 }
