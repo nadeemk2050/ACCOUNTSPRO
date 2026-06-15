@@ -1326,6 +1326,104 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                 }
             }
 
+            if (action === 'rebuild_live_records') {
+                const results = {
+                    processed: 0,
+                    upserted: 0,
+                    errors: []
+                };
+
+                try {
+                    const collectionsToSync = [
+                        { name: 'accounts', field: 'userId' },
+                        { name: 'parties', field: 'userId' },
+                        { name: 'expenses', field: 'userId' },
+                        { name: 'asset_accounts', field: 'userId' },
+                        { name: 'capital_accounts', field: 'userId' },
+                        { name: 'payments', field: 'userId' },
+                        { name: 'invoices', field: 'userId' },
+                        { name: 'journal_vouchers', field: 'userId' }
+                    ];
+
+                    const recordsColl = db.collection('companies_live').doc(companyId).collection('records');
+
+                    let batch = db.batch();
+                    let batchCount = 0;
+
+                    const commitBatchIfNeeded = async (force = false) => {
+                        if (batchCount >= 400 || (force && batchCount > 0)) {
+                            await batch.commit();
+                            batch = db.batch();
+                            results.upserted += batchCount;
+                            batchCount = 0;
+                            await new Promise(r => setTimeout(r, 100));
+                        }
+                    };
+
+                    // Sync regular collections
+                    for (const col of collectionsToSync) {
+                        try {
+                            const querySnap = await db.collection(col.name)
+                                .where(col.field, '==', companyId)
+                                .get();
+                            
+                            results.processed += querySnap.size;
+
+                            for (const docSnap of querySnap.docs) {
+                                const docData = docSnap.data();
+                                const timestamp = docData.timestamp || docData.createdAt?.toMillis?.() || Date.now();
+                                
+                                batch.set(recordsColl.doc(docSnap.id), {
+                                    id: docSnap.id,
+                                    collectionName: col.name,
+                                    syncTimestamp: Date.now(),
+                                    timestamp: timestamp,
+                                    data: docData
+                                }, { merge: true });
+
+                                batchCount++;
+                                await commitBatchIfNeeded();
+                            }
+                        } catch (colErr) {
+                            results.errors.push(`Collection ${col.name} failed: ${colErr.message}`);
+                        }
+                    }
+
+                    // Sync users / team members
+                    try {
+                        const userDocs = new Map();
+                        const userSnap1 = await db.collection('users').where('ownerId', '==', companyId).get();
+                        const userSnap2 = await db.collection('users').where('ownerId', '==', userId).get();
+                        userSnap1.forEach(d => userDocs.set(d.id, d.data()));
+                        userSnap2.forEach(d => userDocs.set(d.id, d.data()));
+
+                        results.processed += userDocs.size;
+
+                        for (const [uid, udata] of userDocs.entries()) {
+                            const timestamp = udata.timestamp || udata.createdAt?.toMillis?.() || Date.now();
+                            batch.set(recordsColl.doc(uid), {
+                                id: uid,
+                                collectionName: 'users',
+                                syncTimestamp: Date.now(),
+                                timestamp: timestamp,
+                                data: udata
+                            }, { merge: true });
+
+                            batchCount++;
+                            await commitBatchIfNeeded();
+                        }
+                    } catch (userErr) {
+                        results.errors.push(`Sync users failed: ${userErr.message}`);
+                    }
+
+                    await commitBatchIfNeeded(true);
+
+                    return res.json({ success: true, results });
+                } catch (error) {
+                    return res.status(500).json({ error: error.message });
+                }
+            }
+
             if (action === 'add_contra') {
                 // Support both query and body for flexibility
                 const { fromAccountId, toAccountId, amount, date, narration, refNo, subUserId } = { ...req.query, ...req.body };

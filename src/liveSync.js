@@ -1040,6 +1040,83 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
  * and pushes them to Firestore. This is called during 'Refresh Hub' 
  * to ensure all records from another PC's restore are correctly uploaded.
  */
+/**
+ * Force full re-sync: pushes EVERY record from local IndexedDB to Firebase,
+ * ignoring the lastSync flag. Use this when records are missing from QuickAccPro
+ * despite being saved in the main AccountsPro app.
+ */
+export const forceFullResync = async (companyId, onProgress) => {
+    try {
+        await ensureLiveFirestoreAccess();
+
+        const companyDb = await getCompanyDB(companyId);
+        if (!companyDb) throw new Error('Could not access company database.');
+
+        let allDocs = await companyDb.offline_records.find().exec();
+
+        // Fallback to master DB if company DB is empty
+        if (allDocs.length === 0) {
+            try {
+                const masterDb = await getMasterDB();
+                const masterDocs = await masterDb.offline_records.find().exec();
+                if (masterDocs.length > 0) allDocs = masterDocs;
+            } catch (me) { /* ignore */ }
+        }
+
+        if (allDocs.length === 0) return { success: true, count: 0 };
+
+        const liveCollectionPath = `companies_live/${companyId}/records`;
+        let batch = writeBatch(realFirestore);
+        let count = 0;
+        let total = 0;
+        const now = Date.now();
+
+        if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('syncing', { progress: 0, total: allDocs.length });
+
+        for (const rxdoc of allDocs) {
+            const data = rxdoc.toJSON();
+            const safeData = JSON.parse(JSON.stringify(data));
+            if (!safeData.timestamp) safeData.timestamp = now;
+
+            batch.set(
+                doc(realFirestore, liveCollectionPath, safeData.id),
+                { ...safeData, syncTimestamp: now },
+                { merge: true }
+            );
+
+            count++;
+            total++;
+
+            if (count >= 400) {
+                await batch.commit();
+                batch = writeBatch(realFirestore);
+                count = 0;
+                if (onProgress) onProgress(total, allDocs.length);
+                if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('syncing', { progress: total, total: allDocs.length });
+                await new Promise(r => setTimeout(r, 150));
+            }
+        }
+
+        if (count > 0) {
+            await batch.commit();
+        }
+
+        // Update lastSync on all docs so delta sync doesn't re-push them
+        for (const rxdoc of allDocs) {
+            try { await rxdoc.incrementalPatch({ lastSync: now }); } catch (e) {}
+        }
+
+        if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('connected');
+
+        console.log(`[FORCE RESYNC] Pushed ${total} records for company ${companyId}.`);
+        return { success: true, count: total };
+    } catch (err) {
+        console.error('[FORCE RESYNC] Failed:', err);
+        if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('error');
+        return { success: false, error: err.message };
+    }
+};
+
 export const syncCompanyDataDelta = async (companyId, onProgress) => {
     try {
         const companyDb = await getCompanyDB(companyId);

@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { 
   BookOpen, RefreshCw, Search, Filter, ArrowUpDown, 
   Receipt, Wallet, Notebook, AlertCircle, Clock, 
-  ChevronDown, ChevronUp, FileText, ChevronLeft, ChevronRight
+  ChevronDown, ChevronUp, FileText, ChevronLeft, ChevronRight, Download
 } from 'lucide-react'
 import { getDaybook, listAccounts, listLedgers, deleteVoucher } from '../api'
 
@@ -45,6 +45,7 @@ export default function DaybookLive({ subUser }) {
   const monthStartStr = todayStr.substring(0, 8) + '01'
   const [dateMode, setDateMode] = useState('all')
   const [filterDate, setFilterDate] = useState(todayStr)
+  const [filterMonth, setFilterMonth] = useState(todayStr.substring(0, 7))
   const [startDate, setStartDate] = useState(monthStartStr)
   const [endDate, setEndDate] = useState(todayStr)
 
@@ -64,6 +65,154 @@ export default function DaybookLive({ subUser }) {
     setFilterDate(d.toISOString().split('T')[0])
   }
 
+  const handlePrevMonth = () => {
+    if (!filterMonth) return
+    const [y, m] = filterMonth.split('-').map(Number)
+    const prevDate = new Date(y, m - 2, 1)
+    const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`
+    setFilterMonth(prevMonthStr)
+  }
+
+  const handleNextMonth = () => {
+    if (!filterMonth) return
+    const [y, m] = filterMonth.split('-').map(Number)
+    const nextDate = new Date(y, m, 1)
+    const nextMonthStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`
+    setFilterMonth(nextMonthStr)
+  }
+
+  const downloadCSV = () => {
+    try {
+      const headers = ["Date", "Vch Type", "Particulars", "Ref", "Debit (DHS)", "Credit (DHS)", "Value"]
+      const rows = filtered.map(t => [
+        t.date || '',
+        t.type || '',
+        getParticulars(t) || '',
+        t.refNo || '',
+        t.debit ? t.debit.toFixed(2) : '',
+        t.credit ? t.credit.toFixed(2) : '',
+        t.runningBalance ? t.runningBalance.toFixed(2) : ''
+      ])
+
+      const csvContent = [
+        headers.join(','),
+        ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))
+      ].join("\n")
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.setAttribute("href", url)
+      link.setAttribute("download", `${filterAccountName || 'Daybook'}_${dateMode}_${new Date().toISOString().split('T')[0]}.csv`)
+      link.style.visibility = 'hidden'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    } catch (e) {
+      console.error("CSV download failed", e)
+      alert("Failed to export CSV.")
+    }
+  }
+
+  const downloadPDF = () => {
+    const printWindow = window.open('', '_blank')
+    const title = filterAccountName ? `${filterAccountName} Register` : 'Daybook Live'
+    
+    const sorted = [...filtered]
+    
+    let rowsHtml = sorted.map(t => {
+      let vchLabel = (t.type || '').toUpperCase()
+      if (t.type === 'payments') {
+        if (t.subType === 'in' || t.subType === 'receipt') vchLabel = 'RECEIPT'
+        else if (t.subType === 'out' || t.subType === 'payment') vchLabel = 'PAYMENT'
+        else if (t.subType?.toLowerCase() === 'contra') vchLabel = 'CONTRA'
+      } else if (t.type === 'journal_vouchers') {
+        vchLabel = 'JOURNAL'
+      }
+
+      return `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 10px 8px; font-family: monospace;">${formatDate(t.date)}</td>
+          <td style="padding: 10px 8px; font-weight: bold; color: #4f46e5;">${vchLabel}</td>
+          <td style="padding: 10px 8px; text-transform: uppercase;">${getParticulars(t) || ''}</td>
+          <td style="padding: 10px 8px; font-family: monospace;">${t.refNo || ''}</td>
+          <td style="padding: 10px 8px; text-align: right; font-family: monospace; color: #15803d; font-weight: bold;">${t.debit ? formatCurrency(t.debit) : ''}</td>
+          <td style="padding: 10px 8px; text-align: right; font-family: monospace; color: #b91c1c; font-weight: bold;">${t.credit ? formatCurrency(t.credit) : ''}</td>
+          <td style="padding: 10px 8px; text-align: right; font-family: monospace; font-weight: bold; background-color: #f8fafc;">${formatCurrency(t.runningBalance)}</td>
+        </tr>
+      `
+    }).join('')
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            body { font-family: system-ui, -apple-system, sans-serif; color: #1e293b; padding: 30px; }
+            header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #e2e8f0; padding-bottom: 15px; margin-bottom: 20px; }
+            h1 { font-size: 24px; margin: 0; text-transform: uppercase; letter-spacing: -0.5px; }
+            .meta { font-size: 11px; color: #64748b; margin-top: 5px; }
+            .totals-box { display: flex; gap: 15px; }
+            .total-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; text-align: right; }
+            .total-card-title { font-size: 8px; font-weight: 800; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+            .total-card-val { font-size: 13px; font-weight: bold; font-family: monospace; margin-top: 2px; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; }
+            th { background-color: #0f172a; color: white; padding: 10px 8px; text-align: left; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; font-size: 9px; }
+            tr:nth-child(even) { background-color: #f8fafc; }
+            @media print {
+              body { padding: 0; }
+              @page { margin: 1.5cm; }
+            }
+          </style>
+        </head>
+        <body>
+          <header>
+            <div>
+              <h1>${title}</h1>
+              <div class="meta">Generated: ${new Date().toLocaleDateString('en-IN')} | Period: ${dateMode.toUpperCase()}</div>
+            </div>
+            <div class="totals-box">
+              <div class="total-card">
+                <div class="total-card-title">Total Vch</div>
+                <div class="total-card-val">${filtered.length}</div>
+              </div>
+              <div class="total-card">
+                <div class="total-card-title">Closing Balance</div>
+                <div class="total-card-val" style="color: ${accountCurrentBalance >= 0 ? '#15803d' : '#b91c1c'}">
+                  DHS ${formatCurrency(Math.abs(accountCurrentBalance || 0))} ${accountCurrentBalance >= 0 ? 'Dr' : 'Cr'}
+                </div>
+              </div>
+            </div>
+          </header>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 100px;">Date</th>
+                <th style="width: 80px;">Type</th>
+                <th>Particulars</th>
+                <th style="width: 100px;">Ref</th>
+                <th style="text-align: right; width: 110px;">Debit (DHS)</th>
+                <th style="text-align: right; width: 110px;">Credit (DHS)</th>
+                <th style="text-align: right; width: 130px;">Balance (DHS)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+          <script>
+            window.onload = function() {
+              window.print();
+              setTimeout(function() { window.close(); }, 500);
+            };
+          </script>
+        </body>
+      </html>
+    `)
+    printWindow.document.close()
+  }
+
+
   useEffect(() => {
     setDateMode('all')
     loadData()
@@ -73,7 +222,7 @@ export default function DaybookLive({ subUser }) {
   // Reset page when search or filters change
   useEffect(() => {
     setCurrentPage(1)
-  }, [search, filterType, dateMode, filterDate, startDate, endDate])
+  }, [search, filterType, dateMode, filterDate, filterMonth, startDate, endDate])
 
   // Listen to filter events from Layout top header bar
   useEffect(() => {
@@ -83,6 +232,7 @@ export default function DaybookLive({ subUser }) {
       if (type === 'filterDate') setFilterDate(value)
       if (type === 'startDate') setStartDate(value)
       if (type === 'endDate') setEndDate(value)
+      if (type === 'filterMonth') setFilterMonth(value)
     }
     const handleSearch = (e) => setSearch(e.detail)
 
@@ -108,6 +258,19 @@ export default function DaybookLive({ subUser }) {
     window.addEventListener('quickaccpro-register-filter-step', handleStepFilter)
     return () => window.removeEventListener('quickaccpro-register-filter-step', handleStepFilter)
   }, [filterDate])
+
+  useEffect(() => {
+    const handleStepMonthFilter = (e) => {
+      if (e.detail === 'prev') {
+        handlePrevMonth()
+      } else {
+        handleNextMonth()
+      }
+    }
+    window.addEventListener('quickaccpro-register-filter-month-step', handleStepMonthFilter)
+    return () => window.removeEventListener('quickaccpro-register-filter-month-step', handleStepMonthFilter)
+  }, [filterMonth])
+
 
   const loadData = async () => {
     const cacheKey = 'quickaccpro_cached_transactions'
@@ -431,8 +594,7 @@ export default function DaybookLive({ subUser }) {
         } else if (dateMode === 'custom') {
           if (!t.date || t.date < startDate || t.date > endDate) return false
         } else if (dateMode === 'month') {
-          const currentMonthPrefix = getTodayStr().slice(0, 7) // "YYYY-MM"
-          if (!t.date || !t.date.startsWith(currentMonthPrefix)) return false
+          if (!t.date || !t.date.startsWith(filterMonth)) return false
         }
       }
 
@@ -586,6 +748,7 @@ export default function DaybookLive({ subUser }) {
           currentBalance: accountCurrentBalance,
           dateMode,
           filterDate,
+          filterMonth,
           startDate,
           endDate,
           search
@@ -599,7 +762,7 @@ export default function DaybookLive({ subUser }) {
     return () => {
       window.dispatchEvent(new CustomEvent('quickaccpro-register-active', { detail: null }))
     }
-  }, [filterAccountName, filtered, refreshing, dateMode, filterDate, startDate, endDate, search, accountCurrentBalance])
+  }, [filterAccountName, filtered, refreshing, dateMode, filterDate, filterMonth, startDate, endDate, search, accountCurrentBalance])
 
   // Listen to refresh clicks from the Layout top header bar
   useEffect(() => {
@@ -611,6 +774,28 @@ export default function DaybookLive({ subUser }) {
       window.removeEventListener('quickaccpro-register-refresh', handleTriggerRefresh)
     }
   }, [handleRefresh])
+
+  // Listen to download clicks from the Layout top header bar
+  useEffect(() => {
+    const handleTriggerDownload = () => {
+      downloadCSV()
+    }
+    window.addEventListener('quickaccpro-register-download', handleTriggerDownload)
+    return () => {
+      window.removeEventListener('quickaccpro-register-download', handleTriggerDownload)
+    }
+  }, [filtered, filterAccountName, dateMode])
+
+  // Listen to PDF download clicks from the Layout top header bar
+  useEffect(() => {
+    const handleTriggerPDFDownload = () => {
+      downloadPDF()
+    }
+    window.addEventListener('quickaccpro-register-pdf-download', handleTriggerPDFDownload)
+    return () => {
+      window.removeEventListener('quickaccpro-register-pdf-download', handleTriggerPDFDownload)
+    }
+  }, [filtered, filterAccountName, dateMode])
 
   const getTypeConfig = (type) => TYPE_CONFIG[type] || { label: type, icon: FileText, color: 'text-slate-600', bg: 'bg-slate-100' }
 
@@ -670,6 +855,20 @@ export default function DaybookLive({ subUser }) {
               title={sortAsc ? 'Newest first' : 'Oldest first'}
             >
               <ArrowUpDown size={16} className={`transition-transform ${sortAsc ? 'rotate-180' : ''}`} />
+            </button>
+            <button
+              onClick={downloadCSV}
+              className="btn-secondary px-3 text-slate-600 hover:text-indigo-600"
+              title="Download CSV"
+            >
+              <Download size={16} />
+            </button>
+            <button
+              onClick={downloadPDF}
+              className="btn-secondary px-3 text-slate-600 hover:text-indigo-600"
+              title="Download PDF"
+            >
+              <FileText size={16} />
             </button>
           </div>
         </div>

@@ -223,7 +223,7 @@ const RegistersDashboard = ({
                             Audit Ready Reports
                         </div>
                         <div className="text-[9px] font-mono bg-white/5 px-2 py-1 rounded text-slate-400">
-                            V2.6.6
+                            V2.6.7
                         </div>
                     </div>
                 </div>

@@ -125,7 +125,7 @@ import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
 import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
-import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta } from './liveSync.js';
+import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync } from './liveSync.js';
 import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
@@ -163,6 +163,12 @@ const round3 = (val) => {
     const n = Number(val || 0);
     if (isNaN(n)) return 0;
     return Math.round(n * 1000) / 1000;
+};
+
+const round6 = (val) => {
+    const n = Number(val || 0);
+    if (isNaN(n)) return 0;
+    return Math.round(n * 1000000) / 1000000;
 };
 
 const createAutoCalcBomMaterial = () => ({ productId: '', percent: '' });
@@ -616,7 +622,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.6.6 (April 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.6.7 (June 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -671,7 +677,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.6</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.7</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -695,7 +701,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.6</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.7</div>
                 </div>
             </div>
         </Modal>
@@ -801,13 +807,21 @@ const toDisplayDate = (isoDate) => {
 const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const [val, setVal] = useState('');
     const inputRef = useRef(null);
+    
+    // Active date page for the calendar
+    const [calDate, setCalDate] = useState(() => {
+        const d = baseDate ? new Date(baseDate) : new Date();
+        return isNaN(d.getTime()) ? new Date() : d;
+    });
 
     useEffect(() => {
         if (isOpen) {
             setVal('');
+            const d = baseDate ? new Date(baseDate) : new Date();
+            setCalDate(isNaN(d.getTime()) ? new Date() : d);
             setTimeout(() => inputRef.current?.focus(), 50);
         }
-    }, [isOpen]);
+    }, [isOpen, baseDate]);
 
     const handleKey = (e) => {
         if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
@@ -817,13 +831,11 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
                 setVal(toDisplayDate(res)); 
                 onSubmit(res);
             } else {
-                // If invalid, maybe just select all to allow retry
                 inputRef.current?.select();
             }
         }
     };
 
-    // ✅ GLOBAL ESCAPE LISTENER
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (isOpen && e.key === 'Escape') {
@@ -837,22 +849,108 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     }, [isOpen, onClose]);
 
     if (!isOpen) return null;
+
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+
+    const firstDayIndex = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const prevTotalDays = new Date(year, month, 0).getDate();
+
+    const days = [];
+    for (let i = firstDayIndex - 1; i >= 0; i--) {
+        days.push({
+            day: prevTotalDays - i,
+            isCurrentMonth: false,
+            date: new Date(year, month - 1, prevTotalDays - i)
+        });
+    }
+    for (let i = 1; i <= totalDays; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: true,
+            date: new Date(year, month, i)
+        });
+    }
+    const remainingCells = 42 - days.length;
+    for (let i = 1; i <= remainingCells; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: false,
+            date: new Date(year, month + 1, i)
+        });
+    }
+
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    const handlePrevMonth = () => {
+        setCalDate(new Date(year, month - 1, 1));
+    };
+
+    const handleNextMonth = () => {
+        setCalDate(new Date(year, month + 1, 1));
+    };
+
+    const handleSelectDay = (date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const iso = `${y}-${m}-${d}`;
+        onSubmit(iso);
+    };
+
     return (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/20 backdrop-blur-[2px]" onClick={onClose}>
-            <div className="bg-white border-2 border-slate-800 shadow-2xl p-4 rounded-lg w-64 animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
-                <div className="bg-slate-800 text-white text-xs font-bold px-2 py-1 mb-2 text-center uppercase tracking-widest">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/25 backdrop-blur-[1px]" onClick={onClose}>
+            <div className="bg-white border-2 border-[#2b5797] shadow-2xl p-4 rounded-lg w-[290px] animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
+                <div className="bg-[#2b5797] text-white text-xs font-black px-2 py-1 mb-2.5 text-center uppercase tracking-widest rounded-sm">
                     Change Date (F2)
                 </div>
                 <input
                     ref={inputRef}
                     type="text"
                     placeholder="DD or DD-MM"
-                    className="w-full text-center font-bold text-lg border-b-2 border-blue-500 outline-none pb-1 bg-transparent placeholder:font-normal placeholder:text-sm"
+                    className="w-full text-center font-black text-lg border-b-2 border-blue-500 outline-none pb-1 bg-transparent placeholder:font-normal placeholder:text-sm mb-3 text-slate-800"
                     value={val}
                     onChange={e => setVal(e.target.value)}
                     onKeyDown={handleKey}
                 />
-                <div className="text-[10px] text-slate-400 mt-2 text-center">Type date & press Enter</div>
+                
+                {/* Modern Calendar Grid */}
+                <div className="border border-slate-200 rounded-lg p-2 bg-slate-50/50">
+                    <div className="flex justify-between items-center mb-2">
+                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">◀</button>
+                        <span className="text-xs font-black text-[#1e3264]">{monthNames[month]} {year}</span>
+                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">▶</button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 text-center text-[9px] font-black text-slate-400 uppercase mb-1">
+                        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                        {days.map((d, idx) => {
+                            const isSelected = baseDate && (d.date.toDateString() === new Date(baseDate).toDateString());
+                            const isToday = d.date.toDateString() === new Date().toDateString();
+                            return (
+                                <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => handleSelectDay(d.date)}
+                                    className={`h-6 w-full rounded flex items-center justify-center text-[10px] font-bold transition-colors ${
+                                        isSelected 
+                                            ? 'bg-blue-600 text-white font-black shadow-sm' 
+                                            : isToday 
+                                                ? 'bg-orange-105 text-orange-700 border border-orange-300 font-black' 
+                                                : d.isCurrentMonth 
+                                                    ? 'text-slate-800 hover:bg-slate-200' 
+                                                    : 'text-slate-300 hover:bg-slate-100'
+                                    }`}
+                                >
+                                    {d.day}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+                <div className="text-[8px] text-slate-400 mt-2.5 text-center font-black uppercase tracking-wider">Type Date + Enter OR Click Calendar</div>
             </div>
         </div>
     );
@@ -864,12 +962,24 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const fromRef = useRef(null);
     const toRef = useRef(null);
 
+    // Track active month/year in the calendar
+    const [calDate, setCalDate] = useState(() => {
+        const d = baseDate ? new Date(baseDate) : new Date();
+        return isNaN(d.getTime()) ? new Date() : d;
+    });
+
+    // Track which field is active in the calendar picker ('from' or 'to')
+    const [activeField, setActiveField] = useState('from');
+
     useEffect(() => {
         if (isOpen) {
             setFromVal(''); setToVal('');
+            setActiveField('from');
+            const d = baseDate ? new Date(baseDate) : new Date();
+            setCalDate(isNaN(d.getTime()) ? new Date() : d);
             setTimeout(() => fromRef.current?.focus(), 50);
         }
-    }, [isOpen]);
+    }, [isOpen, baseDate]);
 
     const handleFromKey = (e) => {
         if (e.key === 'Enter') {
@@ -877,6 +987,7 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
             const res = parseSmartDate(fromVal, baseDate); 
             if (res) {
                 setFromVal(toDisplayDate(res));
+                setActiveField('to');
                 toRef.current?.focus();
             } else {
                 fromRef.current?.select();
@@ -907,7 +1018,6 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
                 setToVal(toDisplayDate(t));
                 onSubmit(f, t);
             } else {
-                // If invalid, don't close. Focus the problematic one.
                 if (!f) fromRef.current?.select();
                 else if (!t) toRef.current?.select();
             }
@@ -928,38 +1038,152 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     }, [isOpen, onClose]);
 
     if (!isOpen) return null;
+
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+
+    const firstDayIndex = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const prevTotalDays = new Date(year, month, 0).getDate();
+
+    const days = [];
+    for (let i = firstDayIndex - 1; i >= 0; i--) {
+        days.push({
+            day: prevTotalDays - i,
+            isCurrentMonth: false,
+            date: new Date(year, month - 1, prevTotalDays - i)
+        });
+    }
+    for (let i = 1; i <= totalDays; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: true,
+            date: new Date(year, month, i)
+        });
+    }
+    const remainingCells = 42 - days.length;
+    for (let i = 1; i <= remainingCells; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: false,
+            date: new Date(year, month + 1, i)
+        });
+    }
+
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    const handlePrevMonth = () => {
+        setCalDate(new Date(year, month - 1, 1));
+    };
+
+    const handleNextMonth = () => {
+        setCalDate(new Date(year, month + 1, 1));
+    };
+
+    const parsedFrom = parseSmartDate(fromVal, baseDate);
+    const parsedTo = parseSmartDate(toVal, baseDate);
+
+    const handleSelectDay = (date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const displayVal = `${d}/${m}/${y}`;
+        const iso = `${y}-${m}-${d}`;
+
+        if (activeField === 'from') {
+            setFromVal(displayVal);
+            setActiveField('to');
+            setTimeout(() => toRef.current?.focus(), 50);
+        } else {
+            setToVal(displayVal);
+            const f = parseSmartDate(fromVal, baseDate) || iso;
+            const t = iso;
+            if (f && t && new Date(f) <= new Date(t)) {
+                setFromVal(toDisplayDate(f));
+                setToVal(toDisplayDate(t));
+                onSubmit(f, t);
+            }
+        }
+    };
+
     return (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/20 backdrop-blur-[2px]" onClick={onClose}>
-            <div className="bg-white border-2 border-slate-800 shadow-2xl p-4 rounded-lg w-72 animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
-                <div className="bg-green-700 text-white text-xs font-bold px-2 py-1 mb-3 text-center uppercase tracking-widest">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/25 backdrop-blur-[1px]" onClick={onClose}>
+            <div className="bg-white border-2 border-green-700 shadow-2xl p-4 rounded-lg w-[290px] animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
+                <div className="bg-green-700 text-white text-xs font-black px-2 py-1 mb-3 text-center uppercase tracking-widest rounded-sm">
                     Change Period (Alt+F2)
                 </div>
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                        <span className="w-10 text-xs font-bold text-slate-500">From</span>
+                <div className="space-y-3 mb-3">
+                    <div className={`flex items-center gap-2 border-b-2 pb-1 transition-colors ${activeField === 'from' ? 'border-green-600 bg-green-50/20' : 'border-slate-200'}`}>
+                        <span className="w-10 text-xs font-black text-slate-500">From</span>
                         <input
                             ref={fromRef}
                             type="text"
                             placeholder="DD/MM/YYYY"
-                            className="flex-1 font-bold text-center border-b border-green-500 outline-none pb-1 text-sm"
+                            className="flex-1 font-bold text-center outline-none text-sm bg-transparent text-slate-800"
                             value={fromVal}
                             onChange={e => setFromVal(e.target.value)}
                             onKeyDown={handleFromKey}
+                            onFocus={() => setActiveField('from')}
                         />
                     </div>
-                    <div className="flex items-center gap-2">
-                        <span className="w-10 text-xs font-bold text-slate-500">To</span>
+                    <div className={`flex items-center gap-2 border-b-2 pb-1 transition-colors ${activeField === 'to' ? 'border-green-600 bg-green-50/20' : 'border-slate-200'}`}>
+                        <span className="w-10 text-xs font-black text-slate-500">To</span>
                         <input
                             ref={toRef}
                             type="text"
                             placeholder="DD/MM/YYYY"
-                            className="flex-1 font-bold text-center border-b border-green-500 outline-none pb-1 text-sm"
+                            className="flex-1 font-bold text-center outline-none text-sm bg-transparent text-slate-800"
                             value={toVal}
                             onChange={e => setToVal(e.target.value)}
                             onKeyDown={handleToKey}
+                            onFocus={() => setActiveField('to')}
                         />
                     </div>
                 </div>
+
+                {/* Calendar Range Grid */}
+                <div className="border border-slate-200 rounded-lg p-2 bg-slate-50/50">
+                    <div className="flex justify-between items-center mb-2">
+                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">◀</button>
+                        <span className="text-xs font-black text-[#1e3264]">{monthNames[month]} {year}</span>
+                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">▶</button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 text-center text-[9px] font-black text-slate-400 uppercase mb-1">
+                        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                        {days.map((d, idx) => {
+                            const isFrom = parsedFrom && (d.date.toDateString() === new Date(parsedFrom).toDateString());
+                            const isTo = parsedTo && (d.date.toDateString() === new Date(parsedTo).toDateString());
+                            const inRange = parsedFrom && parsedTo && (d.date > new Date(parsedFrom) && d.date < new Date(parsedTo));
+                            const isToday = d.date.toDateString() === new Date().toDateString();
+                            
+                            let btnClass = "text-slate-800 hover:bg-slate-200";
+                            if (isFrom || isTo) {
+                                btnClass = "bg-green-600 text-white font-black shadow-sm";
+                            } else if (inRange) {
+                                btnClass = "bg-green-100 text-green-800 font-bold";
+                            } else if (isToday) {
+                                btnClass = "bg-orange-105 text-orange-700 border border-orange-300 font-black";
+                            } else if (!d.isCurrentMonth) {
+                                btnClass = "text-slate-300 hover:bg-slate-100";
+                            }
+
+                            return (
+                                <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => handleSelectDay(d.date)}
+                                    className={`h-6 w-full rounded flex items-center justify-center text-[10px] font-medium transition-colors ${btnClass}`}
+                                >
+                                    {d.day}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="text-[8px] text-slate-400 mt-2.5 text-center font-black uppercase tracking-wider">Type Date + Enter OR Click Calendar</div>
             </div>
         </div>
     );
@@ -1017,6 +1241,7 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
             const queries = [];
             if (type === 'party') {
                 queries.push(getDocs(query(collection(db, 'invoices'), where('partyId', '==', id), ...forwardConstraints)));
+                queries.push(getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'payments'), where('partyId', '==', id), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('drId', '==', id), where('drType', '==', 'party'), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('crId', '==', id), where('crType', '==', 'party'), ...forwardConstraints)));
@@ -1025,6 +1250,7 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                 queries.push(getDocs(query(collection(db, 'payments'), where('toAccountId', '==', id), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('drId', '==', id), where('drType', '==', 'account'), ...forwardConstraints)));
                 queries.push(getDocs(query(collection(db, 'journal_vouchers'), where('crId', '==', id), where('crType', '==', 'account'), ...forwardConstraints)));
+                queries.push(getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...forwardConstraints)));
             }
 
             const snaps = await Promise.all(queries);
@@ -1038,6 +1264,9 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                     // Only for Party logic or Addl Exp
                     if (type === 'party') {
                         if (v.partyId === id) { if (v.type === 'sales') recentDr += amt; else recentCr += amt; }
+                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
+                    } else {
+                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
                     }
                 } else if (vType === 'payment') {
                     if (type === 'account' && v.accountId === id) {
@@ -1054,7 +1283,7 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
             };
 
             snaps.forEach((snap, idx) => {
-                const vchType = idx === 0 ? (type === 'party' ? 'invoice' : 'payment') : (idx === 1 ? (type === 'party' ? 'payment' : 'payment') : 'jv');
+                const vchType = idx <= 1 ? 'invoice' : (idx === 2 ? (type === 'party' ? 'payment' : 'payment') : (idx <= 4 ? 'jv' : 'invoice'));
                 // Just map snaps to logic: actually easier to check based on which query they came from
                 snap.forEach(d => {
                     const v = d.data();
@@ -1066,6 +1295,7 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                             if (v.totalAmount) { if (v.type === 'sales') recentDr += baseAmt; else recentCr += baseAmt; }
                             else { if (v.type === 'out') recentDr += baseAmt; else recentCr += baseAmt; }
                         }
+                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
                         if (v.drId === id) recentDr += baseAmt;
                         if (v.crId === id) recentCr += baseAmt;
                     } else if (type === 'account') {
@@ -1073,6 +1303,7 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                         if (v.toAccountId === id) recentDr += baseAmt;
                         if (v.drId === id) recentDr += baseAmt;
                         if (v.crId === id) recentCr += baseAmt;
+                        if (v.addlExpCreditId === id && v.type === 'purchase') recentCr += (safeNumLocal(v.addlExpTotal) * rate);
                     }
                 });
             });
@@ -1088,12 +1319,14 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
 
         if (type === 'party') {
             const invQ = query(collection(db, 'invoices'), where('partyId', '==', id), ...baseConstraints);
+            const invCrQ = query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints);
             const payQ = query(collection(db, 'payments'), where('partyId', '==', id), ...baseConstraints);
             const jvDrQ = query(collection(db, 'journal_vouchers'), where('drType', '==', 'party'), where('drId', '==', id), ...baseConstraints);
             const jvCrQ = query(collection(db, 'journal_vouchers'), where('crType', '==', 'party'), where('crId', '==', id), ...baseConstraints);
 
-            const [iS, pS, jvDrS, jvCrS] = await Promise.all([getDocs(invQ), getDocs(payQ), getDocs(jvDrQ), getDocs(jvCrQ)]);
+            const [iS, pS, jvDrS, jvCrS, iCS] = await Promise.all([getDocs(invQ), getDocs(payQ), getDocs(jvDrQ), getDocs(jvCrQ), getDocs(invCrQ)]);
 
+            iCS.forEach(d => { const v = d.data(); if (v.type === 'purchase') credit += (safeNumLocal(v.addlExpTotal) * safeNumLocal(v.exchangeRate || 1)); });
             iS.forEach(d => { const v = d.data(); if (v.type === 'sales') debit += safeNumLocal(v.totalAmount); else credit += safeNumLocal(v.totalAmount); });
             pS.forEach(d => { const v = d.data(); const amt = safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); if (v.type === 'out') debit += amt; else credit += amt; });
             jvDrS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.amount); });
@@ -1106,10 +1339,12 @@ async function computeLedgerBalance({ db, userId, type, id, asOfDate, userRole, 
                 getDocs(query(collection(db, 'payments'), where('accountId', '==', id), ...baseConstraints)),
                 getDocs(query(collection(db, 'payments'), where('toAccountId', '==', id), ...baseConstraints)),
                 getDocs(query(collection(db, 'journal_vouchers'), where('drType', '==', 'account'), where('drId', '==', id), ...baseConstraints)),
-                getDocs(query(collection(db, 'journal_vouchers'), where('crType', '==', 'account'), where('crId', '==', id), ...baseConstraints))
+                getDocs(query(collection(db, 'journal_vouchers'), where('crType', '==', 'account'), where('crId', '==', id), ...baseConstraints)),
+                getDocs(query(collection(db, 'invoices'), where('addlExpCreditId', '==', id), ...baseConstraints))
             ];
-            const [pS, pToS, jvDrS, jvCrS] = await Promise.all(queries);
+            const [pS, pToS, jvDrS, jvCrS, invS] = await Promise.all(queries);
 
+            invS.forEach(d => { const v = d.data(); if (v.type === 'purchase') credit += (safeNumLocal(v.addlExpTotal) * safeNumLocal(v.exchangeRate || 1)); });
             pS.forEach(d => { const v = d.data(); const amt = safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); if (v.type === 'in') debit += amt; else credit += amt; });
             pToS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.baseAmount || (v.amount * (v.exchangeRate || 1))); });
             jvDrS.forEach(d => { const v = d.data(); debit += safeNumLocal(v.amount); });
@@ -3434,6 +3669,8 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         vouchers: 0,
         totalVouchers: 0
     });
+    const [forceResyncId, setForceResyncId] = useState(null);
+    const [forceResyncProgress, setForceResyncProgress] = useState({ current: 0, total: 0 });
     const [showSyncHistory, setShowSyncHistory] = useState(false);
     const [syncHistory, setSyncHistory] = useState(() => {
         try { return JSON.parse(localStorage.getItem('accpro_sync_history') || '[]'); } catch { return []; }
@@ -3674,7 +3911,32 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         }
     };
 
+    const handleForceFullResync = async (coId, coName, e) => {
+        e.stopPropagation();
+        const localStats = companies.find(c => c.id === coId)?.stats;
+        const statsText = localStats ? `\n\nThis will push all ${localStats.vouchers || 0} vouchers and ${localStats.ledgers || 0} ledgers.` : '';
+        if (!window.confirm(`🔄 FORCE FULL RE-SYNC\n\nPush ALL local records for "${coName}" to Firebase, ignoring previous sync status?\n\nUse this if QuickAccPro is missing vouchers that exist in the main app.${statsText}`)) return;
+        
+        setForceResyncId(coId);
+        setForceResyncProgress({ current: 0, total: 0 });
+        try {
+            const result = await forceFullResync(coId, (done, total) => {
+                setForceResyncProgress({ current: done, total });
+            });
+            if (result.success) {
+                alert(`✅ Re-Sync Complete!\n\n${result.count} records pushed to Firebase.\nQuickAccPro should now show all vouchers.`);
+            } else {
+                alert(`❌ Re-Sync failed: ${result.error}`);
+            }
+        } catch (err) {
+            alert('❌ Error during re-sync: ' + err.message);
+        } finally {
+            setForceResyncId(null);
+        }
+    };
+
     const openRemoveDialog = (co, e) => {
+
         e.stopPropagation();
         setRemoveDialog({
             open: true,
@@ -4256,7 +4518,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                             <span className="text-[11px] font-bold text-slate-400 group-hover:text-blue-200 uppercase tracking-tighter">Apr 24 - Mar 25</span>
                                                         </td>
                                                         <td className="bg-white/5 group-hover:bg-blue-600/10 px-4 md:px-6 py-3 md:py-5 rounded-r-2xl md:rounded-r-[24px] transition-all border-y border-r border-white/5 group-hover:border-blue-500/20 text-center">
-                                                            <div className="flex items-center justify-center gap-1.5 md:gap-2">
+                                                        <div className="flex items-center justify-center gap-1.5 md:gap-2">
                                                                 {!co.settings?.isLive && (
                                                                     <button
                                                                         onClick={(e) => handleMakeLive(co.id, co.name, e)}
@@ -4266,6 +4528,19 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                                     >
                                                                         {makingLiveId === co.id ? <Loader2 size={12} className="animate-spin md:w-4 md:h-4" /> : <UploadCloud size={12} className="md:w-4 md:h-4" />}
                                                                         <span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">Make Live</span>
+                                                                    </button>
+                                                                )}
+                                                                {co.settings?.isLive && (
+                                                                    <button
+                                                                        onClick={(e) => handleForceFullResync(co.id, co.name, e)}
+                                                                        disabled={forceResyncId === co.id}
+                                                                        className="opacity-100 md:opacity-0 group-hover:opacity-100 p-1.5 md:p-2 bg-orange-500/10 hover:bg-orange-600 text-orange-400 hover:text-white rounded-lg md:rounded-xl transition-all flex items-center gap-1.5 md:gap-2 px-2 md:px-3 border border-orange-500/20"
+                                                                        title="Force Full Re-Sync to Firebase (fixes missing vouchers in QuickAccPro)"
+                                                                    >
+                                                                        {forceResyncId === co.id
+                                                                            ? <><Loader2 size={12} className="animate-spin md:w-4 md:h-4" /><span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">{forceResyncProgress.total > 0 ? `${forceResyncProgress.current}/${forceResyncProgress.total}` : 'Syncing...'}</span></>
+                                                                            : <><RefreshCw size={12} className="md:w-4 md:h-4" /><span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">Re-Sync All</span></>
+                                                                        }
                                                                     </button>
                                                                 )}
                                                                 <button
@@ -4279,6 +4554,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                         </td>
 
                                                     </tr>
+
                                                 ))
                                             )}
                                         </tbody>
@@ -4914,7 +5190,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.6.6";
+    const SYSTEM_VERSION = "2.6.7";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6575,16 +6851,15 @@ export default function App() {
                 // --- Finance Logic ---
                 const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                 const rate = Number(d.exchangeRate || 1);
+                const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
-                const expBase = expForeign * rate;
-                const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
-                const addlExpBase = addlExpForeign * rate;
-
+                if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && accBalMap[d.addlExpCreditId] !== undefined) {
+                    accBalMap[d.addlExpCreditId] -= addlExpBase;
+                }
 
                 if (d.partyId && partyBalMap[d.partyId] !== undefined) {
-                    const supplierBase = (d.type === 'purchase')
-                        ? Math.max(0, baseVal - expBase - addlExpBase)
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
                     const amt = (d.type === 'purchase') ? supplierBase : baseVal;
                     if (['sales', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
@@ -7665,19 +7940,8 @@ export default function App() {
                     if (v.type === 'sales' || v.type === 'sales_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) + grandTotalBase;
                     else if (v.type === 'purchase' || v.type === 'purchase_inv') bal.parties[v.partyId] = (bal.parties[v.partyId] || 0) - grandTotalBase;
                 }
-
-                // Expenses go to their ledgers (Purchase Invoice context)
-                if (v.type === 'purchase') {
-                    (v.expenses || []).forEach(e => {
-                        if (e.expenseId) {
-                            bal.expenses[e.expenseId] = (bal.expenses[e.expenseId] || 0) + (Number(e.amount || 0) * rate);
-                        }
-                    });
-                    (v.addlExpenses || []).forEach(e => {
-                        if (e.expenseId) {
-                            bal.expenses[e.expenseId] = (bal.expenses[e.expenseId] || 0) - (Number(e.amount || 0) * rate);
-                        }
-                    });
+                if (v.addlExpCreditId && v.addlExpTotal) {
+                    bal.accounts[v.addlExpCreditId] = (bal.accounts[v.addlExpCreditId] || 0) - (Number(v.addlExpTotal) * rate);
                 }
             });
 
@@ -7779,25 +8043,9 @@ export default function App() {
                             lastModifiedBy: user?.uid || 'system',
                             lastModifiedByName: user?.displayName || user?.email || 'system'
                         }, { merge: true });
-
-                        // ✅ ALSO UPDATE companies_live FOR QUICKACCPRO PWAs
-                        const activeCoId = getActiveCompanyId();
-                        if (activeCoId) {
-                            batch.set(doc(db, 'companies_live', activeCoId, 'records', id), {
-                                syncTimestamp: Date.now(),
-                                data: {
-                                    [field]: val
-                                }
-                            }, { merge: true });
-                        }
-
                         count++;
                         updated++;
-                        if (count >= 220) { // Reduced batch limit since we do 2 writes per item
-                            await batch.commit();
-                            batch = writeBatch(db);
-                            count = 0;
-                        }
+                        if (count >= 450) { await batch.commit(); batch = writeBatch(db); count = 0; }
                     }
                     if (count > 0) await batch.commit();
                     console.log(`${label}: Updated ${updated} records`);
@@ -8668,20 +8916,14 @@ export default function App() {
                     }
                 });
 
-                // Invoices (Purchase Expenses & Outstanding Additional Expenses)
+                // Invoices (Purchase Paid By Expense)
                 invoices.forEach(inv => {
                     if (inv.type === 'purchase' && inRange(inv.date)) {
-                        const r = Number(inv.exchangeRate || 1);
-                        (inv.expenses || []).forEach(e => {
-                            if (e.expenseId === exp.id) {
-                                total += Number(e.amount || 0) * r;
-                            }
-                        });
-                        (inv.addlExpenses || []).forEach(e => {
-                            if (e.expenseId === exp.id) {
-                                total -= Number(e.amount || 0) * r;
-                            }
-                        });
+                        if (inv.addlExpCreditId === exp.id) {
+                            const r = Number(inv.exchangeRate || 1);
+                            const val = Number(inv.addlExpTotal || 0) * r;
+                            total -= val;
+                        }
                     }
                 });
 
@@ -8730,20 +8972,14 @@ export default function App() {
                     }
                 });
 
-                // Invoices (Purchase Expenses & Outstanding Additional Expenses)
+                // Invoices (Purchase Paid By Expense)
                 invoices.forEach(inv => {
                     if (inv.type === 'purchase' && inRange(inv.date)) {
-                        const r = Number(inv.exchangeRate || 1);
-                        (inv.expenses || []).forEach(e => {
-                            if (e.expenseId === exp.id) {
-                                total += Number(e.amount || 0) * r;
-                            }
-                        });
-                        (inv.addlExpenses || []).forEach(e => {
-                            if (e.expenseId === exp.id) {
-                                total -= Number(e.amount || 0) * r;
-                            }
-                        });
+                        if (inv.addlExpCreditId === exp.id) {
+                            const r = Number(inv.exchangeRate || 1);
+                            const val = Number(inv.addlExpTotal || 0) * r;
+                            total -= val;
+                        }
                     }
                 });
 
@@ -9113,19 +9349,11 @@ export default function App() {
                 slot.qty += qtyTotal || 1;
             }
 
-            if (inv.type === 'purchase') {
+            if (inv.type === 'purchase' && inv.addlExpCreditId) {
                 const slot = expenseMap.get(key);
-                const r = safeNum(inv.exchangeRate || 1);
-                (inv.expenses || []).forEach(e => {
-                    const expVal = safeNum(e.amount) * r;
-                    slot.value += expVal;
-                    slot.qty += expVal !== 0 ? 1 : 0;
-                });
-                (inv.addlExpenses || []).forEach(e => {
-                    const expVal = safeNum(e.amount) * r;
-                    slot.value -= expVal;
-                    slot.qty += expVal !== 0 ? 1 : 0;
-                });
+                const expVal = safeNum(inv.addlExpTotal) * safeNum(inv.exchangeRate || 1);
+                slot.value -= expVal;
+                slot.qty += expVal !== 0 ? 1 : 0;
             }
         });
 
@@ -9335,7 +9563,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v2.6.6</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.7</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -10810,8 +11038,6 @@ export default function App() {
                 effectiveName={effectiveName}
                 dataOwnerId={dataOwnerId}
                 products={products}
-                invoices={invoices}
-                stockJournals={stockJournals}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts}
                 accounts={accounts} // ✅ PASS ACCOUNTS
@@ -11943,7 +12169,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v2.6.6</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.7</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -15104,6 +15330,7 @@ const InvoiceModal = (props) => {
         }
 
         const cleanAddlExpenses = addlExpenses.filter(e => e.expenseId && e.amount > 0).map(e => ({ expenseId: e.expenseId, amount: Number(e.amount) }));
+        // We no longer require 'Paid By' for Purchase as additional expenses are not paid yet and credit their respective ledgers.
 
         if (cleanAddlExpenses.length > 0 && voucherType === 'sales' && !salesExpenseMode) {
             setShowExpenseModeModal(true);
@@ -16338,17 +16565,10 @@ const InvoiceModal = (props) => {
                                     </div>
                                 ))}
 
-                                {voucherType === 'purchase' && (
-                                    <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex items-center justify-end">
-                                        <span className="text-[9px] text-orange-500 font-bold shrink-0">Total: {format3(totals.addlExpTotal)}</span>
-                                    </div>
-                                )}
-                                {voucherType !== 'purchase' && (
-                                    <div className="text-right">
-                                        <span className="text-[9px] text-orange-400 font-normal mr-1">Total Exp:</span>
-                                        <span className="text-[10px] font-bold text-orange-700">{format3(totals.addlExpTotal)}</span>
-                                    </div>
-                                )}
+                                <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex justify-between items-center gap-2">
+                                    <span className="text-[9px] text-orange-500 font-bold">Total Expenses:</span>
+                                    <span className="text-[10px] text-orange-700 font-black">{format3(totals.addlExpTotal)}</span>
+                                </div>
                             </div>
                         ) : null}
 
@@ -18056,7 +18276,7 @@ function GlobalBagManagerModal({
 }
 
 const StockJournalModal = (props) => {
-    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, invoices = [], stockJournals = [], expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
+    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const [date, setDate] = useState(lastDate || new Date().toISOString().split('T')[0]);
     const targetUid = dataOwnerId || user.uid; // ✅ Define targetUid for queries
@@ -18471,172 +18691,14 @@ const StockJournalModal = (props) => {
     const handleApplyAutoCalcResult = () => {
         if (!autoCalcCalcResult) return;
 
-        const parseLocalDate = (dateStr) => {
-            if (!dateStr) return null;
-            const parts = dateStr.split('-');
-            if (parts.length === 3) {
-                return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
-            }
-            return new Date(dateStr);
-        };
-
-        const vDate = parseLocalDate(date);
-        const startDate = new Date(vDate);
-        startDate.setDate(startDate.getDate() - 30);
-
-        console.log("=== AUTO CALC APPLY DEBUG ===");
-        console.log("Voucher Date:", date, vDate);
-        console.log("30 Days Before:", startDate);
-        console.log("Total Invoices in State:", invoices?.length);
-
-        const updatedConsumed = autoCalcCalcResult.consumedRows.map(item => {
-            let finalRate = Number(item.rate || 0);
-            let totalQty = 0;
-            let totalVal = 0;
-
-            // 1. Check Purchases in 30 days (excluding 0-rate entries)
-            if (invoices && Array.isArray(invoices)) {
-                invoices.forEach(inv => {
-                    if (inv.type === 'purchase' && inv.date && inv.items) {
-                        const invDate = parseLocalDate(inv.date);
-                        if (invDate && invDate >= startDate && invDate <= vDate) {
-                            inv.items.forEach(it => {
-                                if (it.productId === item.productId) {
-                                    const q = Number(it.quantity || 0);
-                                    const r = Number(it.rate || 0);
-                                    if (r > 0) {
-                                        totalQty += q;
-                                        totalVal += q * r;
-                                    }
-                                }
-                            });
-                        }
-                    }
-                });
-            }
-
-            // 2. Check Production in 30 days (excluding 0-rate entries)
-            if (stockJournals && Array.isArray(stockJournals)) {
-                stockJournals.forEach(sj => {
-                    if (sj.date && sj.produced) {
-                        const sjDate = parseLocalDate(sj.date);
-                        if (sjDate && sjDate >= startDate && sjDate <= vDate) {
-                            sj.produced.forEach(it => {
-                                if (it.productId === item.productId) {
-                                    const q = Number(it.quantity || 0);
-                                    const r = Number(it.rate || 0);
-                                    if (r > 0) {
-                                        totalQty += q;
-                                        totalVal += q * r;
-                                    }
-                                }
-                            });
-                        }
-                    }
-                });
-            }
-
-            if (totalQty > 0) {
-                finalRate = totalVal / totalQty;
-            } else {
-                // 3. Fallback: Find the latest historical date with non-zero rate ever recorded
-                let latestDate = '';
-
-                if (invoices && Array.isArray(invoices)) {
-                    invoices.forEach(inv => {
-                        if (inv.type === 'purchase' && inv.date && inv.items) {
-                            inv.items.forEach(it => {
-                                if (it.productId === item.productId && Number(it.rate || 0) > 0) {
-                                    if (!latestDate || inv.date > latestDate) {
-                                        latestDate = inv.date;
-                                    }
-                                }
-                            });
-                        }
-                    });
-                }
-
-                if (stockJournals && Array.isArray(stockJournals)) {
-                    stockJournals.forEach(sj => {
-                        if (sj.date && sj.produced) {
-                            sj.produced.forEach(it => {
-                                if (it.productId === item.productId && Number(it.rate || 0) > 0) {
-                                    if (!latestDate || sj.date > latestDate) {
-                                        latestDate = sj.date;
-                                    }
-                                }
-                            });
-                        }
-                    });
-                }
-
-                // If a historical non-zero rate exists, calculate average for that specific date
-                if (latestDate) {
-                    let latestDateQty = 0;
-                    let latestDateVal = 0;
-
-                    if (invoices && Array.isArray(invoices)) {
-                        invoices.forEach(inv => {
-                            if (inv.type === 'purchase' && inv.date === latestDate && inv.items) {
-                                inv.items.forEach(it => {
-                                    if (it.productId === item.productId) {
-                                        const q = Number(it.quantity || 0);
-                                        const r = Number(it.rate || 0);
-                                        if (r > 0) {
-                                            latestDateQty += q;
-                                            latestDateVal += q * r;
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    }
-
-                    if (stockJournals && Array.isArray(stockJournals)) {
-                        stockJournals.forEach(sj => {
-                            if (sj.date === latestDate && sj.produced) {
-                                sj.produced.forEach(it => {
-                                    if (it.productId === item.productId) {
-                                        const q = Number(it.quantity || 0);
-                                        const r = Number(it.rate || 0);
-                                        if (r > 0) {
-                                            latestDateQty += q;
-                                            latestDateVal += q * r;
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    }
-
-                    if (latestDateQty > 0) {
-                        finalRate = latestDateVal / latestDateQty;
-                    }
-                } else {
-                    // Fallback to product master purchasePrice or original BOM rate
-                    const prodPrice = Number(products.find(product => product.id === item.productId)?.purchasePrice || 0);
-                    if (prodPrice > 0) {
-                        finalRate = prodPrice;
-                    } else {
-                        finalRate = Number(item.rate || 0);
-                    }
-                }
-            }
-
-            const qty = Number(item.quantity || 0);
-            const total = qty * finalRate;
-
-            return {
-                productId: item.productId,
-                quantity: item.quantity,
-                rate: finalRate,
-                total: total,
-                lotId: '',
-                pcs: ''
-            };
-        });
-
-        setConsumed(updatedConsumed);
+        setConsumed(autoCalcCalcResult.consumedRows.map(item => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            rate: item.rate,
+            total: item.total,
+            lotId: '',
+            pcs: ''
+        })));
 
         setProduced(autoCalcCalcResult.producedRows.map(item => ({
             productId: item.productId,
@@ -20776,9 +20838,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const d = doc.data();
                         const baseVal = safeNum(d.totalAmount ?? d.grandTotal ?? d.amount ?? 0);
                         const exRate = safeNum(d.exchangeRate || 1);
-                        const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) : 0;
-                        const expBase = expForeign * exRate;
-                        const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) || safeNum(d.addlExpTotal || 0)) : 0;
+                        const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
                         const addlExpBase = addlExpForeign * exRate;
                         const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
 
@@ -20787,9 +20847,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         let qIn = 0;
                         let qOut = 0;
 
-                        // Supplier amount excludes all expenses
-                        const supplierBase = (d.type === 'purchase')
-                            ? Math.max(0, baseVal - expBase - addlExpBase)
+                        // If we are looking at main supplier, additional expenses paid by another ledger
+                        // should not remain in supplier purchase amount.
+                        const supplierBase = (d.type === 'purchase' && hasAddlSplit && d.addlExpCreditId !== d.partyId)
+                            ? Math.max(0, baseVal - addlExpBase)
                             : baseVal;
 
                         if (docType === 'inv') {
@@ -20810,6 +20871,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return';
                                 amtIn = isDr ? amt : 0;
                                 amtOut = isCr ? amt : 0;
+
+                                // Purchase additional expense paid by this same party/account in split mode
+                                if (hasAddlSplit && d.addlExpCreditId === filter.id && d.addlExpCreditId !== d.partyId) {
+                                    amtOut += addlExpBase;
+                                }
                             }
                             else if (filter.type === 'expense' || filter.type === 'direct_expense') {
                                 const checkExpense = (list) => {
@@ -20820,14 +20886,17 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     });
                                     return sum;
                                 };
+                                // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
                                 const isSales = d.type === 'sales';
                                 if (isSales) {
                                     amtOut += checkExpense(d.expenses);
                                     amtOut += checkExpense(d.addlExpenses);
                                 } else {
                                     amtIn += checkExpense(d.expenses);
-                                    amtOut += checkExpense(d.addlExpenses); // ✅ Outstanding additional expenses credit (amtOut)
+                                    // Purchase additional expenses are capitalized, not expense-ledger debit
                                 }
+                            } else if (filter.type === 'account' && hasAddlSplit && d.addlExpCreditId === filter.id) {
+                                amtOut += addlExpBase;
                             } else if (filter.type === 'tax') {
                                 const taxAmt = safeNum(d.taxAmount || 0);
                                 if (!taxAmt) return;
@@ -21118,15 +21187,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const foreignVal = safeNum(d.foreignTotal || d.foreignAmount || 0);
                     const baseVal = safeNum(d.totalAmount || d.amount || 0);
 
-                    // 🔀 Split expenses for Purchase invoices so supplier ledger only gets goods + tax
+                    // 🔀 Split additional expenses for Purchase invoices so supplier ledger only gets goods + tax
                     const rate = safeNum(d.exchangeRate || 1);
-                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) : 0;
-                    const expBase = expForeign * rate;
-                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + safeNum(e.amount), 0) || safeNum(d.addlExpTotal || 0)) : 0;
+                    const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
                     const addlExpBase = addlExpForeign * rate;
                     const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
-                    const supplierBase = (d.type === 'purchase') ? Math.max(0, baseVal - expBase - addlExpBase) : baseVal;
-                    const supplierForeign = (d.type === 'purchase') && isForeign ? Math.max(0, foreignVal - expForeign - addlExpForeign) : foreignVal;
+                    const supplierBase = hasAddlSplit ? Math.max(0, baseVal - addlExpBase) : baseVal;
+                    const supplierForeign = hasAddlSplit && isForeign ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
                     const addlCreditCategory = hasAddlSplit
                         ? (accounts.find(a => a.id === d.addlExpCreditId) ? 'account'
                             : parties.find(p => p.id === d.addlExpCreditId) ? 'party'
@@ -21206,38 +21273,52 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 });
                             }
 
+                            // ✅ Add a separate row if the party is the one who paid the expenses for a purchase
+                            if (isExpCredit && d.type === 'purchase' && d.addlExpCreditId !== d.partyId) {
+                                const expRow = buildRow(doc, d, { amtIn: 0, amtOut: addlExpBase, foreignIn: 0, foreignOut: 0 });
+                                expRow.drName = "Purchase Expenses (Paid By)";
+                                if (isDaybook) allTx.push(expRow);
+                                else row = expRow;
+                            }
                         }
                         else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
-                            const processExpList = (list, isAddl = false) => {
+                            const processExpList = (list) => {
                                 if (!list) return;
                                 list.forEach(exp => {
                                     if (exp.expenseId === activeFilter.id) {
                                         const expForeign = safeNum(exp.amount);
                                         const expBase = expForeign * safeNum(d.exchangeRate || 1);
-                                        
-                                        let amtIn = 0;
-                                        let amtOut = 0;
-                                        if (d.type === 'sales') {
-                                            amtOut = expBase;
-                                        } else {
-                                            if (isAddl) {
-                                                amtOut = expBase; // Purchase additional expenses credit (amtOut) because they are outstanding
-                                            } else {
-                                                amtIn = expBase; // Purchase standard expenses debit (amtIn)
-                                            }
-                                        }
-                                        
+                                        // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
+                                        const isSales = d.type === 'sales';
                                         allTx.push(buildRow(doc, d, {
-                                            amtIn,
-                                            amtOut,
-                                            foreignIn: (isForeign && amtIn > 0) ? expForeign : 0,
-                                            foreignOut: (isForeign && amtOut > 0) ? expForeign : 0
+                                            amtIn: isSales ? 0 : expBase,
+                                            amtOut: isSales ? expBase : 0,
+                                            foreignIn: (isForeign && !isSales) ? expForeign : 0,
+                                            foreignOut: (isForeign && isSales) ? expForeign : 0
                                         }));
                                     }
                                 });
                             };
-                            processExpList(d.expenses, false);
-                            processExpList(d.addlExpenses, true);
+                            processExpList(d.expenses);
+                            // ⚠️ For Purchase: Additional expenses are capitalized into item cost, and show as Credit (amtOut) in expense ledger (Accrued/unpaid liability)
+                            if (d.type === 'purchase') {
+                                if (d.addlExpenses && Array.isArray(d.addlExpenses)) {
+                                    d.addlExpenses.forEach(exp => {
+                                        if (exp.expenseId === activeFilter.id) {
+                                            const expForeign = safeNum(exp.amount);
+                                            const expBase = expForeign * safeNum(d.exchangeRate || 1);
+                                            allTx.push(buildRow(doc, d, {
+                                                amtIn: 0,
+                                                amtOut: expBase,
+                                                foreignIn: 0,
+                                                foreignOut: isForeign ? expForeign : 0
+                                            }));
+                                        }
+                                    });
+                                }
+                            } else {
+                                processExpList(d.addlExpenses);
+                            }
                         }
                         else if (activeFilter.type === 'tax') {
                             const taxAmt = safeNum(d.taxAmount || 0);
@@ -21263,7 +21344,27 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             });
                         }
 
+                        // ➕ Add separate ledger row for additional expenses paid via another ledger
+                        if (hasAddlSplit && activeFilter.type !== 'item') {
+                            const matchesExpenseLedger = addlCreditCategory === 'expense' && activeFilter.type === 'expense' && activeFilter.id === d.addlExpCreditId;
+                            const matchesPartyLedger = addlCreditCategory === 'party' && activeFilter.type === 'party' && activeFilter.id === d.addlExpCreditId;
+                            const matchesAccountLedger = addlCreditCategory === 'account' && activeFilter.type === 'account' && activeFilter.id === d.addlExpCreditId;
+                            const matchesDaybook = ['daybook', 'user'].includes(activeFilter.type);
 
+                            if (matchesExpenseLedger || matchesPartyLedger || matchesAccountLedger || matchesDaybook) {
+                                const expRow = buildRow(doc, d, {
+                                    amtIn: 0,
+                                    amtOut: addlExpBase,
+                                    foreignIn: 0,
+                                    foreignOut: isForeign ? addlExpForeign : 0
+                                });
+                                expRow.drName = 'Purchase Cost';
+                                expRow.crName = findName(d.addlExpCreditId) || 'Paid By';
+                                expRow.vchType = 'PURCHASE EXP';
+                                expRow.searchStr = `${expRow.searchStr} ${expRow.crName}`.toLowerCase();
+                                allTx.push(expRow);
+                            }
+                        }
                     }
                     else if (docType === 'pay') {
                         if (['sales', 'purchase', 'item', 'tax'].includes(activeFilter.type)) return;
@@ -21298,7 +21399,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'party') {
-                            if (!d.isMulti && d.partyId === activeFilter.id) row = buildRow(doc, d, { amtIn: d.type === 'out' ? amt : 0, amtOut: d.type === 'in' ? amt : 0, foreignIn: d.type === 'out' ? fAmt : 0, foreignOut: d.type === 'in' ? fAmt : 0 });
+                            if (d.partyId === activeFilter.id) row = buildRow(doc, d, { amtIn: d.type === 'out' ? amt : 0, amtOut: d.type === 'in' ? amt : 0, foreignIn: d.type === 'out' ? fAmt : 0, foreignOut: d.type === 'in' ? fAmt : 0 });
                             else if (splitMatch) {
                                 const sForeignAmt = isForeign ? sAmt : 0;
                                 const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
@@ -21307,7 +21408,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
-                            if (!d.isMulti && d.transactionCategory === 'expense' && d.expenseId === activeFilter.id) {
+                            if (d.transactionCategory === 'expense' && d.expenseId === activeFilter.id) {
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -21318,7 +21419,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'capital') {
-                            if (!d.isMulti && d.transactionCategory === 'capital' && d.capitalId === activeFilter.id) {
+                            if (d.transactionCategory === 'capital' && d.capitalId === activeFilter.id) {
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -21329,7 +21430,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'asset') {
-                            if (!d.isMulti && d.transactionCategory === 'asset' && d.assetId === activeFilter.id) {
+                            if (d.transactionCategory === 'asset' && d.assetId === activeFilter.id) {
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -21340,7 +21441,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'income') {
-                            if (!d.isMulti && d.transactionCategory === 'income' && d.incomeId === activeFilter.id) {
+                            if (d.transactionCategory === 'income' && d.incomeId === activeFilter.id) {
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
@@ -22718,15 +22819,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             </select>
                          </div>
 
-                        <button onClick={() => setExpandDetails(!expandDetails)} className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${expandDetails ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}>
-                            {expandDetails ? 'ALT+D: COND' : 'ALT+D: DETL'}
+                        <button onClick={() => setExpandDetails(!expandDetails)} className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${expandDetails ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`} title="Alt+D: Toggle detailed/condensed view">
+                            {expandDetails ? 'COND' : 'DETL'}
                         </button>
                         <button
                             onClick={() => { setSortOrder('date_desc'); setCurrentPage(1); }}
                             className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${sortOrder === 'date_desc' ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
                             title="Sort by newest date first"
                         >
-                            VIEW BY NEWEST MODIFIED
+                            NEWEST
                         </button>
                         
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
@@ -22739,7 +22840,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 title="Alt+S: Summarize Report"
                             >
                                 <LayoutGrid size={11} strokeWidth={3} />
-                                {summaryMode === 'detailed' ? 'VIEW BREAKUP' : `${summaryMode.toUpperCase()} VIEW`}
+                                {summaryMode === 'detailed' ? 'BREAKUP' : `${summaryMode.toUpperCase()} VIEW`}
                                 <ChevronDown size={10} />
                             </button>
                             {showSummaryOptions && (
@@ -22773,9 +22874,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 </>
                             )}
                         </div>
-
+ 
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
-
+ 
                         {/* --- DATE NAVIGATOR (NOW IN SCROLL BAR) --- */}
                         <div className="flex items-center gap-1 shrink-0 group">
                             <button
@@ -22792,6 +22893,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             >
                                 <span className="text-[7.5px] opacity-60 uppercase font-black text-[#2b5797] mb-0.5">Report Period</span>
                                 <div className="flex items-center gap-1">
+                                    <Calendar size={10} className="text-[#2b5797] mr-0.5 opacity-80" />
                                     <span className="text-[9px] font-black text-[#2b5797]">{getReportDuration()}</span>
                                     <ChevronDown size={8} strokeWidth={3} className="ml-0.5 opacity-50" />
                                 </div>
@@ -22804,7 +22906,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <ChevronRight size={11} fill="currentColor" />
                             </button>
                         </div>
-
+ 
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
                         {supportsGraphView && (
                             <button
@@ -22817,19 +22919,24 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         )}
                         <button onClick={downloadExcel} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors shrink-0">XLS</button>
                         <button onClick={downloadPDF} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors shrink-0">PDF</button>
-
+ 
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
+
+                        {/* VOUCHER COUNT BADGE */}
+                        <div className="px-2 py-1 bg-[#eef5ff] border border-blue-300 text-[#1e3264] rounded-[2px] text-[9.5px] font-black shrink-0 shadow-sm flex items-center gap-1">
+                            <span className="text-[8px] opacity-70 uppercase font-extrabold text-[#2b5797]">Total Vch:</span>
+                            <span className="text-[10px] text-blue-900">{fullList.filter(r => !r.isOpening).length}</span>
+                        </div>
                         
                         {/* THE ADD VOUCHER BUTTON */}
                         <button 
                             onClick={onOpenVoucherPicker}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded shadow-md transition-all active:scale-95 group shrink-0"
-                            title="Shortcut: CTRL+V"
+                            className="flex items-center justify-center p-1.5 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded shadow-md transition-all active:scale-95 group shrink-0"
+                            title="Add Voucher (CTRL+V)"
                         >
-                            <PlusCircle size={14} fill="currentColor" className="text-blue-200" />
-                            <span className="text-[10px] font-black uppercase tracking-wider">Add Voucher</span>
+                            <PlusCircle size={15} fill="currentColor" className="text-blue-200" />
                         </button>
-
+ 
                         <button 
                             onClick={() => setShowSearch(!showSearch)}
                             className={`flex items-center justify-center p-1.5 rounded border transition-all shrink-0 ${showSearch ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-blue-600 hover:bg-blue-50 shadow-sm'}`}
@@ -24018,18 +24125,33 @@ const PaymentModal = (props) => {
     // Save Handler
     const handleSave = async () => {
         if (saving) return;
+
+        let finalRate = rate;
+        let finalBaseAmount = baseAmount;
+
+        if (baseTotalInput !== '' && currencyId !== 'BASE') {
+            const newBase = Number(baseTotalInput || 0);
+            if (newBase > 0 && rawInputAmount > 0) {
+                const calculatedRate = round6(newBase / rawInputAmount);
+                finalRate = calculatedRate;
+                finalBaseAmount = newBase;
+                setExchangeRate(calculatedRate);
+                setBaseTotalInput('');
+            }
+        }
+
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
         if (!refNo || !refNo.trim()) return alert("⚠️ Reference Number is Mandatory!");
 
         // 🛑 NEGATIVE BALANCE CHECK (For Payments) - DISABLED as per user request
         /*
-        if (type === 'out' && accountBalance !== null && (accountBalance < baseAmount)) {
-            return alert(`❌ Insufficient Balance in Source Account!\n\nAvailable: ${format3(accountBalance)}\nRequired: ${format3(baseAmount)}`);
+        if (type === 'out' && accountBalance !== null && (accountBalance < finalBaseAmount)) {
+            return alert(`❌ Insufficient Balance in Source Account!\n\nAvailable: ${format3(accountBalance)}\nRequired: ${format3(finalBaseAmount)}`);
         }
         */
 
         if (!accountId) return alert("Please select Source Cash/Bank");
-        if (baseAmount <= 0) return alert("Total amount must be greater than 0");
+        if (finalBaseAmount <= 0) return alert("Total amount must be greater than 0");
         if (splits.every(s => !s.targetId)) return alert("Please select at least one receiver / account.");
         if (type === 'contra' && accountId === singleId) return alert("Source and Target accounts cannot be the same!");
         // ⚡ Optional Payment Against: User can leave it empty if they wish. Mandatory check disabled by request.
@@ -24051,7 +24173,7 @@ const PaymentModal = (props) => {
                     const billTotal = Number(billInv.totalAmount || billInv.amount || 0);
                     const alreadyPaid = billPaidMap[s.billRefId] || 0;
                     const remaining = Math.max(0, billTotal - alreadyPaid);
-                    const entered = Number(s.amount) * Number(exchangeRate || 1);
+                    const entered = Number(s.amount) * Number(finalRate || 1);
                     if (entered > remaining + 0.001) {
                         return alert(`❌ Payment amount (${entered.toFixed(3)}) exceeds the remaining balance (${remaining.toFixed(3)}) for bill "${s.billRefNo || s.billRefId}".\n\nPlease reduce the amount or switch to "Against Advance".`);
                     }
@@ -24131,11 +24253,11 @@ const PaymentModal = (props) => {
 
                 // APPLY NEW
                 // Apply Source
-                trackChange(doc(db, 'accounts', accountId), baseAmount, type, 'account');
+                trackChange(doc(db, 'accounts', accountId), finalBaseAmount, type, 'account');
                 // Apply Targets
                 splits.forEach(s => {
                     if (!s.targetId) return;
-                    const splitBase = Number(s.amount || 0) * rate;
+                    const splitBase = Number(s.amount || 0) * finalRate;
                     trackChange(doc(db, getTargetCol(s.category), s.targetId), splitBase, type, s.category);
                 });
 
@@ -24158,12 +24280,12 @@ const PaymentModal = (props) => {
                     date, type, accountId, refNo,
                     userId: targetUid,
                     narration, description: narration, lotId: enableLot ? lotId : null,
-                    amount: baseAmount,
-                    totalAmount: baseAmount,
+                    amount: finalBaseAmount,
+                    totalAmount: finalBaseAmount,
                     foreignTotal: rawInputAmount,
                     foreignAmount: rawInputAmount,
                     currencyId,
-                    exchangeRate: rate,
+                    exchangeRate: finalRate,
                     currencySymbol: currencies.find(c => c.id === currencyId)?.symbol || currencySymbol,
                     lastModifiedAt: serverTimestamp(),
                     lastModifiedBy: user.uid,
@@ -24595,7 +24717,7 @@ const PaymentModal = (props) => {
                             {currencyId !== 'BASE' && (
                                 <input
                                     type="number"
-                                    step="0.001"
+                                    step="any"
                                     className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4"
                                     placeholder="1.0"
                                     value={exchangeRate}
@@ -24819,7 +24941,7 @@ const PaymentModal = (props) => {
                                             onChange={e => {
                                                 const newFcy = Number(e.target.value || 0);
                                                 if (newFcy > 0 && baseAmount > 0) {
-                                                    setExchangeRate(round3(baseAmount / newFcy));
+                                                    setExchangeRate(round6(baseAmount / newFcy));
                                                 } else if (newFcy > 0) {
                                                     // Scale split amounts proportionally
                                                     const factor = newFcy / (rawInputAmount || 1);
@@ -24856,7 +24978,7 @@ const PaymentModal = (props) => {
                                     onBlur={() => {
                                         const newBase = Number(baseTotalInput || 0);
                                         if (newBase > 0 && rawInputAmount > 0) {
-                                            setExchangeRate(round3(newBase / rawInputAmount));
+                                            setExchangeRate(round6(newBase / rawInputAmount));
                                         }
                                         setBaseTotalInput('');
                                     }}
@@ -24864,7 +24986,7 @@ const PaymentModal = (props) => {
                                         if (e.key === 'Enter') {
                                             const newBase = Number(baseTotalInput || 0);
                                             if (newBase > 0 && rawInputAmount > 0) {
-                                                setExchangeRate(round3(newBase / rawInputAmount));
+                                                setExchangeRate(round6(newBase / rawInputAmount));
                                             }
                                             setBaseTotalInput('');
                                             e.target.blur();
@@ -27343,13 +27465,11 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     const d = doc.data();
                     const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                     const rate = Number(d.exchangeRate || 1);
-                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
-                    const expBase = expForeign * rate;
-                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
-                    const addlExpBase = addlExpForeign * rate;
+                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                    const supplierBase = (d.type === 'purchase')
-                        ? Math.max(0, baseVal - expBase - addlExpBase)
+                    // If we are looking at the Main Supplier, subtract the addl expense portion
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
 
                     if (d.partyId && balMap[d.partyId] !== undefined) {
@@ -27357,23 +27477,9 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
                     }
-                    // ✅ Debit the expenses to expense accounts
-                    if (ledgerType === 'expense' || ledgerType === 'direct_expense') {
-                        if (d.type === 'purchase') {
-                            (d.expenses || []).forEach(e => {
-                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] += Number(e.amount || 0) * rate;
-                            });
-                            (d.addlExpenses || []).forEach(e => {
-                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
-                            });
-                        } else if (d.type === 'sales') {
-                            (d.expenses || []).forEach(e => {
-                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
-                            });
-                            (d.addlExpenses || []).forEach(e => {
-                                if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
-                            });
-                        }
+                    // ✅ Credit the account that paid the expenses
+                    if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
+                        balMap[d.addlExpCreditId] -= addlExpBase;
                     }
                     if (ledgerType === 'item' && d.items) {
                         d.items.forEach(it => {
@@ -28024,12 +28130,18 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     <div className="hidden md:flex items-center gap-3 bg-white/80 border border-slate-200 px-3 py-1.5 rounded-xl shadow-sm mr-2">
                         <div className="flex flex-col items-end cursor-pointer hover:bg-blue-50 transition-colors px-1 rounded-md group" onClick={openDatePicker} title="Click to change As of Date (F2)">
                              <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none group-hover:text-blue-500">As of Date</span>
-                             <span className="text-[10px] font-black text-blue-700 leading-none mt-1">{formatDate(dateRange.to)}</span>
+                             <div className="flex items-center gap-1 leading-none mt-1">
+                                 <Calendar size={10} className="text-blue-500" />
+                                 <span className="text-[10px] font-black text-blue-700">{formatDate(dateRange.to)}</span>
+                             </div>
                         </div>
                         <div className="h-5 w-px bg-slate-200"></div>
                         <div className="flex flex-col items-end cursor-pointer hover:bg-emerald-50 transition-colors px-1 rounded-md group" onClick={openPeriodPicker} title="Click to change Period (Alt+F2)">
                              <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none group-hover:text-emerald-500">Period (Range)</span>
-                             <span className="text-[10px] font-black text-slate-700 leading-none mt-1 uppercase">{formatDate(dateRange.from)} - {formatDate(dateRange.to)}</span>
+                             <div className="flex items-center gap-1 leading-none mt-1 uppercase">
+                                 <Calendar size={10} className="text-emerald-500" />
+                                 <span className="text-[10px] font-black text-slate-700">{formatDate(dateRange.from)} - {formatDate(dateRange.to)}</span>
+                             </div>
                         </div>
                     </div>
                 )}
@@ -29278,13 +29390,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 invoicesAsOf.forEach((d) => {
                     const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                     const rate = Number(d.exchangeRate || 1);
-                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
-                    const expBase = expForeign * rate;
-                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
-                    const addlExpBase = addlExpForeign * rate;
-
-                    const supplierBase = (d.type === 'purchase')
-                        ? Math.max(0, baseVal - expBase - addlExpBase)
+                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
 
                     if (ledgerType === 'party' && d.partyId && map[d.partyId] !== undefined) {
@@ -29293,23 +29401,8 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') map[d.partyId] -= amt;
                     }
 
-
-                    if (ledgerType === 'expense' || ledgerType === 'direct_expense') {
-                        if (d.type === 'purchase') {
-                            (d.expenses || []).forEach(e => {
-                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] += Number(e.amount || 0) * rate;
-                            });
-                            (d.addlExpenses || []).forEach(e => {
-                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] -= Number(e.amount || 0) * rate;
-                            });
-                        } else if (d.type === 'sales') {
-                            (d.expenses || []).forEach(e => {
-                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] -= Number(e.amount || 0) * rate;
-                            });
-                            (d.addlExpenses || []).forEach(e => {
-                                if (e.expenseId && map[e.expenseId] !== undefined) map[e.expenseId] -= Number(e.amount || 0) * rate;
-                            });
-                        }
+                    if (ledgerType === 'account' && d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && map[d.addlExpCreditId] !== undefined) {
+                        map[d.addlExpCreditId] -= addlExpBase;
                     }
                 });
 
@@ -31103,13 +31196,10 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                     const d = doc.data();
                     const baseVal = Number(d.grandTotal || d.totalAmount || 0);
                     const rate = Number(d.exchangeRate || 1);
-                    const expForeign = d.type === 'purchase' ? (d.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) : 0;
-                    const expBase = expForeign * rate;
-                    const addlExpForeign = d.type === 'purchase' ? ((d.addlExpenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0) || Number(d.addlExpTotal || 0)) : 0;
-                    const addlExpBase = addlExpForeign * rate;
+                    const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                    const supplierBase = (d.type === 'purchase')
-                        ? Math.max(0, baseVal - expBase - addlExpBase)
+                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                        ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
 
                     if (d.partyId && balMap[d.partyId] !== undefined) {
@@ -31117,21 +31207,8 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                         if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
                     }
-                    // ✅ Debit the expenses to expense accounts
-                    if (d.type === 'purchase') {
-                        (d.expenses || []).forEach(e => {
-                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] += Number(e.amount || 0) * rate;
-                        });
-                        (d.addlExpenses || []).forEach(e => {
-                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
-                        });
-                    } else if (d.type === 'sales') {
-                        (d.expenses || []).forEach(e => {
-                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
-                        });
-                        (d.addlExpenses || []).forEach(e => {
-                            if (e.expenseId && balMap[e.expenseId] !== undefined) balMap[e.expenseId] -= Number(e.amount || 0) * rate;
-                        });
+                    if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
+                        balMap[d.addlExpCreditId] -= addlExpBase;
                     }
                 });
 

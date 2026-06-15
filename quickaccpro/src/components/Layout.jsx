@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { 
   LayoutDashboard, BookOpen, UserCircle, LogOut, Menu, X, 
   ChevronRight, Building2, Send, Receipt, ArrowUpDown, Download, Wallet2, RefreshCw,
-  Activity, ChevronDown, Search, ChevronLeft
+  Activity, ChevronDown, Search, ChevronLeft, FileText
 } from 'lucide-react'
 
 const navItems = [] // Empty placeholder to preserve any other imports or code referencing it without error
@@ -160,7 +160,7 @@ export default function Layout({ company, subUser, onLogout, children }) {
               </div>
               <div className="min-w-0">
                 <h1 className="text-sm font-bold tracking-tight">
-                  QuickAccPro <span className="text-[9px] bg-indigo-500/50 text-indigo-100 px-1 py-0.5 rounded font-mono ml-1">v1.3</span>
+                  QuickAccPro <span className="text-[9px] bg-indigo-500/50 text-indigo-100 px-1 py-0.5 rounded font-mono ml-1">v1.4</span>
                 </h1>
                 {company && (
                   <p className="text-[10px] text-indigo-300 truncate max-w-[120px]">{company.name}</p>
@@ -513,6 +513,24 @@ export default function Layout({ company, subUser, onLogout, children }) {
                     >
                       <RefreshCw size={14} className={registerData.refreshing ? 'animate-spin' : ''} />
                     </button>
+
+                    {/* Download button */}
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-download'))}
+                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-indigo-600 transition-all"
+                      title="Download CSV"
+                    >
+                      <Download size={14} />
+                    </button>
+
+                    {/* PDF button */}
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-pdf-download'))}
+                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-indigo-600 transition-all"
+                      title="Download PDF"
+                    >
+                      <FileText size={14} />
+                    </button>
                   </>
                 )}
 
@@ -633,9 +651,38 @@ export default function Layout({ company, subUser, onLogout, children }) {
                 )}
 
                 {registerData.dateMode === 'month' && (
-                  <span className="text-[10px] font-extrabold text-slate-600 px-2 py-0.5 bg-slate-100 rounded border border-slate-200 shrink-0">
-                    {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
-                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-month-step', { detail: 'prev' }))}
+                      className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-indigo-600"
+                    >
+                      <ChevronLeft size={13} />
+                    </button>
+
+                    <div className="relative flex items-center justify-center bg-slate-50 border border-slate-200 rounded px-2 py-0.5 hover:border-indigo-400 transition-colors text-center shrink-0">
+                      <input
+                        type="month"
+                        value={registerData.filterMonth || new Date().toISOString().substring(0, 7)}
+                        onChange={(e) => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-date', { detail: { type: 'filterMonth', value: e.target.value } }))}
+                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      />
+                      <span className="text-[10px] font-extrabold text-indigo-600">
+                        {(() => {
+                          const fm = registerData.filterMonth;
+                          if (!fm) return '—';
+                          const [y, m] = fm.split('-').map(Number);
+                          return new Date(y, m - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+                        })()}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-month-step', { detail: 'next' }))}
+                      className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-indigo-600"
+                    >
+                      <ChevronRight size={13} />
+                    </button>
+                  </div>
                 )}
               </div>
             )}

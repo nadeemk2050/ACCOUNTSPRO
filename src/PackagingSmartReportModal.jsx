@@ -2479,7 +2479,7 @@ const PackagingSmartReportModal = ({
                 <div className="bg-white px-8 py-5 border-t border-slate-200 flex items-center justify-between text-slate-400">
                     <div className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
                         <Info size={14} />
-                        Accpro Intelligence Framework V2.6.6
+                        Accpro Intelligence Framework V2.6.7
                     </div>
                     <div className="flex gap-3">
                         <button disabled className="px-6 py-2.5 rounded-xl border border-slate-200 text-[10px] font-black uppercase tracking-widest opacity-50 cursor-not-allowed">

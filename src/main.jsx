@@ -49,7 +49,7 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 });
 
-const APP_VERSION = 'V2.6.6'; // Update this string whenever you deploy a breaking change
+const APP_VERSION = 'V2.6.7'; // Update this string whenever you deploy a breaking change
 console.log(`ACCPRO Running Version: ${APP_VERSION}`);
 
 // Keep service worker active so periodic/background sync can run in supported browsers.

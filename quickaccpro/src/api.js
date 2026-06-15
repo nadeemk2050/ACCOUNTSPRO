@@ -199,3 +199,9 @@ export async function updateVoucher(voucherId, params) {
 export async function deleteVoucher(voucherId, password, subUserId, userName) {
   return callApi('delete_voucher', { voucherId, password, subUserId, userName }, 'POST')
 }
+
+/** Trigger backend sync/rebuild of live records from top-level collections */
+export async function rebuildLiveRecords() {
+  return callApi('rebuild_live_records', {}, 'POST')
+}
+

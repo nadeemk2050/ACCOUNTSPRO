@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { 
   Banknote, ChevronDown, ChevronUp,
-  Send, Receipt, ArrowUpDown, X, TrendingUp 
+  Send, Receipt, ArrowUpDown, X, TrendingUp, RefreshCw
 } from 'lucide-react'
-import { listAccounts } from '../api'
+import { listAccounts, rebuildLiveRecords } from '../api'
+
 
 export default function Dashboard({ company, subUser }) {
   const navigate = useNavigate()
@@ -20,6 +21,33 @@ export default function Dashboard({ company, subUser }) {
     const raw = localStorage.getItem('quickaccpro_favorite_accounts')
     return raw ? JSON.parse(raw) : []
   })
+
+  // Sync State
+  const [syncStatus, setSyncStatus] = useState('idle') // 'idle', 'syncing', 'success', 'error'
+  const [syncDetails, setSyncDetails] = useState(null)
+  const [lastSyncTime, setLastSyncTime] = useState(() => {
+    return localStorage.getItem('quickaccpro_last_sync_time') || null
+  })
+
+  const handleSync = async () => {
+    setSyncStatus('syncing')
+    try {
+      const res = await rebuildLiveRecords()
+      if (res.success) {
+        setSyncStatus('success')
+        setSyncDetails(res.results)
+        const timeStr = new Date().toLocaleString()
+        setLastSyncTime(timeStr)
+        localStorage.setItem('quickaccpro_last_sync_time', timeStr)
+        await loadAccounts()
+      } else {
+        setSyncStatus('error')
+      }
+    } catch (e) {
+      console.error(e)
+      setSyncStatus('error')
+    }
+  }
 
   useEffect(() => {
     loadAccounts()
@@ -66,6 +94,45 @@ export default function Dashboard({ company, subUser }) {
 
   return (
     <div className="space-y-7">
+      {/* Universal Sync Card */}
+      <div className="card bg-gradient-to-r from-indigo-50 to-indigo-100/30 border border-indigo-150 p-5 rounded-2xl relative overflow-hidden shadow-sm">
+        <div className="absolute -right-8 -top-8 w-24 h-24 bg-indigo-200/20 rounded-full blur-xl pointer-events-none" />
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+              <RefreshCw size={16} className={`text-indigo-600 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+              <span>Universal Database Sync</span>
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">
+              {syncStatus === 'syncing' ? 'Synchronizing all vouchers & accounts from main database...' : 
+               syncStatus === 'success' ? 'All records successfully synchronized.' : 
+               'Keep your cash and bank registers perfectly in sync with AccountsPro.'}
+            </p>
+            {lastSyncTime && (
+              <p className="text-[10px] text-indigo-600/80 font-semibold mt-1">
+                Last Synced: {lastSyncTime}
+              </p>
+            )}
+            {syncDetails && syncStatus === 'success' && (
+              <p className="text-[10px] text-emerald-600 font-bold mt-1">
+                ✓ Synced {syncDetails.processed} vouchers & records ({syncDetails.upserted} updated)
+              </p>
+            )}
+          </div>
+          <button
+            onClick={handleSync}
+            disabled={syncStatus === 'syncing'}
+            className={`px-4 py-2.5 text-xs font-bold text-white rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 min-w-[120px] ${
+              syncStatus === 'syncing' 
+                ? 'bg-indigo-400 cursor-not-allowed' 
+                : 'bg-indigo-600 hover:bg-indigo-700 hover:shadow active:scale-95'
+            }`}
+          >
+            <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
+            <span>{syncStatus === 'syncing' ? 'Syncing...' : 'Sync Now'}</span>
+          </button>
+        </div>
+      </div>
       {/* Favorite Balances Section */}
       <div>
         <div className="flex items-center justify-between mb-3">
