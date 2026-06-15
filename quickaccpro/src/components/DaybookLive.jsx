@@ -213,10 +213,97 @@ export default function DaybookLive({ subUser }) {
   }
 
 
+  const quietLoadData = async () => {
+    try {
+      const limit = filterAccountName ? 'all' : 200
+      const [accData, ledData, data] = await Promise.all([
+        listAccounts().catch(e => ({})),
+        listLedgers().catch(e => ({})),
+        getDaybook(limit)
+      ])
+
+      if (accData.accounts) {
+        localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
+      }
+      if (ledData.ledgers) {
+        localStorage.setItem('quickaccpro_cached_ledgers', JSON.stringify(ledData.ledgers))
+      }
+
+      const freshList = data.transactions || []
+      const mergedMap = new Map()
+      const freshRefNos = new Set()
+
+      freshList.forEach(t => {
+        mergedMap.set(t.id, t)
+        if (t.refNo) {
+          freshRefNos.add(t.refNo.toLowerCase().trim())
+        }
+      })
+
+      const isExhaustive = limit === 'all' || freshList.length < limit
+
+      const cacheKey = 'quickaccpro_cached_transactions'
+      const cachedRaw = localStorage.getItem(cacheKey)
+      if (cachedRaw) {
+        try {
+          const cached = JSON.parse(cachedRaw)
+          const oldestFresh = freshList[freshList.length - 1]
+          cached.forEach(t => {
+            const hasId = mergedMap.has(t.id)
+            const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
+            if (!hasId && !hasRefNo) {
+              let isDeleted = false
+              const isServerId = t.id && t.id.length > 10
+              
+              if (isServerId) {
+                if (isExhaustive) {
+                  isDeleted = true
+                } else if (oldestFresh) {
+                  const dateCmp = (t.date || '').localeCompare(oldestFresh.date || '')
+                  if (dateCmp > 0) {
+                    isDeleted = true
+                  } else if (dateCmp === 0 && (t.syncTimestamp || 0) > (oldestFresh.syncTimestamp || 0)) {
+                    isDeleted = true
+                  }
+                }
+              }
+
+              if (!isDeleted) {
+                mergedMap.set(t.id, t)
+              }
+            }
+          })
+        } catch (e) {}
+      }
+
+      const mergedList = Array.from(mergedMap.values())
+      mergedList.sort((a, b) => {
+        const dateCmp = (b.date || '').localeCompare(a.date || '')
+        if (dateCmp !== 0) return dateCmp
+        return (b.syncTimestamp || 0) - (a.syncTimestamp || 0)
+      })
+
+      setTransactions(mergedList)
+      localStorage.setItem(cacheKey, JSON.stringify(mergedList.slice(0, 300)))
+    } catch (err) {
+      console.warn("Quiet load failed", err)
+    }
+  }
+
   useEffect(() => {
     setDateMode('all')
     loadData()
   }, [filterAccountName]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-polling for live stream experience
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible' && !refreshing && !loading) {
+        quietLoadData()
+      }
+    }, 6000)
+    return () => clearInterval(timer)
+  }, [filterAccountName, refreshing, loading])
 
 
   // Reset page when search or filters change
@@ -734,30 +821,26 @@ export default function DaybookLive({ subUser }) {
 
   // Dispatch header update event for Layout component
   useEffect(() => {
-    if (filterAccountName) {
-      const totalDr = filtered.reduce((sum, t) => sum + (t.debit || 0), 0)
-      const totalCr = filtered.reduce((sum, t) => sum + (t.credit || 0), 0)
-      
-      const event = new CustomEvent('quickaccpro-register-active', {
-        detail: {
-          accountName: filterAccountName,
-          totalDebit: totalDr,
-          totalCredit: totalCr,
-          refreshing: refreshing,
-          vouchersCount: filtered.length,
-          currentBalance: accountCurrentBalance,
-          dateMode,
-          filterDate,
-          filterMonth,
-          startDate,
-          endDate,
-          search
-        }
-      })
-      window.dispatchEvent(event)
-    } else {
-      window.dispatchEvent(new CustomEvent('quickaccpro-register-active', { detail: null }))
-    }
+    const totalDr = filtered.reduce((sum, t) => sum + (t.debit || 0), 0)
+    const totalCr = filtered.reduce((sum, t) => sum + (t.credit || 0), 0)
+    
+    const event = new CustomEvent('quickaccpro-register-active', {
+      detail: {
+        accountName: filterAccountName || headerInfo.title,
+        totalDebit: totalDr,
+        totalCredit: totalCr,
+        refreshing: refreshing,
+        vouchersCount: filtered.length,
+        currentBalance: filterAccountName ? accountCurrentBalance : null,
+        dateMode,
+        filterDate,
+        filterMonth,
+        startDate,
+        endDate,
+        search
+      }
+    })
+    window.dispatchEvent(event)
 
     return () => {
       window.dispatchEvent(new CustomEvent('quickaccpro-register-active', { detail: null }))
@@ -805,89 +888,35 @@ export default function DaybookLive({ subUser }) {
 
   return (
     <div className="space-y-5 text-slate-800">
-      {/* Header */}
-      {!filterAccountName && (
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold text-slate-800">{headerInfo.title}</h1>
-            <p className="text-sm text-slate-500 mt-1">{headerInfo.desc}</p>
+      {/* Compact Header & Type Filters row */}
+      {!loading && (
+        <div className="flex justify-between items-center gap-2 bg-slate-50 p-3 rounded-2xl border border-slate-100 shadow-sm">
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+            {registerType ? `${registerType} List` : 'Transaction Feed'}
           </div>
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="btn-secondary text-xs"
-          >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            {refreshing ? 'Refreshing...' : 'Refresh'}
-          </button>
-        </div>
-      )}
-
-      {/* Filters */}
-      {!filterAccountName && (
-        <div className="flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search by ref, description, party..."
-              className="input-field pl-10"
-            />
-          </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             {!registerType && (
-              <select
-                value={filterType}
-                onChange={e => setFilterType(e.target.value)}
-                className="input-field w-auto min-w-[130px]"
-              >
-                <option value="all">All Types</option>
-                <option value="invoices">Invoices</option>
-                <option value="payments">Payments</option>
-                <option value="journal_vouchers">Journals</option>
-              </select>
+              <>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest hidden xs:inline">Type:</span>
+                <select
+                  value={filterType}
+                  onChange={e => setFilterType(e.target.value)}
+                  className="input-field py-1 px-2.5 text-xs w-auto min-w-[110px]"
+                >
+                  <option value="all">All Types</option>
+                  <option value="invoices">Invoices</option>
+                  <option value="payments">Payments</option>
+                  <option value="journal_vouchers">Journals</option>
+                </select>
+              </>
             )}
             <button
               onClick={() => setSortAsc(!sortAsc)}
-              className="btn-secondary px-3"
+              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-all bg-white"
               title={sortAsc ? 'Newest first' : 'Oldest first'}
             >
-              <ArrowUpDown size={16} className={`transition-transform ${sortAsc ? 'rotate-180' : ''}`} />
+              <ArrowUpDown size={14} className={`transition-transform ${sortAsc ? 'rotate-180' : ''}`} />
             </button>
-            <button
-              onClick={downloadCSV}
-              className="btn-secondary px-3 text-slate-600 hover:text-indigo-600"
-              title="Download CSV"
-            >
-              <Download size={16} />
-            </button>
-            <button
-              onClick={downloadPDF}
-              className="btn-secondary px-3 text-slate-600 hover:text-indigo-600"
-              title="Download PDF"
-            >
-              <FileText size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Register Summary Card */}
-      {!loading && registerType && (
-        <div className="bg-slate-900 text-white rounded-2xl p-4 flex justify-between items-center shadow-lg">
-          <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Vouchers Count</p>
-            <p className="text-2xl font-bold font-mono mt-0.5">{filtered.length}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              Total Value
-            </p>
-            <p className="text-2xl font-bold font-mono mt-0.5">
-              {formatCurrency(totalAmount)}
-            </p>
           </div>
         </div>
       )}

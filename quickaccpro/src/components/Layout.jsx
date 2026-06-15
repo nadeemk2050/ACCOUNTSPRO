@@ -458,9 +458,11 @@ export default function Layout({ company, subUser, onLogout, children }) {
                     <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
                       VCH: {registerData.vouchersCount}
                     </span>
-                    <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border ${registerData.currentBalance >= 0 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-600 border-red-200'}`}>
-                      BAL: {new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(registerData.currentBalance || 0))} {registerData.currentBalance >= 0 ? 'Dr' : 'Cr'}
-                    </span>
+                    {registerData.currentBalance !== undefined && registerData.currentBalance !== null && (
+                      <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border ${registerData.currentBalance >= 0 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-600 border-red-200'}`}>
+                        BAL: {new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(registerData.currentBalance || 0))} {registerData.currentBalance >= 0 ? 'Dr' : 'Cr'}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 min-w-0">

@@ -10,9 +10,27 @@ export default function CashBankRegister() {
   const [search, setSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
+  const quietLoadAccounts = async () => {
+    try {
+      const data = await listAccounts()
+      const list = data.accounts || []
+      setAccounts(list)
+      localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(list))
+    } catch (e) {}
+  }
+
   useEffect(() => {
     loadAccounts()
   }, [])
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible' && !refreshing && !loading) {
+        quietLoadAccounts()
+      }
+    }, 6000)
+    return () => clearInterval(timer)
+  }, [refreshing, loading])
 
   const loadAccounts = async (isRef = false) => {
     if (isRef) setRefreshing(true)
