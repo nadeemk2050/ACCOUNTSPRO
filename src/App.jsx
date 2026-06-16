@@ -5681,7 +5681,7 @@ export default function App() {
         [liveRegistryCompanies, dataOwnerId]
     );
 
-    const displayCompanyName = activeLiveRegistryEntry?.name || companyProfile?.name || '';
+    const displayCompanyName = companyProfile?.name || activeLiveRegistryEntry?.name || '';
     const displayLogCount = activeLiveRegistryEntry?.stats?.logs ?? companyProfile?.stats?.logs ?? dashboardLogCount;
 
     useEffect(() => {
@@ -5707,7 +5707,7 @@ export default function App() {
         if (!activeLiveRegistryEntry) return;
 
         setCompanyProfile((prev) => {
-            const nextName = activeLiveRegistryEntry.name || prev?.name || '';
+            const nextName = prev?.name || activeLiveRegistryEntry.name || '';
             const nextStats = activeLiveRegistryEntry.stats || prev?.stats;
 
             if (prev && prev.name === nextName && prev.stats?.logs === nextStats?.logs && prev.stats?.vouchers === nextStats?.vouchers && prev.stats?.ledgers === nextStats?.ledgers) {
@@ -17098,7 +17098,7 @@ const InvoiceModal = (props) => {
                                                 })),
                                                 ...totals,
                                                 seller: {
-                                                    name: companyProfile?.name || '',
+                                                    name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
                                                     trn: companyProfile?.trn || '',
                                                     email: companyProfile?.email || '',
@@ -17170,7 +17170,7 @@ const InvoiceModal = (props) => {
                                                 })),
                                                 ...totals,
                                                 seller: {
-                                                    name: companyProfile?.name || '',
+                                                    name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
                                                     trn: companyProfile?.trn || '',
                                                     email: companyProfile?.email || '',
@@ -17241,7 +17241,7 @@ const InvoiceModal = (props) => {
                                                 })),
                                                 ...totals,
                                                 seller: {
-                                                    name: companyProfile?.name || '',
+                                                    name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
                                                     trn: companyProfile?.trn || '',
                                                     email: companyProfile?.email || '',
