@@ -19,8 +19,15 @@ export default function App() {
   const navigate = useNavigate()
 
   const setCompanyData = useCallback((data) => {
-    setCompanyState({ name: data.companyName, id: data.companyId, license: data.license, teamCount: data.teamCount })
-    setStoredCompany({ name: data.companyName, id: data.companyId, license: data.license, teamCount: data.teamCount })
+    const companyObj = { 
+      name: data.companyName, 
+      id: data.companyId, 
+      license: data.license, 
+      teamCount: data.teamCount,
+      profile: data.companyProfile || null
+    }
+    setCompanyState(companyObj)
+    setStoredCompany(companyObj)
   }, [])
 
   // On mount, validate stored API key silently

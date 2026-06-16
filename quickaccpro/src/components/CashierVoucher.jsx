@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, ArrowRight, Banknote, Plus, Trash2, Check, AlertCircle,
   ChevronDown, RefreshCw, Hash, Calendar, FileText, Copy, X, Loader2,
-  Receipt, Send, ArrowUpDown
+  Receipt, Send, ArrowUpDown, Share2
 } from 'lucide-react'
 import { listAccounts, listLedgers, addPayment, addContra, checkRefNo, getVoucher, updateVoucher } from '../api'
 import SearchableSelect from './SearchableSelect'
@@ -59,6 +59,69 @@ function saveVoucherToLocalCache(type, data) {
   } catch (e) {
     console.error('Failed to cache voucher locally:', e)
   }
+}
+
+const getShareText = (vch) => {
+  const isContra = vch.type === 'contra'
+  const isReceipt = vch.type === 'receipt'
+  
+  let text = `📄 *QUICKACCPRO VOUCHER*\n`
+  text += `-----------------------------------\n`
+  text += `*Ref No:* ${vch.refNo}\n`
+  text += `*Date:* ${vch.date}\n`
+  text += `*Type:* ${isContra ? 'Contra' : isReceipt ? 'Receipt' : 'Payment'}\n`
+  
+  if (isContra) {
+    text += `*From Account:* ${vch.fromAccountName}\n`
+    text += `*To Account:* ${vch.toAccountName}\n`
+  } else {
+    text += `*Cash/Bank:* ${vch.accountName}\n`
+  }
+  text += `-----------------------------------\n`
+  
+  if (!isContra && vch.rows && vch.rows.length > 0) {
+    vch.rows.forEach((r, idx) => {
+      text += `${idx + 1}. *Ledger:* ${r.ledgerName}\n`
+      text += `    *Amount:* AED ${formatCurrency(r.amount)}\n`
+      if (r.narration) {
+        text += `    *Narration:* ${r.narration}\n`
+      }
+    })
+    text += `-----------------------------------\n`
+  }
+  
+  text += `*Total Amount:* AED ${formatCurrency(vch.totalAmount)}\n`
+  if (vch.narration) {
+    text += `*Narration:* ${vch.narration}\n`
+  }
+  text += `-----------------------------------\n`
+  text += `Generated via QUICKACCPRO PWA`
+  return text
+}
+
+const handleShare = async (vch) => {
+  const shareText = getShareText(vch)
+  
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: `Voucher ${vch.refNo}`,
+        text: shareText
+      })
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Web Share failed, fallback to WhatsApp:', err)
+        openWhatsAppFallback(shareText)
+      }
+    }
+  } else {
+    openWhatsAppFallback(shareText)
+  }
+}
+
+const openWhatsAppFallback = (text) => {
+  const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`
+  window.open(url, '_blank')
 }
 
 export default function CashierVoucher({ subUser }) {
@@ -206,7 +269,7 @@ export default function CashierVoucher({ subUser }) {
   }
 
   // Submit
-  const handleSubmit = async () => {
+  const handleSubmit = async (shareAfterSave = false) => {
     setError('')
     setSuccess('')
 
@@ -225,6 +288,25 @@ export default function CashierVoucher({ subUser }) {
       if (!accountId) { setError('Please select cash/bank account'); return }
       const validRows = rows.filter(r => r.ledgerId && parseFloat(r.amount) > 0)
       if (validRows.length === 0) { setError('Please add at least one ledger entry with amount'); return }
+    }
+
+    // Capture share data before reset/navigation
+    const shareData = {
+      type,
+      refNo,
+      date,
+      narration,
+      totalAmount,
+      accountName: getAccountName(accountId),
+      fromAccountName: getAccountName(accountId),
+      toAccountName: getAccountName(toAccountId),
+      rows: type === 'contra' ? [] : rows
+        .filter(r => r.ledgerId && parseFloat(r.amount) > 0)
+        .map(r => ({
+          ledgerName: getLedgerName(r.ledgerId),
+          amount: parseFloat(r.amount),
+          narration: r.narration
+        }))
     }
 
     setSaving(true)
@@ -271,6 +353,9 @@ export default function CashierVoucher({ subUser }) {
         }
 
         setSuccess(`${cfg.label} voucher updated successfully!`)
+        if (shareAfterSave) {
+          await handleShare(shareData)
+        }
         setTimeout(() => {
           navigate(-1)
         }, 1500)
@@ -325,6 +410,9 @@ export default function CashierVoucher({ subUser }) {
         }
 
         setSuccess(`${cfg.label} voucher saved successfully!`)
+        if (shareAfterSave) {
+          await handleShare(shareData)
+        }
         
         // Reset form for next entry
         setTimeout(() => {
@@ -613,27 +701,45 @@ export default function CashierVoucher({ subUser }) {
           />
         </div>
 
-        {/* Submit Button */}
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="w-full flex items-center justify-center gap-2 py-3.5 bg-indigo-600 hover:bg-indigo-700 
-                     text-white font-bold rounded-xl transition-all active:scale-[0.98] 
-                     disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-200 text-sm"
-        >
-          {saving ? (
-            <>
-              <Loader2 size={18} className="animate-spin" />
-              Saving...
-            </>
-          ) : (
-            <>
-              <Icon size={18} />
-              ENTER {cfg.label.toUpperCase()} VOUCHER
-              <ArrowRight size={18} />
-            </>
-          )}
-        </button>
+        {/* Submit Buttons */}
+        <div className="flex gap-2.5">
+          <button
+            onClick={() => handleSubmit(false)}
+            disabled={saving}
+            className="flex-1 flex items-center justify-center gap-1.5 py-3.5 bg-slate-800 hover:bg-slate-900 
+                       text-white font-bold rounded-xl transition-all active:scale-[0.98] 
+                       disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-slate-200 text-xs uppercase tracking-wider"
+          >
+            {saving ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <>
+                <Check size={16} />
+                Save Only
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={() => handleSubmit(true)}
+            disabled={saving}
+            className="flex-[1.6] flex items-center justify-center gap-1.5 py-3.5 bg-indigo-600 hover:bg-indigo-700 
+                       text-white font-bold rounded-xl transition-all active:scale-[0.98] 
+                       disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-200 text-xs uppercase tracking-wider"
+          >
+            {saving ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <Share2 size={16} />
+                Save & Share
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Quick help */}

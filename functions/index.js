@@ -989,7 +989,8 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                                     userName: l.userName || ownerData.name || '',
                                     email: l.email || ownerData.email || '',
                                     status: l.status || 'active',
-                                    expiresAt: l.expiresAt?.toMillis?.() || l.expiresAt || null
+                                    expiresAt: l.expiresAt?.toMillis?.() || l.expiresAt || null,
+                                    activatedAt: l.activatedAt?.toMillis?.() || l.activatedAt || l.createdAt?.toMillis?.() || l.createdAt || null
                                 };
                             }
                         }
@@ -1009,7 +1010,8 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                                         userName: l.userName || '',
                                         email: l.email || '',
                                         status: l.status || 'active',
-                                        expiresAt: l.expiresAt?.toMillis?.() || l.expiresAt || null
+                                        expiresAt: l.expiresAt?.toMillis?.() || l.expiresAt || null,
+                                        activatedAt: l.activatedAt?.toMillis?.() || l.activatedAt || l.createdAt?.toMillis?.() || l.createdAt || null
                                     };
                                 }
                             }
@@ -1017,6 +1019,17 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                     }
                 } catch (e) {
                     console.error('License lookup error:', e.message);
+                }
+
+                // Fetch full company details from companies collection
+                let companyProfileDetails = null;
+                try {
+                    const coDoc = await db.collection('companies').doc(companyId).get();
+                    if (coDoc.exists) {
+                        companyProfileDetails = coDoc.data();
+                    }
+                } catch (e) {
+                    console.error('Company details fetch error:', e.message);
                 }
 
                 // Fetch team members count
@@ -1031,7 +1044,8 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                     companyName,
                     companyId,
                     license: licenseInfo,
-                    teamCount
+                    teamCount,
+                    companyProfile: companyProfileDetails
                 });
             }
 
