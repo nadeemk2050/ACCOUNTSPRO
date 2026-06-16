@@ -3,8 +3,9 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { 
   BookOpen, RefreshCw, Search, Filter, ArrowUpDown, 
   Receipt, Wallet, Notebook, AlertCircle, Clock, 
-  ChevronDown, ChevronUp, FileText, ChevronLeft, ChevronRight, Download
+  ChevronDown, ChevronUp, FileText, ChevronLeft, ChevronRight, Download, Share2
 } from 'lucide-react'
+import { downloadVoucherPdf, shareVoucherPdf, shareVoucherText } from '../utils/voucherPdf'
 import { getDaybook, listAccounts, listLedgers, deleteVoucher } from '../api'
 
 const TYPE_CONFIG = {
@@ -1061,26 +1062,41 @@ export default function DaybookLive({ subUser }) {
                         </span>
                       </td>
                       <td className="p-3 text-center whitespace-nowrap">
-                        {tx.type === 'payments' ? (
-                          <div className="flex items-center justify-center gap-1.5">
-                            {tx.createdBy && subUser && tx.createdBy === subUser.id && (
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); downloadVoucherPdf(tx); }}
+                            className="p-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded transition-colors"
+                            title="Download PDF"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); shareVoucherPdf(tx); }}
+                            className="p-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded transition-colors"
+                            title="Share PDF"
+                          >
+                            <Share2 size={12} />
+                          </button>
+                          
+                          {tx.type === 'payments' && (
+                            <>
+                              {tx.createdBy && subUser && tx.createdBy === subUser.id && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); navigate('/voucher/edit/' + tx.id); }}
+                                  className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded text-[9px] transition-colors"
+                                >
+                                  Edit
+                                </button>
+                              )}
                               <button
-                                onClick={() => navigate('/voucher/edit/' + tx.id)}
-                                className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded text-[10px] transition-colors"
+                                onClick={(e) => { e.stopPropagation(); handleDeleteVoucher(tx); }}
+                                className="px-1.5 py-0.5 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded text-[9px] transition-colors"
                               >
-                                Edit
+                                Delete
                               </button>
-                            )}
-                            <button
-                              onClick={() => handleDeleteVoucher(tx)}
-                              className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded text-[10px] transition-colors"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -1193,24 +1209,48 @@ export default function DaybookLive({ subUser }) {
                         {tx.status || 'active'}
                       </span>
                     </div>
-                    {tx.type === 'payments' && (
-                      <div className="col-span-2 flex items-center gap-2 pt-2 border-t border-slate-100 mt-2">
-                        {tx.createdBy && subUser && tx.createdBy === subUser.id && (
+                    <div className="col-span-2 flex items-center flex-wrap gap-2 pt-2 border-t border-slate-100 mt-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); downloadVoucherPdf(tx); }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-colors"
+                      >
+                        <Download size={12} />
+                        PDF
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); shareVoucherPdf(tx); }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded-xl text-xs transition-colors"
+                      >
+                        <Share2 size={12} />
+                        Share PDF
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); shareVoucherText(tx); }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-bold rounded-xl text-xs transition-colors"
+                      >
+                        <Share2 size={12} />
+                        Share Text
+                      </button>
+                      
+                      {tx.type === 'payments' && (
+                        <>
+                          {tx.createdBy && subUser && tx.createdBy === subUser.id && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); navigate('/voucher/edit/' + tx.id); }}
+                              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition-colors"
+                            >
+                              Edit
+                            </button>
+                          )}
                           <button
-                            onClick={(e) => { e.stopPropagation(); navigate('/voucher/edit/' + tx.id); }}
-                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition-colors"
+                            onClick={(e) => { e.stopPropagation(); handleDeleteVoucher(tx); }}
+                            className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition-colors"
                           >
-                            Edit Voucher
+                            Delete
                           </button>
-                        )}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteVoucher(tx); }}
-                          className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition-colors"
-                        >
-                          Delete Voucher
-                        </button>
-                      </div>
-                    )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

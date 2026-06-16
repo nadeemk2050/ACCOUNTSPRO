@@ -61,68 +61,7 @@ function saveVoucherToLocalCache(type, data) {
   }
 }
 
-const getShareText = (vch) => {
-  const isContra = vch.type === 'contra'
-  const isReceipt = vch.type === 'receipt'
-  
-  let text = `📄 *QUICKACCPRO VOUCHER*\n`
-  text += `-----------------------------------\n`
-  text += `*Ref No:* ${vch.refNo}\n`
-  text += `*Date:* ${vch.date}\n`
-  text += `*Type:* ${isContra ? 'Contra' : isReceipt ? 'Receipt' : 'Payment'}\n`
-  
-  if (isContra) {
-    text += `*From Account:* ${vch.fromAccountName}\n`
-    text += `*To Account:* ${vch.toAccountName}\n`
-  } else {
-    text += `*Cash/Bank:* ${vch.accountName}\n`
-  }
-  text += `-----------------------------------\n`
-  
-  if (!isContra && vch.rows && vch.rows.length > 0) {
-    vch.rows.forEach((r, idx) => {
-      text += `${idx + 1}. *Ledger:* ${r.ledgerName}\n`
-      text += `    *Amount:* AED ${formatCurrency(r.amount)}\n`
-      if (r.narration) {
-        text += `    *Narration:* ${r.narration}\n`
-      }
-    })
-    text += `-----------------------------------\n`
-  }
-  
-  text += `*Total Amount:* AED ${formatCurrency(vch.totalAmount)}\n`
-  if (vch.narration) {
-    text += `*Narration:* ${vch.narration}\n`
-  }
-  text += `-----------------------------------\n`
-  text += `Generated via QUICKACCPRO PWA`
-  return text
-}
-
-const handleShare = async (vch) => {
-  const shareText = getShareText(vch)
-  
-  if (navigator.share) {
-    try {
-      await navigator.share({
-        title: `Voucher ${vch.refNo}`,
-        text: shareText
-      })
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('Web Share failed, fallback to WhatsApp:', err)
-        openWhatsAppFallback(shareText)
-      }
-    }
-  } else {
-    openWhatsAppFallback(shareText)
-  }
-}
-
-const openWhatsAppFallback = (text) => {
-  const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`
-  window.open(url, '_blank')
-}
+import { shareVoucherText, shareVoucherPdf } from '../utils/voucherPdf'
 
 export default function CashierVoucher({ subUser }) {
   const { voucherType, voucherId } = useParams()
@@ -269,7 +208,7 @@ export default function CashierVoucher({ subUser }) {
   }
 
   // Submit
-  const handleSubmit = async (shareAfterSave = false) => {
+  const handleSubmit = async (shareFormat = 'none') => {
     setError('')
     setSuccess('')
 
@@ -353,8 +292,10 @@ export default function CashierVoucher({ subUser }) {
         }
 
         setSuccess(`${cfg.label} voucher updated successfully!`)
-        if (shareAfterSave) {
-          await handleShare(shareData)
+        if (shareFormat === 'text') {
+          await shareVoucherText(shareData)
+        } else if (shareFormat === 'pdf') {
+          await shareVoucherPdf(shareData)
         }
         setTimeout(() => {
           navigate(-1)
@@ -410,8 +351,10 @@ export default function CashierVoucher({ subUser }) {
         }
 
         setSuccess(`${cfg.label} voucher saved successfully!`)
-        if (shareAfterSave) {
-          await handleShare(shareData)
+        if (shareFormat === 'text') {
+          await shareVoucherText(shareData)
+        } else if (shareFormat === 'pdf') {
+          await shareVoucherPdf(shareData)
         }
         
         // Reset form for next entry
@@ -702,43 +645,59 @@ export default function CashierVoucher({ subUser }) {
         </div>
 
         {/* Submit Buttons */}
-        <div className="flex gap-2.5">
+        <div className="space-y-2">
           <button
-            onClick={() => handleSubmit(false)}
+            onClick={() => handleSubmit('none')}
             disabled={saving}
-            className="flex-1 flex items-center justify-center gap-1.5 py-3.5 bg-slate-800 hover:bg-slate-900 
+            className="w-full flex items-center justify-center gap-1.5 py-3.5 bg-slate-800 hover:bg-slate-900 
                        text-white font-bold rounded-xl transition-all active:scale-[0.98] 
-                       disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-slate-200 text-xs uppercase tracking-wider"
+                       disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-slate-200 text-xs uppercase tracking-wider font-semibold"
           >
             {saving ? (
               <Loader2 size={16} className="animate-spin" />
             ) : (
               <>
                 <Check size={16} />
-                Save Only
+                Save Only (No Share)
               </>
             )}
           </button>
 
-          <button
-            onClick={() => handleSubmit(true)}
-            disabled={saving}
-            className="flex-[1.6] flex items-center justify-center gap-1.5 py-3.5 bg-indigo-600 hover:bg-indigo-700 
-                       text-white font-bold rounded-xl transition-all active:scale-[0.98] 
-                       disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-200 text-xs uppercase tracking-wider"
-          >
-            {saving ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                Saving...
-              </>
-            ) : (
-              <>
-                <Share2 size={16} />
-                Save & Share
-              </>
-            )}
-          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => handleSubmit('text')}
+              disabled={saving}
+              className="flex items-center justify-center gap-1.5 py-3 bg-blue-600 hover:bg-blue-700 
+                         text-white font-bold rounded-xl transition-all active:scale-[0.98] 
+                         disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-blue-100 text-[11px] uppercase tracking-wider font-semibold"
+            >
+              {saving ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <>
+                  <Share2 size={14} />
+                  Save & Share Text
+                </>
+              )}
+            </button>
+
+            <button
+              onClick={() => handleSubmit('pdf')}
+              disabled={saving}
+              className="flex items-center justify-center gap-1.5 py-3 bg-indigo-600 hover:bg-indigo-700 
+                         text-white font-bold rounded-xl transition-all active:scale-[0.98] 
+                         disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-indigo-100 text-[11px] uppercase tracking-wider font-semibold"
+            >
+              {saving ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <>
+                  <FileText size={14} />
+                  Save & Share PDF
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
