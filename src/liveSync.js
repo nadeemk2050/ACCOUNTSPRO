@@ -131,11 +131,11 @@ export const startLiveSync = async (companyId) => {
                 if (count >= 100) { // Safer batch size
                     await batch.commit();
                     
-                    // ✅ UPDATE LOCAL RxDB with lastSync timestamp
+                    // ✅ UPDATE LOCAL RxDB with lastSync timestamp in parallel
                     const now = Date.now();
-                    for (const syncedDoc of currentBatchDocs) {
-                        try { await syncedDoc.incrementalPatch({ lastSync: now }); } catch(e) {}
-                    }
+                    await Promise.all(currentBatchDocs.map(syncedDoc =>
+                        syncedDoc.incrementalPatch({ lastSync: now }).catch(() => {})
+                    ));
 
                     console.log(`[SYNC] Committed batch. Total sent: ${totalSent}/${docsNeedingSync.length}`);
                     if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('syncing', { progress: totalSent, total: docsNeedingSync.length });
@@ -149,9 +149,9 @@ export const startLiveSync = async (companyId) => {
             if (count > 0) {
                 await batch.commit();
                 const now = Date.now();
-                for (const syncedDoc of currentBatchDocs) {
-                    try { await syncedDoc.incrementalPatch({ lastSync: now }); } catch(e) {}
-                }
+                await Promise.all(currentBatchDocs.map(syncedDoc =>
+                    syncedDoc.incrementalPatch({ lastSync: now }).catch(() => {})
+                ));
                 if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('syncing', { progress: totalSent, total: docsNeedingSync.length });
             }
 
@@ -216,6 +216,9 @@ export const startLiveSync = async (companyId) => {
 
                 console.log(`[SYNC] Pulling ${changes.length} remote changes.`);
 
+                const addedOrModified = [];
+                const deletedIds = [];
+
                 for (const change of changes) {
                     // Sanitize raw Firestore data — Firestore Timestamp objects are not
                     // structured-clone-able and cause BroadcastChannel DataCloneErrors in RxDB.
@@ -224,42 +227,90 @@ export const startLiveSync = async (companyId) => {
                     if (remoteTs > maxSeenSyncTs) maxSeenSyncTs = remoteTs;
 
                     if (change.type === 'added' || change.type === 'modified') {
-                        try {
-                            if (!fsData?.id) continue;
-
-                            // Handle soft-delete: this record was deleted on another PC.
+                        if (fsData?.id) {
                             if (fsData.deleted === true) {
-                                const toRemove = await rxdb.offline_records.findOne({ selector: { id: fsData.id } }).exec();
-                                if (toRemove) {
-                                    markRemoteApplied(fsData.id);
-                                    await toRemove.remove();
-                                }
-                                continue;
-                            }
-
-                            const existing = await rxdb.offline_records.findOne({ selector: { id: fsData.id } }).exec();
-                            const localTs = Number(existing?.timestamp || 0);
-                            const remoteDataTs = Number(fsData?.timestamp || 0);
-
-                            // Apply incoming record only when it is newer (or equal for first insert).
-                            if (!existing || localTs <= remoteDataTs) {
-                                markRemoteApplied(fsData.id); // Mark BEFORE write to ensure suppression
-                                await rxdb.offline_records.incrementalUpsert(wash({
-                                    ...fsData,
-                                    lastSync: remoteTs
-                                }));
-                            }
-                        } catch (e) {
-                            if (!isConflictError(e)) {
-                                console.error(e);
+                                deletedIds.push(fsData.id);
+                            } else {
+                                addedOrModified.push(fsData);
                             }
                         }
                     }
-                    // NOTE: change.type === 'removed' is intentionally NOT handled here.
-                    // Hard-deletes from Firestore (e.g. removeCompanyFromFirebase) must NOT
-                    // cascade to local RxDB deletion — local data is the source of truth.
-                    // Cross-PC deletions are handled via soft-delete (fsData.deleted === true)
-                    // which is already processed in the 'added'/'modified' block above.
+                }
+
+                // 1. Handle Deletions in bulk
+                if (deletedIds.length > 0) {
+                    const toRemoveDocs = await rxdb.offline_records.findByIds(deletedIds);
+                    for (const id of deletedIds) {
+                        const doc = toRemoveDocs.get ? toRemoveDocs.get(id) : toRemoveDocs[id];
+                        if (doc) {
+                            markRemoteApplied(id);
+                            await doc.remove().catch(() => {});
+                        }
+                    }
+                }
+
+                // 2. Handle Added / Modified in bulk
+                if (addedOrModified.length > 0) {
+                    const ids = addedOrModified.map(d => d.id);
+                    const existingDocsMap = await rxdb.offline_records.findByIds(ids);
+
+                    const toInsert = [];
+                    const toUpdate = [];
+
+                    for (const fsData of addedOrModified) {
+                        const existing = existingDocsMap.get ? existingDocsMap.get(fsData.id) : existingDocsMap[fsData.id];
+                        const remoteTs = fsData.syncTimestamp || 0;
+
+                        if (!existing) {
+                            toInsert.push(wash({
+                                ...fsData,
+                                lastSync: remoteTs
+                            }));
+                        } else {
+                            const localTs = Number(existing.timestamp || 0);
+                            const remoteDataTs = Number(fsData.timestamp || 0);
+                            
+                            // Apply incoming record only when it is newer (or equal for first insert).
+                            if (localTs <= remoteDataTs) {
+                                toUpdate.push({
+                                    doc: existing,
+                                    data: wash({
+                                        ...fsData,
+                                        lastSync: remoteTs
+                                    })
+                                });
+                            }
+                        }
+                    }
+
+                    // Bulk Insert new records
+                    if (toInsert.length > 0) {
+                        toInsert.forEach(d => markRemoteApplied(d.id));
+                        try {
+                            await rxdb.offline_records.bulkInsert(toInsert);
+                        } catch (err) {
+                            console.warn('[SYNC] bulkInsert failed for pulled records, falling back to individual inserts:', err);
+                            for (const doc of toInsert) {
+                                try {
+                                    await rxdb.offline_records.insert(doc);
+                                } catch (e) {}
+                            }
+                        }
+                    }
+
+                    // Concurrent Upsert / Patch existing records
+                    if (toUpdate.length > 0) {
+                        toUpdate.forEach(u => markRemoteApplied(u.data.id));
+                        await Promise.all(toUpdate.map(async (u) => {
+                            try {
+                                await u.doc.incrementalPatch(u.data);
+                            } catch (e) {
+                                if (!isConflictError(e)) {
+                                    console.error('[SYNC] Pull patch failed:', u.data.id, e);
+                                }
+                            }
+                        }));
+                    }
                 }
                 
                 // Update local storage so we don't pull these again next time
@@ -1101,10 +1152,10 @@ export const forceFullResync = async (companyId, onProgress) => {
             await batch.commit();
         }
 
-        // Update lastSync on all docs so delta sync doesn't re-push them
-        for (const rxdoc of allDocs) {
-            try { await rxdoc.incrementalPatch({ lastSync: now }); } catch (e) {}
-        }
+        // Update lastSync on all docs in parallel so delta sync doesn't re-push them
+        await Promise.all(allDocs.map(rxdoc =>
+            rxdoc.incrementalPatch({ lastSync: now }).catch(() => {})
+        ));
 
         if (window.onCloudSyncStatusChange) window.onCloudSyncStatusChange('connected');
 
@@ -1171,10 +1222,10 @@ export const syncCompanyDataDelta = async (companyId, onProgress) => {
             await batch.commit();
         }
 
-        // Update local metadata to prevent re-syncing the same records
-        for (const rxdoc of delta) {
-            try { await rxdoc.incrementalPatch({ lastSync: now }); } catch(e) {}
-        }
+        // Update local metadata in parallel to prevent re-syncing the same records
+        await Promise.all(delta.map(rxdoc =>
+            rxdoc.incrementalPatch({ lastSync: now }).catch(() => {})
+        ));
 
         return { success: true, count: total };
     } catch (err) {

@@ -301,6 +301,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                 return {
                     id: doc.id, date: d.date || "", ref: d.refNo || (d.type === 'journal' ? 'JV' : (d.type === 'manufacturing' ? 'MFG' : 'PAY')),
+                    taxInvNo: d.taxInvNo || '',
                     drName, crName, vchType: typeLabel,
 
                     // BASE AMOUNTS (Converted)
@@ -321,7 +322,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     taxAmount: d.taxAmount, taxName: d.taxName, invExpenses: d.expenses || [],
                     narration: d.narration || d.description || '',
                     createdBy: d.createdBy,
-                    searchStr: `${d.refNo} ${drName} ${crName} ${extra.amtIn} ${extra.amtOut} ${d.description || ''} ${d.narration || ''}`.toLowerCase()
+                    searchStr: `${d.refNo} ${d.taxInvNo || ''} ${drName} ${crName} ${extra.amtIn} ${extra.amtOut} ${d.description || ''} ${d.narration || ''}`.toLowerCase()
                 };
             };
 
@@ -1049,8 +1050,50 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
     }, [transactions, searchTerm, sortOrder, currentPage, viewFilter, viewCurrency, itemValuationMethod, showOpeningBalance, hiddenSet, filter.id, filter.type, filter.startDate, filter.endDate, parties, accounts, expenses, incomeAccounts, capitalAccounts, assetAccounts, products, taxRates, subUsers]);
 
-    const downloadPDF = () => { if (fullList.length === 0) return alert("No data"); const doc = new jsPDF('l', 'mm', 'a4'); doc.setFontSize(10); doc.text(`Ledger: ${filter.type.toUpperCase()} (${displayCurrency})`, 14, 15); autoTable(doc, { head: [["Date", "Ref", "Type", "Particulars", "Debit", "Credit", "Balance"]], body: fullList.map(r => [formatDate(r.date), r.ref, r.vchType, `${r.drName}/${r.crName}`, formatCurrency(r.displayIn), formatCurrency(r.displayOut), formatCurrency(r.displayBalance)]), startY: 25, styles: { fontSize: 8 } }); doc.save(`Ledger_${filter.type}.pdf`); };
-    const downloadExcel = () => { if (fullList.length === 0) return alert("No data"); const data = fullList.map(r => ({ Date: formatDate(r.date), Ref: r.ref, Type: r.vchType, DebitAccount: r.drName, CreditAccount: r.crName, Debit: r.displayIn, Credit: r.displayOut, Balance: r.displayBalance, Narration: r.narration })); const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Ledger"); XLSX.writeFile(wb, `Ledger_${filter.type}.xlsx`); };
+    const downloadPDF = () => {
+        if (fullList.length === 0) return alert("No data");
+        const doc = new jsPDF('l', 'mm', 'a4');
+        doc.setFontSize(10);
+        doc.text(`Ledger: ${filter.type.toUpperCase()} (${displayCurrency})`, 14, 15);
+        const isTaxInvActive = ['purchase', 'party', 'tax'].includes(filter.type);
+        const head = isTaxInvActive
+            ? [["Date", "Ref", "Tax Inv No.", "Type", "Particulars", "Debit", "Credit", "Balance"]]
+            : [["Date", "Ref", "Type", "Particulars", "Debit", "Credit", "Balance"]];
+        const body = fullList.map(r => {
+            const rowData = [formatDate(r.date), r.ref];
+            if (isTaxInvActive) {
+                rowData.push(r.taxInvNo || '');
+            }
+            rowData.push(r.vchType, `${r.drName}/${r.crName}`, formatCurrency(r.displayIn), formatCurrency(r.displayOut), formatCurrency(r.displayBalance));
+            return rowData;
+        });
+        autoTable(doc, { head, body, startY: 25, styles: { fontSize: 8 } });
+        doc.save(`Ledger_${filter.type}.pdf`);
+    };
+    const downloadExcel = () => {
+        if (fullList.length === 0) return alert("No data");
+        const isTaxInvActive = ['purchase', 'party', 'tax'].includes(filter.type);
+        const data = fullList.map(r => {
+            const rowData = { Date: formatDate(r.date), Ref: r.ref };
+            if (isTaxInvActive) {
+                rowData["Tax Inv No."] = r.taxInvNo || '';
+            }
+            Object.assign(rowData, {
+                Type: r.vchType,
+                DebitAccount: r.drName,
+                CreditAccount: r.crName,
+                Debit: r.displayIn,
+                Credit: r.displayOut,
+                Balance: r.displayBalance,
+                Narration: r.narration
+            });
+            return rowData;
+        });
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Ledger");
+        XLSX.writeFile(wb, `Ledger_${filter.type}.xlsx`);
+    };
     const itemClosingAvgRate = (filter.type === 'item' && Math.abs(safeNum(summary.balanceQty)) > 0)
         ? Math.abs(safeNum(summary.balance) / safeNum(summary.balanceQty))
         : 0;
@@ -1315,6 +1358,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <th className="p-2 md:p-3">Date</th>
                                 <th className="p-2 md:p-3">Particulars</th>
                                 <th className="p-2 md:p-3">Ref No.</th>
+                                {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                    <th className="p-2 md:p-3">Tax Inv No.</th>
+                                )}
 
                                 {/* ✅ NEW: Qty / Rate Columns */}
                                 {['purchase', 'sales', 'party', 'account', 'item', 'daybook'].includes(filter.type) && (
@@ -1349,6 +1395,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 <div className="text-[10px] text-slate-500 truncate max-w-[150px]">{row.crName}</div>
                                             </td>
                                             <td className="p-2 md:p-3 text-blue-600 font-mono align-top">{row.ref}</td>
+                                            {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                                <td className="p-2 md:p-3 text-slate-600 align-top">{row.taxInvNo || '-'}</td>
+                                            )}
 
                                             {/* ✅ NEW: Qty / Rate Cells */}
                                             {['purchase', 'sales', 'party', 'account', 'item', 'daybook'].includes(filter.type) && (
@@ -1380,7 +1429,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         {expandDetails && (
                                             <tr className="bg-slate-50/10 border-b border-slate-100 animate-in slide-in-from-top-1 duration-200">
                                                 <td colSpan="2"></td>
-                                                <td colSpan="8" className="py-2 pr-10 pl-4">
+                                                <td colSpan={
+                                                    2 // Particulars, Ref No.
+                                                    + (['purchase', 'party', 'tax'].includes(filter.type) ? 1 : 0)
+                                                    + (['purchase', 'sales', 'party', 'account', 'item', 'daybook'].includes(filter.type) ? 2 : 0)
+                                                    + 2 // Debit, Credit
+                                                    + (filter.type === 'item' ? 1 : 0) // Qty In/Out
+                                                    + 1 // Balance
+                                                    + (filter.type === 'item' ? 1 : 0) // Bal Qty
+                                                    + 1 // Act
+                                                } className="py-2 pr-10 pl-4">
                                                     <div className="flex flex-col gap-2">
                                                         {/* --- 1. PRODUCT / ITEM BREAKUP (FOR INVOICES) --- */}
                                                         {row.subItems && row.subItems.length > 0 && (

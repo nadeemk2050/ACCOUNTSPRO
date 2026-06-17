@@ -125,7 +125,7 @@ import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
 import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
-import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta } from './liveSync.js';
+import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync } from './liveSync.js';
 import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
@@ -163,6 +163,12 @@ const round3 = (val) => {
     const n = Number(val || 0);
     if (isNaN(n)) return 0;
     return Math.round(n * 1000) / 1000;
+};
+
+const round6 = (val) => {
+    const n = Number(val || 0);
+    if (isNaN(n)) return 0;
+    return Math.round(n * 1000000) / 1000000;
 };
 
 const createAutoCalcBomMaterial = () => ({ productId: '', percent: '' });
@@ -616,7 +622,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.6.3 (April 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.6.7 (June 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -671,7 +677,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.6.7</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -695,7 +701,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.6.7</div>
                 </div>
             </div>
         </Modal>
@@ -801,13 +807,21 @@ const toDisplayDate = (isoDate) => {
 const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const [val, setVal] = useState('');
     const inputRef = useRef(null);
+    
+    // Active date page for the calendar
+    const [calDate, setCalDate] = useState(() => {
+        const d = baseDate ? new Date(baseDate) : new Date();
+        return isNaN(d.getTime()) ? new Date() : d;
+    });
 
     useEffect(() => {
         if (isOpen) {
             setVal('');
+            const d = baseDate ? new Date(baseDate) : new Date();
+            setCalDate(isNaN(d.getTime()) ? new Date() : d);
             setTimeout(() => inputRef.current?.focus(), 50);
         }
-    }, [isOpen]);
+    }, [isOpen, baseDate]);
 
     const handleKey = (e) => {
         if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
@@ -817,13 +831,11 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
                 setVal(toDisplayDate(res)); 
                 onSubmit(res);
             } else {
-                // If invalid, maybe just select all to allow retry
                 inputRef.current?.select();
             }
         }
     };
 
-    // ✅ GLOBAL ESCAPE LISTENER
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (isOpen && e.key === 'Escape') {
@@ -837,22 +849,108 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     }, [isOpen, onClose]);
 
     if (!isOpen) return null;
+
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+
+    const firstDayIndex = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const prevTotalDays = new Date(year, month, 0).getDate();
+
+    const days = [];
+    for (let i = firstDayIndex - 1; i >= 0; i--) {
+        days.push({
+            day: prevTotalDays - i,
+            isCurrentMonth: false,
+            date: new Date(year, month - 1, prevTotalDays - i)
+        });
+    }
+    for (let i = 1; i <= totalDays; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: true,
+            date: new Date(year, month, i)
+        });
+    }
+    const remainingCells = 42 - days.length;
+    for (let i = 1; i <= remainingCells; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: false,
+            date: new Date(year, month + 1, i)
+        });
+    }
+
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    const handlePrevMonth = () => {
+        setCalDate(new Date(year, month - 1, 1));
+    };
+
+    const handleNextMonth = () => {
+        setCalDate(new Date(year, month + 1, 1));
+    };
+
+    const handleSelectDay = (date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const iso = `${y}-${m}-${d}`;
+        onSubmit(iso);
+    };
+
     return (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/20 backdrop-blur-[2px]" onClick={onClose}>
-            <div className="bg-white border-2 border-slate-800 shadow-2xl p-4 rounded-lg w-64 animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
-                <div className="bg-slate-800 text-white text-xs font-bold px-2 py-1 mb-2 text-center uppercase tracking-widest">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/25 backdrop-blur-[1px]" onClick={onClose}>
+            <div className="bg-white border-2 border-[#2b5797] shadow-2xl p-4 rounded-lg w-[290px] animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
+                <div className="bg-[#2b5797] text-white text-xs font-black px-2 py-1 mb-2.5 text-center uppercase tracking-widest rounded-sm">
                     Change Date (F2)
                 </div>
                 <input
                     ref={inputRef}
                     type="text"
                     placeholder="DD or DD-MM"
-                    className="w-full text-center font-bold text-lg border-b-2 border-blue-500 outline-none pb-1 bg-transparent placeholder:font-normal placeholder:text-sm"
+                    className="w-full text-center font-black text-lg border-b-2 border-blue-500 outline-none pb-1 bg-transparent placeholder:font-normal placeholder:text-sm mb-3 text-slate-800"
                     value={val}
                     onChange={e => setVal(e.target.value)}
                     onKeyDown={handleKey}
                 />
-                <div className="text-[10px] text-slate-400 mt-2 text-center">Type date & press Enter</div>
+                
+                {/* Modern Calendar Grid */}
+                <div className="border border-slate-200 rounded-lg p-2 bg-slate-50/50">
+                    <div className="flex justify-between items-center mb-2">
+                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">◀</button>
+                        <span className="text-xs font-black text-[#1e3264]">{monthNames[month]} {year}</span>
+                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">▶</button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 text-center text-[9px] font-black text-slate-400 uppercase mb-1">
+                        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                        {days.map((d, idx) => {
+                            const isSelected = baseDate && (d.date.toDateString() === new Date(baseDate).toDateString());
+                            const isToday = d.date.toDateString() === new Date().toDateString();
+                            return (
+                                <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => handleSelectDay(d.date)}
+                                    className={`h-6 w-full rounded flex items-center justify-center text-[10px] font-bold transition-colors ${
+                                        isSelected 
+                                            ? 'bg-blue-600 text-white font-black shadow-sm' 
+                                            : isToday 
+                                                ? 'bg-orange-105 text-orange-700 border border-orange-300 font-black' 
+                                                : d.isCurrentMonth 
+                                                    ? 'text-slate-800 hover:bg-slate-200' 
+                                                    : 'text-slate-300 hover:bg-slate-100'
+                                    }`}
+                                >
+                                    {d.day}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+                <div className="text-[8px] text-slate-400 mt-2.5 text-center font-black uppercase tracking-wider">Type Date + Enter OR Click Calendar</div>
             </div>
         </div>
     );
@@ -864,12 +962,24 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const fromRef = useRef(null);
     const toRef = useRef(null);
 
+    // Track active month/year in the calendar
+    const [calDate, setCalDate] = useState(() => {
+        const d = baseDate ? new Date(baseDate) : new Date();
+        return isNaN(d.getTime()) ? new Date() : d;
+    });
+
+    // Track which field is active in the calendar picker ('from' or 'to')
+    const [activeField, setActiveField] = useState('from');
+
     useEffect(() => {
         if (isOpen) {
             setFromVal(''); setToVal('');
+            setActiveField('from');
+            const d = baseDate ? new Date(baseDate) : new Date();
+            setCalDate(isNaN(d.getTime()) ? new Date() : d);
             setTimeout(() => fromRef.current?.focus(), 50);
         }
-    }, [isOpen]);
+    }, [isOpen, baseDate]);
 
     const handleFromKey = (e) => {
         if (e.key === 'Enter') {
@@ -877,6 +987,7 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
             const res = parseSmartDate(fromVal, baseDate); 
             if (res) {
                 setFromVal(toDisplayDate(res));
+                setActiveField('to');
                 toRef.current?.focus();
             } else {
                 fromRef.current?.select();
@@ -907,7 +1018,6 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
                 setToVal(toDisplayDate(t));
                 onSubmit(f, t);
             } else {
-                // If invalid, don't close. Focus the problematic one.
                 if (!f) fromRef.current?.select();
                 else if (!t) toRef.current?.select();
             }
@@ -928,38 +1038,152 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     }, [isOpen, onClose]);
 
     if (!isOpen) return null;
+
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+
+    const firstDayIndex = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const prevTotalDays = new Date(year, month, 0).getDate();
+
+    const days = [];
+    for (let i = firstDayIndex - 1; i >= 0; i--) {
+        days.push({
+            day: prevTotalDays - i,
+            isCurrentMonth: false,
+            date: new Date(year, month - 1, prevTotalDays - i)
+        });
+    }
+    for (let i = 1; i <= totalDays; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: true,
+            date: new Date(year, month, i)
+        });
+    }
+    const remainingCells = 42 - days.length;
+    for (let i = 1; i <= remainingCells; i++) {
+        days.push({
+            day: i,
+            isCurrentMonth: false,
+            date: new Date(year, month + 1, i)
+        });
+    }
+
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    const handlePrevMonth = () => {
+        setCalDate(new Date(year, month - 1, 1));
+    };
+
+    const handleNextMonth = () => {
+        setCalDate(new Date(year, month + 1, 1));
+    };
+
+    const parsedFrom = parseSmartDate(fromVal, baseDate);
+    const parsedTo = parseSmartDate(toVal, baseDate);
+
+    const handleSelectDay = (date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const displayVal = `${d}/${m}/${y}`;
+        const iso = `${y}-${m}-${d}`;
+
+        if (activeField === 'from') {
+            setFromVal(displayVal);
+            setActiveField('to');
+            setTimeout(() => toRef.current?.focus(), 50);
+        } else {
+            setToVal(displayVal);
+            const f = parseSmartDate(fromVal, baseDate) || iso;
+            const t = iso;
+            if (f && t && new Date(f) <= new Date(t)) {
+                setFromVal(toDisplayDate(f));
+                setToVal(toDisplayDate(t));
+                onSubmit(f, t);
+            }
+        }
+    };
+
     return (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/20 backdrop-blur-[2px]" onClick={onClose}>
-            <div className="bg-white border-2 border-slate-800 shadow-2xl p-4 rounded-lg w-72 animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
-                <div className="bg-green-700 text-white text-xs font-bold px-2 py-1 mb-3 text-center uppercase tracking-widest">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/25 backdrop-blur-[1px]" onClick={onClose}>
+            <div className="bg-white border-2 border-green-700 shadow-2xl p-4 rounded-lg w-[290px] animate-in zoom-in-95 duration-100" onClick={e => e.stopPropagation()}>
+                <div className="bg-green-700 text-white text-xs font-black px-2 py-1 mb-3 text-center uppercase tracking-widest rounded-sm">
                     Change Period (Alt+F2)
                 </div>
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                        <span className="w-10 text-xs font-bold text-slate-500">From</span>
+                <div className="space-y-3 mb-3">
+                    <div className={`flex items-center gap-2 border-b-2 pb-1 transition-colors ${activeField === 'from' ? 'border-green-600 bg-green-50/20' : 'border-slate-200'}`}>
+                        <span className="w-10 text-xs font-black text-slate-500">From</span>
                         <input
                             ref={fromRef}
                             type="text"
                             placeholder="DD/MM/YYYY"
-                            className="flex-1 font-bold text-center border-b border-green-500 outline-none pb-1 text-sm"
+                            className="flex-1 font-bold text-center outline-none text-sm bg-transparent text-slate-800"
                             value={fromVal}
                             onChange={e => setFromVal(e.target.value)}
                             onKeyDown={handleFromKey}
+                            onFocus={() => setActiveField('from')}
                         />
                     </div>
-                    <div className="flex items-center gap-2">
-                        <span className="w-10 text-xs font-bold text-slate-500">To</span>
+                    <div className={`flex items-center gap-2 border-b-2 pb-1 transition-colors ${activeField === 'to' ? 'border-green-600 bg-green-50/20' : 'border-slate-200'}`}>
+                        <span className="w-10 text-xs font-black text-slate-500">To</span>
                         <input
                             ref={toRef}
                             type="text"
                             placeholder="DD/MM/YYYY"
-                            className="flex-1 font-bold text-center border-b border-green-500 outline-none pb-1 text-sm"
+                            className="flex-1 font-bold text-center outline-none text-sm bg-transparent text-slate-800"
                             value={toVal}
                             onChange={e => setToVal(e.target.value)}
                             onKeyDown={handleToKey}
+                            onFocus={() => setActiveField('to')}
                         />
                     </div>
                 </div>
+
+                {/* Calendar Range Grid */}
+                <div className="border border-slate-200 rounded-lg p-2 bg-slate-50/50">
+                    <div className="flex justify-between items-center mb-2">
+                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">◀</button>
+                        <span className="text-xs font-black text-[#1e3264]">{monthNames[month]} {year}</span>
+                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">▶</button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1 text-center text-[9px] font-black text-slate-400 uppercase mb-1">
+                        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                        {days.map((d, idx) => {
+                            const isFrom = parsedFrom && (d.date.toDateString() === new Date(parsedFrom).toDateString());
+                            const isTo = parsedTo && (d.date.toDateString() === new Date(parsedTo).toDateString());
+                            const inRange = parsedFrom && parsedTo && (d.date > new Date(parsedFrom) && d.date < new Date(parsedTo));
+                            const isToday = d.date.toDateString() === new Date().toDateString();
+                            
+                            let btnClass = "text-slate-800 hover:bg-slate-200";
+                            if (isFrom || isTo) {
+                                btnClass = "bg-green-600 text-white font-black shadow-sm";
+                            } else if (inRange) {
+                                btnClass = "bg-green-100 text-green-800 font-bold";
+                            } else if (isToday) {
+                                btnClass = "bg-orange-105 text-orange-700 border border-orange-300 font-black";
+                            } else if (!d.isCurrentMonth) {
+                                btnClass = "text-slate-300 hover:bg-slate-100";
+                            }
+
+                            return (
+                                <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => handleSelectDay(d.date)}
+                                    className={`h-6 w-full rounded flex items-center justify-center text-[10px] font-medium transition-colors ${btnClass}`}
+                                >
+                                    {d.day}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="text-[8px] text-slate-400 mt-2.5 text-center font-black uppercase tracking-wider">Type Date + Enter OR Click Calendar</div>
             </div>
         </div>
     );
@@ -3445,6 +3669,8 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         vouchers: 0,
         totalVouchers: 0
     });
+    const [forceResyncId, setForceResyncId] = useState(null);
+    const [forceResyncProgress, setForceResyncProgress] = useState({ current: 0, total: 0 });
     const [showSyncHistory, setShowSyncHistory] = useState(false);
     const [syncHistory, setSyncHistory] = useState(() => {
         try { return JSON.parse(localStorage.getItem('accpro_sync_history') || '[]'); } catch { return []; }
@@ -3685,7 +3911,32 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         }
     };
 
+    const handleForceFullResync = async (coId, coName, e) => {
+        e.stopPropagation();
+        const localStats = companies.find(c => c.id === coId)?.stats;
+        const statsText = localStats ? `\n\nThis will push all ${localStats.vouchers || 0} vouchers and ${localStats.ledgers || 0} ledgers.` : '';
+        if (!window.confirm(`🔄 FORCE FULL RE-SYNC\n\nPush ALL local records for "${coName}" to Firebase, ignoring previous sync status?\n\nUse this if QuickAccPro is missing vouchers that exist in the main app.${statsText}`)) return;
+        
+        setForceResyncId(coId);
+        setForceResyncProgress({ current: 0, total: 0 });
+        try {
+            const result = await forceFullResync(coId, (done, total) => {
+                setForceResyncProgress({ current: done, total });
+            });
+            if (result.success) {
+                alert(`✅ Re-Sync Complete!\n\n${result.count} records pushed to Firebase.\nQuickAccPro should now show all vouchers.`);
+            } else {
+                alert(`❌ Re-Sync failed: ${result.error}`);
+            }
+        } catch (err) {
+            alert('❌ Error during re-sync: ' + err.message);
+        } finally {
+            setForceResyncId(null);
+        }
+    };
+
     const openRemoveDialog = (co, e) => {
+
         e.stopPropagation();
         setRemoveDialog({
             open: true,
@@ -4267,7 +4518,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                             <span className="text-[11px] font-bold text-slate-400 group-hover:text-blue-200 uppercase tracking-tighter">Apr 24 - Mar 25</span>
                                                         </td>
                                                         <td className="bg-white/5 group-hover:bg-blue-600/10 px-4 md:px-6 py-3 md:py-5 rounded-r-2xl md:rounded-r-[24px] transition-all border-y border-r border-white/5 group-hover:border-blue-500/20 text-center">
-                                                            <div className="flex items-center justify-center gap-1.5 md:gap-2">
+                                                        <div className="flex items-center justify-center gap-1.5 md:gap-2">
                                                                 {!co.settings?.isLive && (
                                                                     <button
                                                                         onClick={(e) => handleMakeLive(co.id, co.name, e)}
@@ -4277,6 +4528,19 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                                     >
                                                                         {makingLiveId === co.id ? <Loader2 size={12} className="animate-spin md:w-4 md:h-4" /> : <UploadCloud size={12} className="md:w-4 md:h-4" />}
                                                                         <span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">Make Live</span>
+                                                                    </button>
+                                                                )}
+                                                                {co.settings?.isLive && (
+                                                                    <button
+                                                                        onClick={(e) => handleForceFullResync(co.id, co.name, e)}
+                                                                        disabled={forceResyncId === co.id}
+                                                                        className="opacity-100 md:opacity-0 group-hover:opacity-100 p-1.5 md:p-2 bg-orange-500/10 hover:bg-orange-600 text-orange-400 hover:text-white rounded-lg md:rounded-xl transition-all flex items-center gap-1.5 md:gap-2 px-2 md:px-3 border border-orange-500/20"
+                                                                        title="Force Full Re-Sync to Firebase (fixes missing vouchers in QuickAccPro)"
+                                                                    >
+                                                                        {forceResyncId === co.id
+                                                                            ? <><Loader2 size={12} className="animate-spin md:w-4 md:h-4" /><span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">{forceResyncProgress.total > 0 ? `${forceResyncProgress.current}/${forceResyncProgress.total}` : 'Syncing...'}</span></>
+                                                                            : <><RefreshCw size={12} className="md:w-4 md:h-4" /><span className="text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap hidden md:inline">Re-Sync All</span></>
+                                                                        }
                                                                     </button>
                                                                 )}
                                                                 <button
@@ -4290,6 +4554,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                         </td>
 
                                                     </tr>
+
                                                 ))
                                             )}
                                         </tbody>
@@ -4925,7 +5190,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.6.3";
+    const SYSTEM_VERSION = "2.6.7";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -5416,7 +5681,7 @@ export default function App() {
         [liveRegistryCompanies, dataOwnerId]
     );
 
-    const displayCompanyName = activeLiveRegistryEntry?.name || companyProfile?.name || '';
+    const displayCompanyName = companyProfile?.name || activeLiveRegistryEntry?.name || '';
     const displayLogCount = activeLiveRegistryEntry?.stats?.logs ?? companyProfile?.stats?.logs ?? dashboardLogCount;
 
     useEffect(() => {
@@ -5442,7 +5707,7 @@ export default function App() {
         if (!activeLiveRegistryEntry) return;
 
         setCompanyProfile((prev) => {
-            const nextName = activeLiveRegistryEntry.name || prev?.name || '';
+            const nextName = prev?.name || activeLiveRegistryEntry.name || '';
             const nextStats = activeLiveRegistryEntry.stats || prev?.stats;
 
             if (prev && prev.name === nextName && prev.stats?.logs === nextStats?.logs && prev.stats?.vouchers === nextStats?.vouchers && prev.stats?.ledgers === nextStats?.ledgers) {
@@ -6593,7 +6858,7 @@ export default function App() {
                 }
 
                 if (d.partyId && partyBalMap[d.partyId] !== undefined) {
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                    const supplierBase = (d.type === 'purchase')
                         ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
                     const amt = (d.type === 'purchase') ? supplierBase : baseVal;
@@ -9298,7 +9563,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.3</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.6.7</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -11904,7 +12169,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.3</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.6.7</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -15065,8 +15330,7 @@ const InvoiceModal = (props) => {
         }
 
         const cleanAddlExpenses = addlExpenses.filter(e => e.expenseId && e.amount > 0).map(e => ({ expenseId: e.expenseId, amount: Number(e.amount) }));
-        // Only require 'Paid By' for Purchase. Sales assumes deduction from invoice value.
-        if (cleanAddlExpenses.length > 0 && voucherType === 'purchase' && !addlExpCreditId) return alert("⚠️ Please select a 'Paid By' account for the additional expenses.");
+        // We no longer require 'Paid By' for Purchase as additional expenses are not paid yet and credit their respective ledgers.
 
         if (cleanAddlExpenses.length > 0 && voucherType === 'sales' && !salesExpenseMode) {
             setShowExpenseModeModal(true);
@@ -16301,32 +16565,10 @@ const InvoiceModal = (props) => {
                                     </div>
                                 ))}
 
-                                {/* Credit Account Selector - PURCHASE ONLY */}
-                                {voucherType === 'purchase' && (
-                                    <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex items-center gap-2">
-                                        <label className="text-[9px] font-bold text-slate-500 shrink-0 whitespace-nowrap">Paid Cr By:</label>
-                                        <div className="w-[220px]">
-                                            <SearchableSelect
-                                                placeholder="Cash / Bank / Party..."
-                                                value={addlExpCreditId}
-                                                onChange={setAddlExpCreditId}
-                                                groups={[
-                                                    { name: 'Cash/Bank', options: accounts.map(a => ({ value: a.id, text: a.name })) },
-                                                    { name: 'Parties', options: parties.map(p => ({ value: p.id, text: p.name })) },
-                                                    { name: 'Expenses', options: expenses.map(e => ({ value: e.id, text: e.name })) }
-                                                ]}
-                                                options={[]}
-                                            />
-                                        </div>
-                                        <span className="ml-auto text-[9px] text-orange-500 font-bold shrink-0">Total: {format3(totals.addlExpTotal)}</span>
-                                    </div>
-                                )}
-                                {voucherType !== 'purchase' && (
-                                    <div className="text-right">
-                                        <span className="text-[9px] text-orange-400 font-normal mr-1">Total Exp:</span>
-                                        <span className="text-[10px] font-bold text-orange-700">{format3(totals.addlExpTotal)}</span>
-                                    </div>
-                                )}
+                                <div className="pt-1 mt-1 border-t border-dashed border-orange-200 flex justify-between items-center gap-2">
+                                    <span className="text-[9px] text-orange-500 font-bold">Total Expenses:</span>
+                                    <span className="text-[10px] text-orange-700 font-black">{format3(totals.addlExpTotal)}</span>
+                                </div>
                             </div>
                         ) : null}
 
@@ -16856,7 +17098,7 @@ const InvoiceModal = (props) => {
                                                 })),
                                                 ...totals,
                                                 seller: {
-                                                    name: companyProfile?.name || '',
+                                                    name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
                                                     trn: companyProfile?.trn || '',
                                                     email: companyProfile?.email || '',
@@ -16928,7 +17170,7 @@ const InvoiceModal = (props) => {
                                                 })),
                                                 ...totals,
                                                 seller: {
-                                                    name: companyProfile?.name || '',
+                                                    name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
                                                     trn: companyProfile?.trn || '',
                                                     email: companyProfile?.email || '',
@@ -16999,7 +17241,7 @@ const InvoiceModal = (props) => {
                                                 })),
                                                 ...totals,
                                                 seller: {
-                                                    name: companyProfile?.name || '',
+                                                    name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
                                                     trn: companyProfile?.trn || '',
                                                     email: companyProfile?.email || '',
@@ -20607,7 +20849,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                         // If we are looking at main supplier, additional expenses paid by another ledger
                         // should not remain in supplier purchase amount.
-                        const supplierBase = (d.type === 'purchase' && hasAddlSplit && d.addlExpCreditId !== d.partyId)
+                        const supplierBase = (d.type === 'purchase')
                             ? Math.max(0, baseVal - addlExpBase)
                             : baseVal;
 
@@ -20950,8 +21192,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
                     const addlExpBase = addlExpForeign * rate;
                     const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
-                    const supplierBase = hasAddlSplit ? Math.max(0, baseVal - addlExpBase) : baseVal;
-                    const supplierForeign = hasAddlSplit && isForeign ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
+                    const supplierBase = (d.type === 'purchase') ? Math.max(0, baseVal - addlExpBase) : baseVal;
+                    const supplierForeign = (d.type === 'purchase' && isForeign) ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
                     const addlCreditCategory = hasAddlSplit
                         ? (accounts.find(a => a.id === d.addlExpCreditId) ? 'account'
                             : parties.find(p => p.id === d.addlExpCreditId) ? 'party'
@@ -21058,9 +21300,23 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 });
                             };
                             processExpList(d.expenses);
-                            // ⚠️ For Purchase: Additional expenses are capitalized into item cost, NOT posted to expense ledger
-                            // ⚠️ For Sales: Additional expenses are processed normally
-                            if (d.type !== 'purchase') {
+                            // ⚠️ For Purchase: Additional expenses are capitalized into item cost, and show as Credit (amtOut) in expense ledger (Accrued/unpaid liability)
+                            if (d.type === 'purchase') {
+                                if (d.addlExpenses && Array.isArray(d.addlExpenses)) {
+                                    d.addlExpenses.forEach(exp => {
+                                        if (exp.expenseId === activeFilter.id) {
+                                            const expForeign = safeNum(exp.amount);
+                                            const expBase = expForeign * safeNum(d.exchangeRate || 1);
+                                            allTx.push(buildRow(doc, d, {
+                                                amtIn: 0,
+                                                amtOut: expBase,
+                                                foreignIn: 0,
+                                                foreignOut: isForeign ? expForeign : 0
+                                            }));
+                                        }
+                                    });
+                                }
+                            } else {
                                 processExpList(d.addlExpenses);
                             }
                         }
@@ -22563,15 +22819,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             </select>
                          </div>
 
-                        <button onClick={() => setExpandDetails(!expandDetails)} className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${expandDetails ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}>
-                            {expandDetails ? 'ALT+D: COND' : 'ALT+D: DETL'}
+                        <button onClick={() => setExpandDetails(!expandDetails)} className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${expandDetails ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`} title="Alt+D: Toggle detailed/condensed view">
+                            {expandDetails ? 'COND' : 'DETL'}
                         </button>
                         <button
                             onClick={() => { setSortOrder('date_desc'); setCurrentPage(1); }}
                             className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black shrink-0 ${sortOrder === 'date_desc' ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
                             title="Sort by newest date first"
                         >
-                            VIEW BY NEWEST MODIFIED
+                            NEWEST
                         </button>
                         
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
@@ -22584,7 +22840,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 title="Alt+S: Summarize Report"
                             >
                                 <LayoutGrid size={11} strokeWidth={3} />
-                                {summaryMode === 'detailed' ? 'VIEW BREAKUP' : `${summaryMode.toUpperCase()} VIEW`}
+                                {summaryMode === 'detailed' ? 'BREAKUP' : `${summaryMode.toUpperCase()} VIEW`}
                                 <ChevronDown size={10} />
                             </button>
                             {showSummaryOptions && (
@@ -22618,9 +22874,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 </>
                             )}
                         </div>
-
+ 
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
-
+ 
                         {/* --- DATE NAVIGATOR (NOW IN SCROLL BAR) --- */}
                         <div className="flex items-center gap-1 shrink-0 group">
                             <button
@@ -22637,6 +22893,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             >
                                 <span className="text-[7.5px] opacity-60 uppercase font-black text-[#2b5797] mb-0.5">Report Period</span>
                                 <div className="flex items-center gap-1">
+                                    <Calendar size={10} className="text-[#2b5797] mr-0.5 opacity-80" />
                                     <span className="text-[9px] font-black text-[#2b5797]">{getReportDuration()}</span>
                                     <ChevronDown size={8} strokeWidth={3} className="ml-0.5 opacity-50" />
                                 </div>
@@ -22649,7 +22906,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <ChevronRight size={11} fill="currentColor" />
                             </button>
                         </div>
-
+ 
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
                         {supportsGraphView && (
                             <button
@@ -22662,19 +22919,24 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         )}
                         <button onClick={downloadExcel} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors shrink-0">XLS</button>
                         <button onClick={downloadPDF} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors shrink-0">PDF</button>
-
+ 
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
+
+                        {/* VOUCHER COUNT BADGE */}
+                        <div className="px-2 py-1 bg-[#eef5ff] border border-blue-300 text-[#1e3264] rounded-[2px] text-[9.5px] font-black shrink-0 shadow-sm flex items-center gap-1">
+                            <span className="text-[8px] opacity-70 uppercase font-extrabold text-[#2b5797]">Total Vch:</span>
+                            <span className="text-[10px] text-blue-900">{fullList.filter(r => !r.isOpening).length}</span>
+                        </div>
                         
                         {/* THE ADD VOUCHER BUTTON */}
                         <button 
                             onClick={onOpenVoucherPicker}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded shadow-md transition-all active:scale-95 group shrink-0"
-                            title="Shortcut: CTRL+V"
+                            className="flex items-center justify-center p-1.5 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded shadow-md transition-all active:scale-95 group shrink-0"
+                            title="Add Voucher (CTRL+V)"
                         >
-                            <PlusCircle size={14} fill="currentColor" className="text-blue-200" />
-                            <span className="text-[10px] font-black uppercase tracking-wider">Add Voucher</span>
+                            <PlusCircle size={15} fill="currentColor" className="text-blue-200" />
                         </button>
-
+ 
                         <button 
                             onClick={() => setShowSearch(!showSearch)}
                             className={`flex items-center justify-center p-1.5 rounded border transition-all shrink-0 ${showSearch ? 'bg-blue-700 text-white border-blue-800' : 'bg-white border-blue-300 text-blue-600 hover:bg-blue-50 shadow-sm'}`}
@@ -23863,18 +24125,33 @@ const PaymentModal = (props) => {
     // Save Handler
     const handleSave = async () => {
         if (saving) return;
+
+        let finalRate = rate;
+        let finalBaseAmount = baseAmount;
+
+        if (baseTotalInput !== '' && currencyId !== 'BASE') {
+            const newBase = Number(baseTotalInput || 0);
+            if (newBase > 0 && rawInputAmount > 0) {
+                const calculatedRate = round6(newBase / rawInputAmount);
+                finalRate = calculatedRate;
+                finalBaseAmount = newBase;
+                setExchangeRate(calculatedRate);
+                setBaseTotalInput('');
+            }
+        }
+
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
         if (!refNo || !refNo.trim()) return alert("⚠️ Reference Number is Mandatory!");
 
         // 🛑 NEGATIVE BALANCE CHECK (For Payments) - DISABLED as per user request
         /*
-        if (type === 'out' && accountBalance !== null && (accountBalance < baseAmount)) {
-            return alert(`❌ Insufficient Balance in Source Account!\n\nAvailable: ${format3(accountBalance)}\nRequired: ${format3(baseAmount)}`);
+        if (type === 'out' && accountBalance !== null && (accountBalance < finalBaseAmount)) {
+            return alert(`❌ Insufficient Balance in Source Account!\n\nAvailable: ${format3(accountBalance)}\nRequired: ${format3(finalBaseAmount)}`);
         }
         */
 
         if (!accountId) return alert("Please select Source Cash/Bank");
-        if (baseAmount <= 0) return alert("Total amount must be greater than 0");
+        if (finalBaseAmount <= 0) return alert("Total amount must be greater than 0");
         if (splits.every(s => !s.targetId)) return alert("Please select at least one receiver / account.");
         if (type === 'contra' && accountId === singleId) return alert("Source and Target accounts cannot be the same!");
         // ⚡ Optional Payment Against: User can leave it empty if they wish. Mandatory check disabled by request.
@@ -23896,7 +24173,7 @@ const PaymentModal = (props) => {
                     const billTotal = Number(billInv.totalAmount || billInv.amount || 0);
                     const alreadyPaid = billPaidMap[s.billRefId] || 0;
                     const remaining = Math.max(0, billTotal - alreadyPaid);
-                    const entered = Number(s.amount) * Number(exchangeRate || 1);
+                    const entered = Number(s.amount) * Number(finalRate || 1);
                     if (entered > remaining + 0.001) {
                         return alert(`❌ Payment amount (${entered.toFixed(3)}) exceeds the remaining balance (${remaining.toFixed(3)}) for bill "${s.billRefNo || s.billRefId}".\n\nPlease reduce the amount or switch to "Against Advance".`);
                     }
@@ -23976,11 +24253,11 @@ const PaymentModal = (props) => {
 
                 // APPLY NEW
                 // Apply Source
-                trackChange(doc(db, 'accounts', accountId), baseAmount, type, 'account');
+                trackChange(doc(db, 'accounts', accountId), finalBaseAmount, type, 'account');
                 // Apply Targets
                 splits.forEach(s => {
                     if (!s.targetId) return;
-                    const splitBase = Number(s.amount || 0) * rate;
+                    const splitBase = Number(s.amount || 0) * finalRate;
                     trackChange(doc(db, getTargetCol(s.category), s.targetId), splitBase, type, s.category);
                 });
 
@@ -24003,12 +24280,12 @@ const PaymentModal = (props) => {
                     date, type, accountId, refNo,
                     userId: targetUid,
                     narration, description: narration, lotId: enableLot ? lotId : null,
-                    amount: baseAmount,
-                    totalAmount: baseAmount,
+                    amount: finalBaseAmount,
+                    totalAmount: finalBaseAmount,
                     foreignTotal: rawInputAmount,
                     foreignAmount: rawInputAmount,
                     currencyId,
-                    exchangeRate: rate,
+                    exchangeRate: finalRate,
                     currencySymbol: currencies.find(c => c.id === currencyId)?.symbol || currencySymbol,
                     lastModifiedAt: serverTimestamp(),
                     lastModifiedBy: user.uid,
@@ -24440,7 +24717,7 @@ const PaymentModal = (props) => {
                             {currencyId !== 'BASE' && (
                                 <input
                                     type="number"
-                                    step="0.001"
+                                    step="any"
                                     className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4"
                                     placeholder="1.0"
                                     value={exchangeRate}
@@ -24664,7 +24941,7 @@ const PaymentModal = (props) => {
                                             onChange={e => {
                                                 const newFcy = Number(e.target.value || 0);
                                                 if (newFcy > 0 && baseAmount > 0) {
-                                                    setExchangeRate(round3(baseAmount / newFcy));
+                                                    setExchangeRate(round6(baseAmount / newFcy));
                                                 } else if (newFcy > 0) {
                                                     // Scale split amounts proportionally
                                                     const factor = newFcy / (rawInputAmount || 1);
@@ -24701,7 +24978,7 @@ const PaymentModal = (props) => {
                                     onBlur={() => {
                                         const newBase = Number(baseTotalInput || 0);
                                         if (newBase > 0 && rawInputAmount > 0) {
-                                            setExchangeRate(round3(newBase / rawInputAmount));
+                                            setExchangeRate(round6(newBase / rawInputAmount));
                                         }
                                         setBaseTotalInput('');
                                     }}
@@ -24709,7 +24986,7 @@ const PaymentModal = (props) => {
                                         if (e.key === 'Enter') {
                                             const newBase = Number(baseTotalInput || 0);
                                             if (newBase > 0 && rawInputAmount > 0) {
-                                                setExchangeRate(round3(newBase / rawInputAmount));
+                                                setExchangeRate(round6(newBase / rawInputAmount));
                                             }
                                             setBaseTotalInput('');
                                             e.target.blur();
@@ -27191,7 +27468,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
                     // If we are looking at the Main Supplier, subtract the addl expense portion
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                    const supplierBase = (d.type === 'purchase')
                         ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
 
@@ -27853,12 +28130,18 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     <div className="hidden md:flex items-center gap-3 bg-white/80 border border-slate-200 px-3 py-1.5 rounded-xl shadow-sm mr-2">
                         <div className="flex flex-col items-end cursor-pointer hover:bg-blue-50 transition-colors px-1 rounded-md group" onClick={openDatePicker} title="Click to change As of Date (F2)">
                              <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none group-hover:text-blue-500">As of Date</span>
-                             <span className="text-[10px] font-black text-blue-700 leading-none mt-1">{formatDate(dateRange.to)}</span>
+                             <div className="flex items-center gap-1 leading-none mt-1">
+                                 <Calendar size={10} className="text-blue-500" />
+                                 <span className="text-[10px] font-black text-blue-700">{formatDate(dateRange.to)}</span>
+                             </div>
                         </div>
                         <div className="h-5 w-px bg-slate-200"></div>
                         <div className="flex flex-col items-end cursor-pointer hover:bg-emerald-50 transition-colors px-1 rounded-md group" onClick={openPeriodPicker} title="Click to change Period (Alt+F2)">
                              <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none group-hover:text-emerald-500">Period (Range)</span>
-                             <span className="text-[10px] font-black text-slate-700 leading-none mt-1 uppercase">{formatDate(dateRange.from)} - {formatDate(dateRange.to)}</span>
+                             <div className="flex items-center gap-1 leading-none mt-1 uppercase">
+                                 <Calendar size={10} className="text-emerald-500" />
+                                 <span className="text-[10px] font-black text-slate-700">{formatDate(dateRange.from)} - {formatDate(dateRange.to)}</span>
+                             </div>
                         </div>
                     </div>
                 )}
@@ -29108,7 +29391,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                     const rate = Number(d.exchangeRate || 1);
                     const addlExpBase = Number(d.addlExpTotal || 0) * rate;
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                    const supplierBase = (d.type === 'purchase')
                         ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
 
@@ -30915,7 +31198,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                     const rate = Number(d.exchangeRate || 1);
                     const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                    const supplierBase = (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId)
+                    const supplierBase = (d.type === 'purchase')
                         ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
 
