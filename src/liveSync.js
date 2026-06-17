@@ -237,14 +237,33 @@ export const startLiveSync = async (companyId) => {
                     }
                 }
 
-                // 1. Handle Deletions in bulk
+                // 1. Handle Deletions in bulk with robust findOne & retry mechanisms to prevent conflict failure
                 if (deletedIds.length > 0) {
-                    const toRemoveDocs = await rxdb.offline_records.findByIds(deletedIds);
                     for (const id of deletedIds) {
-                        const doc = toRemoveDocs.get ? toRemoveDocs.get(id) : toRemoveDocs[id];
-                        if (doc) {
-                            markRemoteApplied(id);
-                            await doc.remove().catch(() => {});
+                        const MAX_RETRIES = 5;
+                        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+                            const fresh = await rxdb.offline_records.findOne({ selector: { id } }).exec();
+                            if (!fresh) {
+                                console.log(`[SYNC] Pull deletion: doc ${id} already removed or not found locally.`);
+                                break; 
+                            }
+                            try {
+                                markRemoteApplied(id);
+                                await fresh.remove();
+                                console.log(`[SYNC] Pull deletion: successfully deleted local doc ${id}`);
+                                break; // success
+                            } catch (e) {
+                                const isConflict = e?.rxdb === true || e?.code === 'CONFLICT' ||
+                                    (e?.message && e.message.includes('CONFLICT')) ||
+                                    (e?.parameters?.writeError?.status === 409);
+                                if (isConflict && attempt < MAX_RETRIES - 1) {
+                                    console.warn(`[SYNC] Pull deletion: conflict for ${id}, retrying in ${(attempt + 1) * 50}ms...`);
+                                    await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+                                    continue;
+                                }
+                                console.error(`[SYNC] Pull deletion: failed for ${id} after ${attempt + 1} attempts:`, e);
+                                break;
+                            }
                         }
                     }
                 }
