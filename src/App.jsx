@@ -15710,7 +15710,7 @@ const InvoiceModal = (props) => {
                         </div>
 
                         {/* TAX INV NO — inside this field as hint */}
-                        {voucherType === 'purchase' && (
+                        {['purchase', 'sales'].includes(voucherType) && (
                             <div className="h-7 flex items-center bg-white/10 border border-white/20 rounded-md px-2 shrink-0">
                                 <input
                                     className="text-[9px] font-black text-white bg-transparent outline-none w-28 uppercase placeholder:text-white/30"
@@ -22596,7 +22596,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     }
                 });
             } else {
-                const isTaxInvActive = ['purchase', 'party', 'tax'].includes(filter.type);
+                const isTaxInvActive = ['purchase', 'sales', 'party', 'tax'].includes(filter.type);
                 head = isTaxInvActive
                     ? [["Date", "Ref", "Tax Inv No.", "Type", "Particulars", "Debit", "Credit", "Value"]]
                     : [["Date", "Ref", "Type", "Particulars", "Debit", "Credit", "Value"]];
@@ -22686,7 +22686,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     Value: summary.balance
                 });
             } else {
-                const isTaxInvActive = ['purchase', 'party', 'tax'].includes(filter.type);
+                const isTaxInvActive = ['purchase', 'sales', 'party', 'tax'].includes(filter.type);
                 data = [];
                 fullList.forEach(r => {
                     const rowData = { Date: formatDate(r.date), Ref: r.ref };
@@ -23281,7 +23281,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     ) : isSalesPurchaseRegister ? (
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
-                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 + (['purchase', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','ref','cust','part'].filter(c => hiddenCols.has(c)).length}>TOP TOTALS:</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','ref','cust','part'].filter(c => hiddenCols.has(c)).length}>TOP TOTALS:</th>
                                                 {!hiddenCols.has('qty') && <th className="p-1.5 border-r border-slate-300 text-right font-black">RECS: {summary.count || 0}</th>}
                                                 {!hiddenCols.has('rate') && <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3((summary.totalQtyIn || 0) + (summary.totalQtyOut || 0))}</th>}
                                                 {!hiddenCols.has('amount') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-500">-</th>}
@@ -23293,7 +23293,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {!hiddenCols.has('check') && <th className="p-1.5 border-r border-slate-300 text-left w-6"><input type="checkbox" onChange={() => toggleSelectAll(processedData)} checked={processedData.length > 0 && selectedIds.size === processedData.length} /></th>}
                                                 {!hiddenCols.has('date') && <th className="p-1.5 border-r border-slate-300 text-left w-24 cursor-pointer select-none" onClick={() => toggleSortOrder('date_asc', 'date_desc')}><HideCol name="DATE" id="date" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('ref') && <th className="p-1.5 border-r border-slate-300 text-left w-24 cursor-pointer select-none" onClick={() => toggleSortOrder('ref_asc', 'ref_desc')}><HideCol name="REF NO." id="ref" onHide={toggleColumn} /></th>}
-                                                {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                                {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                                     <th className="p-1.5 border-r border-slate-300 text-left w-24 font-black">Tax Inv No.</th>
                                                 )}
                                                 {!hiddenCols.has('cust') && <th className="p-1.5 border-r border-slate-300 text-left w-40"><HideCol name="CUSTOMER" id="cust" onHide={toggleColumn} /></th>}
@@ -23308,7 +23308,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     ) : (
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
-                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 + (['purchase', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','vch','part','ref'].filter(c => hiddenCols.has(c)).length}>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','vch','part','ref'].filter(c => hiddenCols.has(c)).length}>
                                                     <div className="flex items-center justify-end gap-1.5">
                                                         {isTallyItemLedger && (
                                                             <button
@@ -23341,7 +23341,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {!hiddenCols.has('vch') && <th className="p-1.5 border-r border-slate-300 text-left w-28"><HideCol name="VCH TYPE" id="vch" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('part') && <th className="p-1.5 border-r border-slate-300 text-left"><HideCol name="PARTICULARS" id="part" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('ref') && <th className="p-1.5 border-r border-slate-300 text-left w-24 cursor-pointer select-none" onClick={() => toggleSortOrder('ref_asc', 'ref_desc')}><HideCol name="REF" id="ref" onHide={toggleColumn} /></th>}
-                                                {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                                {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                                     <th className="p-1.5 border-r border-slate-300 text-left w-24 font-black">Tax Inv No.</th>
                                                 )}
                                                 {isTallyItemLedger && !hiddenCols.has('item_qty_in') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY IN" id="item_qty_in" onHide={toggleColumn} /></th>}
@@ -23359,10 +23359,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         <tr>
                                             <td colSpan={
                                                 isSalesPurchaseRegister 
-                                                    ? (10 - ['check','date','ref','cust','part','qty','rate','amount','due_date','payment'].filter(c => hiddenCols.has(c)).length + (['purchase', 'party', 'tax'].includes(filter.type) ? 1 : 0)) 
+                                                    ? (10 - ['check','date','ref','cust','part','qty','rate','amount','due_date','payment'].filter(c => hiddenCols.has(c)).length + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0)) 
                                                     : (isTallyItemLedger 
                                                         ? (11 - ['check','date','vch','part','ref','item_qty_in','debit','item_qty_out','credit','qty_bal','bal'].filter(c => hiddenCols.has(c)).length) 
-                                                        : (8 - ['check','date','vch','part','ref','debit','credit','bal'].filter(c => hiddenCols.has(c)).length + (['purchase', 'party', 'tax'].includes(filter.type) ? 1 : 0)))
+                                                        : (8 - ['check','date','vch','part','ref','debit','credit','bal'].filter(c => hiddenCols.has(c)).length + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0)))
                                             } className="p-20 text-center">
                                                 <div className="flex flex-col items-center gap-3 opacity-30">
                                                     <FileSearch size={48} />
@@ -23451,7 +23451,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {isSalesPurchaseRegister ? (
                                                     <>
                                                         {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70">{row.ref}</td>}
-                                                        {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                                        {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                                             <td className="p-1.5 border-r border-slate-100 text-slate-600 font-medium">{row.taxInvNo || '-'}</td>
                                                         )}
                                                         {!hiddenCols.has('cust') && <td className="p-1.5 border-r border-slate-100 font-bold text-slate-800">{row.isSummary ? (row.crName || '') : (row.customerName || '-')}</td>}
@@ -23532,7 +23532,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                             </td>
                                                         )}
                                                         {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70">{row.ref}</td>}
-                                                        {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                                        {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                                             <td className="p-1.5 border-r border-slate-100 text-slate-600 font-medium">{row.taxInvNo || '-'}</td>
                                                         )}
                                                         {isTallyItemLedger && !hiddenCols.has('item_qty_in') && <td className={`p-1.5 border-r border-slate-100 text-right font-black ${safeNum(row.qtyIn) > 0 ? 'text-green-700' : 'text-slate-300'}`}>{row.isOpening ? '-' : (safeNum(row.qtyIn) > 0 ? format3(safeNum(row.qtyIn)) : '-')}</td>}
@@ -27910,7 +27910,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     filteredData.map(item => ({
                         Date: item.date,
                         RefNo: item.ref,
-                        ...(registerType === 'purchase' ? { "Tax Inv No": item.taxInvNo || '' } : {}),
+                        ...((registerType === 'purchase' || registerType === 'sales') ? { "Tax Inv No": item.taxInvNo || '' } : {}),
                         Particulars: item.label,
                         Qty: item.qty || 0,
                         Rate: item.rate || 0,
@@ -27927,7 +27927,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             dataToExport.push(registerType === 'manufacturing' ?
                 { Date: '', RefNo: 'TOTALS', Item: '', Type: '', Qty: '', Rate: '', Amount: displaySummary.credit, Balance_Qty: displaySummary.balance, Balance_Amt: displaySummary.balance }
                 : isInvReg ?
-                    { Date: '', RefNo: 'TOTALS', ...(registerType === 'purchase' ? { "Tax Inv No": '' } : {}), Particulars: '', Qty: displaySummary.totalQty, Rate: '', Amount: displaySummary.totalVchAmt }
+                    { Date: '', RefNo: 'TOTALS', ...((registerType === 'purchase' || registerType === 'sales') ? { "Tax Inv No": '' } : {}), Particulars: '', Qty: displaySummary.totalQty, Rate: '', Amount: displaySummary.totalVchAmt }
                     : ['payment', 'receipt', 'contra'].includes(registerType) ?
                         { Date: '', RefNo: 'TOTALS', sourceAcc: '', targetDetails: '', totalAmt: displaySummary.totalVchAmt }
                         :
@@ -28010,7 +28010,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                             Number(item.rate || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
                             Number(item.totalAmt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
                         ];
-                        if (registerType === 'purchase') {
+                        if (registerType === 'purchase' || registerType === 'sales') {
                             row.splice(2, 0, item.taxInvNo || '');
                         }
                         return row;
@@ -28037,7 +28037,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     [
                         "", 
                         "TOTAL", 
-                        ...(registerType === 'purchase' ? [""] : []), 
+                        ...((registerType === 'purchase' || registerType === 'sales') ? [""] : []), 
                         "", 
                         Number(displaySummary.totalQty).toLocaleString(), 
                         "", 
@@ -28053,7 +28053,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                 head: isMfg ?
                     [["Date", "Ref No", "Item", "Type", "Bags", "Qty", "Rate", "Amount"]]
                     : isInvReg ?
-                        (registerType === 'purchase'
+                        ((registerType === 'purchase' || registerType === 'sales')
                             ? [["Date", "Ref No", "Tax Inv No", "Particulars", "Qty", "Rate", "Amount"]]
                             : [["Date", "Ref No", "Particulars", "Qty", "Rate", "Amount"]])
                         : registerType === 'payment' ?
@@ -28384,7 +28384,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                             <tr>
                                 <Th col="date" label="Date" className="border-r border-white/5" />
                                 <Th col="ref" label={registerType === 'journal' ? "Vch No." : "Ref No."} className="border-r border-white/5" />
-                                {registerType === 'purchase' && <Th col="taxInvNo" label="Tax Inv No" className="border-r border-white/5" />}
+                                {['purchase', 'sales'].includes(registerType) && <Th col="taxInvNo" label="Tax Inv No" className="border-r border-white/5" />}
                                 <Th col="label" label={registerType === 'journal' ? "Narration" : "Particulars"} className="border-r border-white/5" />
                                 {registerType === 'journal' ? (
                                     <Th col="totalAmt" label="Amount" align="right" />
@@ -28538,7 +28538,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                     >
                                         <td className="p-3 font-medium text-slate-600 whitespace-nowrap border-r border-slate-100">{item.date}</td>
                                         <td className="p-3 font-black text-blue-600 border-r border-slate-100 group-hover:underline">{item.ref}</td>
-                                        {registerType === 'purchase' && (
+                                        {['purchase', 'sales'].includes(registerType) && (
                                             <td className="p-3 text-slate-700 font-semibold border-r border-slate-100">
                                                 {item.taxInvNo || ''}
                                             </td>
@@ -28563,7 +28563,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                     {/* DETAILED VIEW ENHANCEMENT FOR INV/JOURNAL VOUCHERS */}
                                     {detailView && (item.items || item.rows) && (
                                         <tr className="bg-slate-100/40 border-b shadow-inner">
-                                            <td colSpan={registerType === 'journal' ? "4" : registerType === 'purchase' ? "7" : "6"} className="px-10 py-3 border-l-4 border-indigo-400">
+                                            <td colSpan={registerType === 'journal' ? "4" : ['purchase', 'sales'].includes(registerType) ? "7" : "6"} className="px-10 py-3 border-l-4 border-indigo-400">
                                                 <div className="flex flex-col gap-2">
                                                     <div className="flex items-center gap-3 mb-1">
                                                         <div className="text-[10px] font-black text-indigo-600 uppercase tracking-widest bg-indigo-100 px-2 py-0.5 rounded">

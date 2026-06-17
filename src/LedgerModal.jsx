@@ -1055,7 +1055,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         const doc = new jsPDF('l', 'mm', 'a4');
         doc.setFontSize(10);
         doc.text(`Ledger: ${filter.type.toUpperCase()} (${displayCurrency})`, 14, 15);
-        const isTaxInvActive = ['purchase', 'party', 'tax'].includes(filter.type);
+        const isTaxInvActive = ['purchase', 'sales', 'party', 'tax'].includes(filter.type);
         const head = isTaxInvActive
             ? [["Date", "Ref", "Tax Inv No.", "Type", "Particulars", "Debit", "Credit", "Balance"]]
             : [["Date", "Ref", "Type", "Particulars", "Debit", "Credit", "Balance"]];
@@ -1072,7 +1072,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     };
     const downloadExcel = () => {
         if (fullList.length === 0) return alert("No data");
-        const isTaxInvActive = ['purchase', 'party', 'tax'].includes(filter.type);
+        const isTaxInvActive = ['purchase', 'sales', 'party', 'tax'].includes(filter.type);
         const data = fullList.map(r => {
             const rowData = { Date: formatDate(r.date), Ref: r.ref };
             if (isTaxInvActive) {
@@ -1358,7 +1358,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <th className="p-2 md:p-3">Date</th>
                                 <th className="p-2 md:p-3">Particulars</th>
                                 <th className="p-2 md:p-3">Ref No.</th>
-                                {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                     <th className="p-2 md:p-3">Tax Inv No.</th>
                                 )}
 
@@ -1395,7 +1395,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 <div className="text-[10px] text-slate-500 truncate max-w-[150px]">{row.crName}</div>
                                             </td>
                                             <td className="p-2 md:p-3 text-blue-600 font-mono align-top">{row.ref}</td>
-                                            {['purchase', 'party', 'tax'].includes(filter.type) && (
+                                            {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                                 <td className="p-2 md:p-3 text-slate-600 align-top">{row.taxInvNo || '-'}</td>
                                             )}
 
@@ -1431,7 +1431,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 <td colSpan="2"></td>
                                                 <td colSpan={
                                                     2 // Particulars, Ref No.
-                                                    + (['purchase', 'party', 'tax'].includes(filter.type) ? 1 : 0)
+                                                    + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0)
                                                     + (['purchase', 'sales', 'party', 'account', 'item', 'daybook'].includes(filter.type) ? 2 : 0)
                                                     + 2 // Debit, Credit
                                                     + (filter.type === 'item' ? 1 : 0) // Qty In/Out
