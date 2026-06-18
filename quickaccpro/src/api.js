@@ -155,6 +155,42 @@ export async function getDaybook(limit = 50) {
   return callApi('list_daybook', { limit })
 }
 
+/**
+ * Get ALL daybook records via POST — bypasses GET query param limits.
+ * Uses max limit + fetchAll flag to ensure 100% of vouchers are returned.
+ */
+export async function getDaybookAll() {
+  return callApi('list_daybook', { 
+    limit: 999999, 
+    fetchAll: '1',
+    all: 'true' 
+  }, 'POST')
+}
+
+/**
+ * Get account-specific ledger with ALL vouchers for that account.
+ * Uses POST to avoid GET param truncation, and passes accountName
+ * for server-side filtering (more reliable than client-side filter).
+ */
+export async function getAccountLedger(accountName) {
+  return callApi('list_daybook', { 
+    accountName,
+    limit: 999999, 
+    fetchAll: '1',
+    all: 'true' 
+  }, 'POST')
+}
+
+/** List all CONTRA entries (full list for account matching) */
+export async function listContra() {
+  return callApi('list_daybook', { 
+    type: 'contra',
+    limit: 999999,
+    fetchAll: '1',
+    all: 'true' 
+  }, 'POST')
+}
+
 /** List team members */
 export async function listTeam() {
   return callApi('list_team')

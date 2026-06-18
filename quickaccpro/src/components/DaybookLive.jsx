@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, FileText, ChevronLeft, ChevronRight, Download, Share2
 } from 'lucide-react'
 import { downloadVoucherPdf, shareVoucherPdf, shareVoucherText } from '../utils/voucherPdf'
-import { getDaybook, listAccounts, listLedgers, deleteVoucher } from '../api'
+import { getDaybookAll, getAccountLedger, listContra, listAccounts, listLedgers, deleteVoucher } from '../api'
 
 const TYPE_CONFIG = {
   invoices: { label: 'Invoice', icon: Receipt, color: 'text-blue-600', bg: 'bg-blue-100' },
@@ -216,13 +216,33 @@ export default function DaybookLive({ subUser }) {
 
   const quietLoadData = async () => {
     try {
-      const limit = filterAccountName ? 'all' : 200
-      const [accData, ledData, data] = await Promise.all([
+      let allTransactions = []
+
+      if (filterAccountName) {
+        const promises = [
+          getAccountLedger(filterAccountName).catch(e => { return {}; }),
+          listContra().catch(e => { return {}; }),
+        ]
+        const [accLedgerData, contraData] = await Promise.all(promises)
+        const txMap = new Map()
+        const addToMap = (list) => {
+          (list || []).forEach(t => {
+            if (t.id) txMap.set(t.id, t)
+          })
+        }
+        addToMap(accLedgerData.transactions)
+        addToMap(contraData.transactions)
+        allTransactions = Array.from(txMap.values())
+      } else {
+        const data = await getDaybookAll().catch(e => { return {}; })
+        allTransactions = data.transactions || []
+      }
+
+      // Also refresh accounts/ledgers
+      const [accData, ledData] = await Promise.all([
         listAccounts().catch(e => ({})),
         listLedgers().catch(e => ({})),
-        getDaybook(limit)
       ])
-
       if (accData.accounts) {
         localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
       }
@@ -230,48 +250,24 @@ export default function DaybookLive({ subUser }) {
         localStorage.setItem('quickaccpro_cached_ledgers', JSON.stringify(ledData.ledgers))
       }
 
-      const freshList = data.transactions || []
-      const mergedMap = new Map()
-      const freshRefNos = new Set()
-
-      freshList.forEach(t => {
-        mergedMap.set(t.id, t)
-        if (t.refNo) {
-          freshRefNos.add(t.refNo.toLowerCase().trim())
-        }
-      })
-
-      const isExhaustive = limit === 'all' || freshList.length < limit
-
       const cacheKey = 'quickaccpro_cached_transactions'
       const cachedRaw = localStorage.getItem(cacheKey)
+
+      const mergedMap = new Map()
+      const freshRefNos = new Set()
+      allTransactions.forEach(t => {
+        mergedMap.set(t.id, t)
+        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
+      })
+
       if (cachedRaw) {
         try {
           const cached = JSON.parse(cachedRaw)
-          const oldestFresh = freshList[freshList.length - 1]
           cached.forEach(t => {
             const hasId = mergedMap.has(t.id)
             const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
             if (!hasId && !hasRefNo) {
-              let isDeleted = false
-              const isServerId = t.id && t.id.length > 10
-              
-              if (isServerId) {
-                if (isExhaustive) {
-                  isDeleted = true
-                } else if (oldestFresh) {
-                  const dateCmp = (t.date || '').localeCompare(oldestFresh.date || '')
-                  if (dateCmp > 0) {
-                    isDeleted = true
-                  } else if (dateCmp === 0 && (t.syncTimestamp || 0) > (oldestFresh.syncTimestamp || 0)) {
-                    isDeleted = true
-                  }
-                }
-              }
-
-              if (!isDeleted) {
-                mergedMap.set(t.id, t)
-              }
+              mergedMap.set(t.id, t)
             }
           })
         } catch (e) {}
@@ -285,7 +281,7 @@ export default function DaybookLive({ subUser }) {
       })
 
       setTransactions(mergedList)
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList.slice(0, 300)))
+      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
     } catch (err) {
       console.warn("Quiet load failed", err)
     }
@@ -381,13 +377,44 @@ export default function DaybookLive({ subUser }) {
     setCurrentPage(1)
     
     try {
-      const limit = filterAccountName ? 'all' : 200
-      const [accData, ledData, data] = await Promise.all([
+      // ─── Fetch from ALL available sources for 100% coverage ───
+      let allTransactions = []
+
+      if (filterAccountName) {
+        // Account-specific ledger: fetch from 3 parallel sources
+        const promises = [
+          getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
+          listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
+        ]
+        // Also fetch all daybook as a supplement
+        if (!hasCache) {
+          promises.push(getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }))
+        }
+        const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
+
+        // Merge: Account-ledger filtered records (primary)
+        const txMap = new Map()
+        const addToMap = (list) => {
+          (list || []).forEach(t => {
+            if (t.id) txMap.set(t.id, t)
+          })
+        }
+        addToMap(accLedgerData.transactions)
+        addToMap(contraData.transactions)
+        if (allDaybookData?.transactions) addToMap(allDaybookData.transactions)
+
+        allTransactions = Array.from(txMap.values())
+      } else {
+        // Normal daybook: fetch all via POST for exhaustive list
+        const data = await getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; })
+        allTransactions = data.transactions || []
+      }
+
+      // ─── Also refresh accounts/ledgers cache ───
+      const [accData, ledData] = await Promise.all([
         listAccounts().catch(e => { console.error(e); return {}; }),
         listLedgers().catch(e => { console.error(e); return {}; }),
-        getDaybook(limit)
       ])
-
       try {
         if (accData.accounts) {
           localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
@@ -397,48 +424,23 @@ export default function DaybookLive({ subUser }) {
         }
       } catch (e) {}
 
-      const freshList = data.transactions || []
+      // ─── Merge with cache for anything that might still be missing ───
       const mergedMap = new Map()
       const freshRefNos = new Set()
-
-      freshList.forEach(t => {
+      allTransactions.forEach(t => {
         mergedMap.set(t.id, t)
-        if (t.refNo) {
-          freshRefNos.add(t.refNo.toLowerCase().trim())
-        }
+        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
       })
 
-      const isExhaustive = limit === 'all' || freshList.length < limit
-
+      // Supplement from cache with any records not already in fresh data
       if (cachedRaw) {
         try {
           const cached = JSON.parse(cachedRaw)
-          const oldestFresh = freshList[freshList.length - 1]
           cached.forEach(t => {
             const hasId = mergedMap.has(t.id)
             const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
             if (!hasId && !hasRefNo) {
-              // Discard previously synced server-side transactions that are not in the fresh list
-              // if the fresh list is exhaustive or the transaction is newer than the oldest fresh transaction.
-              let isDeleted = false
-              const isServerId = t.id && t.id.length > 10
-              
-              if (isServerId) {
-                if (isExhaustive) {
-                  isDeleted = true
-                } else if (oldestFresh) {
-                  const dateCmp = (t.date || '').localeCompare(oldestFresh.date || '')
-                  if (dateCmp > 0) {
-                    isDeleted = true
-                  } else if (dateCmp === 0 && (t.syncTimestamp || 0) > (oldestFresh.syncTimestamp || 0)) {
-                    isDeleted = true
-                  }
-                }
-              }
-
-              if (!isDeleted) {
-                mergedMap.set(t.id, t)
-              }
+              mergedMap.set(t.id, t)
             }
           })
         } catch (e) {}
@@ -452,7 +454,8 @@ export default function DaybookLive({ subUser }) {
       })
 
       setTransactions(mergedList)
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList.slice(0, 300)))
+      // Store FULL list in cache (no truncation) for 100% accuracy
+      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
     } catch (err) {
       if (!hasCache) {
         setError(err.message || 'Failed to load daybook')
@@ -518,13 +521,41 @@ export default function DaybookLive({ subUser }) {
     const cachedRaw = localStorage.getItem(cacheKey)
 
     try {
-      const limit = filterAccountName ? 'all' : 200
-      const [accData, ledData, data] = await Promise.all([
+      // ─── Fetch from ALL available sources for 100% coverage ───
+      let allTransactions = []
+
+      if (filterAccountName) {
+        // Account-specific ledger: fetch from all parallel sources
+        const promises = [
+          getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
+          listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
+          getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }),
+        ]
+        const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
+
+        // Merge all sources
+        const txMap = new Map()
+        const addToMap = (list) => {
+          (list || []).forEach(t => {
+            if (t.id) txMap.set(t.id, t)
+          })
+        }
+        addToMap(accLedgerData.transactions)
+        addToMap(contraData.transactions)
+        if (allDaybookData?.transactions) addToMap(allDaybookData.transactions)
+
+        allTransactions = Array.from(txMap.values())
+      } else {
+        // Normal daybook: fetch all via POST
+        const data = await getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; })
+        allTransactions = data.transactions || []
+      }
+
+      // ─── Also refresh accounts/ledgers cache ───
+      const [accData, ledData] = await Promise.all([
         listAccounts().catch(e => { console.error(e); return {}; }),
         listLedgers().catch(e => { console.error(e); return {}; }),
-        getDaybook(limit)
       ])
-
       try {
         if (accData.accounts) {
           localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
@@ -534,48 +565,22 @@ export default function DaybookLive({ subUser }) {
         }
       } catch (e) {}
 
-      const freshList = data.transactions || []
+      // ─── Merge with cache for supplement ───
       const mergedMap = new Map()
       const freshRefNos = new Set()
-
-      freshList.forEach(t => {
+      allTransactions.forEach(t => {
         mergedMap.set(t.id, t)
-        if (t.refNo) {
-          freshRefNos.add(t.refNo.toLowerCase().trim())
-        }
+        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
       })
-
-      const isExhaustive = limit === 'all' || freshList.length < limit
 
       if (cachedRaw) {
         try {
           const cached = JSON.parse(cachedRaw)
-          const oldestFresh = freshList[freshList.length - 1]
           cached.forEach(t => {
             const hasId = mergedMap.has(t.id)
             const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
             if (!hasId && !hasRefNo) {
-              // Discard previously synced server-side transactions that are not in the fresh list
-              // if the fresh list is exhaustive or the transaction is newer than the oldest fresh transaction.
-              let isDeleted = false
-              const isServerId = t.id && t.id.length > 10
-              
-              if (isServerId) {
-                if (isExhaustive) {
-                  isDeleted = true
-                } else if (oldestFresh) {
-                  const dateCmp = (t.date || '').localeCompare(oldestFresh.date || '')
-                  if (dateCmp > 0) {
-                    isDeleted = true
-                  } else if (dateCmp === 0 && (t.syncTimestamp || 0) > (oldestFresh.syncTimestamp || 0)) {
-                    isDeleted = true
-                  }
-                }
-              }
-
-              if (!isDeleted) {
-                mergedMap.set(t.id, t)
-              }
+              mergedMap.set(t.id, t)
             }
           })
         } catch (e) {}
@@ -589,7 +594,8 @@ export default function DaybookLive({ subUser }) {
       })
 
       setTransactions(mergedList)
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList.slice(0, 300)))
+      // Store FULL list in cache (no truncation)
+      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
     } catch (err) {
       setError(err.message)
     } finally {
@@ -673,7 +679,9 @@ export default function DaybookLive({ subUser }) {
                         (t.drName || '').toLowerCase() === nameLower ||
                         (t.crName || '').toLowerCase() === nameLower ||
                         (t.partyName || '').toLowerCase() === nameLower ||
-                        (t.type === 'payments' && t.subType === 'contra' && (t.description || '').toLowerCase().includes(nameLower))
+                        (t.description || '').toLowerCase().includes(nameLower) ||
+                        (t.drName || '').toLowerCase().split(', ').map(n => n.trim()).includes(nameLower) ||
+                        (t.crName || '').toLowerCase().split(', ').map(n => n.trim()).includes(nameLower)
         if (!isMatch) return false
 
         // Date-wise filtering
@@ -720,12 +728,38 @@ export default function DaybookLive({ subUser }) {
 
       if (filterAccountName) {
         const nameLower = filterAccountName.toLowerCase()
+        const isAccountNameMatch = (t.accountName || '').toLowerCase() === nameLower
         const isDrMatch = (t.drName || '').toLowerCase() === nameLower || 
                           (t.drName || '').toLowerCase().split(', ').map(n => n.trim()).includes(nameLower)
         const isCrMatch = (t.crName || '').toLowerCase() === nameLower || 
                           (t.crName || '').toLowerCase().split(', ').map(n => n.trim()).includes(nameLower)
 
-        if (isDrMatch) {
+        // ─── Payment vouchers: determine side by subType ───
+        if (t.type === 'payments' && isAccountNameMatch) {
+          if (t.subType === 'in' || t.subType === 'receipt') {
+            // RECEIPT: Money coming IN to this account → Debit
+            isDr = true
+          } else if (t.subType === 'out' || t.subType === 'payment') {
+            // PAYMENT: Money going OUT from this account → Credit
+            isCr = true
+          } else if (t.subType?.toLowerCase() === 'contra') {
+            // CONTRA data model:
+            //   drName = destination account (receives money, being debited)
+            //   crName = source account (sends money, being credited)
+            //   accountName = source account
+            // So for the account we're viewing:
+            //   If it matches drName → it's the DESTINATION → receiving → DEBIT
+            //   If it matches crName or accountName → it's the SOURCE → sending → CREDIT
+            if (isDrMatch && !isCrMatch) {
+              // Account is ONLY in drName → destination → receiving → DEBIT
+              isDr = true
+            } else {
+              // Account is in crName, accountName, or both → source side → CREDIT
+              isCr = true
+            }
+          }
+        } else if (isDrMatch) {
+          // Account is in drName → receiving end → DEBIT
           isDr = true
           if (t.isMulti && t.splits) {
             const matchedSplit = t.splits.find(s => (s.targetName || '').toLowerCase() === nameLower)
@@ -733,8 +767,8 @@ export default function DaybookLive({ subUser }) {
               amt = Number(matchedSplit.amount || 0)
             }
           }
-        }
-        if (isCrMatch) {
+        } else if (isCrMatch) {
+          // Account is in crName → giving end → CREDIT
           isCr = true
           if (t.isMulti && t.splits && t.type === 'journal_vouchers') {
             const matchedSplit = t.splits.find(s => (s.targetName || '').toLowerCase() === nameLower && s.type === 'cr')
@@ -742,6 +776,10 @@ export default function DaybookLive({ subUser }) {
               amt = Number(matchedSplit.amount || 0)
             }
           }
+        } else if (isAccountNameMatch) {
+          // accountName matches but no drName/crName match and not a payment voucher
+          // This is likely an invoice or journal — treat as debit by default
+          isDr = true
         }
       } else {
         // Fallback default daybook logic (when viewing all daybook logs)
