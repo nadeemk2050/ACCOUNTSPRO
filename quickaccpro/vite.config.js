@@ -9,7 +9,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['vite.svg'],
       manifest: {
-        name: 'QuickAccPro',
+        name: 'QuickAccPro v1.5',
         short_name: 'QuickAccPro',
         description: 'Lightweight companion for AccountsPro',
         theme_color: '#1e1b4b',

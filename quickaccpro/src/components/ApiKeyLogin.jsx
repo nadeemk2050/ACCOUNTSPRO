@@ -37,7 +37,7 @@ export default function ApiKeyLogin({ onLogin }) {
           <Zap size={32} className="text-white" />
         </div>
         <h1 className="text-2xl font-bold text-white tracking-tight">
-          QuickAccPro <span className="text-xs bg-indigo-500/30 text-indigo-200 px-2 py-0.5 rounded-md border border-white/10 font-mono align-middle ml-1">v1.4</span>
+          QuickAccPro <span className="text-xs bg-indigo-500/30 text-indigo-200 px-2 py-0.5 rounded-md border border-white/10 font-mono align-middle ml-1">v1.5</span>
         </h1>
         <p className="text-indigo-300 text-sm mt-1">Lightweight companion for AccountsPro</p>
       </div>

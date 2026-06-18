@@ -381,15 +381,12 @@ export default function DaybookLive({ subUser }) {
       let allTransactions = []
 
       if (filterAccountName) {
-        // Account-specific ledger: fetch from 3 parallel sources
+        // Account-specific ledger: fetch from ALL parallel sources for 100% coverage
         const promises = [
           getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
           listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
+          getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }),
         ]
-        // Also fetch all daybook as a supplement
-        if (!hasCache) {
-          promises.push(getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }))
-        }
         const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
 
         // Merge: Account-ledger filtered records (primary)
