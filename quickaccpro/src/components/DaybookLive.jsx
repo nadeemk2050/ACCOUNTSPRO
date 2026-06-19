@@ -214,91 +214,19 @@ export default function DaybookLive({ subUser }) {
   }
 
 
-  const quietLoadData = async () => {
-    try {
-      let allTransactions = []
-
-      if (filterAccountName) {
-        const promises = [
-          getAccountLedger(filterAccountName).catch(e => { return {}; }),
-          listContra().catch(e => { return {}; }),
-        ]
-        const [accLedgerData, contraData] = await Promise.all(promises)
-        const txMap = new Map()
-        const addToMap = (list) => {
-          (list || []).forEach(t => {
-            if (t.id) txMap.set(t.id, t)
-          })
-        }
-        addToMap(accLedgerData.transactions)
-        addToMap(contraData.transactions)
-        allTransactions = Array.from(txMap.values())
-      } else {
-        const data = await getDaybookAll().catch(e => { return {}; })
-        allTransactions = data.transactions || []
-      }
-
-      // Also refresh accounts/ledgers
-      const [accData, ledData] = await Promise.all([
-        listAccounts().catch(e => ({})),
-        listLedgers().catch(e => ({})),
-      ])
-      if (accData.accounts) {
-        localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
-      }
-      if (ledData.ledgers) {
-        localStorage.setItem('quickaccpro_cached_ledgers', JSON.stringify(ledData.ledgers))
-      }
-
-      const cacheKey = 'quickaccpro_cached_transactions'
-      const cachedRaw = localStorage.getItem(cacheKey)
-
-      const mergedMap = new Map()
-      const freshRefNos = new Set()
-      allTransactions.forEach(t => {
-        mergedMap.set(t.id, t)
-        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
-      })
-
-      if (cachedRaw) {
-        try {
-          const cached = JSON.parse(cachedRaw)
-          cached.forEach(t => {
-            const hasId = mergedMap.has(t.id)
-            const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
-            if (!hasId && !hasRefNo) {
-              mergedMap.set(t.id, t)
-            }
-          })
-        } catch (e) {}
-      }
-
-      const mergedList = Array.from(mergedMap.values())
-      mergedList.sort((a, b) => {
-        const dateCmp = (b.date || '').localeCompare(a.date || '')
-        if (dateCmp !== 0) return dateCmp
-        return (b.syncTimestamp || 0) - (a.syncTimestamp || 0)
-      })
-
-      setTransactions(mergedList)
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
-    } catch (err) {
-      console.warn("Quiet load failed", err)
-    }
-  }
-
   useEffect(() => {
     setDateMode('all')
     loadData()
   }, [filterAccountName]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-polling for live stream experience
+  // Lightweight background refresh every 2 minutes (instead of every 6 seconds)
+  // Only refreshes transaction data — does NOT re-fetch accounts/ledgers each time
   useEffect(() => {
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible' && !refreshing && !loading) {
-        quietLoadData()
+        quietRefreshTransactions()
       }
-    }, 6000)
+    }, 120000) // 2 minutes
     return () => clearInterval(timer)
   }, [filterAccountName, refreshing, loading])
 
@@ -356,6 +284,81 @@ export default function DaybookLive({ subUser }) {
   }, [filterMonth])
 
 
+  // ─── Shared function: fetch transactions from API ───
+  // Extracted so both loadData and quietRefreshTransactions use the same logic
+  const fetchTransactions = async () => {
+    let allTransactions = []
+
+    if (filterAccountName) {
+      // Account-specific ledger: fetch from ALL parallel sources for 100% coverage
+      const promises = [
+        getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
+        listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
+        getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }),
+      ]
+      const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
+
+      const txMap = new Map()
+      const addToMap = (list) => {
+        (list || []).forEach(t => {
+          if (t.id) txMap.set(t.id, t)
+        })
+      }
+      addToMap(accLedgerData.transactions)
+      addToMap(contraData.transactions)
+      if (allDaybookData?.transactions) addToMap(allDaybookData.transactions)
+
+      allTransactions = Array.from(txMap.values())
+    } else {
+      const data = await getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; })
+      allTransactions = data.transactions || []
+    }
+
+    return allTransactions
+  }
+
+  // Lightweight background refresh — fetches ONLY transactions, no accounts/ledgers
+  const quietRefreshTransactions = async () => {
+    try {
+      const allTransactions = await fetchTransactions()
+      const cacheKey = 'quickaccpro_cached_transactions'
+
+      const mergedMap = new Map()
+      const freshRefNos = new Set()
+      allTransactions.forEach(t => {
+        mergedMap.set(t.id, t)
+        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
+      })
+
+      // Supplement from cache with any records not already in fresh data
+      const cachedRaw = localStorage.getItem(cacheKey)
+      if (cachedRaw) {
+        try {
+          const cached = JSON.parse(cachedRaw)
+          cached.forEach(t => {
+            const hasId = mergedMap.has(t.id)
+            const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
+            if (!hasId && !hasRefNo) {
+              mergedMap.set(t.id, t)
+            }
+          })
+        } catch (e) {}
+      }
+
+      const mergedList = Array.from(mergedMap.values())
+      mergedList.sort((a, b) => {
+        const dateCmp = (b.date || '').localeCompare(a.date || '')
+        if (dateCmp !== 0) return dateCmp
+        return (b.syncTimestamp || 0) - (a.syncTimestamp || 0)
+      })
+
+      setTransactions(mergedList)
+      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
+    } catch (err) {
+      console.warn("Background refresh failed", err)
+    }
+  }
+
   const loadData = async () => {
     const cacheKey = 'quickaccpro_cached_transactions'
     const cachedRaw = localStorage.getItem(cacheKey)
@@ -378,46 +381,23 @@ export default function DaybookLive({ subUser }) {
     
     try {
       // ─── Fetch from ALL available sources for 100% coverage ───
-      let allTransactions = []
+      const allTransactions = await fetchTransactions()
 
-      if (filterAccountName) {
-        // Account-specific ledger: fetch from ALL parallel sources for 100% coverage
-        const promises = [
-          getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
-          listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
-          getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }),
-        ]
-        const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
-
-        // Merge: Account-ledger filtered records (primary)
-        const txMap = new Map()
-        const addToMap = (list) => {
-          (list || []).forEach(t => {
-            if (t.id) txMap.set(t.id, t)
-          })
-        }
-        addToMap(accLedgerData.transactions)
-        addToMap(contraData.transactions)
-        if (allDaybookData?.transactions) addToMap(allDaybookData.transactions)
-
-        allTransactions = Array.from(txMap.values())
-      } else {
-        // Normal daybook: fetch all via POST for exhaustive list
-        const data = await getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; })
-        allTransactions = data.transactions || []
-      }
-
-      // ─── Also refresh accounts/ledgers cache ───
-      const [accData, ledData] = await Promise.all([
-        listAccounts().catch(e => { console.error(e); return {}; }),
-        listLedgers().catch(e => { console.error(e); return {}; }),
-      ])
+      // ─── Refresh accounts/ledgers cache ONLY if not already cached ───
       try {
-        if (accData.accounts) {
-          localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
-        }
-        if (ledData.ledgers) {
-          localStorage.setItem('quickaccpro_cached_ledgers', JSON.stringify(ledData.ledgers))
+        const existingAccounts = localStorage.getItem('quickaccpro_cached_accounts')
+        const existingLedgers = localStorage.getItem('quickaccpro_cached_ledgers')
+        if (!existingAccounts || !existingLedgers) {
+          const [accData, ledData] = await Promise.all([
+            listAccounts().catch(e => { console.error(e); return {}; }),
+            listLedgers().catch(e => { console.error(e); return {}; }),
+          ])
+          if (accData.accounts) {
+            localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accData.accounts))
+          }
+          if (ledData.ledgers) {
+            localStorage.setItem('quickaccpro_cached_ledgers', JSON.stringify(ledData.ledgers))
+          }
         }
       } catch (e) {}
 
@@ -700,7 +680,17 @@ export default function DaybookLive({ subUser }) {
           if (t.type !== 'payments' || t.subType?.toLowerCase() !== 'contra') return false
         } else {
           // Normal Daybook filters
-          if (filterType !== 'all' && t.type !== filterType) return false
+          if (filterType !== 'all') {
+            if (filterType === 'payments') {
+              if (t.type !== 'payments' || (t.subType !== 'out' && t.subType !== 'payment')) return false
+            } else if (filterType === 'receipts') {
+              if (t.type !== 'payments' || (t.subType !== 'in' && t.subType !== 'receipt')) return false
+            } else if (filterType === 'contra') {
+              if (t.type !== 'payments' || t.subType?.toLowerCase() !== 'contra') return false
+            } else {
+              if (t.type !== filterType) return false
+            }
+          }
         }
       }
 
@@ -942,6 +932,8 @@ export default function DaybookLive({ subUser }) {
                   <option value="all">All Types</option>
                   <option value="invoices">Invoices</option>
                   <option value="payments">Payments</option>
+                  <option value="receipts">Receipts</option>
+                  <option value="contra">Contra</option>
                   <option value="journal_vouchers">Journals</option>
                 </select>
               </>

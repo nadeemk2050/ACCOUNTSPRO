@@ -49,26 +49,8 @@ export default function Dashboard({ company, subUser }) {
     }
   }
 
-  const quietLoadAccounts = async () => {
-    try {
-      const data = await listAccounts()
-      const list = data.accounts || []
-      setAccounts(list)
-      localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(list))
-    } catch (e) {}
-  }
-
   useEffect(() => {
     loadAccounts()
-  }, [])
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        quietLoadAccounts()
-      }
-    }, 6000)
-    return () => clearInterval(timer)
   }, [])
 
   const loadAccounts = async () => {

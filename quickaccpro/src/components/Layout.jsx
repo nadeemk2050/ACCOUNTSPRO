@@ -2,11 +2,9 @@ import React, { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { 
   LayoutDashboard, BookOpen, UserCircle, LogOut, Menu, X, 
-  ChevronRight, Building2, Send, Receipt, ArrowUpDown, Download, Wallet2, RefreshCw,
-  Activity, ChevronDown, Search, ChevronLeft, FileText
+  ChevronRight, Building2, Send, Receipt, ArrowUpDown, Download, RefreshCw,
+  Search, ChevronLeft, FileText
 } from 'lucide-react'
-
-const navItems = [] // Empty placeholder to preserve any other imports or code referencing it without error
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '—'
@@ -21,7 +19,6 @@ const getPageTitle = (pathname) => {
   if (pathname.startsWith('/voucher/receipt')) return 'Receipt'
   if (pathname.startsWith('/voucher/contra')) return 'Contra'
   if (pathname === '/daybook') return 'Daybook'
-  if (pathname === '/cash-bank-register') return 'Cash/Bank Balances'
   if (pathname === '/profile') return 'Profile'
   return 'Dashboard'
 }
@@ -34,29 +31,6 @@ export default function Layout({ company, subUser, onLogout, children }) {
   const [showInstructionModal, setShowInstructionModal] = useState(false)
   const [searchVisible, setSearchVisible] = useState(false)
   const location = useLocation()
-
-  const [registersMenuOpen, setRegistersMenuOpen] = useState(() => {
-    const params = new URLSearchParams(location.search)
-    return location.pathname === '/daybook' && ['payment', 'receipt', 'contra'].includes(params.get('register') || '')
-  })
-
-  useEffect(() => {
-    const params = new URLSearchParams(location.search)
-    if (location.pathname === '/daybook' && ['payment', 'receipt', 'contra'].includes(params.get('register') || '')) {
-      setRegistersMenuOpen(true)
-    }
-  }, [location])
-
-  const toggleRegistersMenu = () => {
-    setRegistersMenuOpen(!registersMenuOpen)
-  }
-
-  const isRegisterActive = (regType) => {
-    const params = new URLSearchParams(location.search)
-    return location.pathname === '/daybook' && params.get('register') === regType
-  }
-
-  const isParentRegisterActive = location.pathname === '/daybook' && ['payment', 'receipt', 'contra'].includes(new URLSearchParams(location.search).get('register') || '')
 
   useEffect(() => {
     const handleRegisterActive = (e) => {
@@ -160,7 +134,7 @@ export default function Layout({ company, subUser, onLogout, children }) {
               </div>
               <div className="min-w-0">
                 <h1 className="text-sm font-bold tracking-tight">
-                  QuickAccPro <span className="text-[9px] bg-indigo-500/50 text-indigo-100 px-1 py-0.5 rounded font-mono ml-1">v1.5</span>
+                  QuickAccPro <span className="text-[9px] bg-indigo-500/50 text-indigo-100 px-1 py-0.5 rounded font-mono ml-1">v1.6</span>
                 </h1>
                 {company && (
                   <p className="text-[10px] text-indigo-300 truncate max-w-[120px]">{company.name}</p>
@@ -259,85 +233,6 @@ export default function Layout({ company, subUser, onLogout, children }) {
               )}
             </NavLink>
 
-            {/* Registers Group Header */}
-            <div className="pt-3 pb-1 px-4 text-[9px] font-bold text-indigo-400/80 uppercase tracking-widest">
-              Registers
-            </div>
-
-            {/* Registers Dashboard Parent */}
-            <div className="space-y-0.5">
-              <button
-                onClick={toggleRegistersMenu}
-                className={`
-                  flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-sm font-medium transition-all text-left
-                  ${isParentRegisterActive
-                    ? 'text-white bg-indigo-900/40' 
-                    : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
-                  }
-                `}
-              >
-                <Activity size={18} />
-                <span>Registers Dashboard</span>
-                <ChevronDown 
-                  size={14} 
-                  className={`ml-auto opacity-75 transition-transform duration-200 ${registersMenuOpen ? 'rotate-180' : ''}`} 
-                />
-              </button>
-
-              {/* Submenus */}
-              <div 
-                className={`
-                  space-y-0.5 transition-all duration-300 ease-in-out overflow-hidden
-                  ${registersMenuOpen ? 'max-h-40 opacity-100 mt-1' : 'max-h-0 opacity-0 pointer-events-none'}
-                `}
-              >
-                <NavLink
-                  to="/daybook?register=payment"
-                  onClick={() => setSidebarOpen(false)}
-                  className={`
-                    flex items-center gap-3 pl-10 pr-4 py-2 rounded-xl text-xs font-semibold transition-all
-                    ${isRegisterActive('payment')
-                      ? 'bg-indigo-600 text-white shadow-md'
-                      : 'text-indigo-300 hover:text-white hover:bg-indigo-800/30'
-                    }
-                  `}
-                >
-                  <Send size={13} />
-                  <span>Payments Register</span>
-                </NavLink>
-
-                <NavLink
-                  to="/daybook?register=receipt"
-                  onClick={() => setSidebarOpen(false)}
-                  className={`
-                    flex items-center gap-3 pl-10 pr-4 py-2 rounded-xl text-xs font-semibold transition-all
-                    ${isRegisterActive('receipt')
-                      ? 'bg-indigo-600 text-white shadow-md'
-                      : 'text-indigo-300 hover:text-white hover:bg-indigo-800/30'
-                    }
-                  `}
-                >
-                  <Receipt size={13} />
-                  <span>Receipts Register</span>
-                </NavLink>
-
-                <NavLink
-                  to="/daybook?register=contra"
-                  onClick={() => setSidebarOpen(false)}
-                  className={`
-                    flex items-center gap-3 pl-10 pr-4 py-2 rounded-xl text-xs font-semibold transition-all
-                    ${isRegisterActive('contra')
-                      ? 'bg-indigo-600 text-white shadow-md'
-                      : 'text-indigo-300 hover:text-white hover:bg-indigo-800/30'
-                    }
-                  `}
-                >
-                  <ArrowUpDown size={13} />
-                  <span>Contra Register</span>
-                </NavLink>
-              </div>
-            </div>
-
             {/* Reports Group Header */}
             <div className="pt-3 pb-1 px-4 text-[9px] font-bold text-indigo-400/80 uppercase tracking-widest">
               Reports & Account
@@ -349,7 +244,7 @@ export default function Layout({ company, subUser, onLogout, children }) {
               onClick={() => setSidebarOpen(false)}
               className={({ isActive }) => `
                 flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
-                ${isActive && !isParentRegisterActive
+                ${isActive
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-800/30' 
                   : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
                 }
@@ -357,29 +252,12 @@ export default function Layout({ company, subUser, onLogout, children }) {
             >
               <BookOpen size={18} />
               <span>Daybook Live</span>
-              {location.pathname === '/daybook' && !isParentRegisterActive && (
+              {location.pathname === '/daybook' && (
                 <ChevronRight size={14} className="ml-auto opacity-50" />
               )}
             </NavLink>
 
-            {/* Cash/Bank Register */}
-            <NavLink
-              to="/cash-bank-register"
-              onClick={() => setSidebarOpen(false)}
-              className={({ isActive }) => `
-                flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
-                ${isActive 
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-800/30' 
-                  : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
-                }
-              `}
-            >
-              <Wallet2 size={18} />
-              <span>Cash/Bank Register</span>
-              {location.pathname === '/cash-bank-register' && (
-                <ChevronRight size={14} className="ml-auto opacity-50" />
-              )}
-            </NavLink>
+
 
             {/* Profile */}
             <NavLink

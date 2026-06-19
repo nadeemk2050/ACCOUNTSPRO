@@ -8,7 +8,6 @@ import Dashboard from './components/Dashboard'
 import DaybookLive from './components/DaybookLive'
 import Profile from './components/Profile'
 import CashierVoucher from './components/CashierVoucher'
-import CashBankRegister from './components/CashBankRegister'
 
 export default function App() {
   const [apiKey, setApiKeyState] = useState(getStoredApiKey())
@@ -158,7 +157,7 @@ export default function App() {
       <Routes>
         <Route path="/dashboard" element={<Dashboard company={company} subUser={subUser} />} />
         <Route path="/daybook" element={<DaybookLive subUser={subUser} />} />
-        <Route path="/cash-bank-register" element={<CashBankRegister />} />
+
         <Route path="/profile" element={<Profile company={company} subUser={subUser} onRefresh={refreshCompany} />} />
         <Route path="/voucher/edit/:voucherId" element={<CashierVoucher subUser={subUser} />} />
         <Route path="/voucher/:voucherType" element={<CashierVoucher subUser={subUser} />} />

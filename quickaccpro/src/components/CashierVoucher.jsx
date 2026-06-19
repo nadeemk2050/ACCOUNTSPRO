@@ -100,13 +100,8 @@ export default function CashierVoucher({ subUser }) {
     }
   }, [voucherType, isEditMode])
 
-  // Load accounts & ledgers
-  useEffect(() => {
-    loadData()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadData = async () => {
-    setLoading(true)
+  // Load accounts & ledgers from cache first, then optionally from API
+  const syncAccountLedgers = useCallback(async () => {
     setError('')
     try {
       const [accData, ledData] = await Promise.all([
@@ -117,8 +112,48 @@ export default function CashierVoucher({ subUser }) {
       const ledgersList = ledData.ledgers || []
       setAccounts(accountsList)
       setLedgers(ledgersList)
+      localStorage.setItem('quickaccpro_cached_accounts', JSON.stringify(accountsList))
+      localStorage.setItem('quickaccpro_cached_ledgers', JSON.stringify(ledgersList))
+      return { accountsList, ledgersList }
+    } catch (err) {
+      setError(err.message || 'Failed to sync accounts & ledgers')
+      return null
+    }
+  }, [])
 
-      if (isEditMode) {
+  useEffect(() => {
+    loadData()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadData = async () => {
+    setLoading(true)
+    setError('')
+
+    // Load from cache first
+    let accountsList = []
+    let ledgersList = []
+    try {
+      const cachedAcc = localStorage.getItem('quickaccpro_cached_accounts')
+      const cachedLed = localStorage.getItem('quickaccpro_cached_ledgers')
+      if (cachedAcc) accountsList = JSON.parse(cachedAcc)
+      if (cachedLed) ledgersList = JSON.parse(cachedLed)
+    } catch (e) {}
+
+    // If no cache, do a fresh fetch
+    if (accountsList.length === 0 || ledgersList.length === 0) {
+      const result = await syncAccountLedgers()
+      if (result) {
+        accountsList = result.accountsList
+        ledgersList = result.ledgersList
+      }
+    } else {
+      setAccounts(accountsList)
+      setLedgers(ledgersList)
+    }
+
+    // Edit mode — also fetch voucher details
+    if (isEditMode) {
+      try {
         const res = await getVoucher(voucherId)
         if (res.success && res.voucher) {
           const v = res.voucher
@@ -141,12 +176,12 @@ export default function CashierVoucher({ subUser }) {
             })))
           }
         }
+      } catch (err) {
+        setError(err.message || 'Failed to load voucher')
       }
-    } catch (err) {
-      setError(err.message || 'Failed to load data')
-    } finally {
-      setLoading(false)
     }
+
+    setLoading(false)
   }
 
   // Check refNo uniqueness
@@ -383,10 +418,11 @@ export default function CashierVoucher({ subUser }) {
     )
   }
 
+  // Options without live balances — reduces need for frequent re-fetches
   const accountOptions = accounts.map(acc => ({
     id: acc.id,
     name: acc.name || acc.accountName,
-    details: acc.balance !== undefined ? `(${formatCurrency(acc.balance)})` : ''
+    details: ''
   }))
 
   const toAccountOptions = accounts
@@ -394,13 +430,13 @@ export default function CashierVoucher({ subUser }) {
     .map(acc => ({
       id: acc.id,
       name: acc.name || acc.accountName,
-      details: acc.balance !== undefined ? `(${formatCurrency(acc.balance)})` : ''
+      details: ''
     }))
 
   const ledgerOptions = ledgers.map(l => ({
     id: l.id,
     name: l.name,
-    details: `(${l.collection})${l.balance !== undefined ? ` - Bal: ${formatCurrency(l.balance)}` : ''}`
+    details: `(${l.collection})`
   }))
 
   return (
@@ -505,9 +541,19 @@ export default function CashierVoucher({ subUser }) {
 
         {/* Account selection (cash/bank source) */}
         <div>
-          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">
-            {type === 'contra' ? 'FROM ACCOUNT' : 'CASH / BANK ACCOUNT'}
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              {type === 'contra' ? 'FROM ACCOUNT' : 'CASH / BANK ACCOUNT'}
+            </label>
+            <button
+              onClick={syncAccountLedgers}
+              className="text-[9px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"
+              title="Sync latest accounts & ledgers list from main database"
+            >
+              <RefreshCw size={10} />
+              Sync Accounts
+            </button>
+          </div>
           <SearchableSelect
             options={accountOptions}
             value={accountId}
@@ -545,6 +591,7 @@ export default function CashierVoucher({ subUser }) {
               type="number"
               value={rows[0]?.amount || ''}
               onChange={e => updateRow(0, 'amount', e.target.value)}
+              onWheel={e => e.target.blur()}
               className="input-field text-sm font-semibold"
               placeholder="0.00"
               step="0.001"
@@ -561,13 +608,23 @@ export default function CashierVoucher({ subUser }) {
                 <FileText size={10} className="inline mr-0.5" />
                 ACCOUNT / PARTICULARS
               </label>
-              <button
-                onClick={addRow}
-                className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
-              >
-                <Plus size={12} />
-                ADD
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={syncAccountLedgers}
+                  className="text-[9px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"
+                  title="Sync latest accounts & ledgers list from main database"
+                >
+                  <RefreshCw size={10} />
+                  Sync
+                </button>
+                <button
+                  onClick={addRow}
+                  className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                >
+                  <Plus size={12} />
+                  ADD
+                </button>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -590,6 +647,7 @@ export default function CashierVoucher({ subUser }) {
                             type="number"
                             value={row.amount}
                             onChange={e => updateRow(idx, 'amount', e.target.value)}
+                            onWheel={e => e.target.blur()}
                             className="input-field text-sm font-semibold"
                             placeholder="0.00"
                             step="0.001"
