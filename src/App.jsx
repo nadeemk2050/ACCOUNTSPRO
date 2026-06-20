@@ -7406,6 +7406,61 @@ export default function App() {
 
     const clearMasterModalEditRequest = () => setMasterModalEditRequest(null);
 
+    const checkAccountNameDuplicate = (name, excludeId = null) => {
+        if (!name || !name.trim()) return null;
+        const cleanName = name.trim().toLowerCase();
+
+        // 1. Check parties
+        const partyMatch = parties.find(p => p.id !== excludeId && p.name && p.name.trim().toLowerCase() === cleanName);
+        if (partyMatch) {
+            let category = 'Customers/Suppliers';
+            if (partyMatch.type === 'customer') {
+                category = 'customers';
+            } else if (partyMatch.group) {
+                category = partyMatch.group;
+            }
+            return category;
+        }
+
+        // 2. Check accounts (Cash/Bank)
+        const accountMatch = accounts.find(a => a.id !== excludeId && a.name && a.name.trim().toLowerCase() === cleanName);
+        if (accountMatch) {
+            return 'Cash/Bank';
+        }
+
+        // 3. Check expenses (Indirect Expenses)
+        const expenseMatch = expenses.find(e => e.id !== excludeId && e.name && e.name.trim().toLowerCase() === cleanName);
+        if (expenseMatch) {
+            return expenseMatch.group || 'Indirect Expenses';
+        }
+
+        // 4. Check directExpenseAccounts (Direct Expenses)
+        const directExpenseMatch = directExpenseAccounts.find(e => e.id !== excludeId && e.name && e.name.trim().toLowerCase() === cleanName);
+        if (directExpenseMatch) {
+            return directExpenseMatch.group || 'Direct Expenses';
+        }
+
+        // 5. Check incomeAccounts (Indirect Incomes)
+        const incomeMatch = incomeAccounts.find(i => i.id !== excludeId && i.name && i.name.trim().toLowerCase() === cleanName);
+        if (incomeMatch) {
+            return 'Indirect Incomes';
+        }
+
+        // 6. Check capitalAccounts (Capital Accounts)
+        const capitalMatch = capitalAccounts.find(c => c.id !== excludeId && c.name && c.name.trim().toLowerCase() === cleanName);
+        if (capitalMatch) {
+            return 'Capital Accounts';
+        }
+
+        // 7. Check assetAccounts (Asset Accounts)
+        const assetMatch = assetAccounts.find(a => a.id !== excludeId && a.name && a.name.trim().toLowerCase() === cleanName);
+        if (assetMatch) {
+            return 'Asset Accounts';
+        }
+
+        return null;
+    };
+
     // --- ADD THIS NEW FUNCTION IN APP.JSX ---
     const handleMasterUpdate = async (collectionName, id, updatedFields) => {
         try {
@@ -10592,6 +10647,7 @@ export default function App() {
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={handlePartyItemClick}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -10622,6 +10678,7 @@ export default function App() {
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={handleAccountItemClick}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -10643,6 +10700,7 @@ export default function App() {
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -10664,6 +10722,7 @@ export default function App() {
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -10748,6 +10807,7 @@ export default function App() {
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -10781,6 +10841,7 @@ export default function App() {
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -10798,6 +10859,7 @@ export default function App() {
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
                 onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'income', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -11935,6 +11997,7 @@ export default function App() {
                     stockJournals={stockJournals}
                     products={products}
                     vehicles={vehicles}
+                    checkDuplicateName={checkAccountNameDuplicate}
                 />
             )}
 
@@ -13317,7 +13380,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
     );
 };
 
-const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, data, userId, fields, onDelete, onUpdate, listColumns = [], groupConfig, onItemClick, hideTotals = false, showViewToggle = false, logAuditActivity, autoEditId = null, onAutoEditHandled, onMoveSuccess }) => {
+const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, data, userId, fields, onDelete, onUpdate, listColumns = [], groupConfig, onItemClick, hideTotals = false, showViewToggle = false, logAuditActivity, autoEditId = null, onAutoEditHandled, onMoveSuccess, checkDuplicateName }) => {
     const [formData, setFormData] = useState({});
     const [editingId, setEditingId] = useState(null);
     const [showForm, setShowForm] = useState(false); // Toggle add/edit form visibility
@@ -13442,6 +13505,17 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+
+        // Check for duplicate account names
+        const accountCollections = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts'];
+        if (accountCollections.includes(collectionName) && checkDuplicateName) {
+            const duplicateCategory = checkDuplicateName(formData.name, editingId);
+            if (duplicateCategory) {
+                alert(`❌ Duplicate Account Name: "${formData.name}" is already used in ${duplicateCategory} category.`);
+                return;
+            }
+        }
+
         const cleanData = { ...formData, userId };
         if (formData.name) cleanData.name_lowercase = formData.name.toLowerCase();
 
@@ -18901,13 +18975,12 @@ const StockJournalModal = (props) => {
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
         if (!refNo || !refNo.trim()) return alert("⚠️ Reference Number is Mandatory!");
 
-        // 🛑 DUPLICATE CHECK (Allowing duplicates as requested for manufacturing/bag tracking)
+        // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        /*
-        if (await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id)) {
-            return alert("❌ Duplicate Reference Number! This Ref No exists in another transaction.");
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        if (duplicateCol) {
+            return alert(`❌ Duplicate Reference Number! This Ref No exists in another transaction (${duplicateCol}).`);
         }
-        */
 
         if (consumed.some(i => !i.productId) || produced.some(i => !i.productId)) return alert("Please select items");
         const hasAbsentStaff = productionStaffIds.some(id => attendanceMap[id] === 'Absent');

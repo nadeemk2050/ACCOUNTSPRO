@@ -26,6 +26,33 @@ import {
 } from "@firebase/firestore";
 import { db, cloudDb } from './firebase';
 
+// 🔥 GLOBAL DUPLICATE CHECK (Ref No must be unique across ALL Vouchers)
+const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
+    if (!refNo || !refNo.trim()) return false;
+    const r = refNo.trim();
+    // Collections to check
+    const cols = ['invoices', 'payments', 'journal_vouchers', 'stock_journals'];
+
+    for (const col of cols) {
+        const q = query(collection(db, col), where("refNo", "==", r), where("userId", "==", userId));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+            if (excludeId) {
+                // If even one found matching doc is NOT our self, it's a dupe
+                const dupeDoc = snap.docs.find(d => d.id !== excludeId);
+                if (dupeDoc) {
+                    const friendlyName = col === 'invoices' ? 'Invoices' : col === 'payments' ? 'Payments/Receipts' : col === 'journal_vouchers' ? 'Journal Vouchers' : 'Manufacturing/Stock';
+                    return `${friendlyName} -> ID: ${dupeDoc.id}`;
+                }
+            } else {
+                const friendlyName = col === 'invoices' ? 'Invoices' : col === 'payments' ? 'Payments/Receipts' : col === 'journal_vouchers' ? 'Journal Vouchers' : 'Manufacturing/Stock';
+                return `${friendlyName} -> ID: ${snap.docs[0].id}`;
+            }
+        }
+    }
+    return false;
+};
+
 
 // ── Minimal Searchable Dropdown ──
 const V2Select = ({ options = [], value, onChange, placeholder = 'Search...', onCreateNew, compact }) => {
@@ -590,11 +617,9 @@ const InventoryVoucherV2 = ({
 
             // --- 🔒 VALIDATION RULE 1: DUPLICATE REF NO CHECK ---
             if (formData.refNo) {
-                const qRef = query(collection(db, 'invoices'), where('userId', '==', targetUid), where('refNo', '==', formData.refNo));
-                const snapRef = await getDocs(qRef);
-                const isDupRef = snapRef.docs.some(d => d.id !== initialData?.id);
-                if (isDupRef) {
-                    alert(`❌ DUPLICATE VOUCHER: Reference Number "${formData.refNo}" already exists. Please use a unique ID.`);
+                const duplicateCol = await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id);
+                if (duplicateCol) {
+                    alert(`❌ DUPLICATE VOUCHER: Reference Number "${formData.refNo}" already exists in another transaction (${duplicateCol}). Please use a unique ID.`);
                     setSaving(false);
                     return;
                 }

@@ -78,7 +78,8 @@ const ManagementDashboard = ({
     products,
     vehicles,
     isRecalculating,
-    currentRole
+    currentRole,
+    checkDuplicateName
 }) => {
     const [activeTab, setActiveTab] = useState('dashboard');
     const [summarySubTab, setSummarySubTab] = useState('cashflow');
@@ -2146,7 +2147,7 @@ const ManagementDashboard = ({
 
                     {activeTab === 'customers_profile' && (
                         <div className="mt-12 animate-in slide-in-from-bottom duration-500">
-                            <CustomersProfileModule user={user} dataOwnerId={dataOwnerId} />
+                            <CustomersProfileModule user={user} dataOwnerId={dataOwnerId} checkDuplicateName={checkDuplicateName} />
                         </div>
                     )}
 

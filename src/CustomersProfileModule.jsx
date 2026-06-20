@@ -7,7 +7,7 @@ import {
 import { collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase';
 
-const CustomersProfileModule = ({ user, dataOwnerId }) => {
+const CustomersProfileModule = ({ user, dataOwnerId, checkDuplicateName }) => {
     const [view, setView] = useState('list'); // 'list', 'add', 'edit'
     const [customers, setCustomers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -107,6 +107,15 @@ const CustomersProfileModule = ({ user, dataOwnerId }) => {
     const handleSave = async (e) => {
         e.preventDefault();
         if (!formData.name.trim()) return alert("Name is required");
+
+        // Check for duplicate account names
+        if (checkDuplicateName) {
+            const duplicateCategory = checkDuplicateName(formData.name, formData.id);
+            if (duplicateCategory) {
+                alert(`❌ Duplicate Account Name: "${formData.name}" is already used in ${duplicateCategory} category.`);
+                return;
+            }
+        }
 
         setSaving(true);
         // Clean up empty array items
