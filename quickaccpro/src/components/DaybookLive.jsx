@@ -22,6 +22,15 @@ const getTodayStr = () => {
   return `${year}-${month}-${day}`
 }
 
+const getYesterdayStr = () => {
+  const d = new Date()
+  d.setDate(d.getDate() - 1)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export default function DaybookLive({ subUser }) {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -43,12 +52,13 @@ export default function DaybookLive({ subUser }) {
 
   // Date filters state
   const todayStr = getTodayStr()
-  const monthStartStr = todayStr.substring(0, 8) + '01'
-  const [dateMode, setDateMode] = useState('all')
+  const yesterdayStr = getYesterdayStr()
+  const [dateMode, setDateMode] = useState('2days') // Default to 2days instead of all
   const [filterDate, setFilterDate] = useState(todayStr)
   const [filterMonth, setFilterMonth] = useState(todayStr.substring(0, 7))
-  const [startDate, setStartDate] = useState(monthStartStr)
+  const [startDate, setStartDate] = useState(yesterdayStr) // Default start range to yesterday
   const [endDate, setEndDate] = useState(todayStr)
+
 
   const handlePrevDate = () => {
     if (!filterDate) return
@@ -215,9 +225,12 @@ export default function DaybookLive({ subUser }) {
 
 
   useEffect(() => {
-    setDateMode('all')
+    setDateMode('2days')
+  }, [filterAccountName])
+
+  useEffect(() => {
     loadData()
-  }, [filterAccountName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filterAccountName, dateMode, filterDate, filterMonth, startDate, endDate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lightweight background refresh every 2 minutes (instead of every 6 seconds)
   // Only refreshes transaction data — does NOT re-fetch accounts/ledgers each time
@@ -289,12 +302,33 @@ export default function DaybookLive({ subUser }) {
   const fetchTransactions = async () => {
     let allTransactions = []
 
+    // Calculate dates based on dateMode
+    let start = null
+    let end = null
+    const today = getTodayStr()
+
+    if (dateMode === '2days') {
+      start = getYesterdayStr()
+      end = today
+    } else if (dateMode === 'single') {
+      start = filterDate
+      end = filterDate
+    } else if (dateMode === 'custom') {
+      start = startDate
+      end = endDate
+    } else if (dateMode === 'month') {
+      start = `${filterMonth}-01`
+      const [year, month] = filterMonth.split('-').map(Number)
+      const lastDay = new Date(year, month, 0).getDate()
+      end = `${filterMonth}-${String(lastDay).padStart(2, '0')}`
+    }
+
     if (filterAccountName) {
       // Account-specific ledger: fetch from ALL parallel sources for 100% coverage
       const promises = [
-        getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
-        listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
-        getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }),
+        getAccountLedger(filterAccountName, start, end).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
+        listContra(start, end).catch(e => { console.warn('listContra failed', e); return {}; }),
+        getDaybookAll(start, end).catch(e => { console.warn('DaybookAll failed', e); return {}; }),
       ]
       const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
 
@@ -310,7 +344,7 @@ export default function DaybookLive({ subUser }) {
 
       allTransactions = Array.from(txMap.values())
     } else {
-      const data = await getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; })
+      const data = await getDaybookAll(start, end).catch(e => { console.warn('DaybookAll failed', e); return {}; })
       allTransactions = data.transactions || []
     }
 
@@ -323,37 +357,14 @@ export default function DaybookLive({ subUser }) {
       const allTransactions = await fetchTransactions()
       const cacheKey = 'quickaccpro_cached_transactions'
 
-      const mergedMap = new Map()
-      const freshRefNos = new Set()
-      allTransactions.forEach(t => {
-        mergedMap.set(t.id, t)
-        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
-      })
-
-      // Supplement from cache with any records not already in fresh data
-      const cachedRaw = localStorage.getItem(cacheKey)
-      if (cachedRaw) {
-        try {
-          const cached = JSON.parse(cachedRaw)
-          cached.forEach(t => {
-            const hasId = mergedMap.has(t.id)
-            const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
-            if (!hasId && !hasRefNo) {
-              mergedMap.set(t.id, t)
-            }
-          })
-        } catch (e) {}
-      }
-
-      const mergedList = Array.from(mergedMap.values())
-      mergedList.sort((a, b) => {
+      allTransactions.sort((a, b) => {
         const dateCmp = (b.date || '').localeCompare(a.date || '')
         if (dateCmp !== 0) return dateCmp
         return (b.syncTimestamp || 0) - (a.syncTimestamp || 0)
       })
 
-      setTransactions(mergedList)
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
+      setTransactions(allTransactions)
+      localStorage.setItem(cacheKey, JSON.stringify(allTransactions))
     } catch (err) {
       console.warn("Background refresh failed", err)
     }
@@ -367,7 +378,36 @@ export default function DaybookLive({ subUser }) {
     if (cachedRaw) {
       try {
         const cached = JSON.parse(cachedRaw)
-        setTransactions(cached)
+        // Filter cache by the current dateMode boundaries so we don't display out-of-range items on load
+        let filteredCached = cached
+        let start = null
+        let end = null
+        const today = getTodayStr()
+        if (dateMode === '2days') {
+          start = getYesterdayStr()
+          end = today
+        } else if (dateMode === 'single') {
+          start = filterDate
+          end = filterDate
+        } else if (dateMode === 'custom') {
+          start = startDate
+          end = endDate
+        } else if (dateMode === 'month') {
+          start = `${filterMonth}-01`
+          const [year, month] = filterMonth.split('-').map(Number)
+          const lastDay = new Date(year, month, 0).getDate()
+          end = `${filterMonth}-${String(lastDay).padStart(2, '0')}`
+        }
+
+        if (start || end) {
+          filteredCached = cached.filter(t => {
+            if (start && t.date < start) return false
+            if (end && t.date > end) return false
+            return true
+          })
+        }
+
+        setTransactions(filteredCached)
         setLoading(false)
         hasCache = true
       } catch (e) {}
@@ -401,38 +441,14 @@ export default function DaybookLive({ subUser }) {
         }
       } catch (e) {}
 
-      // ─── Merge with cache for anything that might still be missing ───
-      const mergedMap = new Map()
-      const freshRefNos = new Set()
-      allTransactions.forEach(t => {
-        mergedMap.set(t.id, t)
-        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
-      })
-
-      // Supplement from cache with any records not already in fresh data
-      if (cachedRaw) {
-        try {
-          const cached = JSON.parse(cachedRaw)
-          cached.forEach(t => {
-            const hasId = mergedMap.has(t.id)
-            const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
-            if (!hasId && !hasRefNo) {
-              mergedMap.set(t.id, t)
-            }
-          })
-        } catch (e) {}
-      }
-
-      const mergedList = Array.from(mergedMap.values())
-      mergedList.sort((a, b) => {
+      allTransactions.sort((a, b) => {
         const dateCmp = (b.date || '').localeCompare(a.date || '')
         if (dateCmp !== 0) return dateCmp
         return (b.syncTimestamp || 0) - (a.syncTimestamp || 0)
       })
 
-      setTransactions(mergedList)
-      // Store FULL list in cache (no truncation) for 100% accuracy
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
+      setTransactions(allTransactions)
+      localStorage.setItem(cacheKey, JSON.stringify(allTransactions))
     } catch (err) {
       if (!hasCache) {
         setError(err.message || 'Failed to load daybook')
@@ -495,38 +511,9 @@ export default function DaybookLive({ subUser }) {
     setRefreshing(true)
     setCurrentPage(1)
     const cacheKey = 'quickaccpro_cached_transactions'
-    const cachedRaw = localStorage.getItem(cacheKey)
 
     try {
-      // ─── Fetch from ALL available sources for 100% coverage ───
-      let allTransactions = []
-
-      if (filterAccountName) {
-        // Account-specific ledger: fetch from all parallel sources
-        const promises = [
-          getAccountLedger(filterAccountName).catch(e => { console.warn('AccountLedger failed', e); return {}; }),
-          listContra().catch(e => { console.warn('listContra failed', e); return {}; }),
-          getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; }),
-        ]
-        const [accLedgerData, contraData, allDaybookData] = await Promise.all(promises)
-
-        // Merge all sources
-        const txMap = new Map()
-        const addToMap = (list) => {
-          (list || []).forEach(t => {
-            if (t.id) txMap.set(t.id, t)
-          })
-        }
-        addToMap(accLedgerData.transactions)
-        addToMap(contraData.transactions)
-        if (allDaybookData?.transactions) addToMap(allDaybookData.transactions)
-
-        allTransactions = Array.from(txMap.values())
-      } else {
-        // Normal daybook: fetch all via POST
-        const data = await getDaybookAll().catch(e => { console.warn('DaybookAll failed', e); return {}; })
-        allTransactions = data.transactions || []
-      }
+      const allTransactions = await fetchTransactions()
 
       // ─── Also refresh accounts/ledgers cache ───
       const [accData, ledData] = await Promise.all([
@@ -542,37 +529,14 @@ export default function DaybookLive({ subUser }) {
         }
       } catch (e) {}
 
-      // ─── Merge with cache for supplement ───
-      const mergedMap = new Map()
-      const freshRefNos = new Set()
-      allTransactions.forEach(t => {
-        mergedMap.set(t.id, t)
-        if (t.refNo) freshRefNos.add(t.refNo.toLowerCase().trim())
-      })
-
-      if (cachedRaw) {
-        try {
-          const cached = JSON.parse(cachedRaw)
-          cached.forEach(t => {
-            const hasId = mergedMap.has(t.id)
-            const hasRefNo = t.refNo && freshRefNos.has(t.refNo.toLowerCase().trim())
-            if (!hasId && !hasRefNo) {
-              mergedMap.set(t.id, t)
-            }
-          })
-        } catch (e) {}
-      }
-
-      const mergedList = Array.from(mergedMap.values())
-      mergedList.sort((a, b) => {
+      allTransactions.sort((a, b) => {
         const dateCmp = (b.date || '').localeCompare(a.date || '')
         if (dateCmp !== 0) return dateCmp
         return (b.syncTimestamp || 0) - (a.syncTimestamp || 0)
       })
 
-      setTransactions(mergedList)
-      // Store FULL list in cache (no truncation)
-      localStorage.setItem(cacheKey, JSON.stringify(mergedList))
+      setTransactions(allTransactions)
+      localStorage.setItem(cacheKey, JSON.stringify(allTransactions))
     } catch (err) {
       setError(err.message)
     } finally {
@@ -646,7 +610,6 @@ export default function DaybookLive({ subUser }) {
     return t.description || t.partyName || 'Transaction'
   }
 
-  // Filtering, sorting and running balance calculation
   const getEnrichedTransactions = () => {
     let list = transactions.filter(t => {
       // Filter by specific accountName if provided (Cash/Bank Register)
@@ -660,15 +623,19 @@ export default function DaybookLive({ subUser }) {
                         (t.drName || '').toLowerCase().split(', ').map(n => n.trim()).includes(nameLower) ||
                         (t.crName || '').toLowerCase().split(', ').map(n => n.trim()).includes(nameLower)
         if (!isMatch) return false
+      }
 
-        // Date-wise filtering
-        if (dateMode === 'single') {
-          if (t.date !== filterDate) return false
-        } else if (dateMode === 'custom') {
-          if (!t.date || t.date < startDate || t.date > endDate) return false
-        } else if (dateMode === 'month') {
-          if (!t.date || !t.date.startsWith(filterMonth)) return false
-        }
+      // Date-wise filtering
+      if (dateMode === '2days') {
+        const today = getTodayStr()
+        const yesterday = getYesterdayStr()
+        if (t.date !== today && t.date !== yesterday) return false
+      } else if (dateMode === 'single') {
+        if (t.date !== filterDate) return false
+      } else if (dateMode === 'custom') {
+        if (!t.date || t.date < startDate || t.date > endDate) return false
+      } else if (dateMode === 'month') {
+        if (!t.date || !t.date.startsWith(filterMonth)) return false
       }
 
       if (!filterAccountName) {
@@ -845,10 +812,38 @@ export default function DaybookLive({ subUser }) {
   }
   const headerInfo = getHeaderInfo()
 
+  const getAccountTotalDebit = (defaultDr) => {
+    if (!filterAccountName) return defaultDr
+    try {
+      const cachedAccountsRaw = localStorage.getItem('quickaccpro_cached_accounts')
+      if (cachedAccountsRaw) {
+        const accounts = JSON.parse(cachedAccountsRaw)
+        const matched = accounts.find(a => (a.name || '').toLowerCase() === filterAccountName.toLowerCase())
+        if (matched && matched.debit !== undefined) return Number(matched.debit)
+      }
+    } catch (e) {}
+    return defaultDr
+  }
+
+  const getAccountTotalCredit = (defaultCr) => {
+    if (!filterAccountName) return defaultCr
+    try {
+      const cachedAccountsRaw = localStorage.getItem('quickaccpro_cached_accounts')
+      if (cachedAccountsRaw) {
+        const accounts = JSON.parse(cachedAccountsRaw)
+        const matched = accounts.find(a => (a.name || '').toLowerCase() === filterAccountName.toLowerCase())
+        if (matched && matched.credit !== undefined) return Number(matched.credit)
+      }
+    } catch (e) {}
+    return defaultCr
+  }
+
   // Dispatch header update event for Layout component
   useEffect(() => {
-    const totalDr = filtered.reduce((sum, t) => sum + (t.debit || 0), 0)
-    const totalCr = filtered.reduce((sum, t) => sum + (t.credit || 0), 0)
+    const listDr = filtered.reduce((sum, t) => sum + (t.debit || 0), 0)
+    const listCr = filtered.reduce((sum, t) => sum + (t.credit || 0), 0)
+    const totalDr = getAccountTotalDebit(listDr)
+    const totalCr = getAccountTotalCredit(listCr)
     
     const event = new CustomEvent('quickaccpro-register-active', {
       detail: {

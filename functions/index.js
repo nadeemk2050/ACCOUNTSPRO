@@ -1251,13 +1251,19 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
                     const s = stats[accId] || { debit: 0, credit: 0 };
                     const dynamicBalance = openingBal + s.debit - s.credit;
                     
+                    // Prioritize stored (synced from desktop) debit/credit/balance if available.
+                    // If not present, fallback to dynamic firestore calculation.
+                    const debit = accData.debit !== undefined ? Number(accData.debit || 0) : s.debit;
+                    const credit = accData.credit !== undefined ? Number(accData.credit || 0) : s.credit;
+                    const balance = accData.balance !== undefined ? Number(accData.balance || 0) : dynamicBalance;
+
                     return {
                         id: accId,
                         ...accData,
                         openingBalance: openingBal,
-                        debit: s.debit,
-                        credit: s.credit,
-                        balance: dynamicBalance,
+                        debit,
+                        credit,
+                        balance,
                         storedBalance: Number(accData.balance || 0)
                     };
                 });
@@ -1765,14 +1771,51 @@ exports.accproApi = onRequest({ cors: true }, async (req, res) => {
             }
 
             if (action === 'list_daybook') {
-                // Fetch all transaction types from live records
+                // Fetch all transaction types from live records within date boundaries
                 const limitParam = req.query.limit || req.body?.limit || '50';
                 const limit = limitParam === 'all' ? 100000 : Math.min(parseInt(limitParam), 100000);
-                const types = ['invoices', 'payments', 'journal_vouchers'];
-                
-                const allSnaps = await Promise.all(
-                    types.map(col => getRecords(col).get())
-                );
+                const { startDate, endDate } = { ...req.query, ...req.body };
+
+                let recordsSnap;
+                if (startDate || endDate) {
+                    let query = db.collection('companies_live').doc(companyId).collection('records');
+                    if (startDate) {
+                        query = query.where('data.date', '>=', startDate);
+                    }
+                    if (endDate) {
+                        query = query.where('data.date', '<=', endDate);
+                    }
+                    recordsSnap = await query.get();
+                } else {
+                    // Default fallback: load last 2 days if no date boundaries are specified
+                    const today = new Date();
+                    const yesterday = new Date(today);
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const formatDateStr = (d) => {
+                        const year = d.getFullYear();
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const day = String(d.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                    };
+                    const defaultStart = formatDateStr(yesterday);
+                    recordsSnap = await db.collection('companies_live').doc(companyId).collection('records')
+                        .where('data.date', '>=', defaultStart)
+                        .get();
+                }
+
+                const invoiceDocs = [];
+                const paymentDocs = [];
+                const jvDocs = [];
+
+                recordsSnap.forEach(doc => {
+                    const item = doc.data();
+                    if (item.collectionName === 'invoices') invoiceDocs.push(doc);
+                    else if (item.collectionName === 'payments') paymentDocs.push(doc);
+                    else if (item.collectionName === 'journal_vouchers') jvDocs.push(doc);
+                });
+
+                const allSnaps = [invoiceDocs, paymentDocs, jvDocs];
+
 
                 const transactions = [];
                 const nameMap = new Map();

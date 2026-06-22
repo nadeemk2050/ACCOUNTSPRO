@@ -5,6 +5,7 @@ import {
   ChevronRight, Building2, Send, Receipt, ArrowUpDown, Download, RefreshCw,
   Search, ChevronLeft, FileText
 } from 'lucide-react'
+import { rebuildLiveRecords } from '../api'
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '—'
@@ -30,7 +31,38 @@ export default function Layout({ company, subUser, onLogout, children }) {
   const [registerData, setRegisterData] = useState(null)
   const [showInstructionModal, setShowInstructionModal] = useState(false)
   const [searchVisible, setSearchVisible] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
   const location = useLocation()
+
+  const handleManualSync = async () => {
+    const pwd = prompt("Enter password for manual database sync:")
+    if (pwd === null) return
+    if (pwd !== 'abcd') {
+      alert("Incorrect password!")
+      return
+    }
+
+    setIsSyncing(true)
+    try {
+      const res = await rebuildLiveRecords()
+      if (res.success) {
+        localStorage.setItem('quickaccpro_last_sync_time', new Date().toLocaleString())
+        localStorage.removeItem('quickaccpro_cached_accounts')
+        localStorage.removeItem('quickaccpro_cached_ledgers')
+        localStorage.removeItem('quickaccpro_cached_transactions')
+        alert(`✓ Sync Success! Synced ${res.results?.processed || 0} records (${res.results?.upserted || 0} updated).`)
+        window.location.reload()
+      } else {
+        alert("Sync failed!")
+      }
+    } catch (e) {
+      console.error(e)
+      alert("Sync failed: " + e.message)
+    } finally {
+      setIsSyncing(false)
+      setSidebarOpen(false)
+    }
+  }
 
   useEffect(() => {
     const handleRegisterActive = (e) => {
@@ -303,6 +335,15 @@ export default function Layout({ company, subUser, onLogout, children }) {
               </button>
             )}
             <button
+              onClick={handleManualSync}
+              disabled={isSyncing}
+              className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-sm font-medium 
+                         text-indigo-200 hover:text-white hover:bg-indigo-800/50 transition-all text-left"
+            >
+              <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} />
+              <span>{isSyncing ? 'Syncing...' : 'Database Sync'}</span>
+            </button>
+            <button
               onClick={onLogout}
               className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-sm font-medium 
                          text-indigo-300 hover:text-white hover:bg-red-600/20 transition-all"
@@ -444,10 +485,10 @@ export default function Layout({ company, subUser, onLogout, children }) {
                 {/* Period buttons */}
                 <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0">
                   <button
-                    onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-set', { detail: 'all' }))}
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${registerData.dateMode === 'all' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'}`}
+                    onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-set', { detail: '2days' }))}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${registerData.dateMode === '2days' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'}`}
                   >
-                    All
+                    2 Days
                   </button>
                   <button
                     onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-set', { detail: 'single' }))}

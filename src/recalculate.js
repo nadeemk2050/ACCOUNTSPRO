@@ -121,6 +121,24 @@ const handleRecalculateSystem = async (scope = 'all') => {
 
         });
 
+        // Initialize accounts stats for debit/credit tracking
+        const accountStats = {};
+        const getAccountStats = (id) => {
+            if (!accountStats[id]) {
+                accountStats[id] = { debit: 0, credit: 0 };
+            }
+            return accountStats[id];
+        };
+        accountsS.forEach(d => {
+            const opBal = Number(d.data().openingBalance || 0);
+            const aStats = getAccountStats(d.id);
+            if (opBal > 0) {
+                aStats.debit = opBal;
+            } else if (opBal < 0) {
+                aStats.credit = Math.abs(opBal);
+            }
+        });
+
         // --- PAYMENTS (Base Amount Aware) ---
         paymentsS.forEach(d => {
             const v = d.data();
@@ -132,8 +150,13 @@ const handleRecalculateSystem = async (scope = 'all') => {
             // 1. Source (Account)
             const srcId = v.accountId || v.sourceId;
             if (srcId && bal.accounts[srcId] !== undefined) {
-                if (v.type === 'in') bal.accounts[srcId] += amtBase; // Dr (+)
-                else bal.accounts[srcId] -= amtBase; // Cr (-)
+                if (v.type === 'in') {
+                    bal.accounts[srcId] += amtBase; // Dr (+)
+                    getAccountStats(srcId).debit += amtBase;
+                } else {
+                    bal.accounts[srcId] -= amtBase; // Cr (-)
+                    getAccountStats(srcId).credit += amtBase;
+                }
             }
 
             // 2. Targets
@@ -148,9 +171,15 @@ const handleRecalculateSystem = async (scope = 'all') => {
 
                 if (map && map[id] !== undefined) {
                     // In (Receipt) -> Party Cr (-)
-                    if (type === 'in') map[id] -= val;
+                    if (type === 'in') {
+                        map[id] -= val;
+                        if (cat === 'account') getAccountStats(id).credit += val;
+                    }
                     // Out (Payment) -> Party Dr (+), Expense Dr(+)
-                    else map[id] += val;
+                    else {
+                        map[id] += val;
+                        if (cat === 'account') getAccountStats(id).debit += val;
+                    }
                 }
             };
 
@@ -188,8 +217,13 @@ const handleRecalculateSystem = async (scope = 'all') => {
                 else if (cat === 'income') map = bal.income;
 
                 if (map && map[id] !== undefined) {
-                    if (mode === 'dr') map[id] += val;
-                    else map[id] -= val;
+                    if (mode === 'dr') {
+                        map[id] += val;
+                        if (cat === 'account') getAccountStats(id).debit += val;
+                    } else {
+                        map[id] -= val;
+                        if (cat === 'account') getAccountStats(id).credit += val;
+                    }
                 }
             };
 
@@ -223,7 +257,16 @@ const handleRecalculateSystem = async (scope = 'all') => {
 
             for (const [id, val] of Object.entries(bal[key])) {
                 // We simply overwrite.
-                batch.update(doc(db, colName, id), { [field]: val });
+                if (key === 'accounts') {
+                    const s = accountStats[id] || { debit: 0, credit: 0 };
+                    batch.update(doc(db, colName, id), { 
+                        [field]: val,
+                        debit: s.debit,
+                        credit: s.credit
+                    });
+                } else {
+                    batch.update(doc(db, colName, id), { [field]: val });
+                }
                 count++;
                 if (count >= 450) {
                     await batch.commit();
