@@ -201,8 +201,9 @@ export default function CashierVoucher({ subUser }) {
     }, 500)
   }, [])
 
-  // Reset form and refNo when type changes
+  // Reset form and refNo when type changes (but NOT in edit mode — data comes from loadData)
   useEffect(() => {
+    if (isEditMode) return;
     if (!refManuallySet) {
       setRefNo(generateRefNo(type))
     }
