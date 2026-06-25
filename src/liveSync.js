@@ -1033,8 +1033,12 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
 
         const now = Date.now();
         let downloadedCount = 0;
-        const BATCH_SIZE = 50;
+        const BATCH_SIZE = 200; // Increased from 50 — more docs per batch
         const allDocs = snap.docs.map(d => d.data());
+
+        // 🚀 OPTIMIZATION: Fetch ALL existing local IDs in ONE query (instead of per-doc findOne)
+        const existingLocalDocs = await companyDb.offline_records.find().exec();
+        const existingIds = new Set(existingLocalDocs.map(d => d.id));
 
         for (let i = 0; i < allDocs.length; i += BATCH_SIZE) {
             const batch = allDocs.slice(i, i + BATCH_SIZE);
@@ -1052,11 +1056,10 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
                     continue;
                 }
 
-                // Check if already exists in the DB
-                const existing = await companyDb.offline_records
-                    .findOne({ selector: { id: fsDoc.id } }).exec();
-                if (!existing) {
+                // 🚀 OPTIMIZATION: Use Set.has() instead of per-doc findOne() query
+                if (!existingIds.has(fsDoc.id)) {
                     seenIds.add(fsDoc.id);
+                    existingIds.add(fsDoc.id); // Prevent re-checking in future batches
                     toInsert.push({
                         id: fsDoc.id,
                         collectionName: fsDoc.collectionName || 'unknown',
@@ -1084,8 +1087,15 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
                 }
             }
             downloadedCount += batch.length;
-            if (onProgress) onProgress(downloadedCount, totalCount);
+            // Throttle progress updates to every ~200ms to reduce React re-renders
+            if (onProgress && (downloadedCount % 200 === 0 || downloadedCount >= totalCount)) {
+                // Use requestAnimationFrame to avoid blocking UI
+                setTimeout(() => onProgress(downloadedCount, totalCount), 0);
+            }
         }
+        
+        // Final progress update
+        if (onProgress) onProgress(totalCount, totalCount);
 
         console.log(`[DOWNLOAD] Successfully downloaded ${downloadedCount} records for '${companyName}'.`);
 
