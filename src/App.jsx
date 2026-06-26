@@ -6002,34 +6002,12 @@ export default function App() {
             else setCurrencySymbol('AED'); // Fallback
         });
 
-        // --- AUTO-RECALCULATE ON REMOTE CHANGES (Debounced) ---
-        // When transaction data changes from another PC, update master balances automatically
-        const autoRecalcDebounceMs = 3000; // Wait 3s after last change to avoid duplicate work
-        let autoRecalcTimer = null;
-        const triggerAutoRecalc = () => {
-            if (autoRecalcTimer) clearTimeout(autoRecalcTimer);
-            autoRecalcTimer = setTimeout(() => {
-                autoRecalcTimer = null;
-                // Silently recalculate affected balances without prompt
-                handleRecalculateSystem('all', true);
-            }, autoRecalcDebounceMs);
-        };
-
         // --- TRANSACTIONS (Filtered for Data Entry 1) ---
-        const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => {
-            setPayments(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-            triggerAutoRecalc();
-        }, (err) => console.error("Snapshot error (payments):", err));
-        const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => {
-            setJournalVouchers(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-            triggerAutoRecalc();
-        }, (err) => console.error("Snapshot error (journal_vouchers):", err));
+        const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => setPayments(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (payments):", err));
+        const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => setJournalVouchers(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (journal_vouchers):", err));
 
         // ✅ ADD THIS LINE to fetch Stock Journals globally
-        const unsubStockJournals = onSnapshot(getTxQuery("stock_journals"), (snap) => {
-            setStockJournals(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-            triggerAutoRecalc();
-        }, (err) => console.error("Snapshot error (stock_journals):", err));
+        const unsubStockJournals = onSnapshot(getTxQuery("stock_journals"), (snap) => setStockJournals(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (stock_journals):", err));
 
         // For Invoices, we need specific logic for stats even if filtered
         // But for Data Entry 1 viewing, we filter the list
@@ -6101,7 +6079,6 @@ export default function App() {
         }, (err) => console.error("Snapshot error (invoices):", err));
 
         return () => {
-            if (autoRecalcTimer) clearTimeout(autoRecalcTimer);
             unsubStockGroups(); unsubPartyGroups(); unsubExpenseGroups();
             unsubProducts(); unsubParties(); unsubLocations(); unsubExpenses(); unsubDirectExpenses(); unsubIncome(); unsubAccounts(); unsubInvoices(); unsubCapital(); unsubAssets(); unsubLots(); unsubProfile(); unsubTaxes(); unsubUnits();
             unsubStaff();
@@ -7036,19 +7013,12 @@ export default function App() {
             setStockSummaryGrandTotal({ qty: totalQty, val: totalVal });
         };
 
-        // ✅ Debounce dashboard summary to avoid excessive recalculations
-        let dashboardDebounceTimer = null;
-        const debouncedFinanceSummary = () => {
-            if (dashboardDebounceTimer) clearTimeout(dashboardDebounceTimer);
-            dashboardDebounceTimer = setTimeout(() => calculateFinanceSummary(), 500);
-        };
+        const unsubInv = onSnapshot(qInv, snap => { invDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin inv:', err));
+        const unsubPay = onSnapshot(qPay, snap => { payDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin pay:', err));
+        const unsubJv  = onSnapshot(qJv,  snap => { jvDocs  = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin jv:', err));
+        const unsubMfg = onSnapshot(qMfg, snap => { mfgDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin mfg:', err));
 
-        const unsubInv = onSnapshot(qInv, snap => { invDocs = snap.docs; debouncedFinanceSummary(); }, err => console.error('Dashboard fin inv:', err));
-        const unsubPay = onSnapshot(qPay, snap => { payDocs = snap.docs; debouncedFinanceSummary(); }, err => console.error('Dashboard fin pay:', err));
-        const unsubJv  = onSnapshot(qJv,  snap => { jvDocs  = snap.docs; debouncedFinanceSummary(); }, err => console.error('Dashboard fin jv:', err));
-        const unsubMfg = onSnapshot(qMfg, snap => { mfgDocs = snap.docs; debouncedFinanceSummary(); }, err => console.error('Dashboard fin mfg:', err));
-
-        return () => { clearTimeout(dashboardDebounceTimer); unsubInv(); unsubPay(); unsubJv(); unsubMfg(); };
+        return () => { unsubInv(); unsubPay(); unsubJv(); unsubMfg(); };
     }, [dashboardDate, user, dataOwnerId, accounts, parties, products]);
 
 
@@ -7378,115 +7348,6 @@ export default function App() {
                 }
             } catch (bagErr) {
                 console.warn("Failed to sync linked bags during deletion:", bagErr);
-            }
-
-            // ✅ REVERSE BALANCES ON MASTER RECORDS BEFORE DELETING
-            try {
-                const revBatch = writeBatch(db);
-                let revCount = 0;
-
-                const revTarget = (cat) => {
-                    if (cat === 'party') return 'parties';
-                    if (cat === 'account') return 'accounts';
-                    if (cat === 'expense') return 'expenses';
-                    if (cat === 'capital') return 'capital_accounts';
-                    if (cat === 'asset') return 'asset_accounts';
-                    if (cat === 'income') return 'income_accounts';
-                    return null;
-                };
-
-                const revApply = async (id, cat, amount, direction) => {
-                    // direction: 'in' or 'out' — the original type that ADDED balance
-                    // To reverse: OUT means we need to SUBTRACT from target, IN means ADD to target
-                    const colName = revTarget(cat);
-                    if (!colName || !id || !amount) return;
-                    const docRef = doc(db, colName, id);
-                    const snap = await getDoc(docRef);
-                    if (!snap.exists()) return;
-                    const currentBal = Number(snap.data().balance || 0);
-                    // Reverse: if original was 'out' (payment to party), reversing means ADD back to party
-                    // If original was 'in' (receipt from party), reversing means SUBTRACT from party
-                    const reversal = (direction === 'out') ? amount : -amount;
-                    revBatch.update(docRef, { balance: currentBal + reversal });
-                    revCount++;
-                };
-
-                if (collectionName === 'payments') {
-                    // Reverse source account
-                    if (docData.accountId) {
-                        await revApply(docData.accountId, 'account', Number(docData.amount || docData.totalAmount || 0), docData.type);
-                    }
-                    // Reverse targets (splits)
-                    if (docData.isMulti && docData.splits) {
-                        for (const s of docData.splits) {
-                            if (s.targetId) {
-                                await revApply(s.targetId, s.category, Number(s.amount || 0), docData.type);
-                            }
-                        }
-                    } else {
-                        const cat = docData.transactionCategory || (docData.type === 'contra' ? 'account' : 'party');
-                        const tid = docData.toAccountId || docData.partyId || docData.expenseId || docData.incomeId || docData.capitalId || docData.assetId;
-                        if (tid) await revApply(tid, cat, Number(docData.amount || docData.totalAmount || 0), docData.type);
-                    }
-                } else if (collectionName === 'invoices') {
-                    // Reverse party balance
-                    if (docData.partyId) {
-                        const invAmt = Number(docData.grandTotal || docData.totalAmount || docData.amount || 0);
-                        const rate = Number(docData.exchangeRate || 1);
-                        const baseVal = invAmt * rate;
-                        const isDr = ['sales', 'debit_note', 'purchase_return'].includes(docData.type);
-                        const isCr = ['purchase', 'credit_note', 'sales_return'].includes(docData.type);
-                        if (isDr || isCr) {
-                            const docRef = doc(db, 'parties', docData.partyId);
-                            const snap = await getDoc(docRef);
-                            if (snap.exists()) {
-                                const currentBal = Number(snap.data().balance || 0);
-                                // Reverse: sales increased party balance (Dr), so subtract; purchase decreased (Cr), so add
-                                revBatch.update(docRef, { balance: currentBal + (isDr ? -baseVal : baseVal) });
-                                revCount++;
-                            }
-                        }
-                    }
-                    // Reverse addlExpCreditId (account that paid additional expenses)
-                    if (docData.addlExpCreditId && docData.addlExpTotal) {
-                        const addlBase = Number(docData.addlExpTotal) * Number(docData.exchangeRate || 1);
-                        const docRef = doc(db, 'accounts', docData.addlExpCreditId);
-                        const snap = await getDoc(docRef);
-                        if (snap.exists()) {
-                            const currentBal = Number(snap.data().balance || 0);
-                            // Additional expense paid by this account → it was debited, so reverse by adding back
-                            revBatch.update(docRef, { balance: currentBal + addlBase });
-                            revCount++;
-                        }
-                    }
-                } else if (collectionName === 'journal_vouchers') {
-                    const jvAmt = Number(docData.amount || 0);
-                    const applyJvReverse = async (id, cat, val, mode) => {
-                        const colName = revTarget(cat);
-                        if (!colName || !id || !val) return;
-                        const docRef = doc(db, colName, id);
-                        const snap = await getDoc(docRef);
-                        if (!snap.exists()) return;
-                        const currentBal = Number(snap.data().balance || 0);
-                        // Dr increases balance, Cr decreases. Reverse: subtract Dr, add Cr
-                        revBatch.update(docRef, { balance: currentBal + (mode === 'dr' ? -val : val) });
-                        revCount++;
-                    };
-                    if (docData.drId) await applyJvReverse(docData.drId, docData.drType, jvAmt, 'dr');
-                    if (docData.crId) await applyJvReverse(docData.crId, docData.crType, jvAmt, 'cr');
-                    if (docData.rows) {
-                        for (const r of docData.rows) {
-                            await applyJvReverse(r.id, r.category, Number(r.amount || 0), r.type);
-                        }
-                    }
-                }
-
-                if (revCount > 0) {
-                    await revBatch.commit();
-                    console.log(`Reversed ${revCount} master balances during deletion.`);
-                }
-            } catch (revErr) {
-                console.warn("Failed to reverse balances during deletion:", revErr);
             }
 
             // DELETE MAIN DOC
