@@ -209,7 +209,9 @@ export const startLiveSync = async (companyId) => {
             where('syncTimestamp', '>', lastPullTsFromStorage)
         );
 
-        const unsubPull = onSnapshot(pullQuery, (snapshot) => {
+        const setupPullListener = () => {
+        const q = pullQuery;
+        const unsub = onSnapshot(q, (snapshot) => {
             pullQueue = pullQueue.then(async () => {
                 const changes = snapshot.docChanges();
                 if (changes.length === 0) return;
@@ -271,14 +273,30 @@ export const startLiveSync = async (companyId) => {
                 // 2. Handle Added / Modified in bulk
                 if (addedOrModified.length > 0) {
                     const ids = addedOrModified.map(d => d.id);
-                    const existingDocsMap = await rxdb.offline_records.findByIds(ids);
+                    let existingDocsMap;
+                    try {
+                        existingDocsMap = await rxdb.offline_records.findByIds(ids);
+                    } catch (e) {
+                        console.warn('[SYNC] findByIds failed, falling back to individual lookup:', e);
+                        existingDocsMap = new Map();
+                    }
 
                     const toInsert = [];
                     const toUpdate = [];
 
                     for (const fsData of addedOrModified) {
-                        const existing = existingDocsMap.get ? existingDocsMap.get(fsData.id) : existingDocsMap[fsData.id];
                         const remoteTs = fsData.syncTimestamp || 0;
+                        let existing;
+                        try {
+                            existing = existingDocsMap.get ? existingDocsMap.get(fsData.id) : existingDocsMap[fsData.id];
+                        } catch (e) { existing = undefined; }
+
+                        // Fallback: if findByIds returned nothing, try findOne individually
+                        if (!existing) {
+                            try {
+                                existing = await rxdb.offline_records.findOne({ selector: { id: fsData.id } }).exec();
+                            } catch (e) {}
+                        }
 
                         if (!existing) {
                             toInsert.push(wash({
@@ -302,7 +320,7 @@ export const startLiveSync = async (companyId) => {
                         }
                     }
 
-                    // Bulk Insert new records
+                    // Bulk Insert new records (genuinely new docs only)
                     if (toInsert.length > 0) {
                         toInsert.forEach(d => markRemoteApplied(d.id));
                         try {
@@ -312,7 +330,16 @@ export const startLiveSync = async (companyId) => {
                             for (const doc of toInsert) {
                                 try {
                                     await rxdb.offline_records.insert(doc);
-                                } catch (e) {}
+                                } catch (e) {
+                                    // If insert fails (docs already exist), try patch instead
+                                    try {
+                                        const existing = await rxdb.offline_records.findOne({ selector: { id: doc.id } }).exec();
+                                        if (existing) {
+                                            await existing.incrementalPatch(doc);
+                                            console.log(`[SYNC] Fallback: patched existing doc ${doc.id} instead of insert`);
+                                        }
+                                    } catch (e2) {}
+                                }
                             }
                         }
                     }
@@ -339,7 +366,22 @@ export const startLiveSync = async (companyId) => {
             }).catch((e) => {
                 console.error('[SYNC] Pull queue error:', e);
             });
+        }, (err) => {
+            // Error handler: auto-reconnect pull listener if it dies
+            console.error('[SYNC] Pull listener error — reconnecting in 5s:', err?.message || err);
+            setTimeout(() => {
+                try {
+                    unsubPull = setupPullListener();
+                    console.log('[SYNC] Pull listener reconnected');
+                } catch (e) {
+                    console.error('[SYNC] Pull listener reconnect failed:', e);
+                }
+            }, 5000);
         });
+        return unsub;
+    };
+
+    let unsubPull = setupPullListener();
 
         // 3. Set up PUSH to Firestore — rxdb.offline_records.$ emits RxChangeEvent one at a time
         const subPush = rxdb.offline_records.$.subscribe(async (changeEvent) => {
