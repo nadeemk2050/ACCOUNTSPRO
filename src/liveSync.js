@@ -391,7 +391,50 @@ export const startLiveSync = async (companyId) => {
             }
         });
 
+        // Expose a direct push trigger for rxfs.js (backup if RxDB $ observable doesn't fire)
+        window.__accproNotifyDataChange = async ({ id, collectionName, operation }) => {
+            try {
+                if (!id) return;
+                console.log(`[SYNC] Direct notify: ${operation} ${id} (${collectionName})`);
+                
+                const docRef = doc(realFirestore, liveCollectionPath, id);
+                
+                if (operation === 'DELETE') {
+                    await setDoc(docRef, { id, deleted: true, syncTimestamp: Date.now() }, { merge: false });
+                    console.log(`[SYNC] Direct notify: pushed DELETE for ${id}`);
+                    return;
+                }
+                
+                // Re-read latest data from RxDB
+                const fresh = await rxdb.offline_records.findOne({ selector: { id } }).exec();
+                if (!fresh) {
+                    console.warn(`[SYNC] Direct notify: doc ${id} not found in RxDB`);
+                    return;
+                }
+                const freshData = fresh.toJSON();
+                const freshTs = Number(freshData.timestamp || 0);
+                const freshLastSync = Number(freshData.lastSync || 0);
+                
+                // Skip if already synced
+                if (freshLastSync > 0 && freshLastSync >= freshTs) {
+                    console.log(`[SYNC] Direct notify: ${id} already synced (lastSync=${freshLastSync} >= ts=${freshTs})`);
+                    return;
+                }
+                
+                await setDoc(docRef, { ...freshData, syncTimestamp: Date.now() }, { merge: true });
+                console.log(`[SYNC] ✅ Direct notify: pushed UPDATE for ${id}`);
+                
+                // Update lastSync
+                try {
+                    await fresh.incrementalPatch({ lastSync: Date.now() });
+                } catch(e) {}
+            } catch (err) {
+                console.error('[SYNC] Direct notify error:', err);
+            }
+        };
+
         activeSyncs[companyId] = () => {
+            delete window.__accproNotifyDataChange;
             unsubPull();
             subPush.unsubscribe();
             delete activeSyncs[companyId];

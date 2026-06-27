@@ -301,6 +301,9 @@ export const addDoc = async (colRef, data) => {
         timestamp: Date.now()
     });
 
+    // Notify sync layer
+    try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id: newId, collectionName: colRef.path, operation: 'INSERT' }); } catch(e) {}
+
     return { id: newId, path: `${colRef.path}/${newId}` };
 };
 
@@ -333,11 +336,14 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                 } else {
                     await exist.patch({ data: cleanData, timestamp: Date.now() });
                 }
+                // Notify sync layer for updates on existing docs
+                try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             } else if (existAny) {
                 // Same id exists in another collection: treat as a move to target collection.
                 const anyData = JSON.parse(JSON.stringify(existAny.toJSON().data || {}));
                 const nextData = options.merge ? { ...anyData, ...cleanData } : cleanData;
                 await existAny.patch({ collectionName: colName, data: nextData, timestamp: Date.now() });
+                try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             } else {
                 await db.offline_records.insert({
                     id: id,
@@ -345,6 +351,8 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                     data: cleanData,
                     timestamp: Date.now()
                 });
+                // Notify for new inserts too (backup)
+                try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'INSERT' }); } catch(e) {}
             }
             return;
         } catch (e) {
@@ -377,10 +385,20 @@ export const updateDoc = async (docRef, data) => {
     const MAX_RETRIES = 5;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         const exist = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
-        if (!exist) return;
+        if (!exist) {
+            // Try finding by id only (collectionName might differ)
+            const existAny = await db.offline_records.findOne({ selector: { id } }).exec();
+            if (!existAny) return;
+            await existAny.patch({ data: { ...existAny.toJSON().data, ...cleanData }, timestamp: Date.now() });
+            // Notify sync layer
+            try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
+            return;
+        }
         try {
             const existingData = JSON.parse(JSON.stringify(exist.toJSON().data || {}));
             await exist.patch({ data: { ...existingData, ...cleanData }, timestamp: Date.now() });
+            // Notify sync layer directly (backup for RxDB $ observable)
+            try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             return;
         } catch (e) {
             if (isConflictError(e) && attempt < MAX_RETRIES - 1) {
@@ -408,6 +426,8 @@ export const deleteDoc = async (docRef) => {
         if (!fresh) return; // already deleted
         try {
             await fresh.remove();
+            // Notify sync layer
+            try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'DELETE' }); } catch(e) {}
             return; // success
         } catch (e) {
             const isConflict = e?.rxdb === true || e?.code === 'CONFLICT' ||
