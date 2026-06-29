@@ -36,6 +36,9 @@ const ManagementDashboard = ({
     onInstall,
     onBackup,
     onRestore,
+    onExportVoucher,
+    onImportVoucher,
+    onShowBackupLog,
     functions,
     dataOwnerId,
     onChangePassword,
@@ -1861,6 +1864,27 @@ const ManagementDashboard = ({
                                         onClick={onRestore}
                                         color="orange"
                                         icon={<RefreshCw />}
+                                    />
+                                    <ActionCard
+                                        title="Export by Voucher"
+                                        desc="Export vouchers by type and date range."
+                                        onClick={onExportVoucher}
+                                        color="cyan"
+                                        icon={<DownloadCloud />}
+                                    />
+                                    <ActionCard
+                                        title="Import Vouchers"
+                                        desc="Restore vouchers from backup — skips duplicates."
+                                        onClick={onImportVoucher}
+                                        color="teal"
+                                        icon={<UploadCloud />}
+                                    />
+                                    <ActionCard
+                                        title="Backup History"
+                                        desc="View backup & restore activity log."
+                                        onClick={onShowBackupLog}
+                                        color="amber"
+                                        icon={<History />}
                                     />
                                     <ActionCard
                                         title="Change Password"

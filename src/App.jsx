@@ -130,6 +130,9 @@ import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncS
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
 import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
+import ExportVoucherModal from './ExportVoucherModal.jsx';
+import ImportVoucherModal from './ImportVoucherModal.jsx';
+import BackupHistoryModal, { addBackupHistoryEntry } from './BackupHistoryModal.jsx';
 
 
 import { resolveStoredImages } from './storageAsset';
@@ -7677,6 +7680,12 @@ export default function App() {
             downloadAnchorNode.remove();
             URL.revokeObjectURL(url);
 
+            // Log to backup history
+            try {
+                const totalDocs = Object.values(backupData.data || {}).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+                addBackupHistoryEntry({ action: 'backup', type: 'Full System Backup', count: totalDocs, details: `Backed up ${Object.keys(backupData.data).length} collections` });
+            } catch {}
+
             setToast({ type: 'success', title: 'Backup Complete', message: 'Data downloaded successfully.' });
 
         } catch (e) {
@@ -7878,6 +7887,11 @@ export default function App() {
 
                     // Invalidate stats cache so Make Live shows fresh counts
                     localStorage.removeItem(`accpro_stats_${activeCompanyId}`);
+
+                    // Log to backup history
+                    try {
+                        addBackupHistoryEntry({ action: 'restore', type: 'Full System Restore', count: restoreResult?.written || 0, details: `Restored ${restoreResult?.written || 0} records` });
+                    } catch {}
 
                     setToast({ type: 'success', title: 'Restore Complete', message: `${restoreResult.written} records restored successfully.` });
                     window.location.reload();
@@ -11954,6 +11968,9 @@ export default function App() {
                     onInstall={handleInstallClick}
                     onBackup={handleBackup}
                     onRestore={handleRestore}
+                    onExportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('export_voucher'); }}
+                    onImportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_voucher'); }}
+                    onShowBackupLog={() => { setModalStack(s => [...s, 'management']); setActiveModal('backup_log'); }}
                     onChangePassword={handleChangePassword}
                     onManageUsers={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_users'); }}
                     onShowStatistics={() => { setModalStack(s => [...s, 'management']); setActiveModal('statistics'); }}
@@ -12006,6 +12023,31 @@ export default function App() {
                 onClose={() => setIsApiKeyModalOpen(false)} 
             />
 
+            {/* Export Voucher Modal */}
+            <ExportVoucherModal
+                isOpen={activeModal === 'export_voucher'}
+                onClose={handleCloseModal}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                invoices={invoices}
+                payments={payments}
+                journalVouchers={journalVouchers}
+                stockJournals={stockJournals}
+            />
+
+            {/* Import Voucher Modal */}
+            <ImportVoucherModal
+                isOpen={activeModal === 'import_voucher'}
+                onClose={handleCloseModal}
+                user={user}
+                dataOwnerId={dataOwnerId}
+            />
+
+            {/* Backup/Restore History Modal */}
+            <BackupHistoryModal
+                isOpen={activeModal === 'backup_log'}
+                onClose={handleCloseModal}
+            />
 
             <SystemLogModal
                 isOpen={activeModal === 'system_logs'}
