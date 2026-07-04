@@ -4,7 +4,7 @@ import { resolve } from 'path';
 export default defineConfig({
   root: resolve(__dirname, 'dist'),
   server: {
-    port: 5200,
+    port: 5180,
     host: true
   },
   build: {

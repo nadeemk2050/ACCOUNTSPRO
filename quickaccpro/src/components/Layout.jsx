@@ -5,7 +5,6 @@ import {
   ChevronRight, Building2, Send, Receipt, ArrowUpDown, Download, RefreshCw,
   Search, ChevronLeft, FileText
 } from 'lucide-react'
-import { rebuildLiveRecords } from '../api'
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '—'
@@ -35,33 +34,9 @@ export default function Layout({ company, subUser, onLogout, children }) {
   const location = useLocation()
 
   const handleManualSync = async () => {
-    const pwd = prompt("Enter password for manual database sync:")
-    if (pwd === null) return
-    if (pwd !== 'abcd') {
-      alert("Incorrect password!")
-      return
-    }
-
-    setIsSyncing(true)
-    try {
-      const res = await rebuildLiveRecords()
-      if (res.success) {
-        localStorage.setItem('quickaccpro_last_sync_time', new Date().toLocaleString())
-        localStorage.removeItem('quickaccpro_cached_accounts')
-        localStorage.removeItem('quickaccpro_cached_ledgers')
-        localStorage.removeItem('quickaccpro_cached_transactions')
-        alert(`✓ Sync Success! Synced ${res.results?.processed || 0} records (${res.results?.upserted || 0} updated).`)
-        window.location.reload()
-      } else {
-        alert("Sync failed!")
-      }
-    } catch (e) {
-      console.error(e)
-      alert("Sync failed: " + e.message)
-    } finally {
-      setIsSyncing(false)
-      setSidebarOpen(false)
-    }
+    // QAPD uses local-first data — no manual sync needed
+    alert("QAPD uses automatic local database. Data is synced automatically.")
+    setSidebarOpen(false)
   }
 
   useEffect(() => {
@@ -289,6 +264,84 @@ export default function Layout({ company, subUser, onLogout, children }) {
               )}
             </NavLink>
 
+            {/* Cash/Bank Register */}
+            <NavLink
+              to="/register"
+              onClick={() => setSidebarOpen(false)}
+              className={({ isActive }) => `
+                flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
+                ${isActive
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-800/30' 
+                  : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
+                }
+              `}
+            >
+              <Building2 size={18} />
+              <span>Cash/Bank Register</span>
+              {location.pathname === '/register' && (
+                <ChevronRight size={14} className="ml-auto opacity-50" />
+              )}
+            </NavLink>
+
+            {/* Registers Dashboard Group */}
+            <div className="pt-3 pb-1 px-4 text-[9px] font-bold text-indigo-400/80 uppercase tracking-widest">
+              Registers
+            </div>
+
+            <NavLink
+              to="/register/payment"
+              onClick={() => setSidebarOpen(false)}
+              className={({ isActive }) => `
+                flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
+                ${isActive
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-800/30' 
+                  : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
+                }
+              `}
+            >
+              <Send size={18} />
+              <span>Payment Register</span>
+              {location.pathname === '/register/payment' && (
+                <ChevronRight size={14} className="ml-auto opacity-50" />
+              )}
+            </NavLink>
+
+            <NavLink
+              to="/register/receipt"
+              onClick={() => setSidebarOpen(false)}
+              className={({ isActive }) => `
+                flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
+                ${isActive
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-800/30' 
+                  : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
+                }
+              `}
+            >
+              <Receipt size={18} />
+              <span>Receipt Register</span>
+              {location.pathname === '/register/receipt' && (
+                <ChevronRight size={14} className="ml-auto opacity-50" />
+              )}
+            </NavLink>
+
+            <NavLink
+              to="/register/contra"
+              onClick={() => setSidebarOpen(false)}
+              className={({ isActive }) => `
+                flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
+                ${isActive
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-800/30' 
+                  : 'text-indigo-200 hover:text-white hover:bg-indigo-800/50'
+                }
+              `}
+            >
+              <ArrowUpDown size={18} />
+              <span>Contra Register</span>
+              {location.pathname === '/register/contra' && (
+                <ChevronRight size={14} className="ml-auto opacity-50" />
+              )}
+            </NavLink>
+
 
 
             {/* Profile */}
@@ -485,10 +538,10 @@ export default function Layout({ company, subUser, onLogout, children }) {
                 {/* Period buttons */}
                 <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0">
                   <button
-                    onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-set', { detail: '2days' }))}
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${registerData.dateMode === '2days' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'}`}
+                    onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-set', { detail: 'all' }))}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${registerData.dateMode === 'all' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'}`}
                   >
-                    2 Days
+                    All
                   </button>
                   <button
                     onClick={() => window.dispatchEvent(new CustomEvent('quickaccpro-register-filter-set', { detail: 'single' }))}

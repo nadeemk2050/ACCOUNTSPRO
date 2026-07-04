@@ -344,7 +344,10 @@ export default function CashierVoucher({ subUser }) {
             amount: totalAmount,
             date,
             narration,
-            refNo
+            refNo,
+            accountName: getAccountName(accountId),
+            toAccountName: getAccountName(toAccountId),
+            partyName: `${getAccountName(accountId)} → ${getAccountName(toAccountId)}`
           })
           saveVoucherToLocalCache('contra', { accountId, toAccountId, amount: totalAmount, date, narration, refNo, accountsList: accounts })
         } else {
@@ -354,6 +357,7 @@ export default function CashierVoucher({ subUser }) {
               const ledgerInfo = ledgers.find(l => l.id === r.ledgerId)
               return {
                 ledgerId: r.ledgerId,
+                ledgerName: ledgerInfo?.name || 'Unknown',
                 ledgerCollection: ledgerInfo?.collection || 'parties',
                 amount: parseFloat(r.amount),
                 narration: r.narration || narration,
@@ -362,14 +366,19 @@ export default function CashierVoucher({ subUser }) {
             })
 
           const paymentType = type === 'receipt' ? 'in' : 'out'
-          
+          const firstPayment = payments[0]
+          const accName = getAccountName(accountId)
+
           await addPayment({
             accountId,
             payments,
             date,
             narration,
             refNo,
-            type: paymentType
+            type: paymentType,
+            accountName: accName,
+            partyId: firstPayment?.ledgerId || '',
+            partyName: firstPayment?.ledgerName || ''
           })
 
           // Cache each individual ledger payment row

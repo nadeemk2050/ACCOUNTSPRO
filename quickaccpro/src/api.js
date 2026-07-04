@@ -1,249 +1,321 @@
 /**
- * QuickAccPro API Layer
- * All communication with AccountsPro happens via the accproApi cloud function.
- * No Firebase SDK needed — pure REST calls.
+ * QAPD Data Layer — Replaces the old REST API with local Firestore/RxDB operations.
+ * All functions match the old names so existing components work without changes.
  */
-
-const API_ENDPOINT = 'https://cashshams.web.app/accproApi'
+import { db, cloudDb } from './firebase';
+import { collection, query, where, getDocs, addDoc, doc, setDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { getCurrentCompanyId, getDB } from './localDB';
 
 // ─── Storage keys ────────────────────────────────────────────────────────────
 const STORAGE_KEYS = {
-  API_KEY: 'quickaccpro_api_key',
-  COMPANY: 'quickaccpro_company',
-  SESSION: 'quickaccpro_session',
+  API_KEY: 'qapd_api_key',
+  COMPANY: 'qapd_company',
+  SESSION: 'qapd_session',
 }
 
-// ─── Stored state helpers ────────────────────────────────────────────────────
-
-export function getStoredApiKey() {
-  return localStorage.getItem(STORAGE_KEYS.API_KEY)
-}
-
-export function setStoredApiKey(key) {
-  if (key) localStorage.setItem(STORAGE_KEYS.API_KEY, key)
-  else localStorage.removeItem(STORAGE_KEYS.API_KEY)
-}
-
-export function getStoredCompany() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.COMPANY)
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
-}
-
-export function setStoredCompany(data) {
-  if (data) localStorage.setItem(STORAGE_KEYS.COMPANY, JSON.stringify(data))
-  else localStorage.removeItem(STORAGE_KEYS.COMPANY)
-}
-
-export function getStoredSession() {
-  try {
-    const raw = sessionStorage.getItem(STORAGE_KEYS.SESSION)
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
-}
-
-export function setStoredSession(data) {
-  if (data) sessionStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(data))
-  else sessionStorage.removeItem(STORAGE_KEYS.SESSION)
-}
-
-const SUB_USER_KEY = 'quickaccpro_sub_user'
-
+export function getStoredApiKey() { return null }
+export function setStoredApiKey(key) {}
+export function getStoredCompany() { return null }
+export function setStoredCompany(data) {}
+export function getStoredSession() { return null }
+export function setStoredSession(data) {}
 export function getStoredSubUser() {
-  try {
-    const raw = localStorage.getItem(SUB_USER_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
+  try { return JSON.parse(localStorage.getItem('qapd_sub_user')) }
+  catch { return null }
 }
-
 export function setStoredSubUser(data) {
-  if (data) localStorage.setItem(SUB_USER_KEY, JSON.stringify(data))
-  else localStorage.removeItem(SUB_USER_KEY)
+  if (data) localStorage.setItem('qapd_sub_user', JSON.stringify(data))
+  else localStorage.removeItem('qapd_sub_user')
 }
-
 export function clearAllStorage() {
-  localStorage.removeItem(STORAGE_KEYS.API_KEY)
-  localStorage.removeItem(STORAGE_KEYS.COMPANY)
-  localStorage.removeItem(SUB_USER_KEY)
-  sessionStorage.removeItem(STORAGE_KEYS.SESSION)
+  localStorage.removeItem('qapd_api_key')
+  localStorage.removeItem('qapd_company')
+  sessionStorage.removeItem('qapd_session')
 }
+export function validateApiKey(key) { throw new Error('API key login disabled — use Firebase Auth') }
+export function verifyTeamLogin(name, pwd) { throw new Error('API login disabled — use Firebase Auth') }
+export function rebuildLiveRecords() { return { success: true } }
 
-// ─── Core API call ───────────────────────────────────────────────────────────
+// ─── Accounts & Ledgers ─────────────────────────────────────────────────────
 
-async function callApi(action, params = {}, method = 'GET') {
-  const apiKey = getStoredApiKey()
-  if (!apiKey) throw new Error('No API key. Please login again.')
-
-  const url = new URL(API_ENDPOINT)
-  url.searchParams.set('action', action)
-
-  const headers = {
-    'x-api-key': apiKey,
-    'x-device-info': `QuickAccPro/${navigator.userAgent || 'web'}`,
-    'x-device-name': `QuickAccPro Web`,
-  }
-
-  // Auto-inject logged-in user info into POST requests
-  const subUser = getStoredSubUser()
-  
-  let body = null
-  if (method === 'POST') {
-    headers['Content-Type'] = 'application/json'
-    body = JSON.stringify({ 
-      action, 
-      ...params,
-      // Pass user identity for audit logging
-      ...(subUser ? { 
-        subUserId: subUser.id,
-        userName: subUser.name
-      } : {})
-    })
-  } else {
-    // GET: append params as query string
-    Object.entries(params).forEach(([k, v]) => {
-      if (v !== undefined && v !== null) url.searchParams.set(k, String(v))
-    })
-  }
-
-  const res = await fetch(url.toString(), { method, headers, body })
-  const data = await res.json()
-
-  if (!res.ok) {
-    throw new Error(data.error || data.message || `API error (${res.status})`)
-  }
-
-  return data
-}
-
-// ─── Public API functions ─────────────────────────────────────────────────────
-
-/** Validate an API key and return company info */
-export async function validateApiKey(apiKey) {
-  const url = new URL(API_ENDPOINT)
-  url.searchParams.set('action', 'validate_key')
-  url.searchParams.set('apiKey', apiKey)
-
-  const res = await fetch(url.toString(), {
-    headers: {
-      'x-device-info': `QuickAccPro/${navigator.userAgent || 'web'}`,
-      'x-device-name': 'QuickAccPro Web',
-    }
-  })
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error || 'Invalid API key')
-  return data
-}
-
-/** Get dashboard summary (receivable, payable, cash balance) */
-export async function getSummary() {
-  return callApi('summary')
-}
-
-/** List all cash/bank accounts */
 export async function listAccounts() {
-  return callApi('list_accounts')
+  try {
+    const companyId = getCurrentCompanyId()
+    if (!companyId) return { accounts: [] }
+    const q = query(collection(db, 'accounts'), where('userId', '==', companyId))
+    const snap = await getDocs(q)
+    return { accounts: snap.docs.map(d => ({ id: d.id, ...d.data() })) }
+  } catch (e) {
+    console.warn('[QAPD] listAccounts failed:', e.message)
+    return { accounts: [] }
+  }
 }
 
-/** List all ledgers (parties, expenses, assets) */
 export async function listLedgers() {
-  return callApi('list_ledgers')
+  const companyId = getCurrentCompanyId()
+  if (!companyId) return { ledgers: [] }
+  try {
+    const collections = ['parties', 'accounts', 'expenses', 'income_accounts']
+    const results = []
+    for (const col of collections) {
+      const q = query(collection(db, col), where('userId', '==', companyId))
+      const snap = await getDocs(q)
+      snap.docs.forEach(d => {
+        const data = d.data()
+        results.push({
+          id: d.id,
+          name: data.name || data.accountName || 'Unknown',
+          collection: col,
+          type: data.type || col
+        })
+      })
+    }
+    return { ledgers: results }
+  } catch (e) {
+    console.warn('[QAPD] listLedgers failed:', e.message)
+    return { ledgers: [] }
+  }
 }
 
-/** Get daybook transactions (invoices, payments, journal vouchers) */
-export async function getDaybook(limit = 50) {
-  return callApi('list_daybook', { limit })
+// ─── Transactions / Daybook ─────────────────────────────────────────────────
+
+export async function listTransactions(params = {}) {
+  const companyId = getCurrentCompanyId()
+  if (!companyId) return { transactions: [], total: 0 }
+  try {
+    const collections = ['payments', 'invoices', 'journal_vouchers', 'stock_journals']
+    const allTxns = []
+    for (const col of collections) {
+      const q = query(collection(db, col), where('userId', '==', companyId))
+      const snap = await getDocs(q)
+      snap.docs.forEach(d => {
+        const data = d.data()
+        if (data.deleted || data.status === 'deleted') return
+        const typeMap = { out: 'Payment', in: 'Receipt', contra: 'Contra', purchase: 'Purchase', sales: 'Sales', journal: 'Journal', manufacturing: 'Manufacturing', stock_journal: 'Stock Journal' }
+        const subType = data.type === 'out' ? 'payment' : data.type === 'in' ? 'receipt' : data.type === 'contra' ? 'contra' : data.type || ''
+        allTxns.push({
+          id: d.id,
+          refNo: data.refNo || '',
+          date: data.date || '',
+          type: data.type || '',
+          subType,
+          voucherType: typeMap[data.type] || col,
+          collection: col,
+          amount: Number(data.totalAmount || data.amount || 0),
+          narration: data.narration || data.description || '',
+          accountName: data.accountName || '',
+          partyName: data.partyName || (data.payments?.[0]?.ledgerName) || '',
+          drName: data.type === 'out' ? (data.payments?.[0]?.ledgerName || data.partyName || '') : '',
+          crName: data.type === 'out' ? (data.accountName || '') : '',
+          syncTimestamp: data.lastModifiedAt?.seconds ? data.lastModifiedAt.seconds * 1000 : Date.now(),
+          status: data.status || 'active'
+        })
+      })
+    }
+    // Sort by date desc
+    allTxns.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    return { transactions: allTxns, total: allTxns.length }
+  } catch (e) {
+    console.warn('[QAPD] listTransactions failed:', e.message)
+    return { transactions: [], total: 0 }
+  }
 }
 
-/**
- * Get ALL daybook records via POST — bypasses GET query param limits.
- * Uses max limit + fetchAll flag to ensure 100% of vouchers are returned.
- */
-export async function getDaybookAll(startDate, endDate) {
-  return callApi('list_daybook', { 
-    limit: 999999, 
-    fetchAll: '1',
-    all: 'true',
-    startDate,
-    endDate
-  }, 'POST')
+// ─── Voucher CRUD ────────────────────────────────────────────────────────────
+
+export async function addPayment(data) {
+  const companyId = getCurrentCompanyId()
+  if (!companyId) throw new Error('No company selected')
+
+  // Calculate totalAmount from payments array
+  const totalAmount = (data.payments || []).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
+
+  const docData = {
+    ...data,
+    totalAmount,
+    amount: totalAmount,
+    userId: companyId,
+    createdAt: Date.now(),
+    status: 'active',
+    // ACCPRO resolves party name via findName(partyId) — store the first ledger ID
+    partyId: data.partyId || (data.payments?.[0]?.ledgerId) || '',
+    partyName: data.partyName || (data.payments?.[0]?.ledgerName) || ''
+  }
+
+  // 1. Save to local RxDB via rxfs shim
+  const colRef = collection(db, 'payments')
+  const docRef = await addDoc(colRef, docData)
+  const voucherId = docRef.id
+
+  // Clear daybook cache so fresh data loads
+  try { localStorage.removeItem('quickaccpro_cached_transactions') } catch {}
+
+  // 2. Push to cloud (real Firestore) for cross-device sync
+  syncToCloud(companyId, 'payments', voucherId, docData)
+
+  return { success: true, id: voucherId }
 }
 
-/**
- * Get account-specific ledger with ALL vouchers for that account.
- * Uses POST to avoid GET param truncation, and passes accountName
- * for server-side filtering (more reliable than client-side filter).
- */
-export async function getAccountLedger(accountName, startDate, endDate) {
-  return callApi('list_daybook', { 
-    accountName,
-    limit: 999999, 
-    fetchAll: '1',
-    all: 'true',
-    startDate,
-    endDate
-  }, 'POST')
-}
+export async function addContra(data) {
+  const companyId = getCurrentCompanyId()
+  if (!companyId) throw new Error('No company selected')
 
-/** List all CONTRA entries (full list for account matching) */
-export async function listContra(startDate, endDate) {
-  return callApi('list_daybook', { 
+  const totalAmount = parseFloat(data.amount || 0)
+
+  const docData = {
+    ...data,
+    totalAmount,
+    amount: totalAmount,
     type: 'contra',
-    limit: 999999,
-    fetchAll: '1',
-    all: 'true',
-    startDate,
-    endDate
-  }, 'POST')
+    userId: companyId,
+    createdAt: Date.now(),
+    status: 'active',
+    partyName: data.partyName || ''
+  }
+
+  // 1. Save to local RxDB
+  const colRef = collection(db, 'payments')
+  const docRef = await addDoc(colRef, docData)
+  const voucherId = docRef.id
+
+  // Clear daybook cache so fresh data loads
+  try { localStorage.removeItem('quickaccpro_cached_transactions') } catch {}
+
+  // 2. Push to cloud
+  syncToCloud(companyId, 'payments', voucherId, docData)
+
+  return { success: true, id: voucherId }
 }
 
-/** List team members */
-export async function listTeam() {
-  return callApi('list_team')
+// Helper: sync a document to real Firestore cloud — matches ACCPRO's live sync structure
+async function syncToCloud(companyId, collectionName, docId, docData) {
+  try {
+    const { collection: c, doc: d, setDoc: s, getDoc: g } = await import('@firebase/firestore');
+    const livePath = `companies_live/${companyId}/records`;
+    const now = Date.now();
+    const cloudDocRef = d(c(cloudDb, livePath), docId);
+
+    // Write document matching ACCPRO's exact format
+    await s(cloudDocRef, {
+      id: docId,
+      collectionName,
+      data: docData,           // business data (same as ACCPRO's RxDB data field)
+      timestamp: now,
+      lastSync: now,
+      syncTimestamp: now       // ⬅️ CRITICAL: ACCPRO pulls docs where syncTimestamp > lastPullTs
+    }, { merge: true });
+
+    // Verify the write by reading it back
+    const verify = await g(cloudDocRef);
+    console.log(`[QAPD] ✅ Synced to cloud: companies_live/${companyId}/records/${docId} (exists: ${verify.exists()})`);
+  } catch (e) {
+    console.warn('[QAPD] Cloud sync error:', e.message);
+  }
 }
 
-/** Verify a sub-user (team member) login */
-export async function verifyTeamLogin(username, password) {
-  return callApi('verify_team_login', { username, password }, 'POST')
-}
-
-/** List invoices for a specific party */
-export async function listPartyInvoices(partyId) {
-  return callApi('list_party_invoices', { partyId })
-}
-
-/** Add a payment (expense/receipt) via API */
-export async function addPayment(params) {
-  return callApi('add_payment', params, 'POST')
-}
-
-/** Add a contra entry (bank-to-bank transfer) via API */
-export async function addContra(params) {
-  return callApi('add_contra', params, 'POST')
-}
-
-/** Check if a reference number already exists */
 export async function checkRefNo(refNo) {
-  return callApi('check_ref_no', { refNo })
+  const companyId = getCurrentCompanyId()
+  if (!companyId) return { exists: false }
+  try {
+    const collections = ['payments', 'invoices', 'journal_vouchers', 'stock_journals']
+    for (const col of collections) {
+      const q = query(collection(db, col), where('userId', '==', companyId), where('refNo', '==', refNo))
+      const snap = await getDocs(q)
+      if (!snap.empty) return { exists: true }
+    }
+  } catch {}
+  return { exists: false }
 }
 
-/** Get voucher details for edit */
 export async function getVoucher(voucherId) {
-  return callApi('get_voucher', { voucherId })
+  try {
+    const collections = ['payments', 'invoices', 'journal_vouchers', 'stock_journals']
+    for (const col of collections) {
+      const docRef = doc(db, col, voucherId)
+      const snap = await getDocs(query(collection(db, col)))
+      const found = snap.docs.find(d => d.id === voucherId)
+      if (found) {
+        return { success: true, voucher: { id: found.id, ...found.data() } }
+      }
+    }
+  } catch {}
+  return { success: false }
 }
 
-/** Update an existing voucher */
-export async function updateVoucher(voucherId, params) {
-  return callApi('edit_voucher', { voucherId, ...params }, 'POST')
+export async function updateVoucher(voucherId, data) {
+  const docRef = doc(db, 'payments', voucherId)
+  await setDoc(docRef, { ...data, updatedAt: Date.now() }, { merge: true })
+  return { success: true }
 }
 
-/** Delete a voucher with password protection */
-export async function deleteVoucher(voucherId, password, subUserId, userName) {
-  return callApi('delete_voucher', { voucherId, password, subUserId, userName }, 'POST')
+export async function deleteVoucher(voucherId, collection) {
+  const docRef = doc(db, collection || 'payments', voucherId)
+  await updateDoc(docRef, { status: 'deleted', deletedAt: Date.now() })
+  return { success: true }
 }
 
-/** Trigger backend sync/rebuild of live records from top-level collections */
-export async function rebuildLiveRecords() {
-  return callApi('rebuild_live_records', {}, 'POST')
+// ─── Daybook helpers ─────────────────────────────────────────────────────────
+
+export async function getDaybookAll(params = {}) {
+  return listTransactions(params)
 }
 
+export async function getAccountLedger(accountId, params = {}) {
+  const companyId = getCurrentCompanyId()
+  if (!companyId) return { transactions: [], total: 0 }
+  try {
+    const allTxns = []
+    const collections = ['payments', 'invoices', 'journal_vouchers', 'stock_journals']
+    for (const col of collections) {
+      const q = query(collection(db, col), where('userId', '==', companyId))
+      const snap = await getDocs(q)
+      snap.docs.forEach(d => {
+        const data = d.data()
+        if (data.deleted || data.status === 'deleted') return
+        // Match if accountId or partyId matches
+        if (data.accountId === accountId || data.partyId === accountId || data.id === accountId) {
+          allTxns.push({
+            id: d.id,
+            refNo: data.refNo || '',
+            date: data.date || '',
+            type: data.type || '',
+            amount: Number(data.totalAmount || data.amount || 0),
+            narration: data.narration || data.description || '',
+            partyName: data.partyName || (data.payments?.[0]?.ledgerName) || '',
+            collection: col
+          })
+        }
+      })
+    }
+    allTxns.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    return { transactions: allTxns, total: allTxns.length }
+  } catch (e) {
+    return { transactions: [], total: 0 }
+  }
+}
+
+export async function listContra(params = {}) {
+  const companyId = getCurrentCompanyId()
+  if (!companyId) return { transactions: [], total: 0 }
+  try {
+    const q = query(collection(db, 'payments'), where('userId', '==', companyId), where('type', '==', 'contra'))
+    const snap = await getDocs(q)
+    const txns = snap.docs.map(d => {
+      const data = d.data()
+      return {
+        id: d.id,
+        refNo: data.refNo || '',
+        date: data.date || '',
+        amount: Number(data.totalAmount || data.amount || 0),
+        narration: data.narration || '',
+        fromAccount: data.accountId || '',
+        toAccount: data.toAccountId || '',
+        collection: 'payments'
+      }
+    })
+    txns.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    return { transactions: txns, total: txns.length }
+  } catch (e) {
+    return { transactions: [], total: 0 }
+  }
+}

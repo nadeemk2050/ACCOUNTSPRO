@@ -4,7 +4,9 @@ import {
   Banknote, ChevronDown, ChevronUp,
   Send, Receipt, ArrowUpDown, X, TrendingUp
 } from 'lucide-react'
-import { listAccounts } from '../api'
+import { db } from '../firebase'
+import { collection, query, where, getDocs } from 'firebase/firestore'
+import { getCurrentCompanyId, getDB } from '../localDB'
 
 
 export default function Dashboard({ company, subUser }) {
@@ -18,7 +20,7 @@ export default function Dashboard({ company, subUser }) {
   const [accounts, setAccounts] = useState([])
   const [showSelector, setShowSelector] = useState(false)
   const [favorites, setFavorites] = useState(() => {
-    const raw = localStorage.getItem('quickaccpro_favorite_accounts')
+    const raw = localStorage.getItem('qapd_favorite_accounts')
     return raw ? JSON.parse(raw) : []
   })
 
@@ -28,34 +30,32 @@ export default function Dashboard({ company, subUser }) {
   }, [])
 
   const loadAccounts = async () => {
-    const cacheKey = 'quickaccpro_cached_accounts'
-    const cachedRaw = localStorage.getItem(cacheKey)
-    if (cachedRaw) {
-      try {
-        setAccounts(JSON.parse(cachedRaw))
-      } catch (e) {}
-    }
-    
+    const companyId = getCurrentCompanyId()
+    if (!companyId) return
+
     try {
-      const data = await listAccounts()
-      const list = data.accounts || []
+      // Read from local RxDB via Firestore shim
+      const q = query(collection(db, 'accounts'), where('userId', '==', companyId))
+      const snap = await getDocs(q)
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       setAccounts(list)
-      localStorage.setItem(cacheKey, JSON.stringify(list))
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[QAPD] Failed to load accounts:', e)
+    }
   }
 
   const addFavorite = (accId) => {
     if (favorites.length >= 3) return
     const updated = [...favorites, accId]
     setFavorites(updated)
-    localStorage.setItem('quickaccpro_favorite_accounts', JSON.stringify(updated))
+    localStorage.setItem('qapd_favorite_accounts', JSON.stringify(updated))
     setShowSelector(false)
   }
 
   const removeFavorite = (accId) => {
     const updated = favorites.filter(id => id !== accId)
     setFavorites(updated)
-    localStorage.setItem('quickaccpro_favorite_accounts', JSON.stringify(updated))
+    localStorage.setItem('qapd_favorite_accounts', JSON.stringify(updated))
   }
 
   const formatCurrency = (val) => {

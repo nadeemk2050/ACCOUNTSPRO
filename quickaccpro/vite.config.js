@@ -1,8 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import path from 'path';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      'firebase/firestore': path.resolve(__dirname, './src/rxfs.js'),
+      'firebase/database': path.resolve(__dirname, './src/rxrtdb.js'),
+      'firebase/functions': path.resolve(__dirname, './src/rxfunctions.js'),
+      'firebase/storage': path.resolve(__dirname, './src/rxstorage.js')
+    }
+  },
   plugins: [
     react(),
     VitePWA({

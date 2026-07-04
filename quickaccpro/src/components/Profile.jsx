@@ -217,28 +217,6 @@ export default function Profile({ company, subUser, onRefresh }) {
           <p className="text-sm text-slate-500">No user logged in. Vouchers will be tagged as "QuickAccPro User".</p>
         )}
       </div>
-
-      {/* API Key Info */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-3">
-          <Key size={18} className="text-amber-600" />
-          <h2 className="text-sm font-bold text-slate-700">API Connection</h2>
-        </div>
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <div className="flex items-start gap-2">
-            <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-xs font-medium text-amber-800">
-                This app connects via the AccountsPro API key system.
-              </p>
-              <p className="text-[10px] text-amber-700 mt-1">
-                Manage your API key from within the main AccountsPro app: 
-                <span className="font-semibold"> API & Widget Access</span>
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

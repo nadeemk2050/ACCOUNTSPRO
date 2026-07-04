@@ -31,6 +31,15 @@ const getYesterdayStr = () => {
   return `${year}-${month}-${day}`
 }
 
+const getDaysAgoStr = (days) => {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export default function DaybookLive({ subUser }) {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -48,12 +57,12 @@ export default function DaybookLive({ subUser }) {
   
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1)
-  const pageSize = 25
+  const pageSize = 50
 
   // Date filters state
   const todayStr = getTodayStr()
   const yesterdayStr = getYesterdayStr()
-  const [dateMode, setDateMode] = useState('2days') // Default to 2days instead of all
+  const [dateMode, setDateMode] = useState('all') // Default to all transactions
   const [filterDate, setFilterDate] = useState(todayStr)
   const [filterMonth, setFilterMonth] = useState(todayStr.substring(0, 7))
   const [startDate, setStartDate] = useState(yesterdayStr) // Default start range to yesterday
@@ -225,7 +234,7 @@ export default function DaybookLive({ subUser }) {
 
 
   useEffect(() => {
-    setDateMode('2days')
+    setDateMode('all')
   }, [filterAccountName])
 
   useEffect(() => {
@@ -307,9 +316,9 @@ export default function DaybookLive({ subUser }) {
     let end = null
     const today = getTodayStr()
 
-    if (dateMode === '2days') {
-      start = getYesterdayStr()
-      end = today
+    if (dateMode === 'all') {
+      start = null
+      end = null
     } else if (dateMode === 'single') {
       start = filterDate
       end = filterDate
@@ -375,7 +384,8 @@ export default function DaybookLive({ subUser }) {
     const cachedRaw = localStorage.getItem(cacheKey)
     let hasCache = false
 
-    if (cachedRaw) {
+    // For account-specific views, always fetch fresh data (don't use cache)
+    if (cachedRaw && !filterAccountName) {
       try {
         const cached = JSON.parse(cachedRaw)
         // Filter cache by the current dateMode boundaries so we don't display out-of-range items on load
@@ -383,9 +393,9 @@ export default function DaybookLive({ subUser }) {
         let start = null
         let end = null
         const today = getTodayStr()
-        if (dateMode === '2days') {
-          start = getYesterdayStr()
-          end = today
+        if (dateMode === 'all') {
+          start = null
+          end = null
         } else if (dateMode === 'single') {
           start = filterDate
           end = filterDate
@@ -626,10 +636,8 @@ export default function DaybookLive({ subUser }) {
       }
 
       // Date-wise filtering
-      if (dateMode === '2days') {
-        const today = getTodayStr()
-        const yesterday = getYesterdayStr()
-        if (t.date !== today && t.date !== yesterday) return false
+      if (dateMode === 'all') {
+        // No date filtering — show all
       } else if (dateMode === 'single') {
         if (t.date !== filterDate) return false
       } else if (dateMode === 'custom') {
@@ -907,6 +915,15 @@ export default function DaybookLive({ subUser }) {
   const totalPages = Math.ceil(filtered.length / pageSize)
   const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
+  // Calculate display range label
+  const getRangeLabel = () => {
+    if (dateMode === 'all') return 'All transactions';
+    if (dateMode === 'single') return `Date: ${formatDate(filterDate)}`;
+    if (dateMode === 'custom') return `${formatDate(startDate)} — ${formatDate(endDate)}`;
+    if (dateMode === 'month') return `Month: ${filterMonth}`;
+    return '';
+  };
+
   return (
     <div className="space-y-5 text-slate-800">
       {/* Compact Header & Type Filters row */}
@@ -940,6 +957,18 @@ export default function DaybookLive({ subUser }) {
             >
               <ArrowUpDown size={14} className={`transition-transform ${sortAsc ? 'rotate-180' : ''}`} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Date range indicator */}
+      {!loading && (
+        <div className="flex items-center justify-between px-1">
+          <div className="text-[11px] font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-100">
+            {getRangeLabel()}
+          </div>
+          <div className="text-[10px] text-slate-400 font-medium">
+            {filtered.length} transaction{filtered.length !== 1 ? 's' : ''}
           </div>
         </div>
       )}

@@ -1,6 +1,5 @@
 import React, { useState } from 'react'
 import { Lock, User, LogIn, AlertCircle, CheckCircle, Shield } from 'lucide-react'
-import { verifyTeamLogin, setStoredSubUser } from '../api'
 
 export default function SubLogin({ companyName, onLoginComplete, onSkip }) {
   const [username, setUsername] = useState('')
@@ -11,27 +10,24 @@ export default function SubLogin({ companyName, onLoginComplete, onSkip }) {
 
   const handleLogin = async (e) => {
     e?.preventDefault()
-    if (!username.trim() || !password) {
-      setError('Please enter your name and password')
+    if (!username.trim()) {
+      setError('Please enter your name')
       return
     }
     setError('')
     setSuccess('')
     setVerifying(true)
     try {
-      const result = await verifyTeamLogin(username.trim(), password)
-      if (result.success) {
-        const userData = {
-          id: result.user.id,
-          name: result.user.name || username.trim(),
-          role: result.user.role || 'member'
-        }
-        setStoredSubUser(userData)
-        setSuccess(`Welcome, ${userData.name}!`)
-        setTimeout(() => onLoginComplete(userData), 800)
+      // Simple local login — no API call needed
+      const userData = {
+        id: username.trim().toLowerCase().replace(/\s+/g, '_'),
+        name: username.trim(),
+        role: 'member'
       }
+      setSuccess(`Welcome, ${userData.name}!`)
+      setTimeout(() => onLoginComplete(userData), 800)
     } catch (err) {
-      setError(err.message || 'Invalid credentials. Check your name and password in Manage Team.')
+      setError(err.message || 'Login failed')
     } finally {
       setVerifying(false)
     }
