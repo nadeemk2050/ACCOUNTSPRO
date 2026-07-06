@@ -21502,10 +21502,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                         // ✅ Helper to check splits (Sum all matches by ID, ignore category to ensure visibility)
                         let sAmt = 0;
+                        let sForeignAmt = 0;
+                        let sBaseAmt = 0;
                         if (d.isMulti && d.splits) {
                             d.splits.forEach(s => {
                                 if (s.targetId === activeFilter.id) sAmt += (Number(s.amount) || 0);
                             });
+                        }
+                        if (sAmt > 0) {
+                            sForeignAmt = isForeign ? sAmt : 0;
+                            sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                         }
                         const splitMatch = sAmt > 0; // Boolean flag if involved
 
@@ -21522,17 +21528,19 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             else if (splitMatch) {
                                 // Receipt (in): Split is Giver (Credit/Out)
                                 // Payment (out): Split is Receiver (Debit/In)
-                                const sForeignAmt = isForeign ? sAmt : 0;
-                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                                 if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                                 else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
                         }
                         else if (activeFilter.type === 'party') {
-                            if (d.partyId === activeFilter.id) row = buildRow(doc, d, { amtIn: d.type === 'out' ? amt : 0, amtOut: d.type === 'in' ? amt : 0, foreignIn: d.type === 'out' ? fAmt : 0, foreignOut: d.type === 'in' ? fAmt : 0 });
+                            if (d.partyId === activeFilter.id) {
+                                // For multi-split payments, use the split-specific amount,
+                                // not the total — otherwise the first party gets the full sum.
+                                const usedAmt = (d.isMulti && splitMatch) ? sAmt : amt;
+                                const usedFAmt = (d.isMulti && splitMatch) ? sForeignAmt : fAmt;
+                                row = buildRow(doc, d, { amtIn: d.type === 'out' ? usedAmt : 0, amtOut: d.type === 'in' ? usedAmt : 0, foreignIn: d.type === 'out' ? usedFAmt : 0, foreignOut: d.type === 'in' ? usedFAmt : 0 });
+                            }
                             else if (splitMatch) {
-                                const sForeignAmt = isForeign ? sAmt : 0;
-                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                                 if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                                 else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
@@ -21542,8 +21550,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                const sForeignAmt = isForeign ? sAmt : 0;
-                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                                 if (d.type === 'out') row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                                 else row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                             }
@@ -21553,8 +21559,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                const sForeignAmt = isForeign ? sAmt : 0;
-                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                                 if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                                 else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
@@ -21564,8 +21568,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isDebit = d.type === 'out';
                                 row = buildRow(doc, d, { amtIn: isDebit ? amt : 0, amtOut: !isDebit ? amt : 0, foreignIn: isForeign && isDebit ? fAmt : 0, foreignOut: isForeign && !isDebit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                const sForeignAmt = isForeign ? sAmt : 0;
-                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                                 if (d.type === 'out') row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                                 else row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                             }
@@ -21575,8 +21577,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 const isCredit = d.type === 'in';
                                 row = buildRow(doc, d, { amtIn: !isCredit ? amt : 0, amtOut: isCredit ? amt : 0, foreignIn: isForeign && !isCredit ? fAmt : 0, foreignOut: isForeign && isCredit ? fAmt : 0 });
                             } else if (splitMatch) {
-                                const sForeignAmt = isForeign ? sAmt : 0;
-                                const sBaseAmt = isForeign ? round3(sAmt * rate) : sAmt;
                                 if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: sBaseAmt, foreignIn: 0, foreignOut: sForeignAmt });
                                 else row = buildRow(doc, d, { amtIn: sBaseAmt, amtOut: 0, foreignIn: sForeignAmt, foreignOut: 0 });
                             }
