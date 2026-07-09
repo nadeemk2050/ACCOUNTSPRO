@@ -171,14 +171,14 @@ const ManagementDashboard = ({
     };
 
     const formatStorage = (storageMb) => {
-        if (storageMb === null || storageMb === undefined || !Number.isFinite(storageMb)) return '—';
+        if (storageMb === null || storageMb === undefined || !Number.isFinite(storageMb)) return 'â€”';
         if (storageMb < 1024) return `${storageMb.toFixed(storageMb >= 100 ? 0 : 1)} MB`;
         const gb = storageMb / 1024;
         return `${gb.toFixed(gb >= 10 ? 1 : 2)} GB`;
     };
 
     const formatDeviceList = (devices = []) => {
-        if (!devices.length) return '—';
+        if (!devices.length) return 'â€”';
         const [first, ...rest] = devices;
         if (rest.length === 0) return first;
         return `${first} +${rest.length}`;
@@ -233,7 +233,7 @@ const ManagementDashboard = ({
                     requestedAt: parsed.requestedAt,
                     deviceId: devices[0] || '',
                     deviceIds: devices,
-                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.6.8',
+                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.7.0',
                     liveCompaniesCount: firstNumber(parsed.liveCompaniesCount, parsed.companyCount, parsed.liveDataCount, usage.liveCompaniesCount),
                     usageReads: firstNumber(parsed.reads, parsed.readCount, usage.reads, usage.readCount, usage.firestoreReads),
                     usageWrites: firstNumber(parsed.writes, parsed.writeCount, usage.writes, usage.writeCount, usage.firestoreWrites),
@@ -313,7 +313,7 @@ const ManagementDashboard = ({
             const nextNum = ndtlKeys.length > 0 ? ndtlKeys[ndtlKeys.length - 1] + 1 : 111;
             const newKey = `NDTL${nextNum}`;
 
-            // ✅ Get Firebase Auth ID token for authenticated REST write
+            // âœ… Get Firebase Auth ID token for authenticated REST write
             const currentUser = auth?.currentUser;
             if (!currentUser) throw new Error('Not authenticated. Please sign in as developer first.');
 
@@ -325,7 +325,7 @@ const ManagementDashboard = ({
                     status: { stringValue: 'inactive' },
                     createdAt: { timestampValue: new Date().toISOString() },
                     createdBy: { stringValue: currentUser.email || 'developer' },
-                    version: { stringValue: '2.6.8' },
+                    version: { stringValue: '2.7.0' },
                     isGenerated: { booleanValue: true },
                 }
             };
@@ -374,7 +374,7 @@ const ManagementDashboard = ({
                 authHeaders['Authorization'] = `Bearer ${idToken}`;
             }
 
-            // ── STEP 1: If approving, first read the license to get email & create Firebase Auth user ──
+            // â”€â”€ STEP 1: If approving, first read the license to get email & create Firebase Auth user â”€â”€
             if (action === 'approve') {
                 try {
                     const readUrl = `${BASE_LICENSE_URL}/nadtally_licenses/${serialKeyId}?key=${FIREBASE_API_KEY}`;
@@ -394,10 +394,10 @@ const ManagementDashboard = ({
                                 console.log(`[LicenseApprove] Firebase Auth user created for: ${userEmail}`);
                             } catch (authErr) {
                                 if (authErr.code === 'auth/email-already-in-use') {
-                                    console.log(`[LicenseApprove] Firebase Auth user already exists for: ${userEmail} — skipping creation.`);
+                                    console.log(`[LicenseApprove] Firebase Auth user already exists for: ${userEmail} â€” skipping creation.`);
                                 } else {
                                     console.warn(`[LicenseApprove] Could not create Auth user for ${userEmail}: ${authErr.message}`);
-                                    // Don't block — still approve in Firestore
+                                    // Don't block â€” still approve in Firestore
                                 }
                             }
                             // Also store the temp password in Firestore so user knows it
@@ -418,7 +418,7 @@ const ManagementDashboard = ({
                 }
             }
 
-            // ── STEP 2: Update Firestore license status ──
+            // â”€â”€ STEP 2: Update Firestore license status â”€â”€
             const expiresAt = action === 'approve'
                 ? new Date(Date.now() + days * 86400000).toISOString()
                 : null;
@@ -442,7 +442,7 @@ const ManagementDashboard = ({
             setTimeout(() => fetchAllLicenses(), 1500);
 
             if (action === 'approve') {
-                alert(`✅ License ${serialKeyId} approved!\n\nFirebase Auth account has been created/verified.\n\nUser can now sign in using:\n• Email: (their registered email)\n• Password: 123456 (default — ask them to change it)`);
+                alert(`âœ… License ${serialKeyId} approved!\n\nFirebase Auth account has been created/verified.\n\nUser can now sign in using:\nâ€¢ Email: (their registered email)\nâ€¢ Password: 123456 (default â€” ask them to change it)`);
             }
         } catch (err) {
             alert('Action failed: ' + err.message);
@@ -650,7 +650,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.6.8</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.7.0</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -1874,7 +1874,7 @@ const ManagementDashboard = ({
                                     />
                                     <ActionCard
                                         title="Import Vouchers"
-                                        desc="Restore vouchers from backup — skips duplicates."
+                                        desc="Restore vouchers from backup â€” skips duplicates."
                                         onClick={onImportVoucher}
                                         color="teal"
                                         icon={<UploadCloud />}
@@ -2189,9 +2189,9 @@ const ManagementDashboard = ({
                             {/* SUB-TABS */}
                             <div className="flex gap-2 mb-5 border-b border-white/5 pb-3 overflow-x-auto">
                                 {[
-                                    { id: 'registry', label: '📋 License Registry', count: serialKeys.length },
-                                    { id: 'pending', label: '⏳ Pending Requests', count: serialKeys.filter(k => k.status === 'pending').length },
-                                    { id: 'generate', label: '🔑 Generate Serial Key' },
+                                    { id: 'registry', label: 'ðŸ“‹ License Registry', count: serialKeys.length },
+                                    { id: 'pending', label: 'â³ Pending Requests', count: serialKeys.filter(k => k.status === 'pending').length },
+                                    { id: 'generate', label: 'ðŸ”‘ Generate Serial Key' },
                                 ].map(tab => (
                                     <button
                                         key={tab.id}
@@ -2257,53 +2257,53 @@ const ManagementDashboard = ({
                                                                 <td className="px-3 py-2.5">
                                                                     <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase ${statusColor}`}>
                                                                         {key.status || 'inactive'}
-                                                                        {isExpired && key.status === 'approved' ? ' ✗' : ''}
+                                                                        {isExpired && key.status === 'approved' ? ' âœ—' : ''}
                                                                     </span>
                                                                 </td>
-                                                                <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.6.8'}</td>
+                                                                <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">â€”</span>}</td>
+                                                                <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">â€”</span>}</td>
+                                                                <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">â€”</span>}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.7.0'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/50 font-mono" title={(key.deviceIds || []).join(', ')}>{formatDeviceList(key.deviceIds || [])}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? '—'}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? 'â€”'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
                                                                     <div className="leading-tight">
-                                                                        <span className="text-sky-300/90">R: {key.usageReads ?? '—'}</span>
+                                                                        <span className="text-sky-300/90">R: {key.usageReads ?? 'â€”'}</span>
                                                                         <span className="text-white/30"> | </span>
-                                                                        <span className="text-emerald-300/90">W: {key.usageWrites ?? '—'}</span>
+                                                                        <span className="text-emerald-300/90">W: {key.usageWrites ?? 'â€”'}</span>
                                                                     </div>
                                                                     <div className="text-white/35">S: {formatStorage(key.usageStorageMb)}</div>
                                                                 </td>
-                                                                <td className="px-3 py-2.5 text-white/30 text-[10px]">{key.requestedAt ? new Date(key.requestedAt).toLocaleDateString('en-GB') : '—'}</td>
+                                                                <td className="px-3 py-2.5 text-white/30 text-[10px]">{key.requestedAt ? new Date(key.requestedAt).toLocaleDateString('en-GB') : 'â€”'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
                                                                     {key.activatedAt
                                                                         ? <span className="text-emerald-400/80 font-bold">{new Date(key.activatedAt).toLocaleDateString('en-GB')}</span>
-                                                                        : <span className="opacity-20">—</span>
+                                                                        : <span className="opacity-20">â€”</span>
                                                                     }
                                                                 </td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
                                                                     <span className={isExpired ? 'text-red-400 font-bold' : 'text-green-400 font-bold'}>
-                                                                        {key.expiresAt ? new Date(key.expiresAt).toLocaleDateString('en-GB') : '—'}
+                                                                        {key.expiresAt ? new Date(key.expiresAt).toLocaleDateString('en-GB') : 'â€”'}
                                                                     </span>
                                                                 </td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
                                                                     <span className={daysColor}>
-                                                                        {daysLeft === null ? '—' : daysLeft <= 0 ? 'EXPIRED' : `${daysLeft}d`}
+                                                                        {daysLeft === null ? 'â€”' : daysLeft <= 0 ? 'EXPIRED' : `${daysLeft}d`}
                                                                     </span>
                                                                 </td>
                                                                 <td className="px-3 py-2.5">
                                                                     <div className="flex gap-1">
                                                                         {key.status === 'pending' && (
-                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'approve')} className="text-[9px] bg-green-600/30 hover:bg-green-600/60 text-green-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : '✓ Approve'}</button>
+                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'approve')} className="text-[9px] bg-green-600/30 hover:bg-green-600/60 text-green-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : 'âœ“ Approve'}</button>
                                                                         )}
                                                                         {key.status === 'pending' && (
-                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'reject')} className="text-[9px] bg-red-600/30 hover:bg-red-600/60 text-red-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : '✗ Reject'}</button>
+                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'reject')} className="text-[9px] bg-red-600/30 hover:bg-red-600/60 text-red-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : 'âœ— Reject'}</button>
                                                                         )}
                                                                         {key.status === 'approved' && (
-                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'expire')} className="text-[9px] bg-orange-600/20 hover:bg-orange-600/40 text-orange-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : '⊘ Revoke'}</button>
+                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'expire')} className="text-[9px] bg-orange-600/20 hover:bg-orange-600/40 text-orange-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : 'âŠ˜ Revoke'}</button>
                                                                         )}
                                                                         {(key.status === 'rejected' || key.status === 'expired' || key.status === 'inactive') && key.email && (
-                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'approve')} className="text-[9px] bg-blue-600/30 hover:bg-blue-600/60 text-blue-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : '↺ Reactivate'}</button>
+                                                                            <button disabled={isLoading} onClick={() => handleLicenseAction(key.id, 'approve')} className="text-[9px] bg-blue-600/30 hover:bg-blue-600/60 text-blue-400 px-2 py-1 rounded font-black uppercase">{isLoading ? '...' : 'â†º Reactivate'}</button>
                                                                         )}
                                                                     </div>
                                                                 </td>
@@ -2326,7 +2326,7 @@ const ManagementDashboard = ({
                                 <div>
                                     {serialKeys.filter(k => k.status === 'pending').length === 0 ? (
                                         <div className="bg-black/30 border border-white/5 rounded-xl p-16 text-center">
-                                            <div className="text-4xl mb-3">✅</div>
+                                            <div className="text-4xl mb-3">âœ…</div>
                                             <div className="text-white/20 italic font-bold">No pending activation requests.</div>
                                             <div className="text-white/10 text-[10px] mt-1">All licenses are up to date.</div>
                                         </div>
@@ -2364,7 +2364,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">Email Address</div>
-                                                                <div className="text-[11px] text-cyan-400 font-bold truncate">{key.email || <span className="text-white/20">—</span>}</div>
+                                                                <div className="text-[11px] text-cyan-400 font-bold truncate">{key.email || <span className="text-white/20">â€”</span>}</div>
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">Mobile Number</div>
@@ -2372,7 +2372,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">Request Date</div>
-                                                                <div className="text-[11px] text-white/60">{key.requestedAt ? new Date(key.requestedAt).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—'}</div>
+                                                                <div className="text-[11px] text-white/60">{key.requestedAt ? new Date(key.requestedAt).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }) : 'â€”'}</div>
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">Device ID</div>
@@ -2380,14 +2380,14 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">App Version</div>
-                                                                <div className="text-[11px] text-white/50">{key.version || '2.6.8'}</div>
+                                                                <div className="text-[11px] text-white/50">{key.version || '2.7.0'}</div>
                                                             </div>
                                                         </div>
 
                                                         {/* Approval control panel */}
                                                         <div className="bg-black/20 rounded-xl p-4 flex flex-col md:flex-row gap-4 items-start md:items-center">
                                                             <div className="flex-1">
-                                                                <div className="text-[10px] text-white/30 uppercase font-bold mb-2">🗓️ Approval Duration</div>
+                                                                <div className="text-[10px] text-white/30 uppercase font-bold mb-2">ðŸ—“ï¸ Approval Duration</div>
                                                                 <div className="flex flex-wrap gap-2">
                                                                     {[30, 90, 180, 365, 730].map(d => (
                                                                         <button
@@ -2423,14 +2423,14 @@ const ManagementDashboard = ({
                                                                     onClick={() => handleLicenseAction(key.id, 'approve', customDays)}
                                                                     className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white text-[11px] font-black rounded-xl uppercase tracking-wider shadow-lg shadow-green-500/20 disabled:opacity-50"
                                                                 >
-                                                                    {approveLoadingId === key.id ? '⏳ Processing...' : `✓ Approve (${customDays}d)`}
+                                                                    {approveLoadingId === key.id ? 'â³ Processing...' : `âœ“ Approve (${customDays}d)`}
                                                                 </button>
                                                                 <button
                                                                     disabled={approveLoadingId === key.id}
                                                                     onClick={() => handleLicenseAction(key.id, 'reject')}
                                                                     className="px-6 py-2.5 bg-red-900/40 hover:bg-red-800 text-red-300 text-[11px] font-black rounded-xl uppercase tracking-wider disabled:opacity-50"
                                                                 >
-                                                                    ✗ Reject Request
+                                                                    âœ— Reject Request
                                                                 </button>
                                                             </div>
                                                         </div>
@@ -2446,14 +2446,14 @@ const ManagementDashboard = ({
                             {devSubTab === 'generate' && (
                                 <div className="max-w-lg">
                                     <div className="bg-black/40 border border-white/10 rounded-xl p-8">
-                                        <h4 className="text-lg font-black mb-2">🔑 Generate New Serial Key</h4>
+                                        <h4 className="text-lg font-black mb-2">ðŸ”‘ Generate New Serial Key</h4>
                                         <p className="text-xs text-white/30 mb-6">Creates a blank license slot in the database. Keys follow the format <span className="font-mono text-blue-400">NDTL111, NDTL112, NDTL113...</span> The next available number is auto-detected.</p>
 
                                         {genKey && genStatus === 'success' && (
                                             <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-5 mb-6 text-center">
                                                 <div className="text-xs text-green-400/60 uppercase font-bold mb-1">New Serial Key Created:</div>
                                                 <div className="font-mono text-3xl font-black text-green-400 tracking-widest mb-2">{genKey}</div>
-                                                <div className="text-[10px] text-white/30">Status: INACTIVE · Waiting for activation request</div>
+                                                <div className="text-[10px] text-white/30">Status: INACTIVE Â· Waiting for activation request</div>
                                             </div>
                                         )}
                                         {genStatus && genStatus.startsWith('error') && (
@@ -2474,7 +2474,7 @@ const ManagementDashboard = ({
                                             disabled={genLoading}
                                             className="w-full py-4 bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400 text-white font-black text-sm rounded-xl uppercase tracking-wider transition-all disabled:opacity-50"
                                         >
-                                            {genLoading ? <span className="flex items-center justify-center gap-2"><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>Generating...</span> : '🔑 Generate Next Serial Key'}
+                                            {genLoading ? <span className="flex items-center justify-center gap-2"><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>Generating...</span> : 'ðŸ”‘ Generate Next Serial Key'}
                                         </button>
 
                                         <div className="mt-6 border-t border-white/5 pt-5">

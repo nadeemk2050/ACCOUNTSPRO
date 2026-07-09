@@ -78,7 +78,7 @@ const UserManualModal = ({ isOpen, onClose }) => {
 
         {/* Footer */}
         <div className="p-4 border-t bg-slate-50 text-center text-xs text-slate-400">
-          v2.6.8 accpro Accounting System • Press 'Esc' to close
+          v2.7.0 accpro Accounting System â€¢ Press 'Esc' to close
         </div>
       </div>
     </div>

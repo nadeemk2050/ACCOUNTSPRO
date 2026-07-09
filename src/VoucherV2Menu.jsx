@@ -1,17 +1,8 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, ChevronRight } from 'lucide-react';
 
 export const VoucherV2Menu = ({ isOpen, onClose, onSelect, zIndexCode = 200 }) => {
-    useEffect(() => {
-        if (!isOpen) return;
-        const handler = (e) => { if (e.key === 'Escape') onClose(); };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, onClose]);
-
-    if (!isOpen) return null;
-
     const vouchers = [
         { id: 'sales_v2', label: 'Sales', kbd: 'F8', desc: 'Outgoing goods & revenue', color: 'text-blue-400' },
         { id: 'purchase_v2', label: 'Purchase', kbd: 'F9', desc: 'Incoming goods & stock', color: 'text-emerald-400' },
@@ -21,6 +12,46 @@ export const VoucherV2Menu = ({ isOpen, onClose, onSelect, zIndexCode = 200 }) =
         { id: 'journal_v2', label: 'Journal', kbd: 'F7', desc: 'Adjustment transactions', color: 'text-slate-400' },
         { id: 'manufacturing_v2', label: 'Mfg Jnl', kbd: 'M', desc: 'Production / Consumption', color: 'text-indigo-400' },
     ];
+
+    const [focusedIndex, setFocusedIndex] = useState(0);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        setFocusedIndex(0); // Reset on open
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handler = (e) => {
+            if (e.key === 'Escape') {
+                onClose();
+                return;
+            }
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setFocusedIndex(prev => Math.min(vouchers.length - 1, prev + 1));
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setFocusedIndex(prev => Math.max(0, prev - 1));
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const chosen = vouchers[focusedIndex];
+                if (chosen) {
+                    onSelect(chosen.id);
+                    onClose();
+                }
+                return;
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [isOpen, onClose, focusedIndex, onSelect]);
+
+    if (!isOpen) return null;
 
     return createPortal(
         <div 
@@ -42,12 +73,13 @@ export const VoucherV2Menu = ({ isOpen, onClose, onSelect, zIndexCode = 200 }) =
 
                 {/* Voucher List */}
                 <div className="p-4 space-y-1 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                    {vouchers.map((v) => (
+                    {vouchers.map((v, idx) => (
                         <button
                             key={v.id}
                             type="button"
                             onClick={() => { onSelect(v.id); onClose(); }}
-                            className="w-full group relative flex items-center justify-between p-3 rounded-xl hover:bg-white/[0.04] transition-all text-left active:scale-[0.99] outline-none"
+                            onMouseEnter={() => setFocusedIndex(idx)}
+                            className={`w-full group relative flex items-center justify-between p-3 rounded-xl transition-all text-left active:scale-[0.99] outline-none ${focusedIndex === idx ? 'bg-white/[0.08] ring-1 ring-blue-500/50' : 'hover:bg-white/[0.04]'}`}
                         >
                             <div className="flex items-center gap-4">
                                 <div className="flex flex-col">
@@ -59,7 +91,7 @@ export const VoucherV2Menu = ({ isOpen, onClose, onSelect, zIndexCode = 200 }) =
                                 </div>
                             </div>
                             
-                            <div className="opacity-0 group-hover:opacity-100 transform translate-x-2 group-hover:translate-x-0 transition-all text-blue-400">
+                            <div className={`transition-all text-blue-400 ${focusedIndex === idx ? 'opacity-100 transform translate-x-0' : 'opacity-0 transform translate-x-2'}`}>
                                 <ChevronRight size={16} strokeWidth={3} />
                             </div>
                         </button>

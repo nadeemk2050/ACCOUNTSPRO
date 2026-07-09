@@ -74,10 +74,10 @@ const PackagingSmartReportModal = ({
                 setDeletePassword('');
             } catch (err) {
                 console.error("Error deleting orphan bag:", err);
-                alert("❌ Failed to delete orphan bag. See console for details.");
+                alert("âŒ Failed to delete orphan bag. See console for details.");
             }
         } else {
-            alert("❌ Incorrect password.");
+            alert("âŒ Incorrect password.");
         }
     };
 
@@ -1116,8 +1116,8 @@ const PackagingSmartReportModal = ({
                             ).size;
 
                             const SortIcon = ({ column }) => {
-                                if (sortConfig.key !== column) return <span className="ml-1 opacity-20">↕</span>;
-                                return sortConfig.direction === 'asc' ? <span className="ml-1 text-white">↑</span> : <span className="ml-1 text-white">↓</span>;
+                                if (sortConfig.key !== column) return <span className="ml-1 opacity-20">â†•</span>;
+                                return sortConfig.direction === 'asc' ? <span className="ml-1 text-white">â†‘</span> : <span className="ml-1 text-white">â†“</span>;
                             };
 
                             return (
@@ -1268,7 +1268,7 @@ const PackagingSmartReportModal = ({
                                 mergedMap.set(key, b);
                             });
 
-                            // ✅ CALCULATE REUSABLE REFILLS CHRONOLOGICALLY ACROSS ENTIRE HISTORY
+                            // âœ… CALCULATE REUSABLE REFILLS CHRONOLOGICALLY ACROSS ENTIRE HISTORY
                             const allHistoricalBags = [...mergedMap.values()];
                             const reusableOccurrences = {};
 
@@ -1392,7 +1392,7 @@ const PackagingSmartReportModal = ({
                                 );
                             };
 
-                            // ✅ DYNAMICALLY FILTER LIST BY SUB-TAB VALUE
+                            // âœ… DYNAMICALLY FILTER LIST BY SUB-TAB VALUE
                             const subTabFilteredList = productionBagsList.filter(b => {
                                 const isSold = isBagMarkedSold(b);
                                 if (readyStockSubTab === 'out') {
@@ -1511,8 +1511,8 @@ const PackagingSmartReportModal = ({
                             };
 
                             const SortIcon = ({ column }) => {
-                                if (sortConfig.key !== column) return <span className="ml-1 opacity-20">↕</span>;
-                                return sortConfig.direction === 'asc' ? <span className="ml-1 text-white">↑</span> : <span className="ml-1 text-white">↓</span>;
+                                if (sortConfig.key !== column) return <span className="ml-1 opacity-20">â†•</span>;
+                                return sortConfig.direction === 'asc' ? <span className="ml-1 text-white">â†‘</span> : <span className="ml-1 text-white">â†“</span>;
                             };
 
                              const getSummary = () => {
@@ -1752,7 +1752,7 @@ const PackagingSmartReportModal = ({
                                                                                 <button 
                                                                                     onClick={(e) => { 
                                                                                         e.stopPropagation(); 
-                                                                                        alert("❌ Cannot delete this bag directly! It has a parent voucher. You must delete the parent voucher directly to remove this bag."); 
+                                                                                        alert("âŒ Cannot delete this bag directly! It has a parent voucher. You must delete the parent voucher directly to remove this bag."); 
                                                                                     }} 
                                                                                     className="text-slate-300 hover:text-slate-400 p-1 transition-colors cursor-not-allowed ml-2"
                                                                                     title="Cannot delete directly. Has parent voucher."
@@ -1873,8 +1873,8 @@ const PackagingSmartReportModal = ({
                             const totalBagsProduced = sortedJournals.reduce((acc, sj) => acc + getBagsForVoucher(sj).filter(b => !isBagReusable(b)).length, 0);
 
                             const SortIcon = ({ column }) => {
-                                if (sortConfig.key !== column) return <span className="ml-1 opacity-20">↕</span>;
-                                return sortConfig.direction === 'asc' ? <span className="ml-1 text-white">↑</span> : <span className="ml-1 text-white">↓</span>;
+                                if (sortConfig.key !== column) return <span className="ml-1 opacity-20">â†•</span>;
+                                return sortConfig.direction === 'asc' ? <span className="ml-1 text-white">â†‘</span> : <span className="ml-1 text-white">â†“</span>;
                             };
 
                             return (
@@ -2033,7 +2033,7 @@ const PackagingSmartReportModal = ({
                                                 Reusable Jumbo Bags Registry
                                             </h3>
                                             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
-                                                Bags approved for multiple reuses — select in manufacturing allocation
+                                                Bags approved for multiple reuses â€” select in manufacturing allocation
                                             </p>
                                         </div>
                                         <button
@@ -2084,8 +2084,8 @@ const PackagingSmartReportModal = ({
                                                             </td>
                                                             <td className="px-6 py-3 text-[11px] font-bold">
                                                                 {rb.status === 'active'
-                                                                    ? <span className="text-emerald-600 flex items-center gap-1"><Check size={13} /> YES — Active &amp; Refillable</span>
-                                                                    : <span className="text-slate-400 flex items-center gap-1"><X size={13} /> NO — Closed</span>
+                                                                    ? <span className="text-emerald-600 flex items-center gap-1"><Check size={13} /> YES â€” Active &amp; Refillable</span>
+                                                                    : <span className="text-slate-400 flex items-center gap-1"><X size={13} /> NO â€” Closed</span>
                                                                 }
                                                             </td>
                                                             <td className="px-6 py-3">
@@ -2093,8 +2093,8 @@ const PackagingSmartReportModal = ({
                                                                     {rb.status === 'active' ? 'Active' : 'Closed'}
                                                                 </span>
                                                             </td>
-                                                            <td className="px-6 py-3 text-[11px] font-bold text-slate-500">{rb.startDate || '—'}</td>
-                                                            <td className="px-6 py-3 text-[11px] font-bold text-slate-500">{rb.lastDate || '—'}</td>
+                                                            <td className="px-6 py-3 text-[11px] font-bold text-slate-500">{rb.startDate || 'â€”'}</td>
+                                                            <td className="px-6 py-3 text-[11px] font-bold text-slate-500">{rb.lastDate || 'â€”'}</td>
                                                             <td className="px-6 py-3 text-center">
                                                                 <button
                                                                     onClick={() => handleToggleReusableStatus(rb)}
@@ -2118,7 +2118,7 @@ const PackagingSmartReportModal = ({
                                                 <tfoot className="bg-slate-50 sticky bottom-0 border-t-2 border-slate-200">
                                                     <tr>
                                                         <td colSpan="4" className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                                            {reusableBags.filter(rb => rb.status === 'active').length} Active &nbsp;·&nbsp; {reusableBags.filter(rb => rb.status === 'closed').length} Closed &nbsp;·&nbsp; {reusableBags.length} Total
+                                                            {reusableBags.filter(rb => rb.status === 'active').length} Active &nbsp;Â·&nbsp; {reusableBags.filter(rb => rb.status === 'closed').length} Closed &nbsp;Â·&nbsp; {reusableBags.length} Total
                                                         </td>
                                                         <td colSpan="4" className="px-6 py-4 text-right text-[10px] font-black text-teal-700 uppercase tracking-widest">
                                                             Total Reusable Weight: {formatWeight(reusableBags.reduce((s, rb) => {
@@ -2205,7 +2205,7 @@ const PackagingSmartReportModal = ({
                                     </div>
                                     <div className="bg-slate-50 px-6 py-4 border-t border-slate-100 flex justify-between items-center">
                                         <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                            Last Ref: {selectedReusableBag.lastRefNo || '-'} · Last Date: {selectedReusableBag.lastDate || '-'}
+                                            Last Ref: {selectedReusableBag.lastRefNo || '-'} Â· Last Date: {selectedReusableBag.lastDate || '-'}
                                         </div>
                                         <button onClick={() => setSelectedReusableBag(null)} className="px-6 py-2 bg-teal-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-teal-900/20 active:scale-95 transition-all">
                                             Close
@@ -2479,7 +2479,7 @@ const PackagingSmartReportModal = ({
                 <div className="bg-white px-8 py-5 border-t border-slate-200 flex items-center justify-between text-slate-400">
                     <div className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
                         <Info size={14} />
-                        Accpro Intelligence Framework V2.6.8
+                        Accpro Intelligence Framework V2.7.0
                     </div>
                     <div className="flex gap-3">
                         <button disabled className="px-6 py-2.5 rounded-xl border border-slate-200 text-[10px] font-black uppercase tracking-widest opacity-50 cursor-not-allowed">
