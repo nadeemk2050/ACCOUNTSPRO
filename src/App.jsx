@@ -1499,7 +1499,7 @@ const checkDuplicateContainer = async (db, containerNo, userId, excludeId = null
 // --- UPDATED SEARCHABLE SELECT (With Ref, Shortcuts & Portal for Front Layer) ---
 const SearchableSelect = React.forwardRef(({ 
     options, groups, value, onChange, placeholder, label, required, 
-    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName 
+    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName, title 
 }, ref) => {
     const [isOpen, setIsOpen] = useState(false);
     const [search, setSearch] = useState("");
@@ -1573,7 +1573,13 @@ const SearchableSelect = React.forwardRef(({
     useEffect(() => {
         if (isOpen && inputRef.current) {
             // Small timeout to ensure render
-            setTimeout(() => inputRef.current?.focus(), 50);
+            setTimeout(() => {
+                if (inputRef.current) {
+                    inputRef.current.focus();
+                    const len = inputRef.current.value.length;
+                    inputRef.current.setSelectionRange(len, len);
+                }
+            }, 50);
         }
     }, [isOpen]);
 
@@ -1638,6 +1644,12 @@ const SearchableSelect = React.forwardRef(({
             setIsOpen(false);
             setSearch("");
             wrapperRef.current?.focus();
+        }
+        // Direct typing support: if closed and user presses a letter/number, open and search
+        if (!isOpen && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            setSearch(e.key);
+            setIsOpen(true);
         }
     };
 
@@ -1740,7 +1752,7 @@ const SearchableSelect = React.forwardRef(({
     const activeTextClass = typeof textClassName === 'function' ? textClassName(selectedOption?.text) : (textClassName || '');
 
     return (
-        <div className={`relative mb-2 group ${containerClassName || ''}`} ref={wrapperRef} onKeyDown={handleKeyDown} tabIndex={0} style={{ outline: 'none' }}>
+        <div className={`relative mb-2 group ${containerClassName || ''}`} ref={wrapperRef} onKeyDown={handleKeyDown} tabIndex={0} style={{ outline: 'none' }} title={title}>
             {label && <label className="block text-xs font-semibold text-slate-600 mb-1">{label} {required && "*"}</label>}
             {isOpen && createPortal(dropdownContent, document.body)}
 
@@ -1751,7 +1763,7 @@ const SearchableSelect = React.forwardRef(({
                 </div>
             ) : (
                 <div
-                    className={`w-full ${compact ? 'p-1.5' : 'p-2'} border rounded-lg text-sm bg-white cursor-pointer flex justify-between items-center transition-all duration-150 ${isOpen ? 'border-blue-500 ring-2 ring-blue-200 bg-slate-100' : 'border-gray-300'} group-focus:bg-slate-100 group-focus:border-slate-500 group-focus:ring-2 group-focus:ring-slate-300/40 group-focus-within:bg-slate-100 group-focus-within:border-slate-500 group-focus-within:ring-2 group-focus-within:ring-slate-300/40 ${triggerClassName || ''}`}
+                    className={`w-full ${compact ? 'p-1.5' : 'p-2'} border rounded-lg text-sm bg-white cursor-pointer flex justify-between items-center transition-all duration-150 ${isOpen ? 'border-blue-500 ring-2 ring-blue-200 bg-red-50' : 'border-gray-300'} group-focus:bg-red-100 group-focus:border-red-400 group-focus:ring-2 group-focus:ring-red-200/40 group-focus-within:bg-red-100 group-focus-within:border-red-400 group-focus-within:ring-2 group-focus-within:ring-red-200/40 ${triggerClassName || ''}`}
                     onClick={() => setIsOpen(!isOpen)}
                 >
                     <span className={`truncate overflow-hidden ${selectedOption ? "text-slate-800" : "text-gray-400"} ${activeTextClass}`}>
@@ -23902,12 +23914,124 @@ const PaymentModal = (props) => {
     const dateRef = useRef(null);
     const sourceAccRef = useRef(null);
     const saveButtonRef = useRef(null);
+    const currencyRef = useRef(null);
+    const lotChkRef = useRef(null);
+    const lotSelectRef = useRef(null);
+    const plusButtonRef = useRef(null);
+    const printButtonRef = useRef(null);
+    const downloadButtonRef = useRef(null);
+
+    const rowParticularsRefs = useRef({});
+    const rowPaymentAgainstRefs = useRef({});
+    const rowAmountRefs = useRef({});
 
     useEffect(() => {
         if (isOpen && refNoRef.current) {
             setTimeout(() => refNoRef.current?.focus(), 100);
         }
     }, [isOpen]);
+
+    // Split Row auto focus when a new row is added
+    const prevSplitsLength = useRef(0);
+    useEffect(() => {
+        if (!isOpen) {
+            prevSplitsLength.current = 0;
+            return;
+        }
+        if (splits.length > prevSplitsLength.current && prevSplitsLength.current > 0) {
+            const addedRow = splits[splits.length - 1];
+            if (addedRow) {
+                setTimeout(() => {
+                    const el = rowParticularsRefs.current[addedRow.id];
+                    if (el) el.focus();
+                }, 100);
+            }
+        }
+        prevSplitsLength.current = splits.length;
+    }, [splits, isOpen]);
+
+    // Modal Global Keyboard Navigation
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleModalKeyDown = (e) => {
+            // Do not override if the search select dropdown list portal is open
+            if (document.querySelector('div[style*="z-index: 9999999"]')) {
+                return;
+            }
+
+            const activeEl = document.activeElement;
+            
+            // Helper to check if focus is inside any element of interest
+            const getFocusableElements = () => {
+                const elms = [];
+                if (refNoRef.current) elms.push(refNoRef.current);
+                if (currencyRef.current) elms.push(currencyRef.current);
+                if (lotChkRef.current) elms.push(lotChkRef.current);
+                if (enableLot && lotSelectRef.current) elms.push(lotSelectRef.current);
+                if (sourceAccRef.current) elms.push(sourceAccRef.current);
+                
+                splits.forEach(row => {
+                    const partEl = rowParticularsRefs.current[row.id];
+                    if (partEl) elms.push(partEl);
+                    
+                    const paEl = rowPaymentAgainstRefs.current[row.id];
+                    if (paEl && paEl.offsetParent !== null) {
+                        elms.push(paEl);
+                    }
+                    
+                    const amtEl = rowAmountRefs.current[row.id];
+                    if (amtEl) elms.push(amtEl);
+                });
+                
+                if (plusButtonRef.current) elms.push(plusButtonRef.current);
+                if (narrationRef.current) elms.push(narrationRef.current);
+                if (printButtonRef.current) elms.push(printButtonRef.current);
+                if (downloadButtonRef.current) elms.push(downloadButtonRef.current);
+                if (saveButtonRef.current) elms.push(saveButtonRef.current);
+                
+                return elms;
+            };
+
+            const focusables = getFocusableElements();
+            const activeIndex = focusables.findIndex(f => f === activeEl || f.contains(activeEl));
+
+            if (e.key === 'Tab' || e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (activeIndex !== -1) {
+                    const nextIndex = (activeIndex + 1) % focusables.length;
+                    focusables[nextIndex].focus();
+                } else {
+                    focusables[0]?.focus();
+                }
+            } else if (e.key === 'Backspace') {
+                let allowBackspaceToDelete = false;
+                if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+                    const typeAttr = activeEl.getAttribute('type');
+                    if (typeAttr !== 'checkbox' && typeAttr !== 'radio' && typeAttr !== 'button' && typeAttr !== 'submit') {
+                        const valLen = activeEl.value ? activeEl.value.length : 0;
+                        if (valLen > 0 && activeEl.selectionStart > 0) {
+                            allowBackspaceToDelete = true;
+                        }
+                    }
+                }
+                
+                if (!allowBackspaceToDelete) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (activeIndex !== -1) {
+                        const prevIndex = (activeIndex - 1 + focusables.length) % focusables.length;
+                        focusables[prevIndex].focus();
+                    } else {
+                        focusables[0]?.focus();
+                    }
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleModalKeyDown, true);
+        return () => window.removeEventListener('keydown', handleModalKeyDown, true);
+    }, [isOpen, splits, enableLot]);
 
     // ✅ GLOBAL DATE LISTENER
     useEffect(() => {
@@ -24527,15 +24651,28 @@ const PaymentModal = (props) => {
         const handler = (e) => {
             if (!isOpen) return;
             if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
-            if (e.altKey && e.key.toLowerCase() === 'd') { e.preventDefault(); setShowDatePopup(true); setDateInputValue(formatVoucherDateText(date)); }
-            if (e.altKey && e.key.toLowerCase() === 'a') { e.preventDefault(); sourceAccRef.current?.focus(); }
-            if (e.altKey && e.key.toLowerCase() === 'x') { e.preventDefault(); amountRef.current?.focus(); }
+            if (e.altKey && e.key.toLowerCase() === 'r') {
+                e.preventDefault();
+                setIsRefNoUnlocked(true);
+                setTimeout(() => {
+                    refNoRef.current?.focus();
+                    refNoRef.current?.select();
+                }, 50);
+            }
+            if (e.altKey && e.key.toLowerCase() === 'c') { e.preventDefault(); sourceAccRef.current?.focus(); }
+            if (e.altKey && e.key.toLowerCase() === 'x') {
+                e.preventDefault();
+                if (splits.length > 0) {
+                    const firstRowId = splits[0].id;
+                    rowParticularsRefs.current[firstRowId]?.focus();
+                }
+            }
             if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); narrationRef.current?.focus(); }
-            if (e.ctrlKey && e.key.toLowerCase() === 'a') { e.preventDefault(); handleSave(); }
+            if ((e.ctrlKey && e.key.toLowerCase() === 'a') || (e.ctrlKey && e.key.toLowerCase() === 's')) { e.preventDefault(); handleSave(); }
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, handleSave]);
+    }, [isOpen, handleSave, splits]);
 
     const getOptions = (cat) => {
         if (cat === 'party') return liveParties;
@@ -24771,11 +24908,12 @@ const PaymentModal = (props) => {
                                         ref={refNoRef}
                                         type="text"
                                         placeholder="REF NO"
-                                        className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-slate-500 focus:bg-slate-100 focus:text-slate-900 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-slate-300/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-red-400 focus:bg-red-100 focus:text-slate-900 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-red-200/40 disabled:opacity-50 disabled:cursor-not-allowed"
                                         value={refNo}
                                         onChange={e => setRefNo(e.target.value)}
                                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); dateRef.current?.focus(); } }}
                                         disabled={isAutoRef && !isRefNoUnlocked}
+                                        title="Voucher Reference Number [Alt + R]"
                                     />
                                     {isAutoRef && !isRefNoUnlocked && (
                                 <button 
@@ -24806,7 +24944,8 @@ const PaymentModal = (props) => {
                         <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest">Curr</span>
                         <div className="flex items-center gap-1.5">
                             <select
-                                className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none cursor-pointer uppercase"
+                                ref={currencyRef}
+                                className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none cursor-pointer uppercase hover:bg-red-100 hover:text-slate-900 focus:bg-red-100 focus:text-slate-900 rounded px-1 transition-all"
                                 value={currencyId}
                                 onChange={e => {
                                     const val = e.target.value;
@@ -24823,7 +24962,7 @@ const PaymentModal = (props) => {
                                 <input
                                     type="number"
                                     step="any"
-                                    className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4 transition-all focus:bg-slate-100 focus:text-slate-900 focus:border-slate-400"
+                                    className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4 transition-all focus:bg-red-100 focus:text-slate-900 focus:border-red-300 hover:bg-red-100 hover:text-slate-900"
                                     placeholder="1.0"
                                     value={exchangeRate}
                                     onChange={e => setExchangeRate(e.target.value)}
@@ -24838,10 +24977,11 @@ const PaymentModal = (props) => {
                     <div className="flex flex-col justify-center min-w-[70px]">
                         <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest">Lot Info</span>
                         <div className="flex items-center gap-2">
-                             <input type="checkbox" className="h-3 w-3 accent-blue-300 rounded cursor-pointer" checked={enableLot} onChange={e => { setEnableLot(e.target.checked); if (!e.target.checked) setLotId(''); }} id="lot-chk" />
+                             <input ref={lotChkRef} type="checkbox" className="h-3.5 w-3.5 accent-blue-300 rounded cursor-pointer outline-none focus:ring-2 focus:ring-red-400 focus:bg-red-100" checked={enableLot} onChange={e => { setEnableLot(e.target.checked); if (!e.target.checked) setLotId(''); }} id="lot-chk" />
                              {enableLot ? (
                                 <div className="w-28">
                                     <SearchableSelect
+                                        ref={lotSelectRef}
                                         options={lots.filter(l => l.status !== 'Closed').map(l => ({ value: l.id, text: l.name }))}
                                         value={lotId}
                                         onChange={setLotId}
@@ -24867,7 +25007,7 @@ const PaymentModal = (props) => {
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
                     {/* 7. DATE (FAR RIGHT) — Tally DateInput */}
-                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20 focus-within:bg-slate-100 focus-within:border-slate-500 focus-within:ring-2 focus-within:ring-slate-300/40" onClick={() => setShowDateModal(true)}>
+                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20 focus-within:bg-red-100 focus-within:border-red-400 focus-within:ring-2 focus-within:ring-red-200/40" onClick={() => setShowDateModal(true)}>
                         <span className="text-[7px] font-black uppercase text-white group-focus-within:text-slate-500 leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
                             <Calendar size={12} className="text-white opacity-60 group-focus-within:text-slate-500" />
@@ -24876,7 +25016,7 @@ const PaymentModal = (props) => {
                                 value={date || ''}
                                 onChange={e => { setDate(e.target.value); if (onUpdateDate) onUpdateDate(e.target.value); }}
                                 onEnter={() => sourceAccRef.current?.focus()}
-                                className="text-[11px] font-black text-white bg-transparent border-none focus:ring-0 p-0 w-20 cursor-pointer text-right shadow-sm"
+                                className="text-[11px] font-black text-white group-focus-within:text-slate-900 bg-transparent border-none focus:ring-0 p-0 w-20 cursor-pointer text-right shadow-sm outline-none"
                             />
                         </div>
                     </div>
@@ -24899,6 +25039,7 @@ const PaymentModal = (props) => {
                             compact={true}
                             containerClassName="mb-0 h-full"
                             textClassName="text-[12px] font-black text-slate-900"
+                            title="Paid From / Received Into Account [Alt + C]"
                         />
                     </div>
                 </div>
@@ -24916,7 +25057,7 @@ const PaymentModal = (props) => {
                                         <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest">Account / Particulars</th>
                                         <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-44">Amount ({currentSym})</th>
                                         <th className="py-2 text-center w-12">
-                                            <button onClick={addLine} className="p-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-all shadow-sm" title="Add New Entry Row">
+                                            <button ref={plusButtonRef} onClick={addLine} className="p-1 bg-blue-600 text-white rounded-md hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 outline-none transition-all shadow-sm" title="Add New Entry Row">
                                                 <Plus size={14} strokeWidth={3} />
                                             </button>
                                         </th>
@@ -24928,6 +25069,7 @@ const PaymentModal = (props) => {
                                             <td className="px-4 py-1.5">
                                                 <div className="max-w-[480px] w-full">
                                                     <SearchableSelect
+                                                        ref={el => { if (el) rowParticularsRefs.current[row.id] = el; }} title="Ledger / Account Particulars [Alt + X]"
                                                         groups={receiverGroups}
                                                         value={row.targetId}
                                                         onChange={(v, option) => handleReceiverChange(row.id, v, option)}
@@ -24938,22 +25080,23 @@ const PaymentModal = (props) => {
                                                 </div>
                                                 {row.category === 'party' && row.targetId && (
                                                     <button
+                                                        ref={el => { if (el) rowPaymentAgainstRefs.current[row.id] = el; }}
                                                         type="button"
                                                         onClick={() => openPayAgainst(row.id, row.targetId)}
-                                                        className={`mt-1.5 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all w-full max-w-lg ${
+                                                        className={`mt-1.5 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all w-full max-w-lg outline-none hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 focus:ring-2 focus:ring-red-400 ${
                                                             row.paymentAgainst
-                                                                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                                                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200 border border-transparent'
                                                                 : 'bg-amber-50 text-amber-600 hover:bg-amber-100 border border-dashed border-amber-300'
                                                         }`}
                                                     >
                                                         {row.paymentAgainst === 'bill' ? (
                                                             <span className="flex items-center gap-2">
-                                                                <span>Bill Ref: {row.billRefNo || '—'}</span>
-                                                                {row.billRemaining != null && (
+                                                                 <span>Bill Ref: {row.billRefNo || '—'}</span>
+                                                                 {row.billRemaining != null && (
                                                                     <span className="bg-blue-700 text-white text-[8px] font-black px-2 py-0.5 rounded-full tabular-nums">
                                                                         Bal: {format3(row.billRemaining)}
                                                                     </span>
-                                                                )}
+                                                                 )}
                                                             </span>
                                                         ) : row.paymentAgainst === 'our-advance'
                                                             ? `Our Advance · ${row.advRefNo || '⚠ Set Ref No.'}`
@@ -24969,9 +25112,10 @@ const PaymentModal = (props) => {
                                             </td>
                                             <td className="px-4 py-1.5 w-44">
                                                 <input
+                                                    ref={el => { if (el) rowAmountRefs.current[row.id] = el; }}
                                                     type="number"
                                                     step="0.001"
-                                                    className="w-full p-1 bg-transparent border-b-2 border-transparent focus:border-slate-500 focus:bg-slate-100 text-[15px] font-black text-right text-slate-800 transition-all outline-none rounded-t focus:px-2"
+                                                    className="w-full p-1 bg-transparent border-b-2 border-transparent focus:border-red-400 focus:bg-red-100 text-[15px] font-black text-right text-slate-800 transition-all outline-none rounded-t focus:px-2"
                                                     value={row.amount}
                                                     onChange={(e) => updateLine(row.id, 'amount', e.target.value)}
                                                     placeholder="0.000"
@@ -25020,11 +25164,11 @@ const PaymentModal = (props) => {
                         {/* 1. NARRATION (COMPACT) */}
                         <div className="flex-1 flex items-center gap-3">
                             <span className="text-[8px] font-black uppercase text-white tracking-widest hidden sm:inline leading-none" style={{textShadow:'0 0 10px rgba(255,255,255,0.7)'}}>Narration</span>
-                            <div className="flex-1 border border-white/25 focus-within:border-slate-500 focus-within:bg-slate-100 focus-within:text-slate-900 focus-within:ring-2 focus-within:ring-slate-300/40 transition-all rounded-lg px-2 py-1">
+                            <div className="flex-1 border border-white/25 focus-within:border-red-400 focus-within:bg-red-100 focus-within:text-slate-900 focus-within:ring-2 focus-within:ring-red-200/40 transition-all rounded-lg px-2 py-1">
                                 <input
                                     ref={narrationRef}
                                     placeholder="Enter voucher narration..."
-                                    className="bg-transparent border-none p-0 text-[11px] font-bold text-white focus:text-slate-900 outline-none w-full placeholder:text-white/30 focus:placeholder:text-slate-400 uppercase tracking-tight"
+                                    className="bg-transparent border-none p-0 text-[11px] font-bold text-white focus:text-slate-900 outline-none w-full placeholder:text-white/30 focus:placeholder:text-red-400 uppercase tracking-tight"
                                     value={narration}
                                     onChange={e => setNarration(e.target.value)}
                                 />
@@ -25059,10 +25203,10 @@ const PaymentModal = (props) => {
                                 </div>
                             )}
                         <div className="flex items-center gap-2 ml-4">
-                            <button onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-white/10 rounded-lg transition-all text-white/70 hover:text-white border border-white/10" title="Generate PDF/Print">
+                            <button ref={printButtonRef} onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 rounded-lg transition-all text-white/70 border border-white/10 outline-none" title="Generate PDF/Print">
                                 <Printer size={18} />
                             </button>
-                            <button onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-white/10 rounded-lg transition-all text-white/70 hover:text-white border border-white/10" title="Export Excel/Data">
+                            <button ref={downloadButtonRef} onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 rounded-lg transition-all text-white/70 border border-white/10 outline-none" title="Export Excel/Data">
                                 <Download size={18} />
                             </button>
                         </div>
@@ -25111,8 +25255,8 @@ const PaymentModal = (props) => {
                                 onClick={handleSave}
                                 disabled={saving}
                                 onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
-                                className={`flex items-center justify-center p-3 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] transition-all active:scale-95 disabled:opacity-50 
-                                    ${saving ? 'bg-white/10 text-white' : 'bg-white text-[#00457c] hover:bg-blue-50 hover:shadow-white/20'}`}
+                                className={`flex items-center justify-center p-3 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] transition-all active:scale-95 disabled:opacity-50 outline-none 
+                                    ${saving ? 'bg-white/10 text-white' : 'bg-white text-[#00457c] hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 hover:shadow-white/20'}`}
                                 title="Finish & Save (Ctrl+S)"
                             >
                                 {saving ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />}
