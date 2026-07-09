@@ -5425,6 +5425,11 @@ export default function App() {
             // 1d. Check Security Lock
             const checkSecurity = async () => {
                 try {
+                    const cachedSession = localStorage.getItem(`accpro_session_${activeCompanyId}`);
+                    if (cachedSession) {
+                        setIsCompanyLocked(false);
+                        return;
+                    }
                     const q = query(collection(db, "users"));
                     const snap = await getDocs(q);
                     // If company has users and no one is logged in yet, Lock it.
