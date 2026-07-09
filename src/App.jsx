@@ -1740,7 +1740,7 @@ const SearchableSelect = React.forwardRef(({
     const activeTextClass = typeof textClassName === 'function' ? textClassName(selectedOption?.text) : (textClassName || '');
 
     return (
-        <div className={`relative mb-2 ${containerClassName || ''}`} ref={wrapperRef} onKeyDown={handleKeyDown} tabIndex={0} style={{ outline: 'none' }}>
+        <div className={`relative mb-2 group ${containerClassName || ''}`} ref={wrapperRef} onKeyDown={handleKeyDown} tabIndex={0} style={{ outline: 'none' }}>
             {label && <label className="block text-xs font-semibold text-slate-600 mb-1">{label} {required && "*"}</label>}
             {isOpen && createPortal(dropdownContent, document.body)}
 
@@ -1751,7 +1751,7 @@ const SearchableSelect = React.forwardRef(({
                 </div>
             ) : (
                 <div
-                    className={`w-full ${compact ? 'p-1.5' : 'p-2'} border rounded-lg text-sm bg-white cursor-pointer flex justify-between items-center ${isOpen ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200'} ${triggerClassName || ''}`}
+                    className={`w-full ${compact ? 'p-1.5' : 'p-2'} border rounded-lg text-sm bg-white cursor-pointer flex justify-between items-center transition-all duration-150 ${isOpen ? 'border-blue-500 ring-2 ring-blue-200 bg-slate-100' : 'border-gray-300'} group-focus:bg-slate-100 group-focus:border-slate-500 group-focus:ring-2 group-focus:ring-slate-300/40 group-focus-within:bg-slate-100 group-focus-within:border-slate-500 group-focus-within:ring-2 group-focus-within:ring-slate-300/40 ${triggerClassName || ''}`}
                     onClick={() => setIsOpen(!isOpen)}
                 >
                     <span className={`truncate overflow-hidden ${selectedOption ? "text-slate-800" : "text-gray-400"} ${activeTextClass}`}>
@@ -24771,7 +24771,7 @@ const PaymentModal = (props) => {
                                         ref={refNoRef}
                                         type="text"
                                         placeholder="REF NO"
-                                        className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-white/60 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-white/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="bg-white/10 border border-white/30 rounded px-2 py-0.5 text-[10px] font-black text-white outline-none focus:border-slate-500 focus:bg-slate-100 focus:text-slate-900 placeholder:text-white/30 w-24 uppercase transition-all focus:ring-2 focus:ring-slate-300/40 disabled:opacity-50 disabled:cursor-not-allowed"
                                         value={refNo}
                                         onChange={e => setRefNo(e.target.value)}
                                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); dateRef.current?.focus(); } }}
@@ -24823,7 +24823,7 @@ const PaymentModal = (props) => {
                                 <input
                                     type="number"
                                     step="any"
-                                    className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4"
+                                    className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4 transition-all focus:bg-slate-100 focus:text-slate-900 focus:border-slate-400"
                                     placeholder="1.0"
                                     value={exchangeRate}
                                     onChange={e => setExchangeRate(e.target.value)}
@@ -24867,10 +24867,10 @@ const PaymentModal = (props) => {
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
                     {/* 7. DATE (FAR RIGHT) — Tally DateInput */}
-                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20" onClick={() => setShowDateModal(true)}>
-                        <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
+                    <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20 focus-within:bg-slate-100 focus-within:border-slate-500 focus-within:ring-2 focus-within:ring-slate-300/40" onClick={() => setShowDateModal(true)}>
+                        <span className="text-[7px] font-black uppercase text-white group-focus-within:text-slate-500 leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
-                            <Calendar size={12} className="text-white opacity-60" />
+                            <Calendar size={12} className="text-white opacity-60 group-focus-within:text-slate-500" />
                             <DateInput
                                 ref={dateRef}
                                 value={date || ''}
@@ -24971,7 +24971,7 @@ const PaymentModal = (props) => {
                                                 <input
                                                     type="number"
                                                     step="0.001"
-                                                    className="w-full p-1 bg-transparent border-b-2 border-transparent focus:border-blue-500 text-[15px] font-black text-right text-slate-800 transition-all outline-none"
+                                                    className="w-full p-1 bg-transparent border-b-2 border-transparent focus:border-slate-500 focus:bg-slate-100 text-[15px] font-black text-right text-slate-800 transition-all outline-none rounded-t focus:px-2"
                                                     value={row.amount}
                                                     onChange={(e) => updateLine(row.id, 'amount', e.target.value)}
                                                     placeholder="0.000"
@@ -25020,11 +25020,11 @@ const PaymentModal = (props) => {
                         {/* 1. NARRATION (COMPACT) */}
                         <div className="flex-1 flex items-center gap-3">
                             <span className="text-[8px] font-black uppercase text-white tracking-widest hidden sm:inline leading-none" style={{textShadow:'0 0 10px rgba(255,255,255,0.7)'}}>Narration</span>
-                            <div className="flex-1 border border-white/25 focus-within:border-white/50 transition-colors rounded-lg px-2 py-1">
+                            <div className="flex-1 border border-white/25 focus-within:border-slate-500 focus-within:bg-slate-100 focus-within:text-slate-900 focus-within:ring-2 focus-within:ring-slate-300/40 transition-all rounded-lg px-2 py-1">
                                 <input
                                     ref={narrationRef}
                                     placeholder="Enter voucher narration..."
-                                    className="bg-transparent border-none p-0 text-[11px] font-bold text-white outline-none w-full placeholder:text-white/20 uppercase tracking-tight"
+                                    className="bg-transparent border-none p-0 text-[11px] font-bold text-white focus:text-slate-900 outline-none w-full placeholder:text-white/30 focus:placeholder:text-slate-400 uppercase tracking-tight"
                                     value={narration}
                                     onChange={e => setNarration(e.target.value)}
                                 />
