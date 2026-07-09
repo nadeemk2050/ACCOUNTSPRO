@@ -6334,85 +6334,15 @@ export default function App() {
     }, [IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY]);
 
     useEffect(() => {
-        // ✅ ADMIN BYPASS: Owners and Developers are NEVER logged out automatically
-        const isAdmin = (currentRole === 'owner' || currentRole === 'developer');
-        
-        if (!user || isAdmin) {
-            if (idleMonitorIntervalRef.current) {
-                clearInterval(idleMonitorIntervalRef.current);
-                idleMonitorIntervalRef.current = null;
-            }
-            setIdleWarningOpen(false);
-            setIdleCountdown(IDLE_WARNING_SECONDS);
-            idleWarningStartRef.current = null;
-            return;
+        // Inactivity auto-logout disabled per user request: remain logged in solidly until manual logout.
+        if (idleMonitorIntervalRef.current) {
+            clearInterval(idleMonitorIntervalRef.current);
+            idleMonitorIntervalRef.current = null;
         }
-
-        // ✅ SET DYNAMIC TIMEOUT: 2 Hours for Team Users
-        const TIMEOUT_MS = 120 * 60 * 1000; 
-        const now = Date.now();
-
-        // ✅ ALWAYS start the idle clock fresh from "now" when the app is opened/reopened.
-        // Idle timeout only counts inactivity within an active open session — NOT time
-        // while the browser was closed. Closing the app is not inactivity; only the
-        // user explicitly clicking Logout should sign them out.
-        idleLastActivityRef.current = now;
-        localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
-
-        const startWarning = (startAt = Date.now()) => {
-            if (idleWarningStartRef.current) return;
-            idleWarningStartRef.current = startAt;
-            setIdleWarningOpen(true);
-            setIdleCountdown(IDLE_WARNING_SECONDS);
-        };
-
-        const evaluateIdleState = () => {
-            const currentNow = Date.now();
-            const inactiveFor = currentNow - idleLastActivityRef.current;
-
-            if (!idleWarningStartRef.current && inactiveFor >= TIMEOUT_MS) {
-                startWarning(currentNow);
-            }
-
-            if (idleWarningStartRef.current) {
-                const warningElapsed = currentNow - idleWarningStartRef.current;
-                const remaining = Math.max(0, IDLE_WARNING_SECONDS - Math.floor(warningElapsed / 1000));
-                setIdleCountdown(remaining);
-
-                if (warningElapsed >= IDLE_WARNING_SECONDS * 1000) {
-                    performLogout('auto');
-                }
-            }
-        };
-
-        const markActivity = () => {
-            if (idleAutoLogoutInProgressRef.current) return;
-
-            const activeNow = Date.now();
-            idleLastActivityRef.current = activeNow;
-            localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(activeNow));
-
-            if (idleWarningStartRef.current) {
-                idleWarningStartRef.current = null;
-                setIdleWarningOpen(false);
-                setIdleCountdown(IDLE_WARNING_SECONDS);
-            }
-        };
-
-        const activityEvents = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'focus'];
-        activityEvents.forEach(evt => window.addEventListener(evt, markActivity, { passive: true }));
-
-        evaluateIdleState();
-        idleMonitorIntervalRef.current = setInterval(evaluateIdleState, 1000);
-
-        return () => {
-            activityEvents.forEach(evt => window.removeEventListener(evt, markActivity));
-            if (idleMonitorIntervalRef.current) {
-                clearInterval(idleMonitorIntervalRef.current);
-                idleMonitorIntervalRef.current = null;
-            }
-        };
-    }, [user, currentRole, subUser, performLogout, IDLE_WARNING_SECONDS, LAST_ACTIVITY_STORAGE_KEY]);
+        setIdleWarningOpen(false);
+        setIdleCountdown(IDLE_WARNING_SECONDS);
+        idleWarningStartRef.current = null;
+    }, [user, currentRole, IDLE_WARNING_SECONDS]);
 
     const handleChangePassword = async () => {
         const newPassword = prompt("Enter new password (min 6 chars):");
