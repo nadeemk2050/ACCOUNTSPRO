@@ -1499,7 +1499,7 @@ const checkDuplicateContainer = async (db, containerNo, userId, excludeId = null
 // --- UPDATED SEARCHABLE SELECT (With Ref, Shortcuts & Portal for Front Layer) ---
 const SearchableSelect = React.forwardRef(({ 
     options, groups, value, onChange, placeholder, label, required, 
-    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName, title 
+    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName, title, tabIndex = 0
 }, ref) => {
     const [isOpen, setIsOpen] = useState(false);
     const [search, setSearch] = useState("");
@@ -1752,7 +1752,7 @@ const SearchableSelect = React.forwardRef(({
     const activeTextClass = typeof textClassName === 'function' ? textClassName(selectedOption?.text) : (textClassName || '');
 
     return (
-        <div className={`relative mb-2 group ${containerClassName || ''}`} ref={wrapperRef} onKeyDown={handleKeyDown} tabIndex={0} style={{ outline: 'none' }} title={title}>
+        <div className={`relative mb-2 group ${containerClassName || ''}`} ref={wrapperRef} onKeyDown={handleKeyDown} tabIndex={tabIndex} style={{ outline: 'none' }} title={title}>
             {label && <label className="block text-xs font-semibold text-slate-600 mb-1">{label} {required && "*"}</label>}
             {isOpen && createPortal(dropdownContent, document.body)}
 
@@ -24056,9 +24056,6 @@ const PaymentModal = (props) => {
             const getFocusableElements = () => {
                 const elms = [];
                 if (refNoRef.current) elms.push(refNoRef.current);
-                if (currencyRef.current) elms.push(currencyRef.current);
-                if (lotChkRef.current) elms.push(lotChkRef.current);
-                if (enableLot && lotSelectRef.current) elms.push(lotSelectRef.current);
                 if (sourceAccRef.current) elms.push(sourceAccRef.current);
                 
                 splits.forEach(row => {
@@ -24076,8 +24073,6 @@ const PaymentModal = (props) => {
                 
                 if (plusButtonRef.current) elms.push(plusButtonRef.current);
                 if (narrationRef.current) elms.push(narrationRef.current);
-                if (printButtonRef.current) elms.push(printButtonRef.current);
-                if (downloadButtonRef.current) elms.push(downloadButtonRef.current);
                 if (saveButtonRef.current) elms.push(saveButtonRef.current);
                 
                 return elms;
@@ -25036,6 +25031,7 @@ const PaymentModal = (props) => {
                         <div className="flex items-center gap-1.5">
                             <select
                                 ref={currencyRef}
+                                tabIndex="-1"
                                 className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none cursor-pointer uppercase hover:bg-red-100 hover:text-slate-900 focus:bg-red-100 focus:text-slate-900 rounded px-1 transition-all"
                                 value={currencyId}
                                 onChange={e => {
@@ -25053,6 +25049,7 @@ const PaymentModal = (props) => {
                                 <input
                                     type="number"
                                     step="any"
+                                    tabIndex="-1"
                                     className="bg-white/10 border border-white/20 rounded px-1 text-[9px] font-black text-white w-10 text-center outline-none h-4 transition-all focus:bg-red-100 focus:text-slate-900 focus:border-red-300 hover:bg-red-100 hover:text-slate-900"
                                     placeholder="1.0"
                                     value={exchangeRate}
@@ -25068,11 +25065,12 @@ const PaymentModal = (props) => {
                     <div className="flex flex-col justify-center min-w-[70px]">
                         <span className="text-[7px] font-black uppercase text-white leading-none mb-0.5 tracking-widest">Lot Info</span>
                         <div className="flex items-center gap-2">
-                             <input ref={lotChkRef} type="checkbox" className="h-3.5 w-3.5 accent-blue-300 rounded cursor-pointer outline-none focus:ring-2 focus:ring-red-400 focus:bg-red-100" checked={enableLot} onChange={e => { setEnableLot(e.target.checked); if (!e.target.checked) setLotId(''); }} id="lot-chk" />
+                             <input ref={lotChkRef} tabIndex="-1" type="checkbox" className="h-3.5 w-3.5 accent-blue-300 rounded cursor-pointer outline-none focus:ring-2 focus:ring-red-400 focus:bg-red-100" checked={enableLot} onChange={e => { setEnableLot(e.target.checked); if (!e.target.checked) setLotId(''); }} id="lot-chk" />
                              {enableLot ? (
                                 <div className="w-28">
                                     <SearchableSelect
                                         ref={lotSelectRef}
+                                        tabIndex={-1}
                                         options={lots.filter(l => l.status !== 'Closed').map(l => ({ value: l.id, text: l.name }))}
                                         value={lotId}
                                         onChange={setLotId}
@@ -25294,10 +25292,10 @@ const PaymentModal = (props) => {
                                 </div>
                             )}
                         <div className="flex items-center gap-2 ml-4">
-                            <button ref={printButtonRef} onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 rounded-lg transition-all text-white/70 border border-white/10 outline-none" title="Generate PDF/Print">
+                            <button ref={printButtonRef} tabIndex="-1" onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 rounded-lg transition-all text-white/70 border border-white/10 outline-none" title="Generate PDF/Print">
                                 <Printer size={18} />
                             </button>
-                            <button ref={downloadButtonRef} onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 rounded-lg transition-all text-white/70 border border-white/10 outline-none" title="Export Excel/Data">
+                            <button ref={downloadButtonRef} tabIndex="-1" onClick={() => setShowInvoiceOptions(true)} className="p-2 hover:bg-red-100 hover:text-red-700 focus:bg-red-100 focus:text-red-700 rounded-lg transition-all text-white/70 border border-white/10 outline-none" title="Export Excel/Data">
                                 <Download size={18} />
                             </button>
                         </div>
