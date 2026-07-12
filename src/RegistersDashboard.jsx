@@ -53,7 +53,7 @@ const RegistersDashboard = ({
         { id: 'expense_reg', name: 'Indirect Expenses Register', shortcut: 'X', action: onShowExpenseRegister, v2: true, desc: 'Operating & administrative costs' },
         { id: 'income_reg', name: 'Indirect Incomes Register', shortcut: 'N', action: onShowIncomeRegister, v2: true, desc: 'Non-operating revenue sources' },
         { id: 'manuf_reg', name: 'Manufacturing Register', shortcut: 'M', action: onShowManufacturingRegister, v2: true, desc: 'Production & processing logs' },
-        { id: 'loans_adv', name: 'Loans & Advances Tracker', shortcut: 'V', action: onShowLoansAdvancesRegister, v2: true, desc: 'OA Â· TA Â· OL Â· TL â€” Track outstanding balances & due dates' },
+        { id: 'loans_adv', name: 'Loans & Advances Tracker', shortcut: 'V', action: onShowLoansAdvancesRegister, v2: true, desc: 'OA · TA · OL · TL — Track outstanding balances & due dates' },
         { id: 'tax_reg', name: 'Tax Registers', shortcut: 'G', action: onShowTaxRegister, v2: true, desc: 'Tax-wise invoice values and running balances' },
         { id: 'bill_wise', name: 'Bill Wise Details', shortcut: 'B', action: null, comingSoon: true, desc: 'Party-wise outstanding bill tracking' },
     ], [

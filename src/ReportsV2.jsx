@@ -1,5 +1,5 @@
 /**
- * ReportsV2.jsx â€” Premium TallyPrime & Oracle-inspired Reporting Engine
+ * ReportsV2.jsx — Premium TallyPrime & Oracle-inspired Reporting Engine
  * Supporting Day Book, Ledgers, Registers, Summaries, and Entity Lists.
  */
 
@@ -21,13 +21,13 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 
-// â”€â”€ V2 Styling Tokens â”€â”€
+// ── V2 Styling Tokens ──
 const headerGrad = 'from-[#0f172a] via-[#1e293b] to-[#0f172a]';
 const cardBg = 'bg-white/5 backdrop-blur-md border border-white/10';
 const activeTabClass = 'bg-blue-600 text-white shadow-lg shadow-blue-900/40 border-blue-500';
 const inactiveTabClass = 'text-slate-400 hover:text-white hover:bg-white/5 border-transparent';
 
-// â”€â”€ Helper Components â”€â”€
+// ── Helper Components ──
 const StatCard = ({ label, value, icon: Icon, color, subValue, trend }) => (
     <div className={`${cardBg} rounded-2xl p-4 flex-1 min-w-[200px] transition-all hover:scale-[1.02] hover:border-white/20 group animate-in fade-in duration-500`}>
         <div className="flex justify-between items-start mb-2">
@@ -48,13 +48,13 @@ const StatCard = ({ label, value, icon: Icon, color, subValue, trend }) => (
 
 const ReportsV2 = ({
     isOpen, onClose, onBack, zIndex = 200,
-    user, dataOwnerId, userRole, effectiveName, // âœ… ADDED THIS
+    user, dataOwnerId, userRole, effectiveName, // ✅ ADDED THIS
     parties = [], products = [], expenses = [], incomeAccounts = [],
     accounts = [], capitalAccounts = [], assetAccounts = [], taxRates = [],
     subUsers = [], initialState, onViewTransaction, onDeleteTransaction,
     currencySymbol = 'AED', units = []
 }) => {
-    // â”€â”€ State â”€â”€
+    // ── State ──
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
     const [searchTerm, setSearchTerm] = useState('');
     const [viewMode, setViewMode] = useState('detailed'); // 'detailed' | 'monthly' | 'entities' | 'chart'
@@ -69,7 +69,7 @@ const ReportsV2 = ({
     const [durationType, setDurationType] = useState('daywise');
     const ITEMS_PER_PAGE = 50;
 
-    // â”€â”€ Pre-fetch / Initial State â”€â”€
+    // ── Pre-fetch / Initial State ──
     useEffect(() => {
         if (isOpen) {
             const today = new Date().toISOString().split('T')[0];
@@ -371,7 +371,7 @@ const ReportsV2 = ({
                         const isDr = ['in', 'receipt'].includes(d.type) || (d.type === 'contra' && d.toAccountId === d.accountId);
                         allTx.push({ ...row, amountIn: isDr ? row.total : 0, amountOut: !isDr ? row.total : 0 });
                     } else if (activeFilter.type === 'item') {
-                        if (docType === 'jv') return; // âœ… Ignore JVs in Item Ledger
+                        if (docType === 'jv') return; // ✅ Ignore JVs in Item Ledger
 
                         const itemsToProcess = d.items || (d.type === 'manufacturing' ? [...(d.produced || []), ...(d.consumed || [])] : []);
                         const matched = itemsToProcess.filter(i => i.productId === activeFilter.id) || [];
@@ -529,7 +529,7 @@ const ReportsV2 = ({
                                 <span className="text-[7.5px] font-black text-slate-400 uppercase tracking-tighter leading-none mb-0.5">Report Duration</span>
                                 <div className="flex items-center gap-1">
                                     <span className="text-[9px] font-black text-blue-900 uppercase">{durationType}:</span>
-                                    <span className="text-[9.5px] font-black text-slate-700">{formatDate(filter.startDate)} â€” {formatDate(filter.endDate)}</span>
+                                    <span className="text-[9.5px] font-black text-slate-700">{formatDate(filter.startDate)} — {formatDate(filter.endDate)}</span>
                                     <ChevronDown size={8} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
                                 </div>
                             </button>
@@ -591,10 +591,10 @@ const ReportsV2 = ({
                 </div>
             )}
 
-            {/* â”€â”€ MAIN CONTENT â”€â”€ */}
+            {/* ── MAIN CONTENT ── */}
             <div className="flex-1 flex flex-col overflow-hidden">
                 
-            {/* â”€â”€ TALLY-STYLE SUMMARY STRIP â”€â”€ */}
+            {/* ── TALLY-STYLE SUMMARY STRIP ── */}
             {!loading && (
                 <div className="bg-[#fcf8e3] border-b border-[#e6db55] px-4 py-1 flex items-center justify-between text-[11px] font-bold text-slate-700 select-none">
                     <div className="flex gap-8">
@@ -639,7 +639,7 @@ const ReportsV2 = ({
                 </div>
             )}
 
-            {/* â”€â”€ MAIN DATA AREA â”€â”€ */}
+            {/* ── MAIN DATA AREA ── */}
             <div className="flex-1 flex flex-col overflow-hidden bg-white">
                     
                     {/* View Switcher Bar */}
@@ -702,7 +702,7 @@ const ReportsV2 = ({
                                                     <div className="flex flex-col"><span className="text-sm font-black text-white group-hover:text-blue-400 transition-colors uppercase tracking-tight">{e.name}</span><span className="text-[10px] text-slate-500 uppercase tracking-widest">{e.companyName || 'Individual Account'}</span></div>
                                                 </div>
                                             </td>
-                                            <td className="px-5 py-5 text-[11px] text-slate-400 font-bold">{e.mobileNumber || e.email || 'â€”'}</td>
+                                            <td className="px-5 py-5 text-[11px] text-slate-400 font-bold">{e.mobileNumber || e.email || '—'}</td>
                                             <td className="px-5 py-5 text-center text-[12px] font-black text-blue-300">{e.count}</td>
                                             <td className={`px-8 py-5 text-right text-[15px] font-black bg-white/[0.01] group-hover:bg-blue-600/10 transition-all ${e.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{formatAmt(Math.abs(e.balance))} <span className="text-[10px] ml-1 opacity-50">{e.balance >= 0 ? 'Dr' : 'Cr'}</span></td>
                                         </tr>
@@ -750,7 +750,7 @@ const ReportsV2 = ({
                                                 </tr>
                                             ) : (
                                                 <tr onClick={() => t.id !== 'OP_BAL' && onViewTransaction?.(t.id, t.vType)} className={`group transition-all select-none border-b border-slate-100 ${t.isOpening ? 'bg-blue-50/30' : 'hover:bg-blue-50/50 cursor-pointer'}`}>
-                                                    <td className="px-4 py-2 text-center text-[11px] font-bold text-slate-400">{t.isOpening ? 'â€”' : idx + 1}</td>
+                                                    <td className="px-4 py-2 text-center text-[11px] font-bold text-slate-400">{t.isOpening ? '—' : idx + 1}</td>
                                                     <td className="px-5 py-2 text-[12px] font-bold text-slate-700">{formatDate(t.date)}</td>
                                                     <td className="px-5 py-2">
                                                         <span className="text-[9.5px] font-black uppercase tracking-tight text-[#2b5797]">{t.vchType}</span>
@@ -819,7 +819,7 @@ const ReportsV2 = ({
                     </div>
 
                     {/* Infinite Footer Row */}
-            {/* â”€â”€ TALLY-STYLE SYSTEM FOOTER â”€â”€ */}
+            {/* ── TALLY-STYLE SYSTEM FOOTER ── */}
             <div className="bg-[#2b5797] px-4 py-1 flex items-center justify-between text-[10px] font-black text-white select-none z-50">
                 <div className="flex items-center gap-6">
                     <div className="flex items-center gap-2">

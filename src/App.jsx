@@ -7,7 +7,7 @@ import {
     setDoc as fSetDoc, deleteField, // <--- ADD THIS HERE + deleteField
     serverTimestamp, runTransaction as fRunTransaction, getDoc, orderBy, limit, getDocs, Timestamp
 } from "firebase/firestore";
-// Real Firestore SDK â€” bypasses Vite's rxfs.js alias for duplicate bag checks
+// Real Firestore SDK — bypasses Vite's rxfs.js alias for duplicate bag checks
 import {
     collection as realCollection,
     query as realQuery,
@@ -97,7 +97,7 @@ async function sha256(text) {
 
 import { db, auth, functions, rtdb, cloudRtdb, cloudDb } from './firebase';
 
-// Real Firebase RTDB functions â€” imported via @firebase/* to bypass the firebase/database â†’ rxrtdb.js stub alias
+// Real Firebase RTDB functions — imported via @firebase/* to bypass the firebase/database → rxrtdb.js stub alias
 import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
 import ManagementDashboard from './ManagementDashboard';
@@ -378,7 +378,7 @@ const PasswordPromptModal = ({ isOpen, title, onConfirm, onCancel }) => {
                     type="password" 
                     autoFocus 
                     className="w-full p-3 border-2 border-slate-200 rounded-lg outline-none focus:border-[#2b5797] font-mono text-center tracking-widest text-xl bg-slate-50 shadow-inner" 
-                    placeholder="â€¢â€¢â€¢â€¢"
+                    placeholder="••••"
                     value={pwd}
                     onChange={(e) => setPwd(e.target.value)}
                     onKeyDown={(e) => {
@@ -921,9 +921,9 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
                 {/* Modern Calendar Grid */}
                 <div className="border border-slate-200 rounded-lg p-2 bg-slate-50/50">
                     <div className="flex justify-between items-center mb-2">
-                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">â—€</button>
+                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">◀</button>
                         <span className="text-xs font-black text-[#1e3264]">{monthNames[month]} {year}</span>
-                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">â–¶</button>
+                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">▶</button>
                     </div>
                     <div className="grid grid-cols-7 gap-1 text-center text-[9px] font-black text-slate-400 uppercase mb-1">
                         <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
@@ -1027,7 +1027,7 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
         }
     };
 
-    // âœ… GLOBAL ESCAPE LISTENER
+    // ✅ GLOBAL ESCAPE LISTENER
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (isOpen && e.key === 'Escape') {
@@ -1147,9 +1147,9 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
                 {/* Calendar Range Grid */}
                 <div className="border border-slate-200 rounded-lg p-2 bg-slate-50/50">
                     <div className="flex justify-between items-center mb-2">
-                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">â—€</button>
+                        <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">◀</button>
                         <span className="text-xs font-black text-[#1e3264]">{monthNames[month]} {year}</span>
-                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">â–¶</button>
+                        <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-200 rounded text-slate-600 font-black text-xs">▶</button>
                     </div>
                     <div className="grid grid-cols-7 gap-1 text-center text-[9px] font-black text-slate-400 uppercase mb-1">
                         <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
@@ -1457,7 +1457,7 @@ const checkDuplicateRef = async (db, collectionName, refNo, userId, excludeId = 
     return true;
 };
 
-// ðŸ”¥ GLOBAL DUPLICATE CHECK (Ref No must be unique across ALL Vouchers)
+// 🔥 GLOBAL DUPLICATE CHECK (Ref No must be unique across ALL Vouchers)
 const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
     if (!refNo || !refNo.trim()) return false;
     const r = refNo.trim();
@@ -1484,7 +1484,7 @@ const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
     return false;
 };
 
-// ðŸ”¥ CONTAINER DUPLICATE CHECK (Invoices Only)
+// 🔥 CONTAINER DUPLICATE CHECK (Invoices Only)
 const checkDuplicateContainer = async (db, containerNo, userId, excludeId = null) => {
     if (!containerNo || !containerNo.trim()) return false;
     const c = containerNo.trim();
@@ -1743,7 +1743,7 @@ const SearchableSelect = React.forwardRef(({
                 </div>
 
                 <div className="bg-gray-50 p-2 text-[10px] text-gray-400 text-right border-t">
-                    Use <b>â†‘ â†“</b> to navigate, <b>Enter</b> to select, <b>Esc</b> to close
+                    Use <b>↑ ↓</b> to navigate, <b>Enter</b> to select, <b>Esc</b> to close
                 </div>
             </div>
         </div>
@@ -1862,7 +1862,7 @@ const AuditLogModalDeprecated = ({ isOpen, onClose, onBack, user, dataOwnerId })
         const q = buildQuery();
 
         const unsub = onSnapshot(q, (snap) => {
-            console.log('ðŸ“Š LOGS RETRIEVED:', snap.docs.length, 'documents');
+            console.log('📊 LOGS RETRIEVED:', snap.docs.length, 'documents');
             const logData = snap.docs
                 .map(d => {
                     const data = d.data();
@@ -2053,7 +2053,7 @@ const GuestLedgerView = () => {
         // 1. Calculate Running Balance on FULL chronological list
         const chronological = [...data.transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-        // âœ… CRITICAL FIX: Start with OPENING BALANCE
+        // ✅ CRITICAL FIX: Start with OPENING BALANCE
         let runningBal = Number(data.party.openingBalance || 0);
 
         const withBalance = chronological.map(t => {
@@ -2238,7 +2238,7 @@ const GuestLedgerView = () => {
                 </div>
 
                 <div className="mt-6 text-center text-[10px] text-slate-400 pb-4">
-                    Generated by accpro â€¢ Secure Link
+                    Generated by accpro • Secure Link
                 </div>
             </div>
 
@@ -3270,7 +3270,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
     }, [isOpen, user, dataOwnerId]);
 
     // 3. UI Handlers (Formula Bar)
-    // âœ… FIX: Wrapped in useCallback to prevent crashing when sidebar toggles
+    // ✅ FIX: Wrapped in useCallback to prevent crashing when sidebar toggles
     const handleCellSelect = React.useCallback((cellName, rawValue) => {
         setActiveCell(cellName);
         setActiveValue(rawValue === null || rawValue === undefined ? "" : rawValue);
@@ -3518,7 +3518,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
 
     const filteredSavedSheets = savedSheets.filter(s => (s.name || "").toLowerCase().includes(searchTerm.toLowerCase()));
 
-    // âœ… FIX: Stable handler for grid ready
+    // ✅ FIX: Stable handler for grid ready
     const handleGridReady = React.useCallback((instance) => {
         jSheetRef.current = instance;
     }, []);
@@ -3529,7 +3529,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="Working Sheets Manager" maxWidth="max-w-[95vw]" zIndex={60}>
             <div className="flex h-[85vh] border rounded-lg overflow-hidden bg-white gap-0">
 
-                {/* âœ… SIDEBAR (Conditionally Rendered) */}
+                {/* ✅ SIDEBAR (Conditionally Rendered) */}
                 {isSidebarOpen && (
                     <div className="w-64 bg-slate-50 border-r border-slate-200 flex flex-col shrink-0 transition-all duration-300">
                         <div className="p-3 border-b border-slate-200 space-y-2">
@@ -3561,7 +3561,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
                     <div className="flex justify-between items-center p-2 border-b bg-slate-50/50">
                         {/* Left Section: Title & Controls */}
                         <div className="flex items-center gap-2">
-                            {/* âœ… Toggle Sidebar Button in Header */}
+                            {/* ✅ Toggle Sidebar Button in Header */}
                             <button
                                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                                 className={`p-1.5 rounded hover:bg-slate-200 transition-colors ${isSidebarOpen ? 'text-slate-600' : 'text-slate-400'}`}
@@ -3578,7 +3578,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
                             </div>
                             <div className="relative">
                                 <button onClick={() => setShowActions(!showActions)} className="flex items-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-lg font-bold text-xs">
-                                    âš¡ Actions <ChevronDown size={14} />
+                                    ⚡ Actions <ChevronDown size={14} />
                                 </button>
                                 {showActions && (
                                     <div className="absolute top-full left-0 mt-2 w-48 bg-white shadow-xl rounded-lg border z-50 overflow-hidden">
@@ -3592,11 +3592,11 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
                         <div className="flex items-center gap-2">
                             {currentSheetId && (
                                 <span style={{ fontSize: '12px', color: 'gray', marginLeft: '10px' }}>
-                                    {isSaving ? "Saving..." : "âœ… Auto-Saved"}
+                                    {isSaving ? "Saving..." : "✅ Auto-Saved"}
                                 </span>
                             )}
                             <button onClick={handleSave} title="Save" className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg font-bold text-sm shadow-sm">
-                                ðŸ’¾ Save
+                                💾 Save
                             </button>
                             <button onClick={handleSaveAs} title="Save As New File" className="flex items-center gap-2 bg-gray-600 hover:bg-gray-700 text-white px-4 py-1.5 rounded-lg font-bold text-sm shadow-sm">
                                 ðŸ’¾ðŸ–Šï¸ Save As
@@ -3604,7 +3604,7 @@ const WorkingSheetModal = ({ isOpen, onClose, onBack, user, dataOwnerId, isSideb
                         </div>
                     </div>
 
-                    {/* âœ… FORMULA BAR (Syncs with Active Cell) */}
+                    {/* ✅ FORMULA BAR (Syncs with Active Cell) */}
                     <div className="flex items-center gap-0 border-b border-slate-300 bg-slate-100 p-1">
                         <div className="w-16 h-8 bg-white border border-slate-300 flex items-center justify-center font-bold text-slate-600 text-sm shadow-inner rounded-l">
                             {activeCell || ""}
@@ -3853,7 +3853,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     // Handle clicking a live company
     const handleLiveCompanyClick = (liveCo) => {
         if (isCompanyLocal(liveCo.id)) {
-            // Already local â€” just open it
+            // Already local — just open it
             onSelect(liveCo.id);
         }
         // If not local, user must click the download button
@@ -3900,7 +3900,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                     return stats ? { ...co, stats } : co;
                 }));
                 setCompanies(withStats);
-                alert(`âœ… "${coName}" is now LIVE on Firebase!\n${result.uploaded} records uploaded to the cloud.`);
+                alert(`✅ "${coName}" is now LIVE on Firebase!\n${result.uploaded} records uploaded to the cloud.`);
             } else {
                 alert(`âŒ Failed to make live: ${result.error}`);
             }
@@ -3930,7 +3930,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         e.stopPropagation();
         const localStats = companies.find(c => c.id === coId)?.stats;
         const statsText = localStats ? `\n\nThis will push all ${localStats.vouchers || 0} vouchers and ${localStats.ledgers || 0} ledgers.` : '';
-        if (!window.confirm(`ðŸ”„ FORCE FULL RE-SYNC\n\nPush ALL local records for "${coName}" to Firebase, ignoring previous sync status?\n\nUse this if QuickAccPro is missing vouchers that exist in the main app.${statsText}`)) return;
+        if (!window.confirm(`🔄 FORCE FULL RE-SYNC\n\nPush ALL local records for "${coName}" to Firebase, ignoring previous sync status?\n\nUse this if QuickAccPro is missing vouchers that exist in the main app.${statsText}`)) return;
         
         setForceResyncId(coId);
         setForceResyncProgress({ current: 0, total: 0 });
@@ -3939,7 +3939,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                 setForceResyncProgress({ current: done, total });
             });
             if (result.success) {
-                alert(`âœ… Re-Sync Complete!\n\n${result.count} records pushed to Firebase.\nQuickAccPro should now show all vouchers.`);
+                alert(`✅ Re-Sync Complete!\n\n${result.count} records pushed to Firebase.\nQuickAccPro should now show all vouchers.`);
             } else {
                 alert(`âŒ Re-Sync failed: ${result.error}`);
             }
@@ -4151,7 +4151,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                     await existing.incrementalPatch({ settings: { ...existingSettings, isLive: false } });
                 }
             } catch (le) {
-                // BroadcastChannel error is non-fatal â€” just use setCompanyLiveStatus as fallback
+                // BroadcastChannel error is non-fatal — just use setCompanyLiveStatus as fallback
                 try { await setCompanyLiveStatus(co.id, false); } catch {}
                 console.warn('[CLOUD DELETE] Local settings update used fallback:', le.message);
             }
@@ -4161,7 +4161,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
             setCompanies(freshList);
             
             setCloudDeleteDialog({ open: false, co: null, password: '', busy: false });
-            alert(`âœ… "${co.name}" has been permanently deleted from Firebase.`);
+            alert(`✅ "${co.name}" has been permanently deleted from Firebase.`);
         } catch (err) {
             alert('Delete failed: ' + err.message);
             setCloudDeleteDialog(prev => ({ ...prev, busy: false }));
@@ -4183,7 +4183,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                 // Refresh local companies list
                 const freshList = await listCompanies();
                 setCompanies(freshList);
-                alert(`âœ… Company '${liveCo.name}' downloaded successfully!\n${result.downloaded} records downloaded.\n\nYou can now open it from LIVE DATAS or OFFLINE section.`);
+                alert(`✅ Company '${liveCo.name}' downloaded successfully!\n${result.downloaded} records downloaded.\n\nYou can now open it from LIVE DATAS or OFFLINE section.`);
             } else {
                 alert('âŒ Download failed: ' + result.error);
             }
@@ -4222,7 +4222,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
             setCompanies(prev => [...prev, co]);
             setNewCompanyName('');
             setView('menu');
-            alert("âœ… Company Created Successfully!");
+            alert("✅ Company Created Successfully!");
         } catch (e) {
             alert("Error creating company: " + e.message);
         } finally {
@@ -4461,8 +4461,8 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                         <td className="pr-4 text-center text-blue-400">{h.ledgers}</td>
                                                         <td className="text-center">
                                                             {h.status === 'success'
-                                                                ? <span className="text-emerald-400 font-bold">âœ“ OK</span>
-                                                                : <span className="text-red-400 font-bold" title={h.error}>âœ— FAIL</span>
+                                                                ? <span className="text-emerald-400 font-bold">✓ OK</span>
+                                                                : <span className="text-red-400 font-bold" title={h.error}>✗ FAIL</span>
                                                             }
                                                         </td>
                                                     </tr>
@@ -4583,7 +4583,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
-                    {/* âœ… LIVE DATAS VIEW (MODERN) */}
+                    {/* ✅ LIVE DATAS VIEW (MODERN) */}
                     {view === 'live' && (
                         <div className="absolute inset-0 z-20 flex items-center justify-center p-8 md:p-16 animated-in fade-in zoom-in-95">
                             <div className="w-full max-w-5xl bg-[#0f172a] border border-white/10 rounded-[40px] shadow-[0_32px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col h-full max-h-[700px]">
@@ -4781,7 +4781,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
-                    {/* â”€â”€ CLOUD RENAME DIALOG â”€â”€ */}
+                    {/* ── CLOUD RENAME DIALOG ── */}
                     {cloudRenameDialog.open && (
                         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => !cloudRenameDialog.busy && setCloudRenameDialog({ open: false, co: null, value: '', busy: false })}>
                             <div className="bg-[#0f172a] border border-white/10 rounded-[28px] p-8 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -4811,7 +4811,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
-                    {/* â”€â”€ CLOUD DELETE DIALOG â”€â”€ */}
+                    {/* ── CLOUD DELETE DIALOG ── */}
                     {cloudDeleteDialog.open && (
                         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !cloudDeleteDialog.busy && setCloudDeleteDialog({ open: false, co: null, password: '', busy: false })}>
                             <div className="bg-[#0f172a] border border-red-500/20 rounded-[28px] p-8 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -4854,7 +4854,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
 
 
-                    {/* âœ… CREATE COMPANY FORM VIEW (MODERN) */}
+                    {/* ✅ CREATE COMPANY FORM VIEW (MODERN) */}
                     {view === 'create' && (
                         <div className="absolute inset-0 z-20 flex items-center justify-center p-8 md:p-16 animated-in fade-in zoom-in-95">
                             <form 
@@ -4900,7 +4900,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                         <div className="grid grid-cols-2 gap-4 opacity-50 pointer-events-none">
                                             <div className="flex flex-col gap-1.5">
                                                 <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest ml-1">Mailing Name</label>
-                                                <div className="bg-white/5 px-4 py-2.5 rounded-xl text-slate-400 text-xs font-bold uppercase">{newCompanyName || 'â€”'}</div>
+                                                <div className="bg-white/5 px-4 py-2.5 rounded-xl text-slate-400 text-xs font-bold uppercase">{newCompanyName || '—'}</div>
                                             </div>
                                             <div className="flex flex-col gap-1.5">
                                                 <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest ml-1">Data Storage</label>
@@ -4946,7 +4946,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
-                    {/* âœ… REMOVE DIALOG (MODERN) */}
+                    {/* ✅ REMOVE DIALOG (MODERN) */}
                     {removeDialog.open && removeDialog.company && (
                         <div className="absolute inset-0 z-30 flex items-center justify-center p-8 bg-black/60 backdrop-blur-sm animated-in fade-in">
                             <div className="w-full max-w-md bg-[#0f172a] border border-red-500/30 rounded-[32px] shadow-[0_32px_80px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col">
@@ -5220,9 +5220,9 @@ export default function App() {
     // -------------------------------------------------------------
 
     const [user, setUser] = useState(null);
-    const accountsRef = useRef([]); // âœ… Added for stale-state-safe calculations
-    const partiesRef = useRef([]);  // âœ… Added for stale-state-safe calculations
-    const productsRef = useRef([]); // âœ… Added for stale-state-safe stock calculations
+    const accountsRef = useRef([]); // ✅ Added for stale-state-safe calculations
+    const partiesRef = useRef([]);  // ✅ Added for stale-state-safe calculations
+    const productsRef = useRef([]); // ✅ Added for stale-state-safe stock calculations
 
     const [userData, setUserData] = useState(null);
     const [idleWarningOpen, setIdleWarningOpen] = useState(false);
@@ -5235,7 +5235,7 @@ export default function App() {
     const [updateDetails, setUpdateDetails] = useState("");
     const confirmPassword = (title) => {
         return new Promise((resolve) => {
-            setPassPrompt({ isOpen: true, title: title || "ðŸ”’ Enter Admin Password", resolve });
+            setPassPrompt({ isOpen: true, title: title || "🔒 Enter Admin Password", resolve });
         });
     };
     const idleWarningStartRef = useRef(null);
@@ -5252,7 +5252,7 @@ export default function App() {
 
     // 2. ADD THIS NEW DATA STATE (If not already there)
     const [stockJournals, setStockJournals] = useState([]);
-    const [showVoucherV2Menu, setShowVoucherV2Menu] = useState(false); // âœ¨ V2 Voucher Menu
+    const [showVoucherV2Menu, setShowVoucherV2Menu] = useState(false); // ✨ V2 Voucher Menu
     const [currentRole, setCurrentRole] = useState(null); // role (owner, data_entry_1, etc)
     const [loading, setLoading] = useState(true);
     const [activeModal, setActiveModal] = useState(null);
@@ -5347,7 +5347,7 @@ export default function App() {
         return id;
     })();
 
-    // ðŸš€ NEW: AUTO-OPEN COMPANY SELECTOR ON LOGIN
+    // 🚀 NEW: AUTO-OPEN COMPANY SELECTOR ON LOGIN
     useEffect(() => {
         if (user && !activeCompanyId && !activeModal) {
             // Give the app a moment to settle then show the selector
@@ -5511,7 +5511,7 @@ export default function App() {
 
     // Menu state - Initialize true on desktop, false on mobile
     const [menuOpen, setMenuOpen] = useState(false);
-    const [isSidebarOpen, setIsSidebarOpen] = useState(false); // âœ… NEW: Sidebar Toggle for Spreadsheet
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ✅ NEW: Sidebar Toggle for Spreadsheet
     const [ledgerInitialState, setLedgerInitialState] = useState(null);
     const [savedLedgerFilter, setSavedLedgerFilter] = useState(null);
     const [toast, setToast] = useState(null); // <--- ADD THIS
@@ -5556,7 +5556,7 @@ export default function App() {
         }
     };
     // ------------------------
-    // âœ… NEW GLOBAL DATE STATE
+    // ✅ NEW GLOBAL DATE STATE
     const [dateModalOpen, setDateModalOpen] = useState(false);
     const [periodModalOpen, setPeriodModalOpen] = useState(false);
     const [globalDateCmd, setGlobalDateCmd] = useState(null); // { type: 'single'|'period', date:..., startDate:..., endDate:..., ts: Date.now() }
@@ -5651,7 +5651,7 @@ export default function App() {
     const [liveRegistryCompanies, setLiveRegistryCompanies] = useState([]);
     const [systemInfo, setSystemInfo] = useState(null);
 
-    // âœ… Sync Refs to always have fresh state in Snapshot callbacks
+    // ✅ Sync Refs to always have fresh state in Snapshot callbacks
     useEffect(() => { accountsRef.current = accounts; }, [accounts]);
     useEffect(() => { partiesRef.current = parties; }, [parties]);
     useEffect(() => { productsRef.current = products; }, [products]);
@@ -5672,7 +5672,7 @@ export default function App() {
 
     // Auth State removed (handled by LicenseGate)
 
-    // ðŸš€ PWA Quick-Action Shortcuts Handler
+    // 🚀 PWA Quick-Action Shortcuts Handler
     useEffect(() => {
         if (activeCompanyId && !loading) {
             const params = new URLSearchParams(window.location.search);
@@ -5880,7 +5880,7 @@ export default function App() {
                             const d = userDoc.data();
                             setUserData(d);
                             
-                            // âœ… Fix: If they don't have the claim but do have the field in Firestore, set it here
+                            // ✅ Fix: If they don't have the claim but do have the field in Firestore, set it here
                             if (d.ownerId) {
                                 console.log("ðŸ” Found ownerId in user document:", d.ownerId);
                                 setDataOwnerId(d.ownerId);
@@ -5902,13 +5902,13 @@ export default function App() {
                     setUserData({ name: 'Guest User', role: 'owner', email: 'guest@accpro.app' });
                 }
             } else {
-                // ðŸ›‘ ONLY CLEAR IF NOT IN OFFLINE (LOCAL COMPANY) MODE
+                // 🛑 ONLY CLEAR IF NOT IN OFFLINE (LOCAL COMPANY) MODE
                 if (!activeCompanyId) {
                     setUser(null);
                     setDataOwnerId(null);
                     setCurrentRole(null);
 
-                    // ðŸ§¹ CLEAR DATA ON LOGOUT (Security Fix)
+                    // 🧹 CLEAR DATA ON LOGOUT (Security Fix)
                     setInvoices([]); setPayments([]); setJournalVouchers([]); setStockJournals([]); setProducts([]); setParties([]); setAccounts([]); setExpenses([]); setAttendanceRecords([]); setVehicles([]);
                     setCompanyProfile(null); setUserData(null);
                 }
@@ -5978,7 +5978,7 @@ export default function App() {
         const unsubProducts = onSnapshot(getMasterQuery("products"), (snap) => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (products):", err));
         const unsubParties = onSnapshot(getMasterQuery("parties"), (snap) => {
             const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            console.log("ðŸ‘¥ Parties Snapshot:", data.length);
+            console.log("👥 Parties Snapshot:", data.length);
             setParties(data);
         }, (err) => console.error("Snapshot error (parties):", err));
         const unsubLocations = onSnapshot(getMasterQuery("locations"), (snap) => setLocations(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (locations):", err));
@@ -6026,7 +6026,7 @@ export default function App() {
         const unsubPayments = onSnapshot(getTxQuery("payments"), (snap) => setPayments(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (payments):", err));
         const unsubJV = onSnapshot(getTxQuery("journal_vouchers"), (snap) => setJournalVouchers(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (journal_vouchers):", err));
 
-        // âœ… ADD THIS LINE to fetch Stock Journals globally
+        // ✅ ADD THIS LINE to fetch Stock Journals globally
         const unsubStockJournals = onSnapshot(getTxQuery("stock_journals"), (snap) => setStockJournals(filterActiveVouchers(snap.docs.map(d => ({ id: d.id, ...d.data() })))), (err) => console.error("Snapshot error (stock_journals):", err));
 
         // For Invoices, we need specific logic for stats even if filtered
@@ -6106,7 +6106,7 @@ export default function App() {
             unsubCurrency();
             if (unsubPayments) unsubPayments();
             if (unsubJV) unsubJV();
-            unsubStockJournals(); // âœ… Cleanup here
+            unsubStockJournals(); // ✅ Cleanup here
         };
     }, [dataOwnerId, user, currentRole === 'data_entry_1']); // <--- Ensure this line appears ONLY ONCE
 
@@ -6234,7 +6234,7 @@ export default function App() {
     useEffect(() => {
         if (!dataOwnerId) return; // Wait until we know who the owner is
 
-        // âœ… CHANGE: Listen to 'tasks/OWNER_ID' instead of just 'tasks'
+        // ✅ CHANGE: Listen to 'tasks/OWNER_ID' instead of just 'tasks'
         const tasksRef = ref(rtdb, `tasks/${dataOwnerId}`);
 
         const unsubscribe = onValue(tasksRef, (snapshot) => {
@@ -6248,7 +6248,7 @@ export default function App() {
             }
         });
         return () => unsubscribe();
-    }, [dataOwnerId]); // âœ… Dependency added
+    }, [dataOwnerId]); // ✅ Dependency added
 
     // 3. Helper to Update My Current Activity (Purchase, Sales, etc.)
     const updateMyActivity = (actionName) => {
@@ -6278,7 +6278,7 @@ export default function App() {
             idleWarningStartRef.current = null;
 
             if (reason === 'auto' && subUser) {
-                // âœ… FOR TEAM USERS: Only clear sub-user session, don't kill main license
+                // ✅ FOR TEAM USERS: Only clear sub-user session, don't kill main license
                 setSubUser(null);
                 const license = window.accproLicense;
                 const targetEmail = license?.email || '';
@@ -6287,14 +6287,14 @@ export default function App() {
                 setActiveModal(null);
                 alert('Team session expired due to 2 hours of inactivity. Returning to user selection.');
             } else {
-                // âœ… MANUAL OR FULL LOGOUT: Kill license/Firebase session
+                // ✅ MANUAL OR FULL LOGOUT: Kill license/Firebase session
                 if (window.deactivateaccproLicense) {
                     await window.deactivateaccproLicense();
                 } else {
                     await signOut(auth);
                 }
 
-                // ðŸš€ CLEAR PWA PERSISTENT SESSION
+                // 🚀 CLEAR PWA PERSISTENT SESSION
                 if (activeCompanyId) {
                     localStorage.removeItem(`accpro_session_${activeCompanyId}`);
                 }
@@ -6311,7 +6311,7 @@ export default function App() {
                 }
             }
 
-            // ðŸ§¹ CLEAR IDLE STATE ON LOGOUT
+            // 🧹 CLEAR IDLE STATE ON LOGOUT
             localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
 
             if (window.innerWidth < 768) setMenuOpen(false);
@@ -6328,7 +6328,7 @@ export default function App() {
     const handleSubUserLogout = useCallback(() => {
         if (!window.confirm("Log out current sub-user and return to admin?")) return;
         
-        // ðŸš€ CLEAR PWA PERSISTENT SESSION
+        // 🚀 CLEAR PWA PERSISTENT SESSION
         if (activeCompanyId) {
             localStorage.removeItem(`accpro_session_${activeCompanyId}`);
         }
@@ -6515,7 +6515,7 @@ export default function App() {
     }
 
     const handleStockItemClick = (itemId) => {
-        // âœ… FIX: Preserve modal stack so back button returns to Stock Summary
+        // ✅ FIX: Preserve modal stack so back button returns to Stock Summary
         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
         onMenuClick();
         setLedgerInitialState({ type: 'item', id: itemId });
@@ -6523,7 +6523,7 @@ export default function App() {
     };
 
     const handleAccountItemClick = (item) => {
-        // âœ… FIX: Preserve modal stack so back button returns to register
+        // ✅ FIX: Preserve modal stack so back button returns to register
         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
         onMenuClick();
         setLedgerInitialState({
@@ -6536,7 +6536,7 @@ export default function App() {
     };
 
     const handlePartyItemClick = (item) => {
-        // âœ… FIX: Preserve modal stack so back button returns to register
+        // ✅ FIX: Preserve modal stack so back button returns to register
         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
         onMenuClick();
         setLedgerInitialState({
@@ -6563,7 +6563,7 @@ export default function App() {
             if (docSnap.exists()) {
                 const data = { id: docSnap.id, ...docSnap.data() };
 
-                // --- ðŸ”“ SECURITY CHECK ---
+                // --- 🔓 SECURITY CHECK ---
                 // Removed restrictive role checks and password prompts. 
                 // All team members can view/edit as per base permissions.
                 // Ownership check removed to allow full collaboration.
@@ -6585,7 +6585,7 @@ export default function App() {
                 if (col === 'invoices') setActiveModal(data.type === 'purchase' ? 'purchase' : 'sales');
                 else if (col === 'payments') setActiveModal('payment');
                 else if (col === 'journal_vouchers') {
-                    // âœ… CHECK FOR HIDDEN (LINKED) JOURNAL
+                    // ✅ CHECK FOR HIDDEN (LINKED) JOURNAL
                     if (data.linkedStockJournalId) {
                         setToast({ type: 'info', title: 'Redirecting...', message: 'Opening Original Mfg Journal...' });
                         // Recursive call to open the PARENT Stock Journal
@@ -6696,8 +6696,8 @@ export default function App() {
         return () => unsub();
     }, []);
 
-    // âœ… REPLACED DASHBOARD STATS (Calculates History based on Date)
-    // âœ… NEW: LIVE STOCK BALANCES (Always the latest, used by Vouchers and live areas)
+    // ✅ REPLACED DASHBOARD STATS (Calculates History based on Date)
+    // ✅ NEW: LIVE STOCK BALANCES (Always the latest, used by Vouchers and live areas)
     const liveStockBalances = useMemo(() => {
         const itemMap = {};
         const lastRateMap = {}; // pid -> {rate, date}
@@ -6748,11 +6748,11 @@ export default function App() {
         return { itemMap, lastRateMap, openValMap };
     }, [products, invoices, stockJournals]);
 
-    // âœ… DASHBOARD STOCK TOTAL â€” derived from the true global documents (not role-filtered)
+    // ✅ DASHBOARD STOCK TOTAL — derived from the true global documents (not role-filtered)
     // that reports use, ensuring admin and team-user always see consistent true balances.
     const [stockSummaryGrandTotal, setStockSummaryGrandTotal] = useState({ qty: 0, val: 0 });
 
-    // âœ… NEW: HISTORICAL CASH, RECEIVABLES, PAYABLES SUMMARY (Calculated for Dashboard Date)
+    // ✅ NEW: HISTORICAL CASH, RECEIVABLES, PAYABLES SUMMARY (Calculated for Dashboard Date)
     const [cashSummaryGrandTotal, setCashSummaryGrandTotal] = useState(0);
     const [receivablesGrandTotal, setReceivablesGrandTotal] = useState(0);
     const [payablesGrandTotal, setPayablesGrandTotal] = useState(0);
@@ -6769,7 +6769,7 @@ export default function App() {
 
         let invDocs = null, payDocs = null, jvDocs = null, mfgDocs = null;
 
-        // âœ… Renamed from 'recalc' to 'calculateFinanceSummary' and using REFS for fresh state
+        // ✅ Renamed from 'recalc' to 'calculateFinanceSummary' and using REFS for fresh state
         const calculateFinanceSummary = async () => {
             if (!invDocs || !payDocs || !jvDocs || !mfgDocs) return;
 
@@ -7108,7 +7108,7 @@ export default function App() {
                         await deleteDoc(doc(db, 'journal_vouchers', docData.expenseJournalId)).catch(e => console.warn("Failed delete linked JV", e));
                     }
 
-                    // âœ… RESTORE JUMBO BAGS (same logic as single-delete)
+                    // ✅ RESTORE JUMBO BAGS (same logic as single-delete)
                     try {
                         const bagBatch = writeBatch(db);
                         let bagCount = 0;
@@ -7238,12 +7238,12 @@ export default function App() {
             // 2. Call Cloud Function
             const collectionName = resolveVoucherCollection(type);
 
-            // âœ… AUTO-DELETE LINKED EXPENSE JOURNAL
+            // ✅ AUTO-DELETE LINKED EXPENSE JOURNAL
             if (docData.expenseJournalId) {
                 await deleteDoc(doc(db, 'journal_vouchers', docData.expenseJournalId)).catch(e => console.warn("Failed to delete linked exp JV", e));
             }
 
-            // âœ… AUTO-SYNC JUMBO BAGS (Deletion for Mfg/Pur, Reversal for Sales)
+            // ✅ AUTO-SYNC JUMBO BAGS (Deletion for Mfg/Pur, Reversal for Sales)
             try {
                 const batch = writeBatch(db);
                 let count = 0;
@@ -7694,7 +7694,7 @@ export default function App() {
 
                     const targetUid = dataOwnerId || user.uid;
 
-                    // â”€â”€ Step 1: Write all records directly to the company DB (bypasses rxfs.js shim)
+                    // ── Step 1: Write all records directly to the company DB (bypasses rxfs.js shim)
                     // This guarantees data lands in the correct company's offline_records regardless
                     // of what currentCompanyId happens to be at restore time.
                     const totalRecords = Object.values(normalizedData).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
@@ -7724,8 +7724,8 @@ export default function App() {
                     );
                     console.log(`[Restore] restoreCompanyData result:`, restoreResult);
 
-                    // â”€â”€ Step 2: Repair missing master group collections
-                    // (written via rxfs.js shim â€” goes to current company DB, same place)
+                    // ── Step 2: Repair missing master group collections
+                    // (written via rxfs.js shim — goes to current company DB, same place)
                     const upsertMasterByName = async (collectionName, names) => {
                         if (!Array.isArray(names) || names.length === 0) return 0;
 
@@ -7915,7 +7915,7 @@ export default function App() {
                 capital: {}, assets: {}, income: {}
             };
 
-            // âœ… Track which IDs actually exist
+            // ✅ Track which IDs actually exist
             const existingIds = {
                 products: new Set(),
                 parties: new Set(),
@@ -8047,7 +8047,7 @@ export default function App() {
                     let count = 0;
                     let updated = 0;
                     for (const [id, val] of Object.entries(bal[key])) {
-                        // âœ… FIX: Only update documents that actually exist
+                        // ✅ FIX: Only update documents that actually exist
                         if (!existingIds[key].has(id)) {
                             console.warn(`Skipping ${label} ID ${id} - document no longer exists`);
                             continue;
@@ -8157,14 +8157,14 @@ export default function App() {
             const batchOps = [];
 
             for (const bag of allBags) {
-                // Case A: Bag is explicitly marked deleted â€” hard delete from Firestore
+                // Case A: Bag is explicitly marked deleted — hard delete from Firestore
                 if (bag.isDeleted || bag.status === 'deleted' || bag.status === 'bulk_deleted') {
                     batchOps.push({ type: 'delete', ref: doc(db, 'jumbo_bags', bag.id) });
                     deletedCount++;
                     continue;
                 }
 
-                // Case B: Bag is linked to a journal that was deleted â€” mark bag as deleted
+                // Case B: Bag is linked to a journal that was deleted — mark bag as deleted
                 const linkedJournalId = String(bag.stockJournalId || bag.linkedStockJournalId || bag.voucherId || bag.originId || '');
                 const linkedJournalRef = (bag.stockJournalRefNo || bag.voucherRefNo || '').toLowerCase();
 
@@ -8191,7 +8191,7 @@ export default function App() {
                         try {
                             const saleDoc = await getDoc(doc(db, 'invoices', saleId));
                             if (!saleDoc.exists()) {
-                                // Sale voucher gone â€” reset bag status back to in_stock
+                                // Sale voucher gone — reset bag status back to in_stock
                                 batchOps.push({
                                     type: 'update',
                                     ref: doc(db, 'jumbo_bags', bag.id),
@@ -8560,11 +8560,11 @@ export default function App() {
                 const k = e.key.toLowerCase();
 
                 // --- SUBMENU SHORTCUTS (when a flyout submenu is open) ---
-                // IMPORTANT: Arrow/Tab/Enter keys are NOT handled here â€” the menu container's
+                // IMPORTANT: Arrow/Tab/Enter keys are NOT handled here — the menu container's
                 // onKeyDown handles those for navigation. We only intercept letter shortcuts
                 // and Escape here; all other keys fall through naturally.
                 if (activeSubMenu) {
-                    // Navigation keys â€” let them pass through to the menu container's onKeyDown
+                    // Navigation keys — let them pass through to the menu container's onKeyDown
                     const isNavKey = e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Tab' || e.key === 'Enter' || e.key === ' ';
                     if (isNavKey) return; // don't block, container handles these
 
@@ -8597,10 +8597,10 @@ export default function App() {
 
                     if (activeSubMenu === 'Payroll (HRM)') {
                         if (k === 'a') { e.preventDefault(); setActiveModal('attendance'); setActiveSubMenu(null); }
-                        else if (k === 's') { e.preventDefault(); alert('ðŸš€ Staff Reports: Coming Soon in Payroll Module.'); setActiveSubMenu(null); }
-                        else if (k === 'e') { e.preventDefault(); alert('ðŸš€ End of Service Benefits (EOSB): Coming Soon.'); setActiveSubMenu(null); }
-                        else if (k === 'l') { e.preventDefault(); alert('ðŸš€ Salary Processing Module: Coming Soon.'); setActiveSubMenu(null); }
-                        else if (k === 'm') { e.preventDefault(); alert('ðŸš€ Employee Profile Management: Coming Soon.'); setActiveSubMenu(null); }
+                        else if (k === 's') { e.preventDefault(); alert('🚀 Staff Reports: Coming Soon in Payroll Module.'); setActiveSubMenu(null); }
+                        else if (k === 'e') { e.preventDefault(); alert('🚀 End of Service Benefits (EOSB): Coming Soon.'); setActiveSubMenu(null); }
+                        else if (k === 'l') { e.preventDefault(); alert('🚀 Salary Processing Module: Coming Soon.'); setActiveSubMenu(null); }
+                        else if (k === 'm') { e.preventDefault(); alert('🚀 Employee Profile Management: Coming Soon.'); setActiveSubMenu(null); }
                         return;
                     }
 
@@ -9118,7 +9118,7 @@ export default function App() {
 
                 // Add to list if Balance is not zero OR if it has movement in this period
                 if (bal !== 0 || hasActivity) {
-                    // âœ… FIXED LOGIC: 
+                    // ✅ FIXED LOGIC: 
                     // 'debit' should be the Closing Balance if Positive (Receivable)
                     // 'credit' should be the Closing Balance if Negative (Payable)
                     const isPositive = bal > 0;
@@ -9126,7 +9126,7 @@ export default function App() {
                     list.push({
                         id: ent.id,
                         label: ent.name,
-                        group: ent.group, // âœ… Added for grouping
+                        group: ent.group, // ✅ Added for grouping
                         rawValue: bal,
                         value: `${currencySymbol} ${formatCurrency(bal)}`,
                         debit: isPositive ? bal : 0,
@@ -9467,7 +9467,7 @@ export default function App() {
         };
     }, [dataOwnerId]);
 
-    // âœ… SYNC STATS TO FIREBASE REGISTRY
+    // ✅ SYNC STATS TO FIREBASE REGISTRY
     useEffect(() => {
         if (!dataOwnerId || !displayCompanyName || !masterStats) return;
 
@@ -9514,7 +9514,7 @@ export default function App() {
 
     return (
         <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-            {/* ðŸš€ New Update Banner */}
+            {/* 🚀 New Update Banner */}
             {latestRemoteVer !== SYSTEM_VERSION && (
                 <div className="bg-[#1e3264] text-white px-2 py-2 flex items-center justify-between shadow-xl animate-in slide-in-from-top duration-500 sticky top-0 z-[1000] border-b border-white/10">
                     <div className="flex items-center gap-3 ml-4">
@@ -9616,7 +9616,7 @@ export default function App() {
                         )}
                     </button>
 
-                    {/* âœ… NEW WORKING SHEET BUTTON */}
+                    {/* ✅ NEW WORKING SHEET BUTTON */}
                     <button
                         onClick={() => setActiveModal('working_sheet')}
                         title="Working Sheet"
@@ -9661,7 +9661,7 @@ export default function App() {
                         )}
                     </div>
 
-                    {/* âœ… NEW: REFRESH VERSION BUTTON */}
+                    {/* ✅ NEW: REFRESH VERSION BUTTON */}
                     <button onClick={handleRefreshApp} title="Refresh Version" className="flex items-center justify-center bg-white/10 text-white/80 border border-white/20 p-2 rounded-full text-xs font-bold hover:bg-white/20 transition-colors shadow-sm">
                         <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
                     </button>
@@ -9698,7 +9698,7 @@ export default function App() {
                         })}
                     </div>
 
-                    {/* âœ… CLOUD SYNC STATUS INDICATOR (BUTTON) */}
+                    {/* ✅ CLOUD SYNC STATUS INDICATOR (BUTTON) */}
                     <div className="flex items-center">
                         <button 
                             onClick={handleManualSync}
@@ -9994,8 +9994,8 @@ export default function App() {
                         </div>
                     )}
 
-                    {/* âœ… DASHBOARD LIST WITH DATE PICKER */}
-                    {/* âœ… TALLY STYLE DASHBOARD LIST WITH DATE PICKER */}
+                    {/* ✅ DASHBOARD LIST WITH DATE PICKER */}
+                    {/* ✅ TALLY STYLE DASHBOARD LIST WITH DATE PICKER */}
                     <div className="tally-menu-container mb-6 overflow-hidden">
 
                         {/* TALLY HEADER */}
@@ -10082,7 +10082,7 @@ export default function App() {
                         </div>
                     </div>
 
-                    {/* Minimal inline stats â€” no box, no heading */}
+                    {/* Minimal inline stats — no box, no heading */}
                     <div className="flex items-center gap-3 px-4 py-1.5 text-[10px] font-semibold text-slate-500 select-none">
                         <span>
                             Vouchers: <span className="font-black text-[#005994]">{voucherStats.total}</span>
@@ -10241,7 +10241,7 @@ export default function App() {
                                                 }}
                                                 className="text-[8px] font-black text-[#2b5797] hover:text-white hover:bg-[#2b5797] border border-[#2b5797] rounded px-2 py-0.5 transition-colors"
                                             >
-                                                MORE â†’
+                                                MORE →
                                             </button>
                                         </div>
                                     </div>
@@ -10288,7 +10288,7 @@ export default function App() {
                     companyId={activeCompanyId}
                     companyName={companyProfile?.name || 'This Company'}
                     onLogin={(u, mode) => {
-                        // ðŸš€ PERSIST LOGIN SESSION FOR THIS DEVICE
+                        // 🚀 PERSIST LOGIN SESSION FOR THIS DEVICE
                         localStorage.setItem(`accpro_session_${activeCompanyId}`, JSON.stringify({ mode, subUser: u }));
 
                         if (mode === 'admin') {
@@ -10404,7 +10404,7 @@ export default function App() {
                 >
                     <div className="p-4 space-y-3 font-black uppercase text-[12px]">
                         <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 tracking-tighter normal-case">
-                            âš¡ <strong>Direct Expenses</strong> are those involved in manufacturing or purchase.
+                            ⚡ <strong>Direct Expenses</strong> are those involved in manufacturing or purchase.
                             They are added to COGS. e.g. Freight, Customs, Labor.
                         </p>
                         <ActionButton
@@ -10879,7 +10879,7 @@ export default function App() {
             <InvoiceModal
                 isOpen={activeModal === 'purchase'}
                 zIndex={1300}
-                globalDateCmd={globalDateCmd} // âœ… PASS PROP
+                globalDateCmd={globalDateCmd} // ✅ PASS PROP
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 type="purchase"
@@ -10904,7 +10904,7 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
-                stockJournals={stockJournals} // âœ… PASS PROP
+                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -10925,7 +10925,7 @@ export default function App() {
             <InvoiceModal
                 isOpen={activeModal === 'sales'}
                 zIndex={1300}
-                globalDateCmd={globalDateCmd} // âœ… PASS PROP
+                globalDateCmd={globalDateCmd} // ✅ PASS PROP
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 type="sales"
@@ -10949,7 +10949,7 @@ export default function App() {
                 companyProfile={companyProfile}
                 vehicles={vehicles}
                 liveStockBalances={liveStockBalances}
-                stockJournals={stockJournals} // âœ… PASS PROP
+                stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
                     handleCloseModal();
@@ -10965,7 +10965,7 @@ export default function App() {
 
             <PaymentModal
                 {...(activeModal === 'receipt' ? getModalState('receipt') : activeModal === 'contra' ? getModalState('contra') : getModalState('payment'))}
-                globalDateCmd={globalDateCmd} // âœ… PASS PROP
+                globalDateCmd={globalDateCmd} // ✅ PASS PROP
                 defaultType={activeModal === 'receipt' ? 'in' : activeModal === 'contra' ? 'contra' : 'out'}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
@@ -11014,7 +11014,7 @@ export default function App() {
 
             <JournalVoucherModal
                 {...getModalState('journal')}
-                globalDateCmd={globalDateCmd} // âœ… PASS PROP
+                globalDateCmd={globalDateCmd} // ✅ PASS PROP
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -11054,7 +11054,7 @@ export default function App() {
 
             <StockJournalModal
                 {...getModalState('stock_journal')}
-                globalDateCmd={globalDateCmd} // âœ… PASS PROP
+                globalDateCmd={globalDateCmd} // ✅ PASS PROP
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -11064,8 +11064,8 @@ export default function App() {
                 products={products}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts}
-                accounts={accounts} // âœ… PASS ACCOUNTS
-                parties={parties}   // âœ… PASS PARTIES
+                accounts={accounts} // ✅ PASS ACCOUNTS
+                parties={parties}   // ✅ PASS PARTIES
                 lots={lots}
                 staff={staff}
                 attendanceRecords={attendanceRecords}
@@ -11852,7 +11852,7 @@ export default function App() {
                 parties={parties}
                 expenses={expenses}
                 accounts={accounts}
-                // ðŸ‘‡ ÛŒÛ Ø¯Ùˆ Ù„Ø§Ø¦Ù†ÛŒÚº Ø´Ø§Ù…Ù„ Ú©Ø±ÛŒÚº ðŸ‘‡
+                // 👇 ÛŒÛ دو لائنیں شامل کریں 👇
                 user={user}
                 subUser={subUser}
                 effectiveName={effectiveName}
@@ -11861,7 +11861,7 @@ export default function App() {
                 initialLotId={activeModal === 'lot_report' && editData?.preSelectedLotId ? editData.preSelectedLotId : null}
                 onViewTransaction={handleViewTransaction}
             />
-            {/* âœ… ADD THIS MODAL SO THE BUTTON WORKS */}
+            {/* ✅ ADD THIS MODAL SO THE BUTTON WORKS */}
 
 
             {activeModal === 'order_vouchers' && (
@@ -12082,7 +12082,7 @@ export default function App() {
             />
 
 
-            {/* âœ… FIXED: Now uses getModalState to open correctly */}
+            {/* ✅ FIXED: Now uses getModalState to open correctly */}
             <PieceWiseInventoryModal
                 {...getModalState('piece_inventory')}
                 onClose={handleCloseModal}
@@ -12108,12 +12108,12 @@ export default function App() {
                 onOpenVoucher={handleViewTransaction}
             />
 
-            {/* âœ… RESTORE THIS MISSING LEDGER MODAL */}
+            {/* ✅ RESTORE THIS MISSING LEDGER MODAL */}
             <LedgerModal
                 {...getModalState('ledgers')}
                 onOpenVoucherPicker={() => setShowVoucherV2Menu(true)}
-                globalDateCmd={globalDateCmd} // âœ… PASS PROP
-                onAddToFavorites={handleAddToFavorites} // âœ… PASS FAVORITES
+                globalDateCmd={globalDateCmd} // ✅ PASS PROP
+                onAddToFavorites={handleAddToFavorites} // ✅ PASS FAVORITES
                 onClose={() => { setActiveModal(null); setModalStack([]); }}
                 onBack={handleModalBack}
                 user={user}
@@ -12165,7 +12165,7 @@ export default function App() {
                     dataOwnerId={dataOwnerId}
                 />
             )}
-            {/* âœ… GLOBAL DATE MODALS (F2 / Alt+F2) */}
+            {/* ✅ GLOBAL DATE MODALS (F2 / Alt+F2) */}
             <ChangeDateModal
                 isOpen={dateModalOpen}
                 onClose={() => setDateModalOpen(false)}
@@ -12581,7 +12581,7 @@ const CompanyHistoryModal = ({ isOpen, onClose, company, deviceNames, onUpdateDe
                                             )}
                                         </div>
                                         <span className="text-[10px] text-blue-400 font-mono">
-                                            IP: {creation.device.ip || 'N/A'} â€¢ OS: {creation.device.platform || 'Local'}
+                                            IP: {creation.device.ip || 'N/A'} • OS: {creation.device.platform || 'Local'}
                                         </span>
                                     </div>
                                     <button 
@@ -12615,13 +12615,13 @@ const CompanyHistoryModal = ({ isOpen, onClose, company, deviceNames, onUpdateDe
                                                         <span className="text-[10px] font-black text-orange-600 uppercase tracking-wider">Name Modified</span>
                                                         <span className="text-[9px] bg-orange-100 text-orange-700 px-1 rounded font-bold">LOG</span>
                                                     </div>
-                                                    <span className="text-sm font-black text-slate-700">{log.details?.oldName} <span className="text-slate-400 mx-1">â†’</span> {log.details?.newName}</span>
+                                                    <span className="text-sm font-black text-slate-700">{log.details?.oldName} <span className="text-slate-400 mx-1">→</span> {log.details?.newName}</span>
                                                 </>
                                             ) : (
                                                 <span className="text-sm font-black text-slate-700">{log.userName}</span>
                                             )}
                                             <span className="text-[10px] text-slate-400 font-medium">
-                                                {log.type === 'name_change' ? `Modified by ${log.userName}` : ''} â€¢ {new Date(log.date).toLocaleString()}
+                                                {log.type === 'name_change' ? `Modified by ${log.userName}` : ''} • {new Date(log.date).toLocaleString()}
                                             </span>
                                         </div>
                                     </div>
@@ -12634,7 +12634,7 @@ const CompanyHistoryModal = ({ isOpen, onClose, company, deviceNames, onUpdateDe
                                                 <span className="text-xs font-bold text-slate-600">{getDisplayName(log.device).main}</span>
                                             </div>
                                             <span className="text-[9px] text-slate-400 font-mono">
-                                                IP: {log.device?.ip || 'N/A'} â€¢ {log.device?.platform || 'OS'}
+                                                IP: {log.device?.ip || 'N/A'} • {log.device?.platform || 'OS'}
                                             </span>
                                         </div>
                                         <button 
@@ -12802,7 +12802,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                     return stats ? { ...c, stats } : c;
                 }));
                 setCompanies(withStats);
-                alert(`âœ… "${co.name}" is now LIVE on Firebase!\n${result.uploaded} records uploaded.`);
+                alert(`✅ "${co.name}" is now LIVE on Firebase!\n${result.uploaded} records uploaded.`);
             } else {
                 alert(`âŒ Failed: ${result.error}`);
             }
@@ -12850,7 +12850,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             setCompanies(list);
             
             setEditingNameCo(null);
-            alert("âœ… Company renamed successfully!");
+            alert("✅ Company renamed successfully!");
         } catch (e) {
             console.error(e);
             alert("Failed to rename: " + e.message);
@@ -12869,7 +12869,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             if (result.success) {
                 const freshList = await listCompanies();
                 setCompanies(freshList);
-                alert(`âœ… Downloaded! ${result.downloaded} records. You can now switch to this company.`);
+                alert(`✅ Downloaded! ${result.downloaded} records. You can now switch to this company.`);
             } else {
                 alert('âŒ Download failed: ' + result.error);
             }
@@ -12907,7 +12907,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             const co = await createCompany(newCompanyName.trim(), user, systemInfo);
             setCompanies(prev => [...prev, co]);
             setNewCompanyName('');
-            alert("âœ… Company Created! Use the list above to Select it.");
+            alert("✅ Company Created! Use the list above to Select it.");
         } catch (e) {
             alert("Error: " + e.message);
         } finally {
@@ -12959,7 +12959,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             const list = await listCompanies();
             setCompanies(list);
 
-            alert("âœ… Company Profile Saved Successfully!");
+            alert("✅ Company Profile Saved Successfully!");
             onClose();
         } catch (e) {
             console.error(e);
@@ -13252,8 +13252,8 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                                                 </div>
                                                 <span className="text-[9px] text-slate-400 font-mono ml-4 mt-0.5">
                                                     {isLocal
-                                                        ? (liveCo.cloudVisible ? 'âœ… On this PC + Firebase' : 'âœ… Live on this PC')
-                                                        : 'â˜ Cloud only â€” download to use'}
+                                                        ? (liveCo.cloudVisible ? '✅ On this PC + Firebase' : '✅ Live on this PC')
+                                                        : 'â˜ Cloud only — download to use'}
                                                 </span>
                                                 <div className="ml-4">
                                                     <CompanyStatsSummary stats={liveCo.stats} />
@@ -13264,7 +13264,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                                                     isActive ? (
                                                         <span className="bg-green-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase">Active</span>
                                                     ) : (
-                                                        <span className="bg-green-100 text-green-700 text-[9px] font-black px-2 py-0.5 rounded-full uppercase border border-green-300">Open â†’</span>
+                                                        <span className="bg-green-100 text-green-700 text-[9px] font-black px-2 py-0.5 rounded-full uppercase border border-green-300">Open →</span>
                                                     )
                                                 ) : isDownloading ? (
                                                     <span className="text-blue-500 text-[9px] font-bold">Downloading...</span>
@@ -13273,7 +13273,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                                                         onClick={(e) => handleDownloadLive(liveCo, e)}
                                                         className="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white text-[9px] font-bold px-2.5 py-1 rounded-full uppercase transition-colors"
                                                     >
-                                                        â¬‡ Download
+                                                        ⬇ Download
                                                     </button>
                                                 )}
                                                 <button 
@@ -13676,7 +13676,7 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                         className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase transition-all ${showBankDetails ? 'bg-green-600 text-white shadow-lg' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                                     >
                                         <Building2 size={14} />
-                                        {showBankDetails ? 'Bank Details Added âœ“' : 'Add Bank Details Also?'}
+                                        {showBankDetails ? 'Bank Details Added ✓' : 'Add Bank Details Also?'}
                                     </button>
                                 </div>
 
@@ -13938,7 +13938,7 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                                 throw new Error("Move partially completed: source ledger still exists in old type.");
                                             }
 
-                                            alert("âœ… Ledger Moved & History Updated!\n\nNow press Update Record once in the new ledger type to finalize your edits.");
+                                            alert("✅ Ledger Moved & History Updated!\n\nNow press Update Record once in the new ledger type to finalize your edits.");
                                             setEditingId(null);
                                             setFormData({});
                                             if (onMoveSuccess) onMoveSuccess(targetType, editingId);
@@ -14605,7 +14605,7 @@ const InvoiceModal = (props) => {
     const [voucherType, setVoucherType] = useState(type); // allow switching between purchase/sales
     const [invoiceZoom, setInvoiceZoom] = useState(1);
 
-    // âœ… STATE FOR CONTAINER POPUP VISIBILITY
+    // ✅ STATE FOR CONTAINER POPUP VISIBILITY
     const [showContainerForm, setShowContainerForm] = useState(false);
     const [showBankPicker, setShowBankPicker] = useState(false);
     const [showVoucherSwitcher, setShowVoucherSwitcher] = useState(false);
@@ -14632,7 +14632,7 @@ const InvoiceModal = (props) => {
         documentType: 'invoice', // 'invoice', 'packing_list', etc.
         generateMode: 'single' // 'single' or 'all'
     });
-    // âœ… HBZ Bank Covering Letter Options
+    // ✅ HBZ Bank Covering Letter Options
     const [hbzOptions, setHbzOptions] = useState({
         releaseAgainstPayment: false,
         releaseAgainstAcceptance: false,
@@ -14644,7 +14644,7 @@ const InvoiceModal = (props) => {
         doNotProtest: false,
         doNotWaiveCharges: false,
         ourChargesText: '',
-        // âœ… Attached Documents Section
+        // ✅ Attached Documents Section
         draftSight: false,
         draftUsance: false,
         blOriginal: false,
@@ -14658,7 +14658,7 @@ const InvoiceModal = (props) => {
         other3: ''
     });
 
-    const [showExtraInfo, setShowExtraInfo] = useState(false); // âœ… NEW POPUP STATE
+    const [showExtraInfo, setShowExtraInfo] = useState(false); // ✅ NEW POPUP STATE
     const [companyImages, setCompanyImages] = useState([]);
 
     const [currencies, setCurrencies] = useState([]);
@@ -14672,12 +14672,12 @@ const InvoiceModal = (props) => {
     const [editNarration, setEditNarration] = useState(false);
     const [taxPercent, setTaxPercent] = useState('');
 
-    // âœ… NEW: Additional Expenses (Capitalized)
+    // ✅ NEW: Additional Expenses (Capitalized)
     const [addlExpenses, setAddlExpenses] = useState([]);   // [{ expenseId, amount }]
     const [addlExpCreditId, setAddlExpCreditId] = useState('');
     const [showAddlExp, setShowAddlExp] = useState(false);
 
-    // âœ… NEW: Sales Expense Mode Selection
+    // ✅ NEW: Sales Expense Mode Selection
     const [salesExpenseMode, setSalesExpenseMode] = useState(''); // 'include' or 'add'
     const [showExpenseModeModal, setShowExpenseModeModal] = useState(false);
     const [showMoreTools, setShowMoreTools] = useState(false);
@@ -14697,7 +14697,7 @@ const InvoiceModal = (props) => {
 
     const [lastUniversalSeed, setLastUniversalSeed] = useState(0);
 
-    // âœ… Store bag counts per product for UI Display
+    // ✅ Store bag counts per product for UI Display
     const [productsBagMap, setProductsBagMap] = useState({});
     const [allRemainingBagsMemo, setAllRemainingBagsMemo] = useState([]);
 
@@ -14818,8 +14818,8 @@ const InvoiceModal = (props) => {
         }
     }, [isOpen, voucherType, dataOwnerId, user]);
 
-    // âœ… AUTO-SELECT & PERSIST LOCATION
-    // âœ… AUTO-SELECT & PERSIST LOCATION
+    // ✅ AUTO-SELECT & PERSIST LOCATION
+    // ✅ AUTO-SELECT & PERSIST LOCATION
     useEffect(() => {
         if (isOpen && !initialData) {
             if (locations.length === 1) {
@@ -14860,7 +14860,7 @@ const InvoiceModal = (props) => {
                     lotId: initialData.lotId || '',
                     currencyId: initialData.currencyId || 'BASE',
                     exchangeRate: initialData.exchangeRate || 1,
-                    // âœ… LOAD SAVED DATA
+                    // ✅ LOAD SAVED DATA
                     containerNo: initialData.containerNo || '',
                     sealNo: initialData.sealNo || '',
                     containers: initialData.containers || (initialData.containerNo ? [{ id: 1, containerNo: initialData.containerNo, sealNo: initialData.sealNo }] : [{ id: 1, containerNo: '', sealNo: '' }]),
@@ -14928,7 +14928,7 @@ const InvoiceModal = (props) => {
                     setAdjustAdvRef(null); setAdjustAdvAmount('');
                 }
                 if (initialData.lotId) { setLotId(initialData.lotId); }
-                // âœ… Instant Render + Background Firestore Sync Loader
+                // ✅ Instant Render + Background Firestore Sync Loader
                 // 1. Instantly load and map bags from the embedded invoice snapshot so they render in the UI immediately without any query delay
                 const embeddedBags = initialData.soldBags || initialData.jumboBags || [];
                 if (embeddedBags.length > 0) {
@@ -14955,7 +14955,7 @@ const InvoiceModal = (props) => {
                     const updateItemsAndBags = (loaded) => {
                         // ðŸ›¡ï¸ GUARD: Never overwrite with empty when embedded bags were successfully loaded
                         if (loaded.length === 0 && embeddedBags.length > 0) {
-                            console.warn("Background bag query returned empty but embedded bags exist â€” keeping Phase 1 loaded bags.");
+                            console.warn("Background bag query returned empty but embedded bags exist — keeping Phase 1 loaded bags.");
                             return;
                         }
                         setJumboBags(loaded);
@@ -15002,7 +15002,7 @@ const InvoiceModal = (props) => {
                         if (loaded.length > 0) {
                             updateItemsAndBags(loaded);
                         } else if (embeddedBags.length > 0) {
-                            console.warn("Background bag query returned 0 results â€” keeping Phase 1 embedded bags.");
+                            console.warn("Background bag query returned 0 results — keeping Phase 1 embedded bags.");
                         }
                     }).catch(err => console.warn("Error fetching and mapping bags (bags preserved from Phase 1):", err));
                 }
@@ -15052,7 +15052,7 @@ const InvoiceModal = (props) => {
             if (initialData?.addlExpenses) {
                 setAddlExpenses(initialData.addlExpenses);
                 setAddlExpCreditId(initialData.addlExpCreditId || '');
-                // NOTE: Do NOT auto-open showAddlExp â€” always start collapsed; user can click Edit Expenses
+                // NOTE: Do NOT auto-open showAddlExp — always start collapsed; user can click Edit Expenses
                 if (initialData.salesExpenseMode) setSalesExpenseMode(initialData.salesExpenseMode);
             }
 
@@ -15075,7 +15075,7 @@ const InvoiceModal = (props) => {
         const newItems = [...items];
 
         let val = value;
-        // ðŸ”’ Enforce Max 3 Decimals for Numeric Fields
+        // 🔒 Enforce Max 3 Decimals for Numeric Fields
         if (['quantity', 'rate', 'pieces', 'total'].includes(field)) {
             if (val && val.toString().includes('.')) {
                 const parts = val.toString().split('.');
@@ -15127,7 +15127,7 @@ const InvoiceModal = (props) => {
             }
         }
 
-        // âš¡ AUTO-TRIGGER BAG SELECTION (SALES + BAGS MODE)
+        // ⚡ AUTO-TRIGGER BAG SELECTION (SALES + BAGS MODE)
         if (voucherType === 'sales' && formData.packingType === 'bags' && field === 'productId' && value) {
             // Clear any previous bags for this row since product changed
             newItems[index].selectedBags = [];
@@ -15201,7 +15201,7 @@ const InvoiceModal = (props) => {
         });
 
         const expTotal = round3(invExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0));
-        // âœ… NEW: Sum Additional Expenses
+        // ✅ NEW: Sum Additional Expenses
         const addlExpTotal = round3(addlExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0));
 
         let taxAmount = 0;
@@ -15209,7 +15209,7 @@ const InvoiceModal = (props) => {
             taxAmount = round3((itemsTotal * (Number(taxPercent) || 0)) / 100);
         }
 
-        // âœ… Updated logic for sales expense modes
+        // ✅ Updated logic for sales expense modes
         let grandTotalForeign;
         if (voucherType === 'sales' && salesExpenseMode === 'add') {
             // Mode 2: Add expenses to total (don't reduce item rates)
@@ -15269,7 +15269,7 @@ const InvoiceModal = (props) => {
             } else if (voucherType === 'sales') {
                 try {
                     // Fetch Available Bags for the selected products
-                    // âš¡ SKIP GLOBAL SELECTION - Use already selected bags per row
+                    // ⚡ SKIP GLOBAL SELECTION - Use already selected bags per row
                     let consolidatedBags = [];
                     items.forEach(item => {
                         if (item.selectedBags && item.selectedBags.length > 0) {
@@ -15322,7 +15322,7 @@ const InvoiceModal = (props) => {
     };
 
     const handleFinalSave = async (finalJumboBags = [], freshUniSeed = 0) => {
-        // ðŸ›‘ MANDATORY & DUPLICATE CHECKS
+        // 🛑 MANDATORY & DUPLICATE CHECKS
         if (!formData.refNo || !formData.refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
         if (!paymentTerms) return alert('âš ï¸ Payment Terms is required!');
         if (paymentTerms === 'date' && !paymentTermsDate) return alert('âš ï¸ Please select a Payment Due Date!');
@@ -15335,7 +15335,7 @@ const InvoiceModal = (props) => {
         }
 
         /*
-        // ðŸ›‘ NEGATIVE STOCK CHECK (For Sales)
+        // 🛑 NEGATIVE STOCK CHECK (For Sales)
         if (voucherType === 'sales') {
             for (const item of items) {
                 if (!item.productId) continue;
@@ -15360,7 +15360,7 @@ const InvoiceModal = (props) => {
         }
 
         let finalItems = [...items];
-        // âœ… Capitalize/Adjust Additional Expenses into Item Cost/Realization
+        // ✅ Capitalize/Adjust Additional Expenses into Item Cost/Realization
         // For Sales: mode 'include' = reduce rates, mode 'add' = NO CHANGE to rates (only add to total)
         // For Purchase: always increase rates (capitalize expenses)
         const shouldAdjustRates = voucherType === 'purchase' || (voucherType === 'sales' && salesExpenseMode === 'include');
@@ -15422,7 +15422,7 @@ const InvoiceModal = (props) => {
         }));
 
         try {
-            // ðŸ›‘ FETCH EXISTING BAGS TO CLEAN UP OR REVERT IF EDITING
+            // 🛑 FETCH EXISTING BAGS TO CLEAN UP OR REVERT IF EDITING
             let bagsToDelete = [];
             let bagsToRevert = [];
             if (initialData?.id) {
@@ -15447,7 +15447,7 @@ const InvoiceModal = (props) => {
                 }
 
                 const payload = {
-                    ...formData, // âœ… This includes containerNo, sealNo, otherRef, bankDetails automatically
+                    ...formData, // ✅ This includes containerNo, sealNo, otherRef, bankDetails automatically
                     companyBank: formData.bankDetails || (formData.companyBankId ? companyProfile.banks.find(b => b.accNumber === formData.companyBankId || b.id === formData.companyBankId) : null), // Save Full Bank Object for Reports
                     type: voucherType, items: cleanItems, expenses: cleanExpenses,
                     addlExpenses: cleanAddlExpenses, addlExpCreditId: addlExpCreditId || null,
@@ -15467,7 +15467,7 @@ const InvoiceModal = (props) => {
                     packingType: formData.packingType,
                     jumboEnabled: formData.packingType === 'bags',
                     bagCount: finalJumboBags.length,
-                    // âœ… EMBED BAG SNAPSHOT so details load instantly when voucher is re-opened
+                    // ✅ EMBED BAG SNAPSHOT so details load instantly when voucher is re-opened
                     jumboBags: voucherType === 'purchase' && finalJumboBags.length > 0
                         ? finalJumboBags.map(b => ({ id: b.id || '', bagNo: b.bagNo, productId: b.productId, qty: Number(b.qty) }))
                         : (initialData?.jumboBags || []),
@@ -15484,7 +15484,7 @@ const InvoiceModal = (props) => {
                 if (initialData && initialData.id) await transaction.update(invoiceRef, payload);
                 else await transaction.set(invoiceRef, payload);
 
-                // ðŸ’¾ SAVE/UPDATE JUMBO BAGS
+                // 💾 SAVE/UPDATE JUMBO BAGS
                 if (voucherType === 'purchase') {
                     // Cleanup old ones first (redundant if transaction handles it but safe)
                     for (const bid of bagsToDelete) {
@@ -15605,7 +15605,7 @@ const InvoiceModal = (props) => {
             if (onUpdateDate) onUpdateDate(formData.date);
 
             // --- OLD CODE (DELETE THIS) ---
-            // alert("âš¡ Saved!");
+            // alert("⚡ Saved!");
 
             // --- NEW CODE (ADD THIS) ---
             showToast({ type: 'success', title: 'Saved', message: 'Invoice recorded successfully.' });
@@ -15679,7 +15679,7 @@ const InvoiceModal = (props) => {
         return 0;
     };
 
-    // Memoize product options â€” prevents new array creation on every Firestore snapshot update (stops trembling)
+    // Memoize product options — prevents new array creation on every Firestore snapshot update (stops trembling)
     const productOptions = useMemo(() => products.map(p => {
         const bagCount = productsBagMap[p.id] || 0;
         const bagLabel = bagCount > 0 ? ` [${bagCount} BAGS]` : (voucherType === 'sales' && formData.packingType === 'bags' ? ' [0 BAGS]' : '');
@@ -15700,7 +15700,7 @@ const InvoiceModal = (props) => {
             defaultMaximized={true}
         >
             <div className="flex flex-col h-full bg-[#f8fafc] overflow-visible relative">
-                {/* ðŸš€ HIGH-END INTEGRATED CONTROL TOOLBAR (Professional Dark Theme) */}
+                {/* 🚀 HIGH-END INTEGRATED CONTROL TOOLBAR (Professional Dark Theme) */}
                 <div className="flex items-center w-full h-[36px] bg-[#1a2b53] border-b border-[#0f1b35] flex-nowrap overflow-visible select-none shadow-xl z-[1000] relative">
                     {/* A. NAVIGATION */}
                     <button 
@@ -15762,7 +15762,7 @@ const InvoiceModal = (props) => {
                     {/* C. QUICK PICKERS & TOOLS (HIGH DENSITY) */}
                     <div className="flex-1 flex items-center h-full px-2 gap-1.5 overflow-visible">
                         
-                        {/* REF NO â€” in top bar */}
+                        {/* REF NO — in top bar */}
                         <div className="h-7 flex items-center bg-white/10 border border-white/20 rounded-md px-2 shrink-0">
                             <input
                                 className="text-[9px] font-black text-white bg-transparent outline-none w-24 uppercase placeholder:text-white/30"
@@ -15772,7 +15772,7 @@ const InvoiceModal = (props) => {
                             />
                         </div>
 
-                        {/* TAX INV NO â€” inside this field as hint */}
+                        {/* TAX INV NO — inside this field as hint */}
                         {['purchase', 'sales'].includes(voucherType) && (
                             <div className="h-7 flex items-center bg-white/10 border border-white/20 rounded-md px-2 shrink-0">
                                 <input
@@ -15957,7 +15957,7 @@ const InvoiceModal = (props) => {
                                 autoFocus
                             />
                         )}
-                        {/* PAY TERMS dropdown button â€” far right */}
+                        {/* PAY TERMS dropdown button — far right */}
                         <div className="relative shrink-0 ml-auto">
                             <button
                                 type="button"
@@ -16390,7 +16390,7 @@ const InvoiceModal = (props) => {
                                     const selectedProd = products.find(p => p.id === item.productId);
                                     const currStock = item.productId ? (liveStockBalances.itemMap[item.productId] || 0) : 0;
 
-                                    // ðŸ§® Calculate RIE (Rate Inc Exp) & AIE (Amt Inc Exp)
+                                    // 🧮 Calculate RIE (Rate Inc Exp) & AIE (Amt Inc Exp)
                                     let rieDisplay = null;
                                     let aieDisplay = null;
                                     if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
@@ -16432,7 +16432,7 @@ const InvoiceModal = (props) => {
 
                                                 {/* Live stock display removed as per user request */}
 
-                                                {/* âœ… VIEW/EDIT BAGS ICON */}
+                                                {/* ✅ VIEW/EDIT BAGS ICON */}
                                                 {(item.productId && voucherType === 'sales' && formData.packingType === 'bags') && (
                                                     <button
                                                         type="button"
@@ -16494,7 +16494,7 @@ const InvoiceModal = (props) => {
                             {enableTax && (
                                 <tfoot>
                                     <tr className="bg-purple-50/40 border-t-2 border-purple-200">
-                                        {/* Tax name select â€” 200px in Item column */}
+                                        {/* Tax name select — 200px in Item column */}
                                         <td className="p-1 pl-2">
                                             <select
                                                 className="w-[200px] h-[36px] px-2 border border-purple-200 rounded-lg text-[10px] font-bold text-slate-700 bg-white outline-none"
@@ -16510,11 +16510,11 @@ const InvoiceModal = (props) => {
                                                 {taxRates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                                             </select>
                                         </td>
-                                        {/* PCS col â€” empty */}
+                                        {/* PCS col — empty */}
                                         <td className="p-1" />
-                                        {/* QTY col â€” empty */}
+                                        {/* QTY col — empty */}
                                         <td className="p-1" />
-                                        {/* Rate col â€” % input, 150px, h-36px */}
+                                        {/* Rate col — % input, 150px, h-36px */}
                                         <td className="p-1">
                                             <div className="relative w-[150px]">
                                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-bold text-purple-400 pointer-events-none">%</span>
@@ -16528,14 +16528,14 @@ const InvoiceModal = (props) => {
                                                 />
                                             </div>
                                         </td>
-                                        {/* Amt col â€” computed tax amount, 200px, h-36px */}
+                                        {/* Amt col — computed tax amount, 200px, h-36px */}
                                         <td className="p-1">
                                             <div className="w-[200px] h-[36px] flex items-center justify-end px-3 border border-purple-100 rounded-lg bg-white">
                                                 <span className="text-[12px] font-black text-purple-800 font-mono">{format3(totals.taxAmount)}</span>
                                                 <span className="text-[9px] text-purple-400 ml-1.5">{currentSym}</span>
                                             </div>
                                         </td>
-                                        {/* Del col â€” empty */}
+                                        {/* Del col — empty */}
                                         <td className="p-1" />
                                     </tr>
                                 </tfoot>
@@ -16576,13 +16576,13 @@ const InvoiceModal = (props) => {
                             </div>
                         </div>
 
-                        {/* EXPENSES SECTION â€” Summary when collapsed, full editor when showAddlExp=true */}
+                        {/* EXPENSES SECTION — Summary when collapsed, full editor when showAddlExp=true */}
                         {addlExpenses.length > 0 && !showAddlExp ? (
                             /* Collapsed summary view */
                             <div className="mx-1 mb-2 flex items-center gap-2 bg-orange-50 border border-orange-100 rounded-lg px-3 py-1.5 flex-wrap">
                                 <span className="text-[9px] font-black text-orange-700 uppercase shrink-0">Expenses:</span>
                                 {addlExpenses.map((exp, i) => {
-                                    const expName = expenses.find(e => e.id === exp.expenseId)?.name || 'â€”';
+                                    const expName = expenses.find(e => e.id === exp.expenseId)?.name || '—';
                                     return (
                                         <span key={i} className="text-[9px] bg-white border border-orange-200 text-orange-800 px-1.5 py-0.5 rounded font-bold">
                                             {expName}: <span className="text-orange-600">{exp.amount || '0'}</span>
@@ -16606,11 +16606,11 @@ const InvoiceModal = (props) => {
                                     </span>
                                     <div className="flex items-center gap-2">
                                         <button type="button" onClick={() => setAddlExpenses([...addlExpenses, { expenseId: '', amount: '' }])} className="text-[9px] text-blue-600 hover:underline font-bold">+ Add Row</button>
-                                        <button type="button" onClick={() => setShowAddlExp(false)} className="text-[9px] text-slate-400 hover:text-slate-600 font-bold px-1">â–² Collapse</button>
+                                        <button type="button" onClick={() => setShowAddlExp(false)} className="text-[9px] text-slate-400 hover:text-slate-600 font-bold px-1">▲ Collapse</button>
                                     </div>
                                 </div>
 
-                                {/* Expense Rows â€” compact 23-char width fields */}
+                                {/* Expense Rows — compact 23-char width fields */}
                                 {addlExpenses.map((exp, i) => (
                                     <div key={i} className="flex gap-1 items-center">
                                         <div className="w-[185px] shrink-0">
@@ -16660,7 +16660,7 @@ const InvoiceModal = (props) => {
                                     <div className="flex items-center gap-2">
                                         <div className="p-1 bg-amber-100 rounded text-amber-600"><Box size={12} /></div>
                                         <span className="text-[10px] font-black text-amber-800 uppercase tracking-wide">
-                                            {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} â€” {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
+                                            {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} — {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
                                         </span>
                                     </div>
                                     {voucherType === 'sales' && formData.packingType === 'bags' && (
@@ -16692,7 +16692,7 @@ const InvoiceModal = (props) => {
                     </div>
                 </form>
 
-                {/* 2ND LAST BAR â€” COMPACT TOTALS + NET BALANCE */}
+                {/* 2ND LAST BAR — COMPACT TOTALS + NET BALANCE */}
                 <div className="bg-[#f0f4f8] border-t border-slate-200 flex items-center h-[30px] shrink-0 px-4 gap-4 z-10">
                     {/* Left: compact summary */}
                     <div className="flex items-center gap-4 flex-1">
@@ -16816,13 +16816,13 @@ const InvoiceModal = (props) => {
                     round3={round3}
                 />
 
-                {/* âœ… Sales Expense Mode Selection Modal */}
+                {/* ✅ Sales Expense Mode Selection Modal */}
                 {
                     showExpenseModeModal && voucherType === 'sales' && (
                         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]" onClick={() => setShowExpenseModeModal(false)}>
                             <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
                                 <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2">
-                                    <span className="text-2xl">ðŸ’°</span> Choose Expense Method
+                                    <span className="text-2xl">💰</span> Choose Expense Method
                                 </h3>
                                 <p className="text-xs text-slate-500 mb-4">How should expenses affect this sales invoice?</p>
 
@@ -16881,7 +16881,7 @@ const InvoiceModal = (props) => {
                         </div>
                     )
                 }
-                {/* âœ… INVOICE GENERATION OPTIONS MODAL (NEW) - ADDED SCROLLBAR */}
+                {/* ✅ INVOICE GENERATION OPTIONS MODAL (NEW) - ADDED SCROLLBAR */}
                 {
                     showInvoiceOptions && (
                         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10000]" onClick={() => setShowInvoiceOptions(false)}>
@@ -16933,7 +16933,7 @@ const InvoiceModal = (props) => {
                                         </div>
                                     )}
 
-                                    {/* âœ… HBZ ADDITIONAL INFO WINDOW */}
+                                    {/* ✅ HBZ ADDITIONAL INFO WINDOW */}
                                     {printOptions.documentType === 'bank_application' && (
                                         <div className="bg-slate-50 border rounded-xl p-3 space-y-2 max-h-[200px] overflow-y-auto custom-scrollbar">
                                             <h4 className="text-[10px] font-black text-slate-500 uppercase border-b pb-1 mb-2">Detailed Instructions (Collection)</h4>
@@ -17006,7 +17006,7 @@ const InvoiceModal = (props) => {
                                                 />
                                             </div>
 
-                                            {/* âœ… ATTACHED DOCUMENTS SECTION */}
+                                            {/* ✅ ATTACHED DOCUMENTS SECTION */}
                                             <h4 className="text-[10px] font-black text-slate-500 uppercase border-b pb-1 mt-4 mb-2">Attached Documents / Bottom Details</h4>
 
                                             <div className="space-y-1">
@@ -17189,7 +17189,7 @@ const InvoiceModal = (props) => {
                                                     stampScale: printOptions.stampScale,
                                                     documentType: printOptions.documentType
                                                 },
-                                                hbzOptions // âœ… PASS HBZ OPTIONS
+                                                hbzOptions // ✅ PASS HBZ OPTIONS
                                             };
                                             if (printOptions.generateMode === 'all') {
                                                 if (!window.confirm("All letters instruction are given?")) return;
@@ -17261,7 +17261,7 @@ const InvoiceModal = (props) => {
                                                     stampScale: printOptions.stampScale,
                                                     documentType: printOptions.documentType
                                                 },
-                                                hbzOptions // âœ… PASS HBZ OPTIONS
+                                                hbzOptions // ✅ PASS HBZ OPTIONS
                                             };
                                             if (printOptions.generateMode === 'all') {
                                                 if (!window.confirm("All letters instruction are given?")) return;
@@ -17350,7 +17350,7 @@ const InvoiceModal = (props) => {
                     />
                 )}
 
-                {/* â”€â”€â”€ ADVANCE PICKER POPUP â”€â”€â”€ */}
+                {/* ─── ADVANCE PICKER POPUP ─── */}
                 {showAdvPicker && createPortal(
                     <div className="fixed inset-0 z-[19000] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowAdvPicker(false)}>
                         <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -17372,7 +17372,7 @@ const InvoiceModal = (props) => {
                                     </div>
                                 ) : advPickerData.length === 0 ? (
                                     <div className="flex flex-col items-center justify-center h-32 gap-2 text-slate-400">
-                                        <div className="text-3xl">ðŸ“‹</div>
+                                        <div className="text-3xl">📋</div>
                                         <div className="text-xs font-bold uppercase tracking-widest">No advances found for this party</div>
                                         <div className="text-[10px] text-slate-300">Create a payment with type Our/Their Advance first</div>
                                     </div>
@@ -17417,13 +17417,13 @@ const InvoiceModal = (props) => {
                                                                 {typeLabel[adv.type] || adv.type}
                                                             </span>
                                                         </td>
-                                                        <td className="px-3 py-3 text-slate-500">{adv.date ? new Date(adv.date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'â€”'}</td>
+                                                        <td className="px-3 py-3 text-slate-500">{adv.date ? new Date(adv.date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
                                                         <td className="px-4 py-3 text-right font-black tabular-nums">
                                                             <span className={isDepleted ? 'text-emerald-500 text-[10px]' : 'text-slate-800'}>
-                                                                {isDepleted ? 'âœ“ SETTLED' : Number(adv.balance).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                                                                {isDepleted ? '✓ SETTLED' : Number(adv.balance).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
                                                             </span>
                                                         </td>
-                                                        <td className="px-3 py-3 text-center text-slate-300 text-lg">{!isDepleted && 'â€º'}</td>
+                                                        <td className="px-3 py-3 text-center text-slate-300 text-lg">{!isDepleted && '›'}</td>
                                                     </tr>
                                                 );
                                             })}
@@ -17433,14 +17433,14 @@ const InvoiceModal = (props) => {
                             </div>
                             {/* Footer */}
                             <div className="shrink-0 px-5 py-2.5 border-t border-slate-100 bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                                Click a row to select Â· Depleted advances shown greyed out
+                                Click a row to select · Depleted advances shown greyed out
                             </div>
                         </div>
                     </div>,
                     document.body
                 )}
 
-                {/* â”€â”€â”€ ADVANCE MINI-LEDGER POPUP â”€â”€â”€ */}
+                {/* ─── ADVANCE MINI-LEDGER POPUP ─── */}
                 {showAdvLedger && adjustAdvRef && createPortal(
                     <div className="fixed inset-0 z-[19001] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowAdvLedger(false)}>
                         <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -17478,7 +17478,7 @@ const InvoiceModal = (props) => {
                                                     return (
                                                         <tr key={i} className={`${isAdj ? 'bg-amber-50/50' : ''}`}>
                                                             <td className="px-4 py-2.5 text-slate-500 tabular-nums whitespace-nowrap">
-                                                                {e.date ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : 'â€”'}
+                                                                {e.date ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
                                                             </td>
                                                             <td className="px-3 py-2.5">
                                                                 <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-black ${
@@ -17487,14 +17487,14 @@ const InvoiceModal = (props) => {
                                                                     'bg-emerald-100 text-emerald-700'
                                                                 }`}>{e.type}</span>
                                                             </td>
-                                                            <td className="px-3 py-2.5 text-slate-500 font-bold">{e.refNo || 'â€”'}</td>
+                                                            <td className="px-3 py-2.5 text-slate-500 font-bold">{e.refNo || '—'}</td>
                                                             <td className={`px-4 py-2.5 text-right font-black tabular-nums ${isAdj ? 'text-amber-700' : isOut ? 'text-red-600' : 'text-emerald-700'}`}>
-                                                                {isAdj ? '' : (isOut ? '+' : 'âˆ’')}{Number(Math.abs(e.amount || 0)).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
-                                                                {isAdj && `âˆ’${Number(Math.abs(e.amount || 0)).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`}
+                                                                {isAdj ? '' : (isOut ? '+' : '−')}{Number(Math.abs(e.amount || 0)).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                                                                {isAdj && `−${Number(Math.abs(e.amount || 0)).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`}
                                                             </td>
                                                             <td className={`px-4 py-2.5 text-right font-black tabular-nums ${running > 0 ? 'text-slate-700' : 'text-emerald-600'}`}>
                                                                 {Number(Math.abs(running)).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
-                                                                {running <= 0.01 && <span className="ml-1 text-[8px] text-emerald-500 font-black">âœ“</span>}
+                                                                {running <= 0.01 && <span className="ml-1 text-[8px] text-emerald-500 font-black">✓</span>}
                                                             </td>
                                                         </tr>
                                                     );
@@ -17512,7 +17512,7 @@ const InvoiceModal = (props) => {
                                         ? Number(adjustAdvRef.balance).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
                                         : (advLedgerData.reduce((s, e) => s + Number(e.amount || 0), 0) > 0.01
                                             ? Number(advLedgerData.reduce((s, e) => s + Number(e.amount || 0), 0)).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
-                                            : <span className="text-emerald-600 text-xs">âœ“ FULLY SETTLED</span>)
+                                            : <span className="text-emerald-600 text-xs">✓ FULLY SETTLED</span>)
                                     }
                                 </span>
                             </div>
@@ -17570,7 +17570,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                 setNextBagNo('A' + (propSeed + 1).toString());
             }
 
-            // âš¡ FETCH LATEST SEED ON MOUNT (Double Safe)
+            // ⚡ FETCH LATEST SEED ON MOUNT (Double Safe)
             const fetchFreshSeed = async () => {
                 try {
                     const targetUid = dataOwnerId || (user ? user.uid : null);
@@ -17666,12 +17666,12 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
             return showToast({ type: 'error', title: 'Limit Exceeded', message: `Remaining: ${totalProduced - allocated}` });
         }
 
-        // âœ… LOCAL DUPLICATE CHECK (current allocation list)
+        // ✅ LOCAL DUPLICATE CHECK (current allocation list)
         if (!useReusablePicker && bags.some(b => normalizeBagNo(b.bagNo) === cleanNext)) {
             return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${cleanNext} is already in this allocation list!` });
         }
 
-        // âœ…âœ… STRICT DATABASE DUPLICATE CHECK with FALLBACK SCAN
+        // ✅✅ STRICT DATABASE DUPLICATE CHECK with FALLBACK SCAN
         // Skip this in reusable mode because these bags are intentionally refillable.
         setIsChecking(true);
         let blocked = false;
@@ -17687,7 +17687,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                 cleanNext.toLowerCase(),             // a73
                 `#${cleanNext.toLowerCase()}`,       // #a73
                 cleanNext.replace(/^0+/, ''),        // Leading zeros stripped
-                `#${cleanNext.replace(/^0+/, '')}`   // #A073 â†’ #A73
+                `#${cleanNext.replace(/^0+/, '')}`   // #A073 → #A73
             ])].filter(Boolean).slice(0, 10);
 
             // PHASE 1: Try indexed query (fastest)
@@ -18258,7 +18258,7 @@ function GlobalBagManagerModal({
                                                 <span className="text-blue-600 font-black">{Number(bag.qty || 0).toFixed(3)} kg</span>
                                                 {bag.date && (
                                                     <>
-                                                        <span className="text-slate-300">â€¢</span>
+                                                        <span className="text-slate-300">•</span>
                                                         <span>{bag.date}</span>
                                                     </>
                                                 )}
@@ -18299,7 +18299,7 @@ function GlobalBagManagerModal({
                                                 <span className="text-amber-700 font-black">{Number(bag.qty || 0).toFixed(3)} kg</span>
                                                 {bag.date && (
                                                     <>
-                                                        <span className="text-slate-300">â€¢</span>
+                                                        <span className="text-slate-300">•</span>
                                                         <span>{bag.date}</span>
                                                     </>
                                                 )}
@@ -18356,7 +18356,7 @@ const StockJournalModal = (props) => {
     const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const [date, setDate] = useState(lastDate || new Date().toISOString().split('T')[0]);
-    const targetUid = dataOwnerId || user.uid; // âœ… Define targetUid for queries
+    const targetUid = dataOwnerId || user.uid; // ✅ Define targetUid for queries
     const [refNo, setRefNo] = useState('');
     const [narration, setNarration] = useState('');
     const [productionStaffIds, setProductionStaffIds] = useState([]);
@@ -18394,7 +18394,7 @@ const StockJournalModal = (props) => {
         return () => window.removeEventListener('keydown', handler);
     }, [isOpen]);
 
-    // âœ… AUTO-FOCUS REF NO ON OPEN
+    // ✅ AUTO-FOCUS REF NO ON OPEN
     useEffect(() => {
         if (isOpen && !initialData) {
             setTimeout(() => refNoRef.current?.focus(), 100);
@@ -18905,7 +18905,7 @@ const StockJournalModal = (props) => {
         const newRows = [...rows];
 
         let val = value;
-        // ðŸ”’ Enforce Max 3 Decimals
+        // 🔒 Enforce Max 3 Decimals
         if (['quantity', 'rate', 'total', 'pcs'].includes(field)) {
             if (val && val.toString().includes('.')) {
                 const parts = val.toString().split('.');
@@ -18964,7 +18964,7 @@ const StockJournalModal = (props) => {
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
-        // ðŸ›‘ DUPLICATE CHECK
+        // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
         const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
         if (duplicateCol) {
@@ -19093,7 +19093,7 @@ const StockJournalModal = (props) => {
             const expensesAmountTotal = round3(cleanExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0));
             const targetUid = dataOwnerId || user.uid;
 
-            // --- ðŸ”’ VALIDATION RULE 1: DUPLICATE REF NO CHECK ---
+            // --- 🔒 VALIDATION RULE 1: DUPLICATE REF NO CHECK ---
             if (refNo) {
                 const qRef = query(collection(db, 'stock_journals'), where('userId', '==', targetUid), where('refNo', '==', refNo));
                 const snapRef = await getDocs(qRef);
@@ -19105,7 +19105,7 @@ const StockJournalModal = (props) => {
                 }
             }
 
-            // --- ðŸ”’ VALIDATION RULE 2: DUPLICATE BAG NO CHECK (Strict - No Reuse) ---
+            // --- 🔒 VALIDATION RULE 2: DUPLICATE BAG NO CHECK (Strict - No Reuse) ---
             if (finalJumboBags.length > 0) {
                 const normalizeBagNo = (val) => String(val || '').replace(/^#/, '').trim().toUpperCase();
                 const strictBags = finalJumboBags.filter(b => !b?.isReusable);
@@ -19306,7 +19306,7 @@ const StockJournalModal = (props) => {
                     consumedTotal: consumedTotal, producedTotal: producedTotal,
                     jumboEnabled: jumboEnabled || false,
                     bagCount: finalJumboBags.filter(b => !b?.isReusable).length,
-                    // âœ… EMBED BAG SNAPSHOT so they load instantly when voucher is re-opened
+                    // ✅ EMBED BAG SNAPSHOT so they load instantly when voucher is re-opened
                     jumboBags: finalJumboBags.map(b => ({ 
                         id: b.id || (Date.now() + Math.random()), 
                         bagNo: b.bagNo, 
@@ -19727,7 +19727,7 @@ const StockJournalModal = (props) => {
                 headerClassName="bg-gradient-to-r from-[#1a2b53] to-[#0f1b35] h-[40px] flex items-center border-b border-black/20 shadow-md"
                 title={(
                     <div className="flex items-center w-full h-full px-2 gap-2">
-                        {/* VOUCHER NAME TAB â€” prussian blue background */}
+                        {/* VOUCHER NAME TAB — prussian blue background */}
                         <div className="bg-[#1a2b53] border border-white/20 h-full flex items-center px-4 rounded shadow-sm shrink-0">
                             <span className="text-white font-black text-[16px] uppercase leading-none">Stock Journal</span>
                         </div>
@@ -19744,7 +19744,7 @@ const StockJournalModal = (props) => {
                             />
                         </div>
 
-                        {/* DATE â€” pushed to far right, adjacent to close button */}
+                        {/* DATE — pushed to far right, adjacent to close button */}
                         <div className="ml-auto" />
                         <div className="bg-[#003459] h-[34px] flex flex-col items-center justify-center px-4 rounded border border-white/10 shadow-lg group shrink-0 cursor-pointer hover:bg-[#004e82] transition-all" onClick={() => setShowDateModal(true)}>
                             <span className="text-[7px] font-black text-sky-200/50 uppercase leading-none mb-0.5">Voucher Date</span>
@@ -20130,12 +20130,12 @@ const StockJournalModal = (props) => {
                                                             <div className="font-black text-slate-400">{record.serialNo}</div>
                                                             <div>{record.mainProductName}</div>
                                                             <div className="text-right font-black">{format3(record.mainPercent)}%</div>
-                                                            <div>{(record.consumedItems || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || 'â€”'}</div>
-                                                            <div className="text-right text-slate-500">{(record.consumedItems || []).map(item => `${format3(item.percent)}%`).join(', ') || 'â€”'}</div>
-                                                            <div>{(record.expenseItems || []).map(item => directExpenseNameMap[item.expenseId]).filter(Boolean).join(', ') || 'â€”'}</div>
-                                                            <div className="text-right text-slate-500">{(record.expenseItems || []).map(item => format3(item.ratePerTon)).join(', ') || 'â€”'}</div>
-                                                            <div>{(record.byProducts || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || 'â€”'}</div>
-                                                            <div className="text-right text-slate-500">{(record.byProducts || []).map(item => `${format3(item.percent)}%`).join(', ') || 'â€”'}</div>
+                                                            <div>{(record.consumedItems || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || '—'}</div>
+                                                            <div className="text-right text-slate-500">{(record.consumedItems || []).map(item => `${format3(item.percent)}%`).join(', ') || '—'}</div>
+                                                            <div>{(record.expenseItems || []).map(item => directExpenseNameMap[item.expenseId]).filter(Boolean).join(', ') || '—'}</div>
+                                                            <div className="text-right text-slate-500">{(record.expenseItems || []).map(item => format3(item.ratePerTon)).join(', ') || '—'}</div>
+                                                            <div>{(record.byProducts || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || '—'}</div>
+                                                            <div className="text-right text-slate-500">{(record.byProducts || []).map(item => `${format3(item.percent)}%`).join(', ') || '—'}</div>
                                                             <div className="flex items-start justify-end gap-1">
                                                                 <button type="button" onClick={() => editAutoCalcRecord(record)} className="rounded-lg border border-slate-200 p-1 text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600">
                                                                     <Edit2 size={12} />
@@ -20481,27 +20481,27 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [viewFilter, setViewFilter] = useState('all');
 
-    // âœ… NEW: State for Opening Balance & Qty
+    // ✅ NEW: State for Opening Balance & Qty
     const [openingBalance, setOpeningBalance] = useState(0);
     const [openingQty, setOpeningQty] = useState(0);
     const [openingRate, setOpeningRate] = useState(0);
 
-    // âœ… NEW: Voucher Type Filter
+    // ✅ NEW: Voucher Type Filter
     const [voucherTypeFilter, setVoucherTypeFilter] = useState('ALL');
 
-    // âœ… NEW: Keyboard focus tracking & scroll ref
+    // ✅ NEW: Keyboard focus tracking & scroll ref
     const [focusedRowIndex, setFocusedRowIndex] = useState(-1);
     const tableContainerRef = useRef(null);
 
-    // âœ… NEW: State for Collapsible Tools
+    // ✅ NEW: State for Collapsible Tools
     const [showTools, setShowTools] = useState(false); // Disabled legacy tools
-    const [showSearch, setShowSearch] = useState(false); // âœ… Added for toggleable search
+    const [showSearch, setShowSearch] = useState(false); // ✅ Added for toggleable search
     const [showDateModal, setShowDateModal] = useState(false);
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [showDateOptionsMenu, setShowDateOptionsMenu] = useState(false);
     const [showRegisterPicker, setShowRegisterPicker] = useState(false);
     const [summaryMode, setSummaryMode] = useState('detailed'); // 'detailed', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'
-    const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } â€” saved when drilling into a breakup period
+    const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
     const [hiddenStack, setHiddenStack] = useState([]); // Stack of arrays of IDs
     const hiddenSet = useMemo(() => new Set(hiddenStack.flat()), [hiddenStack]);
     const [hiddenCols, setHiddenCols] = useState(new Set());
@@ -20527,7 +20527,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     };
     const restoreColumns = () => setHiddenCols(new Set());
 
-    // âœ… NEW: Refs for Realtime Data
+    // ✅ NEW: Refs for Realtime Data
     const rawDataRef = useRef({ inv: [], pay: [], jv: [], mfg: [] });
     const unsubsRef = useRef([]);
     const clearSubs = () => {
@@ -20535,7 +20535,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         unsubsRef.current = [];
     };
 
-    // âœ… PAYMENT TRACKING MAP: invoiceId â†’ totalPaid
+    // ✅ PAYMENT TRACKING MAP: invoiceId → totalPaid
     const [invoicePaymentMap, setInvoicePaymentMap] = useState({});
     useEffect(() => {
         if (!isOpen || !['sales', 'purchase'].includes(filter.type)) {
@@ -20585,7 +20585,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         if (rawItems.length === 0) return alert("No removable transactions selected.");
 
-        // âœ… ENFORCE LINKED PAIR RULE: for every selected item that has a linked partner,
+        // ✅ ENFORCE LINKED PAIR RULE: for every selected item that has a linked partner,
         // auto-include the partner so both are always deleted together.
         const idsToDelete = new Set(rawItems.map(i => i.id));
         let hasLinkedPair = false;
@@ -20616,7 +20616,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         if (hasLinkedPair) {
             const linkedCount = itemsToDelete.length - rawItems.filter(i => !getLinkedPartnerId(i)).length;
-            if (!window.confirm(`âš ï¸ LINKED VOUCHERS\n\nSome of the selected vouchers are Manufacturing/Expense Journal pairs that were created together.\n\nBoth vouchers in each pair will be deleted together â€” you cannot delete one without the other.\n\nTotal vouchers to be deleted: ${itemsToDelete.length}\n\nProceed?`)) return;
+            if (!window.confirm(`âš ï¸ LINKED VOUCHERS\n\nSome of the selected vouchers are Manufacturing/Expense Journal pairs that were created together.\n\nBoth vouchers in each pair will be deleted together — you cannot delete one without the other.\n\nTotal vouchers to be deleted: ${itemsToDelete.length}\n\nProceed?`)) return;
         }
 
         if (onBulkDelete) {
@@ -20664,7 +20664,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
 
 
-    // âœ… GLOBAL DATE LISTENER FOR REPORT
+    // ✅ GLOBAL DATE LISTENER FOR REPORT
     useEffect(() => {
         if (isOpen && globalDateCmd) {
             // Check timestamp to avoid stale updates if using same obj ref
@@ -20689,7 +20689,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         return () => unsub();
     }, [isOpen, dataOwnerId, user]);
 
-    // âœ… FIX: Reset Page on Filter Change
+    // ✅ FIX: Reset Page on Filter Change
     useEffect(() => {
         setCurrentPage(1);
     }, [filter.startDate, filter.endDate, filter.id, filter.type, searchTerm, viewCurrency, viewFilter, sortOrder, voucherTypeFilter]);
@@ -20735,7 +20735,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             setShowRegisterPicker(false);
             if (initialState?.openGraphView) { setShowGraphView(true); } else { setShowGraphView(false); }
 
-            // âœ… Auto-hide tools if we have a direct report request (Daybook or Specific ID)
+            // ✅ Auto-hide tools if we have a direct report request (Daybook or Specific ID)
             if (initialState && (initialState.id || initialState.type === 'daybook')) {
                 setShowTools(false);
             } else {
@@ -20799,7 +20799,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     };
 
 
-    // âœ… CALCULATE OPENING BALANCE for Period Ledgers
+    // ✅ CALCULATE OPENING BALANCE for Period Ledgers
     useEffect(() => {
         // Only calculate for specific entity ledgers
         if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income', 'tax'].includes(filter.type)) {
@@ -20810,7 +20810,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         const targetUid = dataOwnerId || user.uid;
 
-        // âœ… FIX: Get entity list early to access master opening values
+        // ✅ FIX: Get entity list early to access master opening values
         let entityList = [];
         switch (filter.type) {
             case 'party': entityList = (partiesRef?.current?.length > 0) ? partiesRef.current : parties; break;
@@ -20849,11 +20849,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             return;
         }
 
-        // âœ… Fetch all transactions before the start date to calculate opening balance
+        // ✅ Fetch all transactions before the start date to calculate opening balance
         const calculateOpening = async () => {
             try {
-                // âœ… entityList and found are already available from outer scope
-                console.log(`ðŸ“Š Calculating Opening Balance for ${filter.type}:${filter.id}, Master Opening: ${masterOpeningBal}, Qty: ${masterOpeningQty}`);
+                // ✅ entityList and found are already available from outer scope
+                console.log(`📊 Calculating Opening Balance for ${filter.type}:${filter.id}, Master Opening: ${masterOpeningBal}, Qty: ${masterOpeningQty}`);
 
                 let balance = masterOpeningBal;
                 let qtyBal = masterOpeningQty;
@@ -20917,7 +20917,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     });
                                     return sum;
                                 };
-                                // âœ… FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
+                                // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
                                 const isSales = d.type === 'sales';
                                 if (isSales) {
                                     amtOut += checkExpense(d.expenses);
@@ -21043,7 +21043,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 processSnap(jvSnap.docs, 'jv');
                 processSnap(mfgSnap.docs, 'mfg');
 
-                console.log(`âœ… Final Opening Balance: ${balance}, Qty: ${qtyBal}`);
+                console.log(`✅ Final Opening Balance: ${balance}, Qty: ${qtyBal}`);
                 setOpeningBalance(balance);
                 setOpeningQty(qtyBal);
                 // Opening rate for selected start date should reflect carried-forward closing
@@ -21062,7 +21062,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         calculateOpening();
     }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, directExpenseAccounts, capitalAccounts, assetAccounts, products, incomeAccounts, taxRates]);
 
-    // âœ… REALTIME REPORT GENERATION (Replaces generateReport)
+    // ✅ REALTIME REPORT GENERATION (Replaces generateReport)
     useEffect(() => {
         if (['party', 'account', 'item', 'expense', 'direct_expense', 'capital', 'asset', 'tax', 'user'].includes(filter.type) && !filter.id) {
             setTransactions([]);
@@ -21219,7 +21219,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const foreignVal = safeNum(d.foreignTotal || d.foreignAmount || 0);
                     const baseVal = safeNum(d.totalAmount || d.amount || 0);
 
-                    // ðŸ”€ Split additional expenses for Purchase invoices so supplier ledger only gets goods + tax
+                    // 🔀 Split additional expenses for Purchase invoices so supplier ledger only gets goods + tax
                     const rate = safeNum(d.exchangeRate || 1);
                     const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
                     const addlExpBase = addlExpForeign * rate;
@@ -21246,7 +21246,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                             const itemAmt = matchedItems.reduce((sum, i) => sum + (Number(i.quantity) * Number(i.rate)), 0);
                             row = buildRow(doc, d, { amtIn: isInward ? itemAmt : 0, amtOut: isOutward ? itemAmt : 0, foreignIn: 0, foreignOut: 0 });
-                            // âœ… Stop here for item ledger to prevent extra rows/expenses
+                            // ✅ Stop here for item ledger to prevent extra rows/expenses
                             if (row) allTx.push(row);
                             return; 
                         }
@@ -21254,7 +21254,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             if (activeFilter.type === 'sales' && d.type !== 'sales') return;
                             if (activeFilter.type === 'purchase' && d.type !== 'purchase') return;
 
-                            // ðŸ›‘ Check if this transaction matches the filtered entity
+                            // 🛑 Check if this transaction matches the filtered entity
                             const isMainParty = activeFilter.type === 'party' && d.partyId === activeFilter.id;
                             const isExpCredit = d.addlExpCreditId === activeFilter.id;
                             const isDaybook = ['daybook', 'user', 'sales', 'purchase'].includes(activeFilter.type);
@@ -21281,7 +21281,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 let finalRateOut = 0;
 
                                 if (activeFilter.type === 'sales') {
-                                    // Sales Register shows subtotal (net of tax) â€” tax is not our revenue
+                                    // Sales Register shows subtotal (net of tax) — tax is not our revenue
                                     const salesNetAmt = amt - safeNum(d.taxAmount || 0);
                                     const salesNetRate = totalQty > 0 ? salesNetAmt / totalQty : 0;
                                     finalAmtIn = 0; finalAmtOut = salesNetAmt;
@@ -21305,7 +21305,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 });
                             }
 
-                            // âœ… Add a separate row if the party is the one who paid the expenses for a purchase
+                            // ✅ Add a separate row if the party is the one who paid the expenses for a purchase
                             if (isExpCredit && d.type === 'purchase' && d.addlExpCreditId !== d.partyId) {
                                 const expRow = buildRow(doc, d, { amtIn: 0, amtOut: addlExpBase, foreignIn: 0, foreignOut: 0 });
                                 expRow.drName = "Purchase Expenses (Paid By)";
@@ -21320,7 +21320,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     if (exp.expenseId === activeFilter.id) {
                                         const expForeign = safeNum(exp.amount);
                                         const expBase = expForeign * safeNum(d.exchangeRate || 1);
-                                        // âœ… FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
+                                        // ✅ FIX: Sales expenses should credit (amtOut), Purchase expenses should debit (amtIn)
                                         const isSales = d.type === 'sales';
                                         allTx.push(buildRow(doc, d, {
                                             amtIn: isSales ? 0 : expBase,
@@ -21376,7 +21376,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             });
                         }
 
-                        // âž• Add separate ledger row for additional expenses paid via another ledger
+                        // ➕ Add separate ledger row for additional expenses paid via another ledger
                         if (hasAddlSplit && activeFilter.type !== 'item') {
                             const matchesExpenseLedger = addlCreditCategory === 'expense' && activeFilter.type === 'expense' && activeFilter.id === d.addlExpCreditId;
                             const matchesPartyLedger = addlCreditCategory === 'party' && activeFilter.type === 'party' && activeFilter.id === d.addlExpCreditId;
@@ -21402,7 +21402,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         if (['sales', 'purchase', 'item', 'tax'].includes(activeFilter.type)) return;
                         const amt = baseVal; const fAmt = foreignVal;
 
-                        // âœ… Helper to check splits (Sum all matches by ID, ignore category to ensure visibility)
+                        // ✅ Helper to check splits (Sum all matches by ID, ignore category to ensure visibility)
                         let sAmt = 0;
                         let sForeignAmt = 0;
                         let sBaseAmt = 0;
@@ -21437,7 +21437,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         else if (activeFilter.type === 'party') {
                             if (d.partyId === activeFilter.id) {
                                 // For multi-split payments, use the split-specific amount,
-                                // not the total â€” otherwise the first party gets the full sum.
+                                // not the total — otherwise the first party gets the full sum.
                                 const usedAmt = (d.isMulti && splitMatch) ? sAmt : amt;
                                 const usedFAmt = (d.isMulti && splitMatch) ? sForeignAmt : fAmt;
                                 row = buildRow(doc, d, { amtIn: d.type === 'out' ? usedAmt : 0, amtOut: d.type === 'in' ? usedAmt : 0, foreignIn: d.type === 'out' ? usedFAmt : 0, foreignOut: d.type === 'in' ? usedFAmt : 0 });
@@ -21488,7 +21488,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         }
                     }
                     else if (docType === 'jv') {
-                        // âš¡ Item Balance should NOT be affected by accounting JVs in this system
+                        // ⚡ Item Balance should NOT be affected by accounting JVs in this system
                         if (activeFilter.type === 'item') return;
 
                         const amt = baseVal;
@@ -21742,20 +21742,20 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 matchesVoucherType = (t.type === voucherTypeFilter);
             }
 
-            // âœ… NEW: Filter Hidden
+            // ✅ NEW: Filter Hidden
             const isHidden = hiddenSet.has(t.id);
 
             return matchesSearch && matchesView && matchesCurrency && matchesVoucherType && !isHidden;
         });
 
-        // âœ… FIX: Handling Opening Balance
+        // ✅ FIX: Handling Opening Balance
         let openingBal = 0;
         let showOpening = false;
         let runningTotal = 0;
 
         // Only if filtering by specific entity (Party, Account, etc.)
         if (filter.id && ['party', 'account', 'expense', 'capital', 'asset', 'item', 'income'].includes(filter.type)) {
-            // âœ… Always use computed opening states; do not depend on option lookup timing
+            // ✅ Always use computed opening states; do not depend on option lookup timing
             openingBal = openingBalance;
 
             // FIX: Ensure we start Running Balance with Opening Balance
@@ -21792,7 +21792,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         // let runningTotal = 0; // Initialize 0, Opening Row adds to it -- REMOVED DUPLICATE
 
-        // âœ… Accumulators for Qty/Rate
+        // ✅ Accumulators for Qty/Rate
         let qtyTotalSum = 0;
         let qtyInTotal = 0;
         let qtyOutTotal = 0;
@@ -21808,7 +21808,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 else { dr = t.amountIn || 0; cr = t.amountOut || 0; }
             }
 
-            // âœ… NEW: Calculate Qty & Rate (Sum ALL occurrences of this item)
+            // ✅ NEW: Calculate Qty & Rate (Sum ALL occurrences of this item)
             let dQtyIn = 0, dRateIn = '-', dQtyOut = 0, dRateOut = '-';
 
             if (filter.type === 'item') {
@@ -21877,7 +21877,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             };
         });
 
-        // âœ… COMPREHENSIVE SUMMARY BREAKUP SYSTEM (Daily, Weekly, Monthly, Quarterly, Annually)
+        // ✅ COMPREHENSIVE SUMMARY BREAKUP SYSTEM (Daily, Weekly, Monthly, Quarterly, Annually)
         let displayList = detailedList;
         if (['daily', 'weekly', 'monthly', 'quarterly', 'annually'].includes(summaryMode)) {
             const groups = {};
@@ -21980,7 +21980,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         sum.balance = runningTotal; // Closing Balance
         sum.balanceQty = runningQty; // Closing Qty Balance
 
-        // âœ… NEW: Avg Rate = Total Debit (Purchase Value) / Total Qty In
+        // ✅ NEW: Avg Rate = Total Debit (Purchase Value) / Total Qty In
         if (filter.type === 'item' && sum.totalQtyIn > 0) {
             sum.avgRate = sum.debit / sum.totalQtyIn;
         }
@@ -22630,7 +22630,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         if (!start && !end) return "All Time";
         if (start && end && filter.startDate === filter.endDate) return start;
-        if (start && end) return `${start} â€” ${end}`;
+        if (start && end) return `${start} — ${end}`;
         if (start) return `From ${start}`;
         if (end) return `Until ${end}`;
         return "All Time";
@@ -23386,7 +23386,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             <table className="w-full border-collapse font-sans text-[11px] md:text-[12px]">
                                 <thead className="sticky top-0 z-10">
                                     {isBreakupMode && isSalesPurchaseRegister ? (
-                                        /* â”€â”€ SALES/PURCHASE BREAKUP HEADERS â”€â”€ */
+                                        /* ── SALES/PURCHASE BREAKUP HEADERS ── */
                                         (() => {
                                             const _periodCount = processedData.filter(r => r.isSummary).length;
                                             const _totalVch = processedData.filter(r => r.isSummary).reduce((s, r) => s + (parseInt((r.crName || '').replace(/\D/g,'')) || 0), 0);
@@ -23399,7 +23399,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                     <th className="p-1.5 border-r border-blue-400 text-center font-black">{_totalVch} Vouchers</th>
                                                     <th className="p-1.5 border-r border-blue-400 text-right font-black">{format3(_totalQty)}</th>
                                                     <th className="p-1.5 border-r border-blue-400 text-right font-black text-green-300">{formatCurrency(_totalAmt)}</th>
-                                                    <th className="p-1.5 text-center font-black">â€”</th>
+                                                    <th className="p-1.5 text-center font-black">—</th>
                                                 </tr>
                                                 <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
                                                     <th className="p-1.5 border-r border-slate-300 text-left w-52 cursor-pointer select-none" onClick={() => toggleSortOrder('date_asc', 'date_desc')}>PERIOD</th>
@@ -23412,14 +23412,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                             );
                                         })()
                                     ) : isBreakupMode && !isSalesPurchaseRegister ? (
-                                        /* â”€â”€ DAYBOOK/LEDGER/PAYMENT BREAKUP HEADERS â”€â”€ */
+                                        /* ── DAYBOOK/LEDGER/PAYMENT BREAKUP HEADERS ── */
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
                                                 <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={2}>CURRENT TOTALS:</th>
                                                 <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{formatCurrency(summary.debit)}</th>
                                                 <th className="p-1.5 border-r border-slate-300 text-right font-black text-red-700">{formatCurrency(summary.credit)}</th>
                                                 <th className="p-1.5 border-r border-slate-300 text-right font-black">{formatCurrency(Math.abs(summary.balance))} {summary.balance >= 0 ? 'Dr' : 'Cr'}</th>
-                                                <th className="p-1.5 text-center font-black">â€”</th>
+                                                <th className="p-1.5 text-center font-black">—</th>
                                             </tr>
                                             <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
                                                 <th className="p-1.5 border-r border-slate-300 text-left w-52 cursor-pointer select-none" onClick={() => toggleSortOrder('date_asc', 'date_desc')}>PERIOD</th>
@@ -23437,8 +23437,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {!hiddenCols.has('qty') && <th className="p-1.5 border-r border-slate-300 text-right font-black">RECS: {summary.count || 0}</th>}
                                                 {!hiddenCols.has('rate') && <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3((summary.totalQtyIn || 0) + (summary.totalQtyOut || 0))}</th>}
                                                 {!hiddenCols.has('amount') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-500">-</th>}
-                                                {!hiddenCols.has('due_date') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">â€”</th>}
-                                                {!hiddenCols.has('payment') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">â€”</th>}
+                                                {!hiddenCols.has('due_date') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">—</th>}
+                                                {!hiddenCols.has('payment') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">—</th>}
                                                 <th className="p-1.5 text-right font-black text-green-700">{formatCurrency((summary.debit || 0) + (summary.credit || 0))}</th>
                                             </tr>
                                             <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
@@ -23525,7 +23525,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     ) : (
                                         processedData.map((row, idx) => {
                                             if (isBreakupMode && row.isSummary) {
-                                                // â”€â”€ SIMPLIFIED BREAKUP ROW â”€â”€
+                                                // ── SIMPLIFIED BREAKUP ROW ──
                                                 if (isSalesPurchaseRegister) {
                                                     const totalQty = safeNum(row.qtyIn) + safeNum(row.qtyOut);
                                                     const totalAmt = safeNum(row.displayIn) + safeNum(row.displayOut);
@@ -23548,7 +23548,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                         <BarChart3 size={11} strokeWidth={2.5} />
                                                                     </button>
                                                                 ) : (
-                                                                    <span className="text-slate-300">â€”</span>
+                                                                    <span className="text-slate-300">—</span>
                                                                 )}
                                                             </td>
                                                         </tr>
@@ -23574,7 +23574,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                         <BarChart3 size={11} strokeWidth={2.5} />
                                                                     </button>
                                                                 ) : (
-                                                                    <span className="text-slate-300">â€”</span>
+                                                                    <span className="text-slate-300">—</span>
                                                                 )}
                                                             </td>
                                                         </tr>
@@ -23635,7 +23635,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                         })()}</td>}
                                                         {!hiddenCols.has('amount') && <td className="p-1.5 border-r border-slate-100 text-right font-black text-blue-900">{formatCurrency((safeNum(row.displayIn) + safeNum(row.displayOut)))}</td>}
                                                         {!hiddenCols.has('due_date') && (() => {
-                                                            if (row.isSummary || row.isOpening || !row.paymentTerms) return <td className="p-1.5 border-r border-slate-100 text-right text-slate-300">â€”</td>;
+                                                            if (row.isSummary || row.isOpening || !row.paymentTerms) return <td className="p-1.5 border-r border-slate-100 text-right text-slate-300">—</td>;
                                                             const today = new Date().toISOString().split('T')[0];
                                                             const isOverdue = row.paymentTerms < today;
                                                             return (
@@ -23645,7 +23645,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                             );
                                                         })()}
                                                         {!hiddenCols.has('payment') && (() => {
-                                                            if (row.isSummary || row.isOpening) return <td className="p-1.5 text-right text-slate-300">â€”</td>;
+                                                            if (row.isSummary || row.isOpening) return <td className="p-1.5 text-right text-slate-300">—</td>;
                                                             const paid = invoicePaymentMap[row.id] || 0;
                                                             const total = row.invoiceTotal || (safeNum(row.displayIn) + safeNum(row.displayOut));
                                                             if (paid === 0) return <td className="p-1.5 text-right font-black text-red-400 text-[10px]">UNPAID</td>;
@@ -23900,7 +23900,7 @@ const PaymentModal = (props) => {
     const [payAgainstPurchases, setPayAgainstPurchases] = useState([]);
     const [payAgainstSearch, setPayAgainstSearch] = useState('');
     const [payAgainstLoading, setPayAgainstLoading] = useState(false);
-    // Map of invoiceId â†’ already paid amount (across all existing payment vouchers)
+    // Map of invoiceId → already paid amount (across all existing payment vouchers)
     const [billPaidMap, setBillPaidMap] = useState({});
     const [advRefNoGenerating, setAdvRefNoGenerating] = useState(false);
     const [printOptions, setPrintOptions] = useState({
@@ -24119,7 +24119,7 @@ const PaymentModal = (props) => {
         return () => window.removeEventListener('keydown', handleModalKeyDown, true);
     }, [isOpen, splits, enableLot]);
 
-    // âœ… GLOBAL DATE LISTENER
+    // ✅ GLOBAL DATE LISTENER
     useEffect(() => {
         if (isOpen && globalDateCmd && globalDateCmd.type === 'single') {
             setDate(globalDateCmd.date);
@@ -24142,11 +24142,11 @@ const PaymentModal = (props) => {
         return () => unsub();
     }, [isOpen, dataOwnerId, user]);
 
-    // âœ… LIVE BALANCE CALCULATION - Use Authoritative Ledger Balance
+    // ✅ LIVE BALANCE CALCULATION - Use Authoritative Ledger Balance
     const [liveBalances, setLiveBalances] = useState({});
     const [balancesLoading, setBalancesLoading] = useState(false);
 
-    // âœ… LIVE BALANCE DERIVATION (Synchronous & Correct)
+    // ✅ LIVE BALANCE DERIVATION (Synchronous & Correct)
     // We use the authoritative 'balance' from props (Db Store) and adjust ONLY if editing.
     const { liveAccounts, liveParties, liveExpenses, liveDirectExpenses, liveCapital, liveAssets, liveIncome } = useMemo(() => {
 
@@ -24252,7 +24252,7 @@ const PaymentModal = (props) => {
         };
     }, [accounts, parties, expenses, directExpenseAccounts, capitalAccounts, assetAccounts, incomeAccounts, initialData]);
 
-    // âœ… ASYNC LEDGER BALANCE FETCH (Authoritative) - DISABLED to save Firebase reads
+    // ✅ ASYNC LEDGER BALANCE FETCH (Authoritative) - DISABLED to save Firebase reads
     const [ledgerBalance, setLedgerBalance] = useState(null);
     const [isLedgerBalLoading, setIsLedgerBalLoading] = useState(false);
 
@@ -24393,12 +24393,12 @@ const PaymentModal = (props) => {
     const removeLine = (id) => setSplits(splits.filter(s => s.id !== id));
     const updateLine = (id, field, val) => {
         let value = val;
-        // ðŸ”’ Enforce Max 3 Decimals
+        // 🔒 Enforce Max 3 Decimals
         if (field === 'amount' && value && value.toString().includes('.')) {
             const parts = value.toString().split('.');
             if (parts[1].length > 3) value = `${parts[0]}.${parts[1].substring(0, 3)}`;
         }
-        // ðŸ”’ Bill cap enforcement: if this row is "Against Bill", don't allow amount > remaining balance
+        // 🔒 Bill cap enforcement: if this row is "Against Bill", don't allow amount > remaining balance
         if (field === 'amount') {
             const row = splits.find(s => s.id === id);
             if (row && row.paymentAgainst === 'bill' && row.billRefId) {
@@ -24409,7 +24409,7 @@ const PaymentModal = (props) => {
                     const remaining = Math.max(0, billTotal - alreadyPaid);
                     const entered = Number(value || 0);
                     if (entered > remaining + 0.001) {
-                        // Overpayment â€” auto-switch to Our/Their Advance and assign a ref no.
+                        // Overpayment — auto-switch to Our/Their Advance and assign a ref no.
                         const autoType = type === 'out' ? 'our-advance' : 'their-advance';
                         const autoPrefix = type === 'out' ? 'OA' : 'TA';
                         const existingPrefixCount = splits.filter(s => s.advRefNo?.toUpperCase().startsWith(autoPrefix)).length;
@@ -24458,7 +24458,7 @@ const PaymentModal = (props) => {
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
-        // ðŸ›‘ NEGATIVE BALANCE CHECK (For Payments) - DISABLED as per user request
+        // 🛑 NEGATIVE BALANCE CHECK (For Payments) - DISABLED as per user request
         /*
         if (type === 'out' && accountBalance !== null && (accountBalance < finalBaseAmount)) {
             return alert(`âŒ Insufficient Balance in Source Account!\n\nAvailable: ${format3(accountBalance)}\nRequired: ${format3(finalBaseAmount)}`);
@@ -24469,18 +24469,18 @@ const PaymentModal = (props) => {
         if (finalBaseAmount <= 0) return alert("Total amount must be greater than 0");
         if (splits.every(s => !s.targetId)) return alert("Please select at least one receiver / account.");
         if (type === 'contra' && accountId === singleId) return alert("Source and Target accounts cannot be the same!");
-        // âš¡ Optional Payment Against: User can leave it empty if they wish. Mandatory check disabled by request.
+        // ⚡ Optional Payment Against: User can leave it empty if they wish. Mandatory check disabled by request.
         // const untaggedPartyRows = splits.filter(s => s.category === 'party' && s.targetId && !s.paymentAgainst);
         // if (untaggedPartyRows.length > 0) return alert(`âš ï¸ "Payment Against" is mandatory...`);
 
-        // ðŸ”’ Mandatory Ref No. for advance/loan rows
+        // 🔒 Mandatory Ref No. for advance/loan rows
         for (const s of splits) {
             if (['our-advance', 'their-advance', 'our-loan', 'their-loan'].includes(s.paymentAgainst) && !s.advRefNo) {
                 return alert(`âš ï¸ Reference No. is mandatory for all Advance/Loan rows. Please set a Ref No. via "Payment Against" before saving.`);
             }
         }
 
-        // ðŸ”’ Bill over-payment guard (save-time safety net)
+        // 🔒 Bill over-payment guard (save-time safety net)
         for (const s of splits) {
             if (s.paymentAgainst === 'bill' && s.billRefId && s.amount) {
                 const billInv = payAgainstPurchases.find(p => p.id === s.billRefId);
@@ -24496,7 +24496,7 @@ const PaymentModal = (props) => {
             }
         }
 
-        // ðŸ›‘ DUPLICATE CHECK
+        // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
         const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
         if (duplicateCol) {
@@ -24612,7 +24612,7 @@ const PaymentModal = (props) => {
                 baseData.splits = splits;
                 baseData.transactionCategory = 'multi';
 
-                // âœ… ALWAYS re-derive partyId from current splits so ledger queries stay accurate.
+                // ✅ ALWAYS re-derive partyId from current splits so ledger queries stay accurate.
                 // If no party split exists (e.g. payment changed to a cashier/account), set null so
                 // the old party's ledger stops showing this voucher.
                 const primaryPartySplit = splits.find(s => s.category === 'party' && s.targetId);
@@ -24869,7 +24869,7 @@ const PaymentModal = (props) => {
         setPayAgainstLoading(true);
         try {
             const targetUid = dataOwnerId || user.uid;
-            // Payment voucher (out) â†’ show PURCHASE bills; Receipt voucher (in) â†’ show SALES bills
+            // Payment voucher (out) → show PURCHASE bills; Receipt voucher (in) → show SALES bills
             const invType = type === 'in' ? 'sales' : 'purchase';
             const snap = await getDocs(query(collection(db, 'invoices'), where('userId', '==', targetUid), where('type', '==', invType), limit(500)));
             let all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -24877,7 +24877,7 @@ const PaymentModal = (props) => {
             all.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
             setPayAgainstPurchases(all);
 
-            // Build already-paid map: invoiceId â†’ sum of payments tagged to that bill
+            // Build already-paid map: invoiceId → sum of payments tagged to that bill
             // Exclude current voucher being edited (initialData?.id) so we don't double-count
             const paySnap = await getDocs(query(collection(db, 'payments'), where('userId', '==', targetUid)));
             const paidMap = {};
@@ -25095,7 +25095,7 @@ const PaymentModal = (props) => {
 
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
-                    {/* 7. DATE (FAR RIGHT) â€” Tally DateInput */}
+                    {/* 7. DATE (FAR RIGHT) — Tally DateInput */}
                     <div className="flex flex-col items-end group px-2 py-1 rounded-lg transition-all border border-white/10 bg-black/10 cursor-pointer hover:bg-black/20 focus-within:bg-red-100 focus-within:border-red-400 focus-within:ring-2 focus-within:ring-red-200/40" onClick={() => setShowDateModal(true)}>
                         <span className="text-[7px] font-black uppercase text-white group-focus-within:text-slate-500 leading-none mb-0.5 tracking-widest opacity-60">Voucher Date</span>
                         <div className="flex items-center gap-1.5">
@@ -25180,7 +25180,7 @@ const PaymentModal = (props) => {
                                                     >
                                                         {row.paymentAgainst === 'bill' ? (
                                                             <span className="flex items-center gap-2">
-                                                                 <span>Bill Ref: {row.billRefNo || 'â€”'}</span>
+                                                                 <span>Bill Ref: {row.billRefNo || '—'}</span>
                                                                  {row.billRemaining != null && (
                                                                     <span className="bg-blue-700 text-white text-[8px] font-black px-2 py-0.5 rounded-full tabular-nums">
                                                                         Bal: {format3(row.billRemaining)}
@@ -25188,13 +25188,13 @@ const PaymentModal = (props) => {
                                                                  )}
                                                             </span>
                                                         ) : row.paymentAgainst === 'our-advance'
-                                                            ? `Our Advance Â· ${row.advRefNo || 'âš  Set Ref No.'}`
+                                                            ? `Our Advance · ${row.advRefNo || '⚠ Set Ref No.'}`
                                                             : row.paymentAgainst === 'their-advance'
-                                                            ? `Their Advance Â· ${row.advRefNo || 'âš  Set Ref No.'}`
+                                                            ? `Their Advance · ${row.advRefNo || '⚠ Set Ref No.'}`
                                                             : row.paymentAgainst === 'our-loan'
-                                                            ? `Our Loan Â· ${row.advRefNo || 'âš  Set Ref No.'}`
+                                                            ? `Our Loan · ${row.advRefNo || '⚠ Set Ref No.'}`
                                                             : row.paymentAgainst === 'their-loan'
-                                                            ? `Their Loan Â· ${row.advRefNo || 'âš  Set Ref No.'}`
+                                                            ? `Their Loan · ${row.advRefNo || '⚠ Set Ref No.'}`
                                                             : '+ Set Payment Against?'}
                                                     </button>
                                                 )}
@@ -25222,7 +25222,7 @@ const PaymentModal = (props) => {
                         </div>
                     </div>
 
-                    {/* âœ… DOCKED BOTTOM BAR (FULL REDESIGN) */}
+                    {/* ✅ DOCKED BOTTOM BAR (FULL REDESIGN) */}
                     <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center h-14 shrink-0 px-4 md:px-10 gap-6 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                         <div className="flex flex-nowrap items-center gap-6 shrink-0 min-w-full">
                         {/* Subtle Audit Labels (Floating) */}
@@ -25233,7 +25233,7 @@ const PaymentModal = (props) => {
                             </div>
                         )}
 
-                        {/* DELETE â€” far left */}
+                        {/* DELETE — far left */}
                         {initialData?.id && (
                             <button
                                 onClick={() => { 
@@ -25357,7 +25357,7 @@ const PaymentModal = (props) => {
 
                 </div>
 
-                {/* âœ… ACCOUNTING VOUCHER OPTION MODAL (NEW) */}
+                {/* ✅ ACCOUNTING VOUCHER OPTION MODAL (NEW) */}
                 {showInvoiceOptions && (
                     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10000]" onClick={() => setShowInvoiceOptions(false)}>
                         <div className="bg-white rounded-2xl shadow-2xl p-6 w-[400px] animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
@@ -25488,7 +25488,7 @@ const PaymentModal = (props) => {
                                 {/* Header */}
                                 <div className="bg-slate-800 text-white px-5 py-3.5 flex items-center justify-between shrink-0">
                                     <div>
-                                        <div className="text-[8px] font-black uppercase tracking-widest opacity-40">Row {splits.indexOf(currentRow) + 1} Â· Payment Against</div>
+                                        <div className="text-[8px] font-black uppercase tracking-widest opacity-40">Row {splits.indexOf(currentRow) + 1} · Payment Against</div>
                                         <div className="text-sm font-black mt-0.5">{liveParties.find(p => p.id === currentRow.targetId)?.name || 'Selected Party'}</div>
                                     </div>
                                     <button type="button" onClick={() => setPayAgainstRowId(null)} className="p-1.5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white"><X size={16} /></button>
@@ -25523,7 +25523,7 @@ const PaymentModal = (props) => {
                                                 className={`py-2.5 text-[8px] font-black uppercase tracking-wider transition-all border-b-2 border-r border-slate-100 ${currentType === key ? c.tab : 'border-transparent border-r-slate-100 text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
                                             >
                                                 {m.label}
-                                                <div className="text-[7px] font-bold opacity-50 normal-case tracking-normal mt-0.5">Ref: {m.prefix}001â€¦</div>
+                                                <div className="text-[7px] font-bold opacity-50 normal-case tracking-normal mt-0.5">Ref: {m.prefix}001…</div>
                                             </button>
                                         );
                                     })}
@@ -25546,7 +25546,7 @@ const PaymentModal = (props) => {
                                                 className={`py-2.5 text-[8px] font-black uppercase tracking-wider transition-all border-b-2 border-r border-slate-100 ${currentType === key ? c.tab : 'border-transparent border-r-slate-100 text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
                                             >
                                                 {m.label}
-                                                <div className="text-[7px] font-bold opacity-50 normal-case tracking-normal mt-0.5">Ref: {m.prefix}001â€¦</div>
+                                                <div className="text-[7px] font-bold opacity-50 normal-case tracking-normal mt-0.5">Ref: {m.prefix}001…</div>
                                             </button>
                                         );
                                     })}
@@ -25555,7 +25555,7 @@ const PaymentModal = (props) => {
                                 {/* Content */}
                                 <div className="flex-1 overflow-y-auto p-5 min-h-0">
 
-                                    {/* â”€â”€ BILL TAB â”€â”€ */}
+                                    {/* ── BILL TAB ── */}
                                     {currentType === 'bill' && (
                                         <div className="space-y-3">
                                             <input
@@ -25594,14 +25594,14 @@ const PaymentModal = (props) => {
                                                                 <div>
                                                                     <div className="text-xs font-black">{inv.refNo}</div>
                                                                     <div className={`text-[9px] mt-0.5 ${currentRow.billRefId === inv.id ? 'text-blue-100' : 'text-slate-400'}`}>
-                                                                        {inv.partyName || 'Unknown'} Â· {formatDate(inv.date)}
+                                                                        {inv.partyName || 'Unknown'} · {formatDate(inv.date)}
                                                                     </div>
                                                                     {alreadyPaid > 0 && !isFullyPaid && (
                                                                         <div className="text-[9px] mt-0.5 text-orange-500 font-bold">
-                                                                            Paid: {format3(alreadyPaid)} Â· Remaining: {format3(remaining)}
+                                                                            Paid: {format3(alreadyPaid)} · Remaining: {format3(remaining)}
                                                                         </div>
                                                                     )}
-                                                                    {isFullyPaid && <div className="text-[9px] mt-0.5 text-green-600 font-bold">âœ“ FULLY PAID</div>}
+                                                                    {isFullyPaid && <div className="text-[9px] mt-0.5 text-green-600 font-bold">✓ FULLY PAID</div>}
                                                                 </div>
                                                                 <div className="text-right">
                                                                     <div className={`text-xs font-black tabular-nums ${currentRow.billRefId === inv.id ? 'text-blue-100' : (isFullyPaid ? 'text-green-600' : 'text-blue-600')}`}>
@@ -25619,7 +25619,7 @@ const PaymentModal = (props) => {
                                         </div>
                                     )}
 
-                                    {/* â”€â”€ ADVANCE / LOAN TABS (shared form) â”€â”€ */}
+                                    {/* ── ADVANCE / LOAN TABS (shared form) ── */}
                                     {isAdvLoan && (() => {
                                         const c = colorMap[advMeta.color];
                                         return (
@@ -25633,7 +25633,7 @@ const PaymentModal = (props) => {
                                                 <div>
                                                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1.5">
                                                         Reference No. <span className="text-red-500">*</span>
-                                                        <span className="ml-2 font-normal text-slate-300 normal-case tracking-normal">(Auto-generated Â· editable)</span>
+                                                        <span className="ml-2 font-normal text-slate-300 normal-case tracking-normal">(Auto-generated · editable)</span>
                                                     </label>
                                                     <div className="flex gap-2">
                                                         <input
@@ -25649,7 +25649,7 @@ const PaymentModal = (props) => {
                                                             disabled={advRefNoGenerating}
                                                             className={`px-3 py-2.5 ${c.btn} text-white text-[9px] font-black rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50`}
                                                         >
-                                                            {advRefNoGenerating ? <Loader2 size={12} className="animate-spin" /> : 'âŸ³'}
+                                                            {advRefNoGenerating ? <Loader2 size={12} className="animate-spin" /> : '⟳'}
                                                             Auto
                                                         </button>
                                                     </div>
@@ -25782,7 +25782,7 @@ const JournalVoucherModal = (props) => {
         return () => unsub();
     }, [isOpen, dataOwnerId, user]);
 
-    // âœ… GLOBAL SHORTCUTS
+    // ✅ GLOBAL SHORTCUTS
     useEffect(() => {
         const handler = (e) => {
             if (!isOpen) return;
@@ -25792,14 +25792,14 @@ const JournalVoucherModal = (props) => {
         return () => window.removeEventListener('keydown', handler);
     }, [isOpen]);
 
-    // âœ… AUTO-FOCUS REF NO ON OPEN
+    // ✅ AUTO-FOCUS REF NO ON OPEN
     useEffect(() => {
         if (isOpen && !initialData) {
             setTimeout(() => refNoRef.current?.focus(), 100);
         }
     }, [isOpen, initialData]);
 
-    // âœ… GLOBAL DATE LISTENER
+    // ✅ GLOBAL DATE LISTENER
     useEffect(() => {
         if (isOpen && globalDateCmd && globalDateCmd.type === 'single') {
             setDate(globalDateCmd.date);
@@ -25869,7 +25869,7 @@ const JournalVoucherModal = (props) => {
     const removeRow = (id) => setRows(rows.filter(r => r.id !== id));
     const updateRow = (id, field, val) => {
         let value = val;
-        // ðŸ”’ Enforce Max 3 Decimals
+        // 🔒 Enforce Max 3 Decimals
         if (field === 'amount' && value && value.toString().includes('.')) {
             const parts = value.toString().split('.');
             if (parts[1].length > 3) value = `${parts[0]}.${parts[1].substring(0, 3)}`;
@@ -25898,7 +25898,7 @@ const JournalVoucherModal = (props) => {
         if (t === 'expense') return expenses;
         if (t === 'direct_expense') return directExpenseAccounts; // <--- NEW
         if (t === 'capital') return capitalAccounts;
-        if (t === 'asset') return assetAccounts; // âœ… Added Asset
+        if (t === 'asset') return assetAccounts; // ✅ Added Asset
         if (t === 'income') return incomeAccounts; // <--- NEW INCOME
         if (t === 'tax') return taxRates;
         return accounts;
@@ -25956,7 +25956,7 @@ const JournalVoucherModal = (props) => {
             if (!isBalanced) return alert(`Entries NOT Balanced!\nTotal Dr: ${totalDr}\nTotal Cr: ${totalCr}\nDiff: ${Math.abs(totalDr - totalCr)}`);
         }
 
-        // ðŸ›‘ DUPLICATE CHECK
+        // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
         const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
         if (duplicateCol) {
@@ -26413,7 +26413,7 @@ const JournalVoucherModal = (props) => {
                     )}
                 </div>
 
-                {/* âœ… FIXED BOTTOM BAR */}
+                {/* ✅ FIXED BOTTOM BAR */}
                 <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-t-2 border-[#003a68] text-white flex items-center shrink-0 px-4 gap-3 z-20 shadow-[0_-8px_30px_rgba(0,0,0,0.2)] relative" style={{minHeight:'48px'}}>
                     {/* TOTAL */}
                     <div className="flex flex-col justify-center shrink-0">
@@ -26521,10 +26521,10 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         }
     }, [globalDateCmd, isOpen]);
 
-    // âœ… NEW: Valuation Method State
+    // ✅ NEW: Valuation Method State
     const [valuationMethod, setValuationMethod] = useState('wac'); // 'wac' | 'fifo' | 'last_purchase' | 'last_sold'
 
-    // âœ… HELPER: Auto-Shrink Text for Tally Look
+    // ✅ HELPER: Auto-Shrink Text for Tally Look
     const getTallyShrinkStyle = (text, isGroup = false) => {
         const len = text?.toString().length || 0;
         let baseSize = isGroup ? 13 : 11;
@@ -26548,7 +26548,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         };
     };
 
-    // âœ… Reset to Default View (Closing / Today) on every open
+    // ✅ Reset to Default View (Closing / Today) on every open
     useEffect(() => {
         if (isOpen) {
             setViewMode('closing');
@@ -26564,8 +26564,8 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         return 'Weighted Average Cost (WAC)';
     }, [valuationMethod]);
 
-    // âœ… NEW: Group Filter State
-    // âœ… NEW: Group Filter State (If empty string -> Top Level View)
+    // ✅ NEW: Group Filter State
+    // ✅ NEW: Group Filter State (If empty string -> Top Level View)
     const [currentGroupFilter, setCurrentGroupFilter] = useState(''); // '' means All/Top Level
     const [expandedGroups, setExpandedGroups] = useState(new Set());
 
@@ -26595,7 +26595,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     const [showSearch, setShowSearch] = useState(false);
     const [showDate, setShowDate] = useState(false);
 
-    // âœ… NEW: Toggle for Zero Balance Items
+    // ✅ NEW: Toggle for Zero Balance Items
     const [showZeroBalance, setShowZeroBalance] = useState(false);
 
     // --- CHECK RESTRICTION ---
@@ -26848,7 +26848,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 const avgRate = (closingQty !== 0) ? Math.abs(ledgerClosingVal / closingQty) : 0;
                 const closingRate = getRate(valuationMethod, i.lastPurchaseRate, i.lastSaleRate, avgRate, fifoClosingVal, closingQty);
 
-                // âœ… FIX: Use Valuated Closing Value instead of always Average Cost
+                // ✅ FIX: Use Valuated Closing Value instead of always Average Cost
                 const closingVal = (valuationMethod === 'fifo')
                     ? fifoClosingVal
                     : ((valuationMethod === 'wac' || valuationMethod === 'purchase_avg' || valuationMethod === 'average_cost')
@@ -26880,11 +26880,11 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         finally { setLoading(false); setShowDate(false); }
     };
 
-    // âœ… FIX: Re-run report when date range, valuation method, or location changes
+    // ✅ FIX: Re-run report when date range, valuation method, or location changes
     useEffect(() => { if (isOpen) generateReport(); }, [isOpen, valuationMethod, products, stockGroups, dateRange.from, dateRange.to, selectedLoc]);
 
 
-    // âœ… NEW: CALCULATE EFFECTIVE ADDITIVE SETTINGS (Ancestors override)
+    // ✅ NEW: CALCULATE EFFECTIVE ADDITIVE SETTINGS (Ancestors override)
     const effectiveAdditiveMap = useMemo(() => {
         const map = {};
         const getEffective = (name, visited = new Set()) => {
@@ -26933,7 +26933,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             showZeroBalance || (Math.abs(i.closingQty) > 0.0001 || Math.abs(i.closingVal) > 0.01)
         );
 
-        // Always exclude the synthetic 'Primary' group â€” items without a group appear at root level
+        // Always exclude the synthetic 'Primary' group — items without a group appear at root level
         // Case-insensitive so it works regardless of how 'Primary' is stored in local RxDB
         const isPrimaryGroup = (name) => (name || '').toLowerCase() === 'primary';
         const effectiveStockGroups = stockGroups.filter(g => !isPrimaryGroup(g.name));
@@ -26965,7 +26965,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 g.openingQty += (item.openingQty || 0);
                 g.openingVal += (item.openingVal || 0);
 
-                // âœ… RESPECT ADDITIVE FLAGS FOR IN/OUT
+                // ✅ RESPECT ADDITIVE FLAGS FOR IN/OUT
                 if (g.shouldQuantities) {
                     g.inQty += (item.inQty || 0);
                     g.outQty += (item.outQty || 0);
@@ -27011,7 +27011,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                         if (addClsV) g.closingVal += sub.closingVal;
                     }
 
-                    // âœ… RESPECT ADDITIVE FLAGS FOR IN/OUT PROPAGATION
+                    // ✅ RESPECT ADDITIVE FLAGS FOR IN/OUT PROPAGATION
                     if (g.shouldQuantities && sq) {
                         if (addInQ) g.inQty += sub.inQty;
                         if (addOutQ) g.outQty += sub.outQty;
@@ -27127,7 +27127,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             }
 
         } else {
-            // Root View â€” named groups first, then ungrouped/Primary items at root
+            // Root View — named groups first, then ungrouped/Primary items at root
             rootGroupNames.sort().forEach(name => flatten(name, 0));
             // Items with no group or group='Primary' appear directly at root (not inside a 'Primary' group header)
             activeItems
@@ -27174,7 +27174,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         if (focusedRowRef.current) focusedRowRef.current.scrollIntoView({ block: 'nearest' });
     }, [focusedRowIdx]);
 
-    // âœ… NEW: CALCULATE ITEM COUNTS FOR DISPLAY
+    // ✅ NEW: CALCULATE ITEM COUNTS FOR DISPLAY
     const itemCountsBadge = useMemo(() => {
         const total = reportData.length;
         const active = reportData.filter(i => (Math.abs(i.closingQty) > 0.0001 || Math.abs(i.closingVal) > 0.01)).length;
@@ -27182,13 +27182,13 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     }, [reportData]);
 
     const totals = useMemo(() => {
-        // âœ… Calculate totals from all active items directly to avoid double counting groups vs items in the visible list
+        // ✅ Calculate totals from all active items directly to avoid double counting groups vs items in the visible list
         const activeItemsForTotals = reportData.filter(i =>
             showZeroBalance || (Math.abs(i.closingQty) > 0.0001 || Math.abs(i.closingVal) > 0.01)
         );
 
         // If we are drill-down, only sum those items
-        // âœ… IMPROVED: Properly sum sub-group items in drill-down!
+        // ✅ IMPROVED: Properly sum sub-group items in drill-down!
         const targetItems = currentGroupFilter
             ? activeItemsForTotals.filter(i => {
                 if (i.group === currentGroupFilter) return true;
@@ -27209,7 +27209,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             return {
                 openingQty: acc.openingQty + (curr.openingQty || 0),
                 openingVal: acc.openingVal + (curr.openingVal || 0),
-                // âœ… RESPECT EFFECTIVE ADDITIVE SETTINGS FOR GRAND TOTAL
+                // ✅ RESPECT EFFECTIVE ADDITIVE SETTINGS FOR GRAND TOTAL
                 inQty: acc.inQty + (eff.qty && eff.inQty ? (curr.inQty || 0) : 0),
                 inVal: acc.inVal + (eff.val && eff.inVal ? (curr.inVal || 0) : 0),
                 outQty: acc.outQty + (eff.qty && eff.outQty ? (curr.outQty || 0) : 0),
@@ -27294,7 +27294,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             headerClassName="!h-[22px] !p-0 px-2 flex items-center"
             titleClassName="!text-[13px] !leading-none"
         >
-            <div className="space-y-0 h-[88vh] flex flex-col bg-[#fcf6ea]"> {/* âœ… Tally Tan Background */}
+            <div className="space-y-0 h-[88vh] flex flex-col bg-[#fcf6ea]"> {/* ✅ Tally Tan Background */}
 
                 {/* 1. TOOLBAR */}
                 <div className="bg-white border-b shadow-sm p-1 flex items-center justify-between gap-1 shrink-0 relative z-[200]">
@@ -27391,7 +27391,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 </button>
                             )}
 
-                            {/* âœ… NEW: VALUATION METHOD SELECTOR */}
+                            {/* ✅ NEW: VALUATION METHOD SELECTOR */}
                             <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-200">
                                 <span className="text-[10px] font-bold text-yellow-700 uppercase">Valuation:</span>
                                 <select
@@ -27406,7 +27406,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 </select>
                             </div>
 
-                            {/* âœ… ZERO ITEMS TOGGLE WITH COUNT */}
+                            {/* ✅ ZERO ITEMS TOGGLE WITH COUNT */}
                             <button
                                 onClick={() => setShowZeroBalance(!showZeroBalance)}
                                 className={`uppercase text-[10px] font-bold px-3 py-1.5 rounded border transition-colors flex items-center gap-2 ${showZeroBalance
@@ -27422,7 +27422,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                         </div>
                     )}
 
-                    {/* âœ… ZOOM CONTROLS (New) */}
+                    {/* ✅ ZOOM CONTROLS (New) */}
                     <div className="hidden md:flex items-center bg-slate-100 rounded-full px-2 py-1 gap-1 border border-slate-200">
                         <button onClick={() => setZoomScale(Math.max(0.6, zoomScale - 0.2))} className="p-1 hover:bg-white rounded-full transition-colors"><ZoomOut size={16} className="text-slate-600" /></button>
                         <span className="text-[10px] font-black text-slate-500 w-8 text-center">{Math.round(zoomScale * 100)}%</span>
@@ -27456,7 +27456,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                         }}
                         className="h-full flex flex-col p-1 sm:p-4"
                     >
-                        {/* ðŸ“Š Unified Table View (Both Desktop & Mobile) */}
+                        {/* 📊 Unified Table View (Both Desktop & Mobile) */}
                         <div className="flex-1" style={{ fontSize: `${fontSize}px` }}>
                             <table className="min-w-full text-left border-collapse border border-slate-500 shadow-xl bg-[#fdf6ea]">
                                 <thead className="sticky top-0 z-20 text-xs bg-[#e0d2bc] text-slate-900 border-b border-slate-500">
@@ -27815,7 +27815,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
                         else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
                     }
-                    // âœ… Credit the account that paid the expenses
+                    // ✅ Credit the account that paid the expenses
                     if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
                         balMap[d.addlExpCreditId] -= addlExpBase;
                     }
@@ -27922,7 +27922,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     // Filter & Sort Logic
     const rawBaseData = (ledgerSource ? (asyncData || []) : (data || []));
 
-    // âœ… NEW: Apply Summary Mode Grouping (Daily / Monthly)
+    // ✅ NEW: Apply Summary Mode Grouping (Daily / Monthly)
     const baseData = useMemo(() => {
         const canSummarize = ['sales', 'purchase', 'payment', 'receipt', 'contra', 'journal', 'debit_note', 'credit_note', 'manufacturing'].includes(registerType) || ledgerSource;
         if (summaryMode === 'detailed' || !canSummarize) return rawBaseData;
@@ -28880,7 +28880,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                                                     <div className="flex items-center gap-6">
                                                                         <div className="flex gap-2 text-slate-400 font-mono text-[10px]">
                                                                             <span>{Number(it.qty).toLocaleString()}</span>
-                                                                            <span>Ã—</span>
+                                                                            <span>×</span>
                                                                             <span>{Number(it.rate).toLocaleString()}</span>
                                                                         </div>
                                                                         <span className="font-mono font-black text-slate-800 bg-slate-50 px-2 py-0.5 rounded border border-slate-100 w-24 text-right">
@@ -29252,7 +29252,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     // Always drill down with the exact report period selected in Financial Statements
     const onDrillDown = (type, id) => onParentDrillDown(type, id, dateRange);
 
-    // âœ… NEW: Expanded Groups State for Indirect Expenses
+    // ✅ NEW: Expanded Groups State for Indirect Expenses
     const [expandedGroups, setExpandedGroups] = useState({});
     const toggleGroup = (groupName) => {
         setExpandedGroups(prev => ({ ...prev, [groupName]: !prev[groupName] }));
@@ -29412,7 +29412,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 };
             });
 
-            // Helper: Track Latest Rates (Only up to the TO date â€” for point-in-time accuracy)
+            // Helper: Track Latest Rates (Only up to the TO date — for point-in-time accuracy)
             const trackRate = (pid, rate, date, type) => {
                 if (!itemMap[pid]) return;
                 if (date > range.to) return; // Ignore future invoices beyond the report end date
@@ -29909,7 +29909,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 { name: "Payables (Creditors)", amount: creditors, type: 'payables' }
             ];
 
-            // Equity = Assets âˆ’ Creditors  (= Owner's Capital + Net Profit + Mfg Exp Absorbed)
+            // Equity = Assets − Creditors  (= Owner's Capital + Net Profit + Mfg Exp Absorbed)
             const equityValue = assets.reduce((s, i) => s + i.amount, 0) - creditors;
 
             setData({
@@ -30003,7 +30003,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             <Calendar size={12} className="text-white/40 group-hover:text-white" />
                             <span className="text-[10px] font-black text-white/70 uppercase group-hover:text-white hidden sm:inline">Period:</span>
                             <span className="text-[10px] font-mono font-bold text-white tracking-tight uppercase">
-                                {dateRange.from} â€” {dateRange.to}
+                                {dateRange.from} — {dateRange.to}
                             </span>
                             <ChevronDown size={12} className="text-white/40 group-hover:text-white" />
                         </div>
@@ -30032,7 +30032,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                 <button onClick={downloadPNL_PDF} className="p-1.5 hover:bg-white/10 rounded transition-colors text-white/70 hover:text-white" title="Download PDF"><FileText size={16} /></button>
                                                 <button onClick={downloadPNL_Excel} className="p-1.5 hover:bg-white/10 rounded transition-colors text-white/70 hover:text-white" title="Download Excel"><FileSpreadsheet size={16} /></button>
                                             </div>
-                                            <span className="text-[9px] font-mono font-bold opacity-60">{dateRange.from} â€” {dateRange.to}</span>
+                                            <span className="text-[9px] font-mono font-bold opacity-60">{dateRange.from} — {dateRange.to}</span>
                                         </div>
                                     </div>
 
@@ -30733,18 +30733,18 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             snapPay.forEach(doc => {
                 const d = doc.data();
 
-                // ðŸ›‘ FILTER 1: Must belong to this Lot
+                // 🛑 FILTER 1: Must belong to this Lot
                 if (d.lotId !== selectedLotId) return;
 
-                // ðŸ›‘ FILTER 2: Strict check for Money OUT. 
+                // 🛑 FILTER 2: Strict check for Money OUT. 
                 // If it is 'in' (Receipt), it is INCOME/CASH FLOW, not an expense. SKIP IT.
                 if (d.type === 'in') return;
 
-                // ðŸ›‘ FILTER 3: CRITICAL - Must be an EXPENSE category payment, NOT a party payment
+                // 🛑 FILTER 3: CRITICAL - Must be an EXPENSE category payment, NOT a party payment
                 // Party payments are purchases/settlements, NOT expenses!
                 if (d.transactionCategory !== 'expense') return;
 
-                // âœ… If we passed all filters, it is a valid Expense (Freight, Duty, etc.)
+                // ✅ If we passed all filters, it is a valid Expense (Freight, Duty, etc.)
                 const amt = safeNum(d.amount);
                 totalExpense += amt;
 
@@ -30761,7 +30761,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 });
             });
 
-            // 3. âœ… FETCH JOURNAL VOUCHERS (JVs) - THIS WAS MISSING
+            // 3. ✅ FETCH JOURNAL VOUCHERS (JVs) - THIS WAS MISSING
             const qJv = query(collection(db, 'journal_vouchers'), ...baseConstraints);
             const snapJv = await getDocs(qJv);
             snapJv.forEach(doc => {
@@ -31074,7 +31074,7 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
     // Helper: Get the correct path for this licence/team
     const getTeamPath = () => `tasks/${dataOwnerId}`;
 
-    // 1. Listen for Tasks (Team Specific) â€” uses cloudRtdb (real Firebase RTDB)
+    // 1. Listen for Tasks (Team Specific) — uses cloudRtdb (real Firebase RTDB)
     useEffect(() => {
         if (!isOpen || !dataOwnerId) return;
 
@@ -31113,7 +31113,7 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
         setEditTaskText(task.text);
     };
 
-    // 4. Save Edit â€” records who edited
+    // 4. Save Edit — records who edited
     const saveEdit = (taskId) => {
         realUpdate(realRef(cloudRtdb, `${getTeamPath()}/${taskId}`), {
             text: editTaskText,
@@ -31172,7 +31172,7 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
                                     title={isDone ? `Marked done by ${task.completedBy}` : 'Mark as done'}
                                     className={`mt-1 min-w-[24px] h-6 rounded border flex items-center justify-center transition-colors ${isDone ? 'bg-green-500 text-white border-green-500' : 'bg-white border-slate-300 hover:border-green-400'}`}
                                 >
-                                    {isDone && <span className="font-bold text-sm">âœ“</span>}
+                                    {isDone && <span className="font-bold text-sm">✓</span>}
                                 </button>
 
                                 {/* CONTENT */}
@@ -31187,12 +31187,12 @@ const TaskBoardModal = ({ isOpen, onClose, onBack, user, dataOwnerId, effectiveN
                                         <>
                                             <p className={`text-base font-medium ${isDone ? 'line-through text-slate-500' : 'text-slate-800'}`}>{task.text}</p>
                                             <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-                                                <span>ðŸ“ Added by <strong className="text-slate-600">{task.createdBy}</strong>{task.createdAt ? ` Â· ${formatDate(task.createdAt)}` : ''}</span>
+                                                <span>ðŸ“ Added by <strong className="text-slate-600">{task.createdBy}</strong>{task.createdAt ? ` · ${formatDate(task.createdAt)}` : ''}</span>
                                                 {isDone && task.completedBy && (
-                                                    <span className="text-green-600 font-bold">âœ… Done by {task.completedBy}{task.completedAt ? ` Â· ${formatDate(task.completedAt)}` : ''}</span>
+                                                    <span className="text-green-600 font-bold">✅ Done by {task.completedBy}{task.completedAt ? ` · ${formatDate(task.completedAt)}` : ''}</span>
                                                 )}
                                                 {task.editedBy && (
-                                                    <span className="text-orange-500">âœï¸ Edited by {task.editedBy}{task.editedAt ? ` Â· ${formatDate(task.editedAt)}` : ''}</span>
+                                                    <span className="text-orange-500">âœï¸ Edited by {task.editedBy}{task.editedAt ? ` · ${formatDate(task.editedAt)}` : ''}</span>
                                                 )}
                                             </div>
                                         </>
@@ -31269,7 +31269,7 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
                     await setDoc(doc(db, "users", payload.targetUid), updateData, { merge: true });
                 };
                 await updateFn(payload);
-                alert("âœ… User Updated Locally!");
+                alert("✅ User Updated Locally!");
                 if (onRefresh) onRefresh();
                 resetForm();
             } else {
@@ -31281,7 +31281,7 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
                     ownerId: dataOwnerId || user.uid,
                     createdAt: serverTimestamp()
                 });
-                alert("âœ… User Created Locally!");
+                alert("✅ User Created Locally!");
                 if (onRefresh) onRefresh();
                 resetForm();
             }
@@ -31302,12 +31302,12 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
             if (onRefresh) onRefresh();
         } catch (error) {
             console.error(error);
-            // âœ… Fix: If Auth user is missing but Firestore doc exists (Ghost User), delete doc manually
+            // ✅ Fix: If Auth user is missing but Firestore doc exists (Ghost User), delete doc manually
             if (error.message.includes('no user record') || error.message.includes('NOT_FOUND')) {
                 if (window.confirm("âš ï¸ User ID not found in Authentication system (already deleted?), but exists in your list.\n\nForce delete this record from the list?")) {
                     try {
                         await deleteDoc(doc(db, 'users', uid));
-                        alert("âœ… Ghost record removed from list.");
+                        alert("✅ Ghost record removed from list.");
                     } catch (e) {
                         alert("Failed to remove record: " + e.message);
                     }
@@ -31357,7 +31357,7 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
                                 <input type="text" required className="w-full p-2 border rounded" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
                             </div>
 
-                            {/* âœ… PASSWORD FIELD (Updated to show in Edit Mode) */}
+                            {/* ✅ PASSWORD FIELD (Updated to show in Edit Mode) */}
                             <div>
                                 <label className="text-xs font-bold text-slate-500">
                                     {editMode ? "New Password (Leave blank to keep current)" : "Password"}
@@ -31416,8 +31416,8 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
                                                     .filter(s => (Date.now() - (s.last_active || 0)) < 90000)
                                                     .map((s, idx) => (
                                                         <div key={idx} className="flex gap-1 items-center">
-                                                            <span>ðŸ’» {s.device}</span>
-                                                            <span>â€¢</span>
+                                                            <span>💻 {s.device}</span>
+                                                            <span>•</span>
                                                             <span>ðŸŒ {s.ip}</span>
                                                             {idx > 0 && <span className="text-orange-400">(Read Only)</span>}
                                                         </div>
@@ -31463,7 +31463,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
     useEffect(() => {
         if (isOpen) {
             setSearchTerm('');
-            // âœ… Default to Today's Date for accurate balances
+            // ✅ Default to Today's Date for accurate balances
             setViewDate(new Date().toISOString().split('T')[0]);
             setTimeout(() => inputRef.current?.focus(), 50);
         }
@@ -31809,7 +31809,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
     };
 
     const formatDate = (isoDate) => {
-        if (!isoDate) return 'â€”';
+        if (!isoDate) return '—';
         return new Date(isoDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     };
 
@@ -31826,7 +31826,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
             return;
         }
 
-        alert('Install prompt is not ready right now.\n\nIn mobile Chrome, open menu (â‹®) and tap "Add to Home screen" or "Install app".');
+        alert('Install prompt is not ready right now.\n\nIn mobile Chrome, open menu (⋮) and tap "Add to Home screen" or "Install app".');
     };
 
     useEffect(() => {
@@ -31866,7 +31866,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                 });
             } catch (pErr) { }
 
-            alert("âœ… Profile updated successfully!");
+            alert("✅ Profile updated successfully!");
             onClose();
         } catch (err) {
             alert(`âŒ Update Failed: ${err.message}`);
@@ -31891,7 +31891,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
         <Modal isOpen={isOpen} onClose={onClose} hideHeader={true} removePadding={true} maxWidth="max-w-[460px]">
             <div style={{ background: '#ededed', border: '2px solid #005994', fontFamily: "'Segoe UI', 'Roboto Slab', sans-serif" }} className="overflow-hidden rounded">
 
-                {/* === BLUE HEADER BAR â€” matches tally-menu-header === */}
+                {/* === BLUE HEADER BAR — matches tally-menu-header === */}
                 <div style={{ background: 'linear-gradient(to bottom, #005ea8 0%, #00457c 100%)', borderBottom: '1px solid #003a68' }}
                     className="flex items-center justify-between px-4 py-2.5">
                     <div className="flex items-center gap-3">
@@ -31912,7 +31912,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                 {/* === SCROLLABLE CONTENT === */}
                 <div className="overflow-y-auto p-3 space-y-3" style={{ maxHeight: '82vh' }}>
 
-                    {/* â”€â”€ USER IDENTITY CARD â”€â”€ */}
+                    {/* ── USER IDENTITY CARD ── */}
                     <div className="bg-white rounded overflow-hidden" style={{ border: '1px solid #005994' }}>
                         <div className="px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-white" style={{ background: '#005994' }}>
                             User Identity
@@ -31947,7 +31947,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                         </div>
                     </div>
 
-                    {/* â”€â”€ LICENSE STATUS CARD â”€â”€ */}
+                    {/* ── LICENSE STATUS CARD ── */}
                     <div className="bg-white rounded overflow-hidden" style={{ border: '1px solid #005994' }}>
                         <div className="px-3 py-1.5 flex items-center justify-between" style={{ borderBottom: '1px solid #e2edf7' }}>
                             <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: '#005994' }}>License Status</span>
@@ -31957,10 +31957,10 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                         </div>
                         <div>
                             {[
-                                { icon: <Key size={13} />, label: 'Serial Key', value: isEdu ? 'EDUCATIONAL' : (license?.serialKey || 'â€”'), mono: true, color: '#1e3264' },
+                                { icon: <Key size={13} />, label: 'Serial Key', value: isEdu ? 'EDUCATIONAL' : (license?.serialKey || '—'), mono: true, color: '#1e3264' },
                                 { icon: <Calendar size={13} />, label: 'Starts On', value: formatDate(license?.activatedAt), color: '#444' },
                                 { icon: <Calendar size={13} />, label: 'Expires On', value: isEdu ? 'Never' : formatDate(license?.expiresAt), color: '#444' },
-                                { icon: <RefreshCw size={13} />, label: 'Days Left', value: isEdu ? 'âˆž' : `${days} days`, bold: true, color: days > 30 ? '#22c55e' : days > 0 ? '#f59e0b' : '#ef4444' },
+                                { icon: <RefreshCw size={13} />, label: 'Days Left', value: isEdu ? '∞' : `${days} days`, bold: true, color: days > 30 ? '#22c55e' : days > 0 ? '#f59e0b' : '#ef4444' },
                             ].map((item, i) => (
                                 <div key={i} className={`flex justify-between items-center px-3 py-2 text-xs ${i < 3 ? 'border-b' : ''}`} style={{ borderColor: '#e2edf7' }}>
                                     <div className="flex items-center gap-2 font-black uppercase tracking-tighter" style={{ color: '#555' }}>
@@ -31976,7 +31976,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                         </div>
                     </div>
 
-                    {/* â”€â”€ PROFILE DETAILS FORM â”€â”€ */}
+                    {/* ── PROFILE DETAILS FORM ── */}
                     <form onSubmit={handleSave}>
                         <div className="bg-white rounded overflow-hidden" style={{ border: '1px solid #005994' }}>
                             <div className="px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-white" style={{ background: '#005994' }}>
@@ -32034,13 +32034,13 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                         </div>
                     </form>
 
-                    {/* â”€â”€ SESSION & ACCESS â”€â”€ */}
+                    {/* ── SESSION & ACCESS ── */}
                     <div className="bg-white rounded overflow-hidden" style={{ border: '1px solid #005994' }}>
                         <div className="px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-white" style={{ background: '#005994' }}>
                             Session &amp; Access
                         </div>
                         <div className="p-3 space-y-2">
-                            {/* Sub-user logout â€” only when a sub-user is active */}
+                            {/* Sub-user logout — only when a sub-user is active */}
                             {subUser && (
                                 <button
                                     type="button"
@@ -32051,7 +32051,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                                     <UserX size={15} style={{ color: '#d97706', flexShrink: 0 }} />
                                     <div>
                                         <div className="text-[11px] font-black uppercase tracking-wide" style={{ color: '#92400e' }}>Sub User Logout (In-App)</div>
-                                        <div className="text-[9px] font-medium normal-case" style={{ color: '#b45309' }}>Returns to admin â€” no internet connection needed</div>
+                                        <div className="text-[9px] font-medium normal-case" style={{ color: '#b45309' }}>Returns to admin — no internet connection needed</div>
                                     </div>
                                 </button>
                             )}
@@ -32065,7 +32065,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                                 <LogOut size={15} style={{ color: '#dc2626', flexShrink: 0 }} />
                                 <div>
                                     <div className="text-[11px] font-black uppercase tracking-wide" style={{ color: '#991b1b' }}>Full Admin Logout</div>
-                                    <div className="text-[9px] font-medium normal-case" style={{ color: '#b91c1c' }}>Signs out completely â€” requires internet to login again</div>
+                                    <div className="text-[9px] font-medium normal-case" style={{ color: '#b91c1c' }}>Signs out completely — requires internet to login again</div>
                                 </div>
                             </button>
                             {/* Change password */}
@@ -32094,7 +32094,7 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
                         </div>
                     </div>
 
-                    {/* â”€â”€ DEACTIVATE LINK â”€â”€ */}
+                    {/* ── DEACTIVATE LINK ── */}
                     <button
                         type="button"
                         onClick={() => { if (window.deactivateaccproLicense) window.deactivateaccproLicense(); }}
