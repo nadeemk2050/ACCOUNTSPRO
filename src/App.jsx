@@ -829,6 +829,12 @@ const ChangeDateModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const handleKey = (e) => {
         if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
             e.preventDefault();
+            e.stopPropagation();
+            if (!val.trim()) {
+                const fallback = baseDate || new Date().toISOString().split('T')[0];
+                onSubmit(fallback);
+                return;
+            }
             const res = parseSmartDate(val, baseDate);
             if (res) {
                 setVal(toDisplayDate(res)); 
@@ -987,6 +993,7 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const handleFromKey = (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
+            e.stopPropagation();
             const res = parseSmartDate(fromVal, baseDate); 
             if (res) {
                 setFromVal(toDisplayDate(res));
@@ -997,6 +1004,7 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
             }
         } else if (e.ctrlKey && e.key.toLowerCase() === 'a') {
             e.preventDefault();
+            e.stopPropagation();
             const f = parseSmartDate(fromVal, baseDate);
             const t = parseSmartDate(toVal, baseDate || f); 
             if (f && t) {
@@ -1014,6 +1022,7 @@ const ChangePeriodModal = ({ isOpen, onClose, onSubmit, baseDate }) => {
     const handleToKey = (e) => {
         if (e.key === 'Enter' || (e.ctrlKey && e.key.toLowerCase() === 'a')) {
             e.preventDefault();
+            e.stopPropagation();
             const f = parseSmartDate(fromVal, baseDate);
             const t = parseSmartDate(toVal, baseDate || f); 
             if (f && t) {
@@ -1648,7 +1657,7 @@ const SearchableSelect = React.forwardRef(({
         // Direct typing support: if closed and user presses a letter/number, open and search
         if (!isOpen && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
             e.preventDefault();
-            setSearch(e.key);
+            setSearch(e.key === ' ' ? '' : e.key);
             setIsOpen(true);
         }
     };
@@ -24735,7 +24744,7 @@ const PaymentModal = (props) => {
     // Shortcuts
     useEffect(() => {
         const handler = (e) => {
-            if (!isOpen) return;
+            if (!isOpen || showDateModal) return;
             if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
             if (e.altKey && e.key.toLowerCase() === 'r') {
                 e.preventDefault();
@@ -24758,7 +24767,7 @@ const PaymentModal = (props) => {
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, handleSave, splits]);
+    }, [isOpen, handleSave, splits, showDateModal]);
 
     const getOptions = (cat) => {
         if (cat === 'party') return liveParties;
@@ -25785,12 +25794,12 @@ const JournalVoucherModal = (props) => {
     // ✅ GLOBAL SHORTCUTS
     useEffect(() => {
         const handler = (e) => {
-            if (!isOpen) return;
+            if (!isOpen || showDateModal) return;
             if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [isOpen]);
+    }, [isOpen, showDateModal]);
 
     // ✅ AUTO-FOCUS REF NO ON OPEN
     useEffect(() => {
