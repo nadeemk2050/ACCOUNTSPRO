@@ -230,8 +230,6 @@ export const getMasterDB = async () => {
     }
     return masterDbPromise;
 };
-if (typeof window !== 'undefined') window.getMasterDB = getMasterDB;
-
 export const getDB = async () => {
     if (!currentCompanyId) {
         console.warn("Attempted to getDB without an active company. Returning Master DB.");
@@ -254,6 +252,11 @@ export const getDB = async () => {
     }
     return companyDbPromise;
 };
+
+if (typeof window !== 'undefined') {
+    window.getMasterDB = getMasterDB;
+    window.getDB = getDB;
+}
 
 const companyDbCache = new Map();
 export const getCompanyDB = async (companyId) => {

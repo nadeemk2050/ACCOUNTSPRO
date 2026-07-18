@@ -5285,6 +5285,38 @@ export default function App() {
     const [syncPulse, setSyncPulse] = useState(false);
     const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
 
+    useEffect(() => {
+        const restoreVouchers = async () => {
+            try {
+                const logsSnap = await getDocs(collection(db, 'audit_logs'));
+                if (!logsSnap.empty) {
+                    let restoredCount = 0;
+                    for (const d of logsSnap.docs) {
+                        const logData = d.data();
+                        if (logData.docType === 'Journal Voucher' && (logData.refNo === '12swed' || logData.refNo === '12swedr')) {
+                            if (logData.snapshotData) {
+                                const payload = JSON.parse(logData.snapshotData);
+                                if (payload.rows && Array.isArray(payload.rows)) {
+                                    payload.rows = payload.rows.map(r => ({
+                                        ...r,
+                                        id: r.id || r.aid || ''
+                                    }));
+                                }
+                                await fSetDoc(doc(db, 'journal_vouchers', logData.docId), payload);
+                                restoredCount++;
+                            }
+                        }
+                    }
+                    if (restoredCount > 0) {
+                        alert(`Restoration complete: ${restoredCount} vouchers (12swed/12swedr) successfully recovered and fixed! Check your Day Book now.`);
+                    }
+                }
+            } catch (err) {
+                console.error("[Recovery] Error running restoration:", err);
+            }
+        };
+        setTimeout(restoreVouchers, 5000);
+    }, []);
 
     // Handle Cloud Sync Status updates
     useEffect(() => {
@@ -11007,9 +11039,9 @@ export default function App() {
                 companyProfile={companyProfile}
                 onUpdateProfile={setCompanyProfile}
                 confirmPassword={confirmPassword}
-                onSwitch={(targetType) => {
+                onSwitch={(targetType, convertedData) => {
                     handleCloseModal();
-                    setEditData(null);
+                    setEditData(convertedData || null);
                     setTimeout(() => {
                         if (targetType === 'purchase') setActiveModal('purchase');
                         else if (targetType === 'sales') setActiveModal('sales');
@@ -11050,9 +11082,9 @@ export default function App() {
                 companyProfile={companyProfile}
                 onUpdateProfile={setCompanyProfile}
                 confirmPassword={confirmPassword}
-                onSwitchVoucher={(newType) => {
+                onSwitchVoucher={(newType, convertedData) => {
                     handleCloseModal();
-                    setEditData(null);
+                    setEditData(convertedData || null);
                     setTimeout(() => {
                         if (['payment', 'receipt', 'contra', 'purchase', 'sales', 'journal'].includes(newType)) {
                             setActiveModal(newType);
@@ -21610,6 +21642,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         const sub = (col, key) => {
             return onSnapshot(query(collection(db, col), ...baseConstraints), (snap) => {
                 rawDataRef.current[key] = snap.docs;
+                console.log(`[Database Sync] Loaded ${col} collection, size: ${snap.size}`);
+                if (col === 'journal_vouchers') {
+                    console.log("[Database Sync] Journal Vouchers List:", snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                }
                 recalculate();
             }, (err) => { console.error(err); setLoading(false); });
         };
@@ -24499,7 +24535,7 @@ const PaymentModal = (props) => {
                     const remaining = Math.max(0, billTotal - alreadyPaid);
                     const entered = Number(s.amount) * Number(finalRate || 1);
                     if (entered > remaining + 0.001) {
-                        return alert(`âŒ Payment amount (${entered.toFixed(3)}) exceeds the remaining balance (${remaining.toFixed(3)}) for bill "${s.billRefNo || s.billRefId}".\n\nPlease reduce the amount or switch to "Against Advance".`);
+                        return alert(`❌ Payment amount (${entered.toFixed(3)}) exceeds the remaining balance (${remaining.toFixed(3)}) for bill "${s.billRefNo || s.billRefId}".\n\nPlease reduce the amount or switch to "Against Advance".`);
                     }
                 }
             }
@@ -24518,12 +24554,23 @@ const PaymentModal = (props) => {
             await runTransaction(db, async (transaction) => {
                 const targetUid = dataOwnerId || user.uid;
 
-                // --- 1. INITIAL READS ---
                 const docRef = (initialData && initialData.id) ? doc(db, 'payments', initialData.id) : doc(collection(db, 'payments'));
+
+                // --- 1. INITIAL READS ---
                 let currentDocData = null;
+                let oldCollection = 'payments';
                 if (initialData && initialData.id) {
-                    const docSnap = await transaction.get(docRef);
-                    if (docSnap.exists()) currentDocData = docSnap.data();
+                    let docSnap = await transaction.get(doc(db, 'payments', initialData.id));
+                    if (docSnap.exists()) {
+                        currentDocData = docSnap.data();
+                        oldCollection = 'payments';
+                    } else {
+                        docSnap = await transaction.get(doc(db, 'journal_vouchers', initialData.id));
+                        if (docSnap.exists()) {
+                            currentDocData = docSnap.data();
+                            oldCollection = 'journal_vouchers';
+                        }
+                    }
                 }
 
                 // --- 2. CONSOLIDATE BALANCE CHANGES ---
@@ -24552,26 +24599,53 @@ const PaymentModal = (props) => {
                     balanceDiffs.get(path).netChange += change;
                 };
 
-                // REVERT OLD (If Editing)
-                if (currentDocData) {
-                    const oldType = currentDocData.type; // 'in' or 'out' or 'contra'
-                    const oldAmt = Number(currentDocData.amount || 0);
-                    const oldRate = Number(currentDocData.exchangeRate || 1);
-                    const revertType = (oldType === 'in') ? 'out' : 'in';
-
-                    // Revert Source
-                    trackChange(doc(db, 'accounts', currentDocData.accountId), oldAmt, revertType, 'account');
-
-                    // Revert Targets
-                    if (currentDocData.isMulti && currentDocData.splits) {
-                        currentDocData.splits.forEach(s => {
-                            const splitBase = Number(s.amount || 0) * oldRate;
-                            trackChange(doc(db, getTargetCol(s.category), s.targetId), splitBase, revertType, s.category);
-                        });
+                const getJvDeltaType = (isDebit, category) => {
+                    if (category === 'account') {
+                        return isDebit ? 'in' : 'out';
                     } else {
-                        const cat = currentDocData.transactionCategory || (currentDocData.type === 'contra' ? 'account' : 'party');
-                        const tid = currentDocData.toAccountId || currentDocData.partyId || currentDocData.expenseId || currentDocData.incomeId || currentDocData.capitalId || currentDocData.assetId;
-                        if (tid) trackChange(doc(db, getTargetCol(cat), tid), oldAmt, revertType, cat);
+                        return isDebit ? 'out' : 'in';
+                    }
+                };
+
+                // REVERT OLD (If Editing)
+                let shouldDeleteOldJv = false;
+                if (currentDocData) {
+                    if (oldCollection === 'journal_vouchers') {
+                        const oldRate = Number(currentDocData.exchangeRate || 1);
+                        if (currentDocData.isMulti && currentDocData.rows) {
+                            currentDocData.rows.forEach(r => {
+                                const oldAmtBase = Number(r.amount || 0) * oldRate;
+                                const isDebit = r.type === 'dr';
+                                const revertDeltaType = getJvDeltaType(!isDebit, r.category);
+                                trackChange(doc(db, getTargetCol(r.category), r.id), oldAmtBase, revertDeltaType, r.category);
+                            });
+                        } else if (currentDocData.drId && currentDocData.crId) {
+                            const oldAmtBase = Number(currentDocData.amount || 0) * oldRate;
+                            trackChange(doc(db, getTargetCol(currentDocData.drType), currentDocData.drId), oldAmtBase, 'in', currentDocData.drType); // DR reverted is CR
+                            trackChange(doc(db, getTargetCol(currentDocData.crType), currentDocData.crId), oldAmtBase, 'out', currentDocData.crType); // CR reverted is DR
+                        }
+                        // Delete the old Journal Voucher
+                        shouldDeleteOldJv = true;
+                    } else {
+                        const oldType = currentDocData.type; // 'in' or 'out' or 'contra'
+                        const oldAmt = Number(currentDocData.amount || 0);
+                        const oldRate = Number(currentDocData.exchangeRate || 1);
+                        const revertType = (oldType === 'in') ? 'out' : 'in';
+
+                        // Revert Source
+                        trackChange(doc(db, 'accounts', currentDocData.accountId), oldAmt, revertType, 'account');
+
+                        // Revert Targets
+                        if (currentDocData.isMulti && currentDocData.splits) {
+                            currentDocData.splits.forEach(s => {
+                                const splitBase = Number(s.amount || 0) * oldRate;
+                                trackChange(doc(db, getTargetCol(s.category), s.targetId), splitBase, revertType, s.category);
+                            });
+                        } else {
+                            const cat = currentDocData.transactionCategory || (currentDocData.type === 'contra' ? 'account' : 'party');
+                            const tid = currentDocData.toAccountId || currentDocData.partyId || currentDocData.expenseId || currentDocData.incomeId || currentDocData.capitalId || currentDocData.assetId;
+                            if (tid) trackChange(doc(db, getTargetCol(cat), tid), oldAmt, revertType, cat);
+                        }
                     }
                 }
 
@@ -24599,6 +24673,10 @@ const PaymentModal = (props) => {
                 });
 
                 // --- 4. SAVE VOUCHER ---
+                const createdBy = initialData?.createdBy || (subUser?.username || subUser?.id || user.uid);
+                const createdByName = initialData?.createdByName || effectiveName;
+                const createdAt = initialData?.createdAt || serverTimestamp();
+
                 const baseData = {
                     ...formData,
                     date, type, accountId, refNo,
@@ -24614,7 +24692,9 @@ const PaymentModal = (props) => {
                     lastModifiedAt: serverTimestamp(),
                     lastModifiedBy: user.uid,
                     lastModifiedByName: effectiveName,
-                    ...(!initialData ? { createdAt: serverTimestamp(), createdBy: (subUser?.username || subUser?.id || user.uid), createdByName: effectiveName } : {})
+                    createdBy,
+                    createdByName,
+                    createdAt
                 };
 
                 baseData.isMulti = true;
@@ -24630,7 +24710,7 @@ const PaymentModal = (props) => {
                     ? (parties.find(p => p.id === primaryPartySplit.targetId)?.name || primaryPartySplit.targetId)
                     : null;
 
-                if (initialData) await transaction.update(docRef, baseData);
+                if (initialData && oldCollection === 'payments') await transaction.update(docRef, baseData);
                 else {
                     await transaction.set(docRef, baseData);
                     let modeToUse = '';
@@ -24695,6 +24775,10 @@ const PaymentModal = (props) => {
                     description: `${narration || 'Transaction'} ${currencyId !== 'BASE' ? `(FCY @ ${rate})` : ''}`.trim(),
                     docId: docRef.id
                 });
+
+                if (shouldDeleteOldJv) {
+                    transaction.delete(doc(db, 'journal_vouchers', initialData.id));
+                }
             });
 
             if (onUpdateDate) onUpdateDate(date);
@@ -24946,8 +25030,9 @@ const PaymentModal = (props) => {
         { key: 'payment', label: 'PAYMENT', active: type === 'out' },
         { key: 'receipt', label: 'RECEIPT', active: type === 'in' },
         { key: 'contra', label: 'CONTRA', active: type === 'contra' },
+        { key: 'journal', label: 'JOURNAL', active: type === 'journal' },
     ];
-    const activeVoucherKey = type === 'in' ? 'receipt' : (type === 'contra' ? 'contra' : 'payment');
+    const activeVoucherKey = type === 'in' ? 'receipt' : (type === 'contra' ? 'contra' : (type === 'journal' ? 'journal' : 'payment'));
     const barBgColor = type === 'out' ? 'bg-[#5d4037]' : (type === 'in' ? 'bg-[#064e3b]' : 'bg-[#4c1d95]'); // Brown, Green, Purple
 
     return (
@@ -24978,24 +25063,58 @@ const PaymentModal = (props) => {
                                 const nextVoucher = e.target.value;
                                 if (nextVoucher === activeVoucherKey) return;
                                 if (initialData) {
-                                    const nextType = nextVoucher === 'receipt' ? 'in' : nextVoucher === 'contra' ? 'contra' : 'out';
-                                    setType(nextType);
-                                    setSplits(prevSplits => prevSplits.map(s => ({
-                                        ...s,
-                                        targetId: '',
-                                        category: nextType === 'contra' ? 'account' : 'party',
-                                        paymentAgainst: null,
-                                        billRefId: null,
-                                        billRefNo: null,
-                                        advRefNo: null,
-                                        advReturnDate: null,
-                                        advRemark: null,
-                                        loanReturnDate: null,
-                                        loanRemark: null,
-                                        poNumber: null,
-                                        advanceReturnDate: null,
-                                        advanceRemark: null
-                                    })));
+                                    if (nextVoucher === 'journal') {
+                                        const jvRows = [];
+                                        if (accountId) {
+                                            jvRows.push({
+                                                type: 'cr',
+                                                category: 'account',
+                                                id: accountId,
+                                                amount: String(rawInputAmount),
+                                                description: narration
+                                            });
+                                        }
+                                        splits.forEach(s => {
+                                            jvRows.push({
+                                                type: 'dr',
+                                                category: s.category || 'party',
+                                                id: s.targetId || '',
+                                                amount: String(s.amount || ''),
+                                                description: s.description || ''
+                                            });
+                                        });
+                                        const convertedData = {
+                                            id: initialData.id,
+                                            originalCollection: 'payments',
+                                            type: 'journal',
+                                            refNo: refNo,
+                                            date: date,
+                                            description: narration,
+                                            amount: rawInputAmount,
+                                            isMulti: true,
+                                            rows: jvRows
+                                        };
+                                        if (onSwitch) onSwitch('journal', convertedData);
+                                    } else {
+                                        const nextType = nextVoucher === 'receipt' ? 'in' : nextVoucher === 'contra' ? 'contra' : 'out';
+                                        setType(nextType);
+                                        setSplits(prevSplits => prevSplits.map(s => ({
+                                            ...s,
+                                            targetId: '',
+                                            category: nextType === 'contra' ? 'account' : 'party',
+                                            paymentAgainst: null,
+                                            billRefId: null,
+                                            billRefNo: null,
+                                            advRefNo: null,
+                                            advReturnDate: null,
+                                            advRemark: null,
+                                            loanReturnDate: null,
+                                            loanRemark: null,
+                                            poNumber: null,
+                                            advanceReturnDate: null,
+                                            advanceRemark: null
+                                        })));
+                                    }
                                 } else {
                                     if (onSwitch) onSwitch(nextVoucher);
                                 }
@@ -25847,11 +25966,11 @@ const JournalVoucherModal = (props) => {
 
                 if (initialData.isMulti) {
                     setMode('multi');
-                    setRows(initialData.rows.map(r => ({ ...r, id: Math.random(), aid: r.id }))); // Map stored 'id' to 'aid' for UI, keep 'id' unique for React key
+                    setRows(initialData.rows.map(r => ({ ...r, id: Math.random(), aid: r.aid || r.id }))); // Map stored 'id' or converted 'aid' to 'aid' for UI, keep 'id' unique for React key
                 } else {
                     setMode('multi');
                     // We only support multi now, but if it was single, it will be converted naturally by state (though UI only shows multi)
-                    setRows(initialData.rows ? initialData.rows.map(r => ({ ...r, id: Math.random(), aid: r.id })) : [
+                    setRows(initialData.rows ? initialData.rows.map(r => ({ ...r, id: Math.random(), aid: r.aid || r.id })) : [
                         { id: 1, type: 'dr', category: initialData.drType, aid: initialData.drId, amount: initialData.amount, description: initialData.description || '' },
                         { id: 2, type: 'cr', category: initialData.crType, aid: initialData.crId, amount: initialData.amount, description: initialData.description || '' }
                     ]);
@@ -26000,9 +26119,21 @@ const JournalVoucherModal = (props) => {
                 const targetUid = dataOwnerId || user.uid;
 
                 // --- 0. INITIAL READ (Security/State Sync) ---
+                let currentDocData = null;
+                let oldCollection = 'journal_vouchers';
                 const jvRef = (initialData && initialData.id) ? doc(db, 'journal_vouchers', initialData.id) : doc(collection(db, 'journal_vouchers'));
                 if (initialData && initialData.id) {
-                    await transaction.get(jvRef); // Satisfy security rules
+                    let docSnap = await transaction.get(doc(db, 'journal_vouchers', initialData.id));
+                    if (docSnap.exists()) {
+                        currentDocData = docSnap.data();
+                        oldCollection = 'journal_vouchers';
+                    } else {
+                        docSnap = await transaction.get(doc(db, 'payments', initialData.id));
+                        if (docSnap.exists()) {
+                            currentDocData = docSnap.data();
+                            oldCollection = 'payments';
+                        }
+                    }
                 }
 
                 // --- 1. CONSOLIDATE BALANCE CHANGES ---
@@ -26024,17 +26155,48 @@ const JournalVoucherModal = (props) => {
                 };
 
                 // REVERT OLD (If Editing)
-                if (initialData) {
-                    const oldRate = Number(initialData.exchangeRate || 1);
-                    if (initialData.isMulti && initialData.rows) {
-                        initialData.rows.forEach(r => {
-                            const oldAmtBase = Number(r.amount || 0) * oldRate;
-                            trackChange(doc(db, getColName(r.category), r.id), oldAmtBase, r.type === 'cr', r.category); // Note: swapped isDebit for revert
-                        });
-                    } else if (initialData.drId && initialData.crId) {
-                        const oldAmtBase = Number(initialData.amount || 0) * oldRate;
-                        trackChange(doc(db, getColName(initialData.drType), initialData.drId), oldAmtBase, false, initialData.drType); // Swapped: Revert DR as CR
-                        trackChange(doc(db, getColName(initialData.crType), initialData.crId), oldAmtBase, true, initialData.crType);  // Swapped: Revert CR as DR
+                let shouldDeleteOldPayment = false;
+                if (currentDocData) {
+                    if (oldCollection === 'payments') {
+                        const oldType = currentDocData.type; // 'in' or 'out' or 'contra'
+                        const oldAmt = Number(currentDocData.amount || 0);
+                        const oldRate = Number(currentDocData.exchangeRate || 1);
+
+                        // Revert Source (it was an account)
+                        trackChange(doc(db, 'accounts', currentDocData.accountId), oldAmt, oldType === 'out', 'account');
+
+                        // Revert Targets
+                        const getTargetCol = (cat) => (cat === 'contra' || cat === 'account') ? 'accounts' :
+                            (cat === 'party' ? 'parties' : (cat === 'expense' ? 'expenses' :
+                                (cat === 'direct_expense' ? 'direct_expenses' : // <--- NEW DIRECT EXPENSE
+                                    (cat === 'income' ? 'income_accounts' : (cat === 'capital' ? 'capital_accounts' : 'asset_accounts')))));
+
+                        const targetIsDebitRevert = (oldType === 'in');
+
+                        if (currentDocData.isMulti && currentDocData.splits) {
+                            currentDocData.splits.forEach(s => {
+                                const splitBase = Number(s.amount || 0) * oldRate;
+                                trackChange(doc(db, getTargetCol(s.category), s.targetId), splitBase, targetIsDebitRevert, s.category);
+                            });
+                        } else {
+                            const cat = currentDocData.transactionCategory || (currentDocData.type === 'contra' ? 'account' : 'party');
+                            const tid = currentDocData.toAccountId || currentDocData.partyId || currentDocData.expenseId || currentDocData.incomeId || currentDocData.capitalId || currentDocData.assetId;
+                            if (tid) trackChange(doc(db, getTargetCol(cat), tid), oldAmt, targetIsDebitRevert, cat);
+                        }
+                        // Delete the old Payment document
+                        shouldDeleteOldPayment = true;
+                    } else {
+                        const oldRate = Number(currentDocData.exchangeRate || 1);
+                        if (currentDocData.isMulti && currentDocData.rows) {
+                            currentDocData.rows.forEach(r => {
+                                const oldAmtBase = Number(r.amount || 0) * oldRate;
+                                trackChange(doc(db, getColName(r.category), r.id), oldAmtBase, r.type === 'cr', r.category); // Note: swapped isDebit for revert
+                            });
+                        } else if (currentDocData.drId && currentDocData.crId) {
+                            const oldAmtBase = Number(currentDocData.amount || 0) * oldRate;
+                            trackChange(doc(db, getColName(currentDocData.drType), currentDocData.drId), oldAmtBase, false, currentDocData.drType); // Swapped: Revert DR as CR
+                            trackChange(doc(db, getColName(currentDocData.crType), currentDocData.crId), oldAmtBase, true, currentDocData.crType);  // Swapped: Revert CR as DR
+                        }
                     }
                 }
 
@@ -26069,6 +26231,10 @@ const JournalVoucherModal = (props) => {
 
                 // --- 3. SAVE THE VOUCHER ---
                 const logAction = initialData ? 'UPDATED' : 'CREATED';
+                const createdBy = initialData?.createdBy || (subUser?.username || subUser?.id || user.uid);
+                const createdByName = initialData?.createdByName || effectiveName;
+                const createdAt = initialData?.createdAt || serverTimestamp();
+
                 const payload = {
                     date, refNo, description,
                     lotId: enableLot ? lotId : null,
@@ -26077,7 +26243,9 @@ const JournalVoucherModal = (props) => {
                     isMulti: mode === 'multi',
                     lastModifiedBy: user.uid,
                     lastModifiedByName: effectiveName,
-                    ...(!initialData ? { createdBy: (subUser?.username || subUser?.id || user.uid), createdByName: effectiveName, createdAt: serverTimestamp() } : {})
+                    createdBy,
+                    createdByName,
+                    createdAt
                 };
 
                 if (mode === 'single') {
@@ -26098,7 +26266,7 @@ const JournalVoucherModal = (props) => {
                 payload.exchangeRate = currentRate;
                 payload.currencySymbol = currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || '');
 
-                if (initialData) await transaction.update(jvRef, payload);
+                if (initialData && oldCollection === 'journal_vouchers') await transaction.update(jvRef, payload);
                 else {
                     await transaction.set(jvRef, payload);
                     if (companyProfile?.rules?.journalRefMode === 'auto') {
@@ -26137,6 +26305,10 @@ const JournalVoucherModal = (props) => {
                     description: description || (mode === 'multi' ? 'Multi-Entry Journal' : 'Journal Adjustment'),
                     docId: jvRef.id
                 });
+
+                if (shouldDeleteOldPayment) {
+                    transaction.delete(doc(db, 'payments', initialData.id));
+                }
             });
 
             if (onUpdateDate) onUpdateDate(date);
@@ -26233,8 +26405,74 @@ const JournalVoucherModal = (props) => {
                         <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">Voucher Type</span>
                         <select
                             value="journal"
-                            onChange={(e) => onSwitchVoucher && onSwitchVoucher(e.target.value)}
-                            disabled={!!initialData}
+                            onChange={(e) => {
+                                const nextVoucher = e.target.value;
+                                if (nextVoucher === 'journal') return;
+                                if (initialData) {
+                                    const targetType = nextVoucher === 'receipt' ? 'in' : nextVoucher === 'contra' ? 'contra' : 'out';
+                                    const isReceipt = targetType === 'in';
+                                    
+                                    const sourceRow = rows.find(r => r.type === (isReceipt ? 'dr' : 'cr') && r.category === 'account');
+                                    const sourceAccountId = sourceRow ? sourceRow.aid : '';
+                                    
+                                    const oppositeType = isReceipt ? 'cr' : 'dr';
+                                    const splitRows = rows.filter(r => r !== sourceRow && r.type === oppositeType);
+                                    
+                                    const convertedSplits = splitRows.map(r => ({
+                                        category: r.category || 'party',
+                                        targetId: '', // clear/omit receiver name
+                                        amount: String(r.amount || ''),
+                                        description: r.description || '',
+                                        paymentAgainst: null,
+                                        billRefId: null,
+                                        billRefNo: null,
+                                        advRefNo: null,
+                                        advReturnDate: null,
+                                        advRemark: null,
+                                        loanReturnDate: null,
+                                        loanRemark: null,
+                                        poNumber: null,
+                                        advanceReturnDate: null,
+                                        advanceRemark: null
+                                    }));
+                                    
+                                    if (convertedSplits.length === 0) {
+                                        convertedSplits.push({
+                                            category: targetType === 'contra' ? 'account' : 'party',
+                                            targetId: '',
+                                            amount: '',
+                                            description: '',
+                                            paymentAgainst: null,
+                                            billRefId: null,
+                                            billRefNo: null,
+                                            advRefNo: null,
+                                            advReturnDate: null,
+                                            advRemark: null,
+                                            loanReturnDate: null,
+                                            loanRemark: null,
+                                            poNumber: null,
+                                            advanceReturnDate: null,
+                                            advanceRemark: null
+                                        });
+                                    }
+
+                                    const convertedData = {
+                                        id: initialData.id,
+                                        originalCollection: 'journal_vouchers',
+                                        type: targetType,
+                                        refNo: refNo,
+                                        date: date,
+                                        narration: description,
+                                        amount: sourceRow ? Number(sourceRow.amount || 0) : (isReceipt ? totalDr : totalCr),
+                                        accountId: sourceAccountId,
+                                        splits: convertedSplits
+                                    };
+
+                                    if (onSwitchVoucher) onSwitchVoucher(nextVoucher, convertedData);
+                                } else {
+                                    if (onSwitchVoucher) onSwitchVoucher(nextVoucher);
+                                }
+                            }}
                             className="bg-transparent border-none p-0 text-[10px] font-black text-white outline-none cursor-pointer uppercase tracking-tight"
                         >
                             <option value="journal" className="text-slate-900 font-bold">JOURNAL (F7)</option>
