@@ -24977,7 +24977,28 @@ const PaymentModal = (props) => {
                             onChange={(e) => {
                                 const nextVoucher = e.target.value;
                                 if (nextVoucher === activeVoucherKey) return;
-                                if (onSwitch) onSwitch(nextVoucher);
+                                if (initialData) {
+                                    const nextType = nextVoucher === 'receipt' ? 'in' : nextVoucher === 'contra' ? 'contra' : 'out';
+                                    setType(nextType);
+                                    setSplits(prevSplits => prevSplits.map(s => ({
+                                        ...s,
+                                        targetId: '',
+                                        category: nextType === 'contra' ? 'account' : 'party',
+                                        paymentAgainst: null,
+                                        billRefId: null,
+                                        billRefNo: null,
+                                        advRefNo: null,
+                                        advReturnDate: null,
+                                        advRemark: null,
+                                        loanReturnDate: null,
+                                        loanRemark: null,
+                                        poNumber: null,
+                                        advanceReturnDate: null,
+                                        advanceRemark: null
+                                    })));
+                                } else {
+                                    if (onSwitch) onSwitch(nextVoucher);
+                                }
                             }}
                             className="bg-transparent border-none p-0 text-[13px] font-black text-white outline-none cursor-pointer uppercase tracking-tight"
                             style={{ textShadow: '0 0 12px rgba(255,255,255,0.4)' }}
