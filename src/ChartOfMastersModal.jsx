@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft } from 'lucide-react';
+import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
 import { db } from './firebase';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -29,7 +29,13 @@ const ChartOfMastersModal = ({
     const [searchTerm, setSearchTerm] = useState('');
     const [showSearch, setShowSearch] = useState(false);
     const [auditLogs, setAuditLogs] = useState({});
+    const [isDetailedView, setIsDetailedView] = useState(false);
+    const [expandedGroups, setExpandedGroups] = useState(new Set());
     const [loadingLogs, setLoadingLogs] = useState(false);
+
+    useEffect(() => {
+        setExpandedGroups(new Set());
+    }, [activeTab]);
 
     // Quick Add Modal States
     const [quickAddType, setQuickAddType] = useState(null); // 'group' | 'ledger'
@@ -420,6 +426,17 @@ const ChartOfMastersModal = ({
                             )}
                         </div>
 
+                        <button
+                            onClick={() => {
+                                setIsDetailedView(prev => !prev);
+                                setExpandedGroups(new Set());
+                            }}
+                            className="bg-white/15 hover:bg-white/20 text-white text-xs font-black px-3 py-1.5 rounded-xl border border-white/10 transition-colors uppercase tracking-wider"
+                            title="Toggle Detailed or Condensed View"
+                        >
+                            {isDetailedView ? 'Cond View' : 'Dtl View'}
+                        </button>
+
                         {loadingLogs && (
                             <div className="flex items-center gap-1.5 bg-white/10 px-3 py-1 rounded-full text-xs animate-pulse">
                                 <RefreshCw size={12} className="animate-spin" />
@@ -527,17 +544,37 @@ const ChartOfMastersModal = ({
                                         let globalIndex = 0;
                                         return groupNamesList.map(gName => {
                                             const items = groupedMap[gName] || [];
+                                            const isExpanded = isDetailedView || expandedGroups.has(gName);
                                             return (
                                                 <React.Fragment key={gName}>
                                                     {/* Section Group Header Row */}
-                                                    <tr className="bg-[#005994]/5 border-y border-slate-100 font-bold text-slate-700">
+                                                    <tr 
+                                                        onClick={() => {
+                                                            setExpandedGroups(prev => {
+                                                                const next = new Set(prev);
+                                                                if (next.has(gName)) {
+                                                                    next.delete(gName);
+                                                                } else {
+                                                                    next.add(gName);
+                                                                }
+                                                                return next;
+                                                            });
+                                                        }}
+                                                        className="bg-[#005994]/5 border-y border-slate-100 font-bold text-slate-700 cursor-pointer hover:bg-[#005994]/10 transition-colors select-none"
+                                                    >
                                                         <td colSpan={5} className="py-2.5 px-4">
                                                             <div className="flex items-center justify-between">
                                                                 <div className="flex items-center gap-2">
+                                                                    {isExpanded ? (
+                                                                        <ChevronDown size={16} className="text-[#005994]/60" />
+                                                                    ) : (
+                                                                        <ChevronRight size={16} className="text-[#005994]/60" />
+                                                                    )}
                                                                     <span className="text-xs uppercase tracking-wider text-slate-400">Group:</span>
                                                                     <span className="text-[#005994]">{gName}</span>
                                                                     <button
-                                                                        onClick={() => {
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
                                                                             setQuickAddType('ledger');
                                                                             setQuickAddTargetGroup(gName);
                                                                             setQuickAddName('');
@@ -556,43 +593,45 @@ const ChartOfMastersModal = ({
                                                     </tr>
 
                                                     {/* Group items list */}
-                                                    {items.length === 0 ? (
-                                                        <tr className="hover:bg-slate-50/50 transition-colors">
-                                                            <td className="py-3 px-4 text-slate-300 font-medium">-</td>
-                                                            <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
-                                                            <td className="py-3 px-6 text-slate-400 italic font-medium">Zero Ledgers</td>
-                                                            <td className="py-3 px-6 text-center text-slate-300">-</td>
-                                                            <td className="py-3 px-6 text-slate-300 text-xs">-</td>
-                                                        </tr>
-                                                    ) : (
-                                                        items.map((item) => {
-                                                            globalIndex++;
-                                                            return (
-                                                                <tr 
-                                                                    key={item.id} 
-                                                                    className="hover:bg-slate-50/50 transition-colors"
-                                                                >
-                                                                    <td className="py-3 px-4 text-slate-400 font-medium">{globalIndex}</td>
-                                                                    <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
-                                                                    <td className="py-3 px-6 font-semibold text-slate-900">{item.name}</td>
-                                                                    <td className="py-3 px-6 text-center">
-                                                                        {item.voucherCount > 0 ? (
-                                                                            <span className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100">
-                                                                                {item.voucherCount} {item.voucherCount === 1 ? 'voucher' : 'vouchers'}
-                                                                            </span>
-                                                                        ) : (
-                                                                            <span className="text-slate-300 text-xs">No vouchers</span>
-                                                                        )}
-                                                                    </td>
-                                                                    <td className="py-3 px-6 text-slate-600 text-xs font-medium">
-                                                                        <div className="flex items-center gap-1.5">
-                                                                            <User size={13} className="text-slate-400" />
-                                                                            <span>{item.createdBy}</span>
-                                                                        </div>
-                                                                    </td>
-                                                                </tr>
-                                                            );
-                                                        })
+                                                    {isExpanded && (
+                                                        items.length === 0 ? (
+                                                            <tr className="hover:bg-slate-50/50 transition-colors">
+                                                                <td className="py-3 px-4 text-slate-300 font-medium">-</td>
+                                                                <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
+                                                                <td className="py-3 px-6 text-slate-400 italic font-medium">Zero Ledgers</td>
+                                                                <td className="py-3 px-6 text-center text-slate-300">-</td>
+                                                                <td className="py-3 px-6 text-slate-300 text-xs">-</td>
+                                                            </tr>
+                                                        ) : (
+                                                            items.map((item) => {
+                                                                globalIndex++;
+                                                                return (
+                                                                    <tr 
+                                                                        key={item.id} 
+                                                                        className="hover:bg-slate-50/50 transition-colors"
+                                                                    >
+                                                                        <td className="py-3 px-4 text-slate-400 font-medium">{globalIndex}</td>
+                                                                        <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
+                                                                        <td className="py-3 px-6 font-semibold text-slate-900">{item.name}</td>
+                                                                        <td className="py-3 px-6 text-center">
+                                                                            {item.voucherCount > 0 ? (
+                                                                                <span className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100">
+                                                                                    {item.voucherCount} {item.voucherCount === 1 ? 'voucher' : 'vouchers'}
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="text-slate-300 text-xs">No vouchers</span>
+                                                                            )}
+                                                                        </td>
+                                                                        <td className="py-3 px-6 text-slate-600 text-xs font-medium">
+                                                                            <div className="flex items-center gap-1.5">
+                                                                                <User size={13} className="text-slate-400" />
+                                                                                <span>{item.createdBy}</span>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                );
+                                                            })
+                                                        )
                                                     )}
                                                 </React.Fragment>
                                             );
