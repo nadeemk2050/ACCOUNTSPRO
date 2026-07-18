@@ -19,6 +19,9 @@ const ChartOfMastersModal = ({
     payments = [],
     journalVouchers = [],
     stockJournals = [],
+    stockGroups = [],
+    partyGroups = [],
+    expenseGroups = [],
     dataOwnerId,
     user
 }) => {
@@ -243,6 +246,26 @@ const ChartOfMastersModal = ({
         });
 
         const groups = {};
+
+        // Resolve and pre-populate all base groups to show empty ones
+        let baseGroups = [];
+        if (activeTab === 'ITEMS') {
+            baseGroups = ['Primary', ...stockGroups.map(g => g.name)];
+        } else if (activeTab === 'CUSTOMERS') {
+            baseGroups = ['Primary', ...partyGroups.map(g => g.name)];
+        } else if (activeTab === 'INDIRECT_EXPENSES' || activeTab === 'DIRECT_EXPENSES') {
+            baseGroups = ['Primary', ...expenseGroups.map(g => g.name)];
+        } else if (activeTab === 'CASH_BANK') {
+            baseGroups = ['Cash/Bank', 'CURRENT_ASSET', 'FIXED_ASSET', 'EXPENSE', 'OTHER'];
+        }
+
+        const uniqueBaseGroups = Array.from(new Set(baseGroups.filter(Boolean)));
+        uniqueBaseGroups.forEach(gName => {
+            if (!searchTerm || gName.toLowerCase().includes(searchTerm.toLowerCase())) {
+                groups[gName] = [];
+            }
+        });
+
         mapped.forEach(item => {
             if (!groups[item.groupName]) groups[item.groupName] = [];
             groups[item.groupName].push(item);
@@ -254,7 +277,7 @@ const ChartOfMastersModal = ({
         });
 
         return groups;
-    }, [currentTab, searchTerm, activeTab, auditLogs, invoices, payments, journalVouchers, stockJournals]);
+    }, [currentTab, searchTerm, activeTab, auditLogs, invoices, payments, journalVouchers, stockJournals, stockGroups, partyGroups, expenseGroups]);
 
     // Handle Quick Adding to Firestore Database
     const handleQuickAddSubmit = async (e) => {
@@ -533,34 +556,44 @@ const ChartOfMastersModal = ({
                                                     </tr>
 
                                                     {/* Group items list */}
-                                                    {items.map((item) => {
-                                                        globalIndex++;
-                                                        return (
-                                                            <tr 
-                                                                key={item.id} 
-                                                                className="hover:bg-slate-50/50 transition-colors"
-                                                            >
-                                                                <td className="py-3 px-4 text-slate-400 font-medium">{globalIndex}</td>
-                                                                <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
-                                                                <td className="py-3 px-6 font-semibold text-slate-900">{item.name}</td>
-                                                                <td className="py-3 px-6 text-center">
-                                                                    {item.voucherCount > 0 ? (
-                                                                        <span className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100">
-                                                                            {item.voucherCount} {item.voucherCount === 1 ? 'voucher' : 'vouchers'}
-                                                                        </span>
-                                                                    ) : (
-                                                                        <span className="text-slate-300 text-xs">No vouchers</span>
-                                                                    )}
-                                                                </td>
-                                                                <td className="py-3 px-6 text-slate-600 text-xs font-medium">
-                                                                    <div className="flex items-center gap-1.5">
-                                                                        <User size={13} className="text-slate-400" />
-                                                                        <span>{item.createdBy}</span>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    })}
+                                                    {items.length === 0 ? (
+                                                        <tr className="hover:bg-slate-50/50 transition-colors">
+                                                            <td className="py-3 px-4 text-slate-300 font-medium">-</td>
+                                                            <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
+                                                            <td className="py-3 px-6 text-slate-400 italic font-medium">Zero Ledgers</td>
+                                                            <td className="py-3 px-6 text-center text-slate-300">-</td>
+                                                            <td className="py-3 px-6 text-slate-300 text-xs">-</td>
+                                                        </tr>
+                                                    ) : (
+                                                        items.map((item) => {
+                                                            globalIndex++;
+                                                            return (
+                                                                <tr 
+                                                                    key={item.id} 
+                                                                    className="hover:bg-slate-50/50 transition-colors"
+                                                                >
+                                                                    <td className="py-3 px-4 text-slate-400 font-medium">{globalIndex}</td>
+                                                                    <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
+                                                                    <td className="py-3 px-6 font-semibold text-slate-900">{item.name}</td>
+                                                                    <td className="py-3 px-6 text-center">
+                                                                        {item.voucherCount > 0 ? (
+                                                                            <span className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100">
+                                                                                {item.voucherCount} {item.voucherCount === 1 ? 'voucher' : 'vouchers'}
+                                                                            </span>
+                                                                        ) : (
+                                                                            <span className="text-slate-300 text-xs">No vouchers</span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="py-3 px-6 text-slate-600 text-xs font-medium">
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <User size={13} className="text-slate-400" />
+                                                                            <span>{item.createdBy}</span>
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })
+                                                    )}
                                                 </React.Fragment>
                                             );
                                         });

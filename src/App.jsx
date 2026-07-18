@@ -12234,6 +12234,9 @@ export default function App() {
                     payments={payments}
                     journalVouchers={journalVouchers}
                     stockJournals={stockJournals}
+                    stockGroups={stockGroups}
+                    partyGroups={partyGroups}
+                    expenseGroups={expenseGroups}
                     dataOwnerId={dataOwnerId || user?.uid}
                     user={user}
                 />
