@@ -19,7 +19,6 @@ const ChartOfMastersModal = ({
     payments = [],
     journalVouchers = [],
     stockJournals = [],
-    findUserName,
     dataOwnerId
 }) => {
     const [activeTab, setActiveTab] = useState('ITEMS');

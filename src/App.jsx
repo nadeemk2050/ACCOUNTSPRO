@@ -12234,7 +12234,6 @@ export default function App() {
                     payments={payments}
                     journalVouchers={journalVouchers}
                     stockJournals={stockJournals}
-                    findUserName={findUserName}
                     dataOwnerId={dataOwnerId || user?.uid}
                 />
             )}
