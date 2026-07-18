@@ -260,8 +260,8 @@ const ChartOfMastersModal = ({
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1000] flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl w-full max-w-7xl h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-slate-100 animate-in fade-in zoom-in duration-200">
+        <div className="fixed inset-0 bg-white z-[1000] flex flex-col animate-in fade-in duration-200">
+            <div className="w-full h-full flex flex-col overflow-hidden">
                 
                 {/* Header */}
                 <div className="px-6 py-4 bg-[#005994] text-white flex items-center justify-between">
