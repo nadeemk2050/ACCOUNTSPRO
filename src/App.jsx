@@ -5285,38 +5285,6 @@ export default function App() {
     const [syncPulse, setSyncPulse] = useState(false);
     const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
 
-    useEffect(() => {
-        const restoreVouchers = async () => {
-            try {
-                const logsSnap = await getDocs(collection(db, 'audit_logs'));
-                if (!logsSnap.empty) {
-                    let restoredCount = 0;
-                    for (const d of logsSnap.docs) {
-                        const logData = d.data();
-                        if (logData.docType === 'Journal Voucher' && (logData.refNo === '12swed' || logData.refNo === '12swedr')) {
-                            if (logData.snapshotData) {
-                                const payload = JSON.parse(logData.snapshotData);
-                                if (payload.rows && Array.isArray(payload.rows)) {
-                                    payload.rows = payload.rows.map(r => ({
-                                        ...r,
-                                        id: r.id || r.aid || ''
-                                    }));
-                                }
-                                await fSetDoc(doc(db, 'journal_vouchers', logData.docId), payload);
-                                restoredCount++;
-                            }
-                        }
-                    }
-                    if (restoredCount > 0) {
-                        alert(`Restoration complete: ${restoredCount} vouchers (12swed/12swedr) successfully recovered and fixed! Check your Day Book now.`);
-                    }
-                }
-            } catch (err) {
-                console.error("[Recovery] Error running restoration:", err);
-            }
-        };
-        setTimeout(restoreVouchers, 5000);
-    }, []);
 
     // Handle Cloud Sync Status updates
     useEffect(() => {
