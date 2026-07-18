@@ -434,21 +434,6 @@ const ChartOfMastersModal = ({
                             </button>
                         ))}
                     </div>
-
-                    {/* Quick Add Group button at top bar if tab supports groups */}
-                    {currentTab?.groupCollection && (
-                        <button
-                            onClick={() => {
-                                setQuickAddType('group');
-                                setQuickAddTargetGroup('');
-                                setQuickAddName('');
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#005994]/10 hover:bg-[#005994]/20 text-[#005994] text-xs font-bold rounded-lg transition-colors ml-auto"
-                        >
-                            <Plus size={14} />
-                            <span>Add Group</span>
-                        </button>
-                    )}
                 </div>
 
                 {/* Details Table Content */}
@@ -476,8 +461,40 @@ const ChartOfMastersModal = ({
                                 <thead>
                                     <tr className="bg-slate-50 border-b border-slate-100">
                                         <th className="py-3 px-4 font-semibold text-slate-700 w-16">S.No.</th>
-                                        <th className="py-3 px-6 font-semibold text-slate-700">Group Name</th>
-                                        <th className="py-3 px-6 font-semibold text-slate-700">Ledger Name</th>
+                                        <th className="py-3 px-6 font-semibold text-slate-700">
+                                            <div className="flex items-center gap-1.5">
+                                                <span>Group Name</span>
+                                                {currentTab?.groupCollection && (
+                                                    <button
+                                                        onClick={() => {
+                                                            setQuickAddType('group');
+                                                            setQuickAddTargetGroup('');
+                                                            setQuickAddName('');
+                                                        }}
+                                                        className="p-1 hover:bg-slate-200 rounded text-[#005994] transition-colors inline-flex items-center justify-center"
+                                                        title="Add Group"
+                                                    >
+                                                        <Plus size={14} className="stroke-[3]" />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </th>
+                                        <th className="py-3 px-6 font-semibold text-slate-700">
+                                            <div className="flex items-center gap-1.5">
+                                                <span>Ledger Name</span>
+                                                <button
+                                                    onClick={() => {
+                                                        setQuickAddType('ledger');
+                                                        setQuickAddTargetGroup(groupNamesList[0] || 'Primary');
+                                                        setQuickAddName('');
+                                                    }}
+                                                    className="p-1 hover:bg-slate-200 rounded text-[#005994] transition-colors inline-flex items-center justify-center"
+                                                    title="Add Ledger"
+                                                >
+                                                    <Plus size={14} className="stroke-[3]" />
+                                                </button>
+                                            </div>
+                                        </th>
                                         <th className="py-3 px-6 font-semibold text-slate-700 text-center w-40">Vouchers Count</th>
                                         <th className="py-3 px-6 font-semibold text-slate-700">Last Modified By & Date</th>
                                     </tr>
@@ -496,23 +513,21 @@ const ChartOfMastersModal = ({
                                                                 <div className="flex items-center gap-2">
                                                                     <span className="text-xs uppercase tracking-wider text-slate-400">Group:</span>
                                                                     <span className="text-[#005994]">{gName}</span>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setQuickAddType('ledger');
+                                                                            setQuickAddTargetGroup(gName);
+                                                                            setQuickAddName('');
+                                                                        }}
+                                                                        className="p-0.5 hover:bg-slate-200 rounded text-[#005994] transition-colors inline-flex items-center justify-center"
+                                                                        title={`Add ledger under ${gName}`}
+                                                                    >
+                                                                        <Plus size={13} className="stroke-[3]" />
+                                                                    </button>
                                                                     <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium ml-2">
                                                                         {items.length} {items.length === 1 ? 'record' : 'records'}
                                                                     </span>
                                                                 </div>
-                                                                {/* Quick add LEDGER under this group */}
-                                                                <button
-                                                                    onClick={() => {
-                                                                        setQuickAddType('ledger');
-                                                                        setQuickAddTargetGroup(gName);
-                                                                        setQuickAddName('');
-                                                                    }}
-                                                                    className="flex items-center gap-1 text-[11px] font-bold text-[#005994] hover:text-[#004878] bg-white border border-[#005994]/20 px-2 py-0.5 rounded-md shadow-sm transition-all"
-                                                                    title={`Add ledger under ${gName}`}
-                                                                >
-                                                                    <Plus size={12} />
-                                                                    <span>Add Ledger</span>
-                                                                </button>
                                                             </div>
                                                         </td>
                                                     </tr>
