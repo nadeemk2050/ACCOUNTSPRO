@@ -12235,6 +12235,7 @@ export default function App() {
                     journalVouchers={journalVouchers}
                     stockJournals={stockJournals}
                     dataOwnerId={dataOwnerId || user?.uid}
+                    user={user}
                 />
             )}
 
