@@ -26,6 +26,7 @@ import { getFunctions, httpsCallable as fHttpsCallable } from "firebase/function
 
 // --- VIEW ONLY & GUEST MODE BLOCKER ---
 import DateInput from './DateInput';
+import ChartOfMastersModal from './ChartOfMastersModal';
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -9880,6 +9881,15 @@ export default function App() {
                             <>
                                 <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
                                     <MenuDropdown label="Create / Alter Masters" shortcut="M" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
+                                    <MenuButton
+                                        label="Chart of Masters"
+                                        shortcut="C"
+                                        onClick={() => {
+                                            setActiveModal('chart_of_masters');
+                                            onMenuClick();
+                                            setActiveSubMenu(null);
+                                        }}
+                                    />
 
                                     <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-4">Transactions</div>
                                     <MenuDropdown label="Quick Action Vouchers" shortcut="Q" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
@@ -12204,6 +12214,28 @@ export default function App() {
                     onUninstallPwa={handleUninstallClick}
                     isInstallable={!!deferredPrompt}
                     isPwaInstalled={isPwaInstalled}
+                />
+            )}
+
+            {activeModal === 'chart_of_masters' && (
+                <ChartOfMastersModal
+                    isOpen={true}
+                    onClose={handleCloseModal}
+                    products={products}
+                    lots={lots}
+                    parties={parties}
+                    expenses={expenses}
+                    directExpenses={directExpenseAccounts}
+                    incomeAccounts={incomeAccounts}
+                    capitalAccounts={capitalAccounts}
+                    accounts={accounts}
+                    assetAccounts={assetAccounts}
+                    invoices={invoices}
+                    payments={payments}
+                    journalVouchers={journalVouchers}
+                    stockJournals={stockJournals}
+                    findUserName={findUserName}
+                    dataOwnerId={dataOwnerId || user?.uid}
                 />
             )}
 
