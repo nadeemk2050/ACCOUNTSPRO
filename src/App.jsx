@@ -20873,15 +20873,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         const masterOpeningQty = found ? safeNum(found.openingStock || 0) : 0;
         const masterOpeningRate = found ? safeNum(found.openingRate || 0) : 0;
 
-        // Item ledger should not auto-derive opening from prior transactions.
-        // Use only master opening values (if any), otherwise start from zero.
-        if (filter.type === 'item') {
-            setOpeningBalance(masterOpeningBal);
-            setOpeningQty(masterOpeningQty);
-            const calcRate = (masterOpeningQty !== 0) ? (masterOpeningBal / masterOpeningQty) : 0;
-            setOpeningRate(masterOpeningRate || calcRate);
-            return;
-        }
+
 
         // If no start date, use master opening balance (All Time view)
         if (!filter.startDate) {
@@ -26900,11 +26892,10 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             const itemMap = {};
             products.forEach(p => {
                 const basePurchaseRate = Number(p.purchasePrice || 0);
-                // Keep Stock Summary aligned with Item Ledger totals by deriving opening
-                // from transaction history (date < from) instead of master opening stock.
-                const openingQty = 0;
-                const openingVal = 0;
-                const openingRate = basePurchaseRate;
+                // Keep Stock Summary aligned with Item Ledger totals by starting with master opening stock.
+                const openingQty = Number(p.openingStock || 0);
+                const openingVal = Number(p.openingBalance || 0);
+                const openingRate = Number(p.openingRate || p.purchasePrice || 0);
 
                 itemMap[p.id] = {
                     id: p.id, name: p.name,
