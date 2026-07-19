@@ -12160,6 +12160,7 @@ export default function App() {
                 savedFilter={savedLedgerFilter}
                 onFilterSave={setSavedLedgerFilter}
                 currencySymbol={currencySymbol}
+                displayCompanyName={displayCompanyName}
             />
 
             {/* NEW UNIT MANAGER */}
@@ -20506,7 +20507,7 @@ const HideCol = ({ name, id, onHide, color = 'inherit' }) => (
 );
 
 // --- UPDATED LEDGER MODAL (With Collapsible Tools & Persistent Header) ---
-const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker }) => {
+const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker, displayCompanyName }) => {
 
     // Filters
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
@@ -22256,7 +22257,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [isOpen, selectedIds, hiddenStack, focusedRowIndex, processedData, summaryMode, onOpenVoucherPicker]);
 
-    const isTallyItemLedger = filter.type === 'item' && summaryMode === 'detailed';
+    const isTallyItemLedger = filter.type === 'item';
     const isItemLedgerReport = filter.type === 'item';
 
     const graphReportType = useMemo(() => {
@@ -23193,8 +23194,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         )}
                     </div>
 
-                    <div className="flex items-center gap-2">
-                        {/* Redundant columns/date area removed as they are now in the scrollable row */}
+                    <div className="flex items-center gap-2 shrink-0">
+                        {displayCompanyName && (
+                            <span className="text-[8px] font-black text-[#1e3264] opacity-80 uppercase tracking-wider select-none pr-1">
+                                {displayCompanyName}
+                            </span>
+                        )}
                     </div>
                 </div>
 
@@ -23594,6 +23599,39 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                         </tr>
                                                     );
                                                 } else {
+                                                    if (filter.type === 'item') {
+                                                        return (
+                                                            <tr key={`${row.id}_${idx}`} data-row-idx={idx} onClick={() => handleSummaryClick(row)}
+                                                                className={`cursor-pointer bg-indigo-50/40 hover:bg-indigo-100 border-b border-indigo-100 font-bold transition-colors ${focusedRowIndex === idx ? 'bg-[#ffe699] ring-2 ring-blue-600 ring-inset outline-none relative z-10' : ''}`}
+                                                                title="Click to drill down into this period"
+                                                            >
+                                                                {!hiddenCols.has('check') && <td className="p-2 border-r border-indigo-100 text-center"></td>}
+                                                                {!hiddenCols.has('date') && <td className="p-2 border-r border-indigo-100 text-indigo-700 font-black text-[11px] whitespace-nowrap">{row.particulars || row.drName || ''}</td>}
+                                                                {!hiddenCols.has('vch') && <td className="p-2 border-r border-indigo-100 text-center text-[#1e3264] text-xs font-black uppercase">{row.vchType}</td>}
+                                                                {!hiddenCols.has('part') && (
+                                                                    <td className="p-2 border-r border-indigo-100 text-center text-slate-600 font-black">
+                                                                        <div className="flex items-center justify-center gap-1.5">
+                                                                            <span>{row.crName}</span>
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); openBreakupSummaryView(row); }}
+                                                                                className="p-0.5 rounded border border-blue-300 bg-white text-[#2b5797] hover:bg-blue-50 transition-colors"
+                                                                                title="View Summary"
+                                                                            >
+                                                                                <BarChart3 size={10} strokeWidth={2.5} />
+                                                                            </button>
+                                                                        </div>
+                                                                    </td>
+                                                                )}
+                                                                {!hiddenCols.has('ref') && <td className="p-2 border-r border-indigo-100 text-center text-slate-300">—</td>}
+                                                                {!hiddenCols.has('item_qty_in') && <td className={`p-2 border-r border-indigo-100 text-right font-black ${safeNum(row.qtyIn) > 0 ? 'text-green-700' : 'text-slate-300'}`}>{safeNum(row.qtyIn) > 0 ? format3(safeNum(row.qtyIn)) : '-'}</td>}
+                                                                {!hiddenCols.has('debit') && <td className={`p-2 border-r border-indigo-100 text-right font-black ${row.displayIn > 0 ? 'text-green-700' : 'text-slate-300'}`}>{row.displayIn > 0 ? formatCurrency(row.displayIn) : '-'}</td>}
+                                                                {!hiddenCols.has('item_qty_out') && <td className={`p-2 border-r border-indigo-100 text-right font-black ${safeNum(row.qtyOut) > 0 ? 'text-red-700' : 'text-slate-300'}`}>{safeNum(row.qtyOut) > 0 ? format3(safeNum(row.qtyOut)) : '-'}</td>}
+                                                                {!hiddenCols.has('credit') && <td className={`p-2 border-r border-indigo-100 text-right font-black ${row.displayOut > 0 ? 'text-red-700' : 'text-slate-300'}`}>{row.displayOut > 0 ? formatCurrency(row.displayOut) : '-'}</td>}
+                                                                {!hiddenCols.has('qty_bal') && <td className="p-2 border-r border-indigo-100 text-right font-black text-slate-800 bg-blue-50/10">{format3(row.displayBalanceQty)}</td>}
+                                                                {!hiddenCols.has('bal') && <td className="p-2 text-right font-black text-slate-900">{formatCurrency(Math.abs(row.displayBalance))} <span className="text-[9px] text-slate-500">{row.displayBalance >= 0 ? 'Dr' : 'Cr'}</span></td>}
+                                                            </tr>
+                                                        );
+                                                    }
                                                     return (
                                                         <tr key={`${row.id}_${idx}`} data-row-idx={idx} onClick={() => handleSummaryClick(row)}
                                                             className={`cursor-pointer bg-indigo-50/40 hover:bg-indigo-100 border-b border-indigo-100 font-bold transition-colors ${focusedRowIndex === idx ? 'bg-[#ffe699] ring-2 ring-blue-600 ring-inset outline-none relative z-10' : ''}`}
