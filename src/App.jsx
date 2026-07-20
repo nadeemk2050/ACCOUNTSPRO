@@ -28161,6 +28161,17 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         else if (cat === 'capital') tid = v.capitalId;
                         else if (cat === 'asset') tid = v.assetId;
                         else if (cat === 'income') tid = v.incomeId;
+
+                        // Fallback category detection for newer payments without transactionCategory field
+                        if (!cat) {
+                            if (v.partyId) { cat = 'party'; tid = v.partyId; }
+                            else if (v.expenseId) { cat = 'expense'; tid = v.expenseId; }
+                            else if (v.toAccountId) { cat = 'account'; tid = v.toAccountId; }
+                            else if (v.capitalId) { cat = 'capital'; tid = v.capitalId; }
+                            else if (v.assetId) { cat = 'asset'; tid = v.assetId; }
+                            else if (v.incomeId) { cat = 'income'; tid = v.incomeId; }
+                        }
+
                         if (tid) applyPaymentTarget(tid, cat, amtBase);
                     }
                 });
@@ -29216,7 +29227,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                                         <div className={`p-1 rounded bg-white shadow-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
                                                             <ChevronRight size={12} className={isExpanded ? "text-blue-600" : "text-slate-400"} />
                                                         </div>
-                                                        <span className="group-hover:text-blue-700 transition-colors">ðŸ“ {group.name}</span>
+                                                        <span className="group-hover:text-blue-700 transition-colors">{group.name}</span>
                                                         <span className="text-slate-400 font-bold ml-1 px-1.5 py-0.5 bg-slate-200/50 rounded-full text-[9px] leading-none">{group.items.length}</span>
                                                     </td>
                                                     <td className={`p-3 text-right font-black font-mono text-xs group-hover:scale-105 transition-transform ${group.balance < 0 ? 'text-rose-700' : 'text-blue-700'}`}>
