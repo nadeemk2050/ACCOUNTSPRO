@@ -23,6 +23,7 @@ import {
     generateBankApplicationPDF
 } from './invoiceGenerator';
 import CustomersProfileModule from './CustomersProfileModule';
+import TaxModule from './TaxModule';
 
 const ManagementDashboard = ({
     onClose,
@@ -82,7 +83,8 @@ const ManagementDashboard = ({
     vehicles,
     isRecalculating,
     currentRole,
-    checkDuplicateName
+    checkDuplicateName,
+    taxRates
 }) => {
     const [activeTab, setActiveTab] = useState('dashboard');
     const [summarySubTab, setSummarySubTab] = useState('cashflow');
@@ -624,6 +626,7 @@ const ManagementDashboard = ({
 
     const modules = [
         { id: 'infolets', name: 'Company Management Tools', icon: <LayoutDashboard className="w-6 h-6 md:w-8 md:h-8" /> },
+        { id: 'accprotax', name: 'ACCPRO TAX', icon: <FileText className="w-6 h-6 md:w-8 md:h-8 text-yellow-400" /> },
         { id: 'data', name: 'Data', icon: <Database className="w-6 h-6 md:w-8 md:h-8" /> },
         { id: 'reports', name: 'Reports', icon: <FileText className="w-6 h-6 md:w-8 md:h-8" /> },
         { id: 'summary_reports', name: 'Summarised Reports', icon: <Archive className="w-6 h-6 md:w-8 md:h-8" /> },
@@ -642,6 +645,8 @@ const ManagementDashboard = ({
     if (currentRole === 'developer') {
         modules.push({ id: 'developer_tools', name: 'Dev Center', icon: <ShieldCheck className="w-6 h-6 md:w-8 md:h-8 text-red-500 animate-pulse" /> });
     }
+
+    const [showTaxModule, setShowTaxModule] = useState(false);
 
     return (
         <div className={`fixed inset-0 z-[100] ${bgGradient} text-white font-sans flex flex-col`}>
@@ -696,7 +701,13 @@ const ManagementDashboard = ({
                             <div
                                 key={mod.id}
                                 className="group flex flex-col items-center gap-2 cursor-pointer"
-                                onClick={() => setActiveTab(activeTab === mod.id ? 'dashboard' : mod.id)}
+                                onClick={() => {
+                                    if (mod.id === 'accprotax') {
+                                        setShowTaxModule(true);
+                                        return;
+                                    }
+                                    setActiveTab(activeTab === mod.id ? 'dashboard' : mod.id);
+                                }}
                             >
                                 <div className={`w-14 h-14 md:w-20 md:h-20 rounded-lg md:rounded-xl border border-white/20 flex items-center justify-center bg-white/5 group-hover:bg-white/20 group-hover:scale-105 transition-all shadow-lg backdrop-blur-sm ${activeTab === mod.id ? 'bg-white/20 ring-2 ring-white/50' : ''}`}>
                                     <div className="opacity-80 group-hover:opacity-100 flex items-center justify-center">
@@ -2498,6 +2509,17 @@ const ManagementDashboard = ({
 
                 </div >
             </div >
+
+            {showTaxModule && (
+                <TaxModule
+                    onClose={() => setShowTaxModule(false)}
+                    parties={parties}
+                    products={products}
+                    taxRates={taxRates}
+                    user={user}
+                    dataOwnerId={dataOwnerId}
+                />
+            )}
         </div >
     );
 };

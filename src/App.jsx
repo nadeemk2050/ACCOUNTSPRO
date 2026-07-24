@@ -102,6 +102,7 @@ import { db, auth, functions, rtdb, cloudRtdb, cloudDb } from './firebase';
 import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
 import ManagementDashboard from './ManagementDashboard';
+import TaxVoucherViewer from './TaxVoucherViewer';
 import OrderVouchersDashboard from './OrderVouchersDashboard';
 import RegistersDashboard from './RegistersDashboard';
 import LoansAdvancesRegister from './LoansAdvancesRegister';
@@ -2340,8 +2341,8 @@ const PieceWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOw
                         // The existing code line 1521 used 'item.pieces'. I will stick to that for Invoices, but verify if 'pcs' exists too.
                         const finalPcs = pcs || Number(item.pcs || 0);
 
-                        if (d.type === 'purchase') processRow(d.date, d.refNo, 'purchase', d.partyName, item.productId, finalPcs, 'in');
-                        if (d.type === 'sales') processRow(d.date, d.refNo, 'sales', d.partyName, item.productId, finalPcs, 'out');
+                        if (d.type === 'purchase' || d.type === 'purchase_apt') processRow(d.date, d.refNo, 'purchase', d.partyName, item.productId, finalPcs, 'in');
+                        if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt') processRow(d.date, d.refNo, 'sales', d.partyName, item.productId, finalPcs, 'out');
                     });
                 }
             });
@@ -2537,8 +2538,8 @@ const LotDrillDownModal = ({ isOpen, onClose, lot, type, user, dataOwnerId, prod
                     if (isMainLot || isItemLot) {
                         const qty = safeNum(item.quantity);
                         const rate = safeNum(item.rate);
-                        if (d.type === 'purchase') processItem(item.productId, qty, rate, 'in');
-                        if (d.type === 'sales') processItem(item.productId, qty, rate, 'out');
+                        if (d.type === 'purchase' || d.type === 'purchase_apt') processItem(item.productId, qty, rate, 'in');
+                        if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt') processItem(item.productId, qty, rate, 'out');
                     }
                 });
             });
@@ -5526,6 +5527,7 @@ export default function App() {
     const [savedLedgerFilter, setSavedLedgerFilter] = useState(null);
     const [toast, setToast] = useState(null); // <--- ADD THIS
     const [editData, setEditData] = useState(null);
+    const [viewTaxVoucher, setViewTaxVoucher] = useState(null);
     const [masterModalEditRequest, setMasterModalEditRequest] = useState(null);
 
     const [showVersionDetails, setShowVersionDetails] = useState(false);
@@ -6592,7 +6594,14 @@ export default function App() {
                 if (activeModal) setModalStack(s => [...s, activeModal]);
 
                 // Open correct modal
-                if (col === 'invoices') setActiveModal(data.type === 'purchase' ? 'purchase' : 'sales');
+                if (col === 'invoices') {
+                    if (data.type === 'purchase_apt' || data.type === 'sales_reg_apt' || data.type === 'sales_unreg_apt') {
+                        // APT = ACCPRO TAX voucher — delegate to TaxModule viewer
+                        setViewTaxVoucher(data);
+                        return;
+                    }
+                    setActiveModal(data.type === 'purchase' ? 'purchase' : 'sales');
+                }
                 else if (col === 'payments') setActiveModal('payment');
                 else if (col === 'journal_vouchers') {
                     // ✅ CHECK FOR HIDDEN (LINKED) JOURNAL
@@ -6818,17 +6827,17 @@ export default function App() {
                 }
 
                 if (d.partyId && partyBalMap[d.partyId] !== undefined) {
-                    const supplierBase = (d.type === 'purchase')
+                    const supplierBase = (d.type === 'purchase' || d.type === 'purchase_apt')
                         ? Math.max(0, baseVal - addlExpBase)
                         : baseVal;
-                    const amt = (d.type === 'purchase') ? supplierBase : baseVal;
-                    if (['sales', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
-                    else if (['purchase', 'credit_note', 'sales_return'].includes(d.type)) partyBalMap[d.partyId] -= amt;
+                    const amt = (d.type === 'purchase' || d.type === 'purchase_apt') ? supplierBase : baseVal;
+                    if (['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
+                    else if (['purchase', 'purchase_apt', 'credit_note', 'sales_return'].includes(d.type)) partyBalMap[d.partyId] -= amt;
                 }
 
                 // --- Stock Logic ---
-                const isInward  = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
-                const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
+                const isInward  = ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(d.type);
+                const isOutward = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(d.type);
                 if (isInward || isOutward) {
                     (d.items || []).forEach(it => {
                         const qty  = Number(it.quantity || 0);
@@ -11980,6 +11989,7 @@ export default function App() {
                     stockJournals={stockJournals}
                     products={products}
                     vehicles={vehicles}
+                    taxRates={taxRates}
                     checkDuplicateName={checkAccountNameDuplicate}
                 />
             )}
@@ -11988,6 +11998,17 @@ export default function App() {
                 isOpen={isApiKeyModalOpen} 
                 onClose={() => setIsApiKeyModalOpen(false)} 
             />
+
+            {/* APT Voucher Viewer (ACCPRO TAX) */}
+            {viewTaxVoucher && (
+                <TaxVoucherViewer
+                    data={viewTaxVoucher}
+                    onClose={() => setViewTaxVoucher(null)}
+                    parties={parties}
+                    products={products}
+                    taxRates={taxRates}
+                />
+            )}
 
             {/* Export Voucher Modal */}
             <ExportVoucherModal
@@ -20929,14 +20950,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 if (matchedItems.length === 0) return;
                                 const itemVal = matchedItems.reduce((sum, i) => sum + (Number(i.quantity) * Number(i.rate)), 0);
                                 const itemQty = matchedItems.reduce((sum, i) => sum + Number(i.quantity), 0);
-                                const isDr = d.type === 'purchase' || d.type === 'sales_return' || d.type === 'credit_note';
+                                const isDr = d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'sales_return' || d.type === 'credit_note';
                                 amtIn = isDr ? itemVal : 0;
                                 amtOut = !isDr ? itemVal : 0;
                                 qIn = isDr ? itemQty : 0;
                                 qOut = !isDr ? itemQty : 0;
                             } else if (filter.type === 'party' && d.partyId === filter.id) {
-                                const isDr = d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return';
-                                const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return';
+                                const isDr = d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt' || d.type === 'debit_note' || d.type === 'purchase_return';
+                                const isCr = d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'credit_note' || d.type === 'sales_return';
                                 amtIn = isDr ? amt : 0;
                                 amtOut = isCr ? amt : 0;
 
@@ -20977,8 +20998,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
                                 if (!matchesTax) return;
 
-                                const isInputTax = d.type === 'purchase' || d.type === 'credit_note';
-                                const isOutputTax = d.type === 'sales' || d.type === 'debit_note';
+                                const isInputTax = d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'credit_note';
+                                const isOutputTax = d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt' || d.type === 'debit_note';
                                 if (isInputTax) amtIn += taxAmt;
                                 if (isOutputTax) amtOut += taxAmt;
                             }
@@ -21133,6 +21154,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 const firstSplitName = firstSplitTargetId ? findName(firstSplitTargetId) : '';
 
                 if (d.type === 'sales') { drName = d.partyName || findName(d.partyId) || 'Customer'; crName = 'Sales A/c'; typeLabel = 'SALES INV'; }
+                else if (d.type === 'sales_reg_apt') { drName = d.partyName || findName(d.partyId) || 'Customer'; crName = 'Reg Sales APT'; typeLabel = 'REG APT'; }
+                else if (d.type === 'sales_unreg_apt') { drName = d.partyName || findName(d.partyId) || 'Customer'; crName = 'Unreg Sales APT'; typeLabel = 'UNREG APT'; }
                 else if (d.type === 'purchase') { drName = 'Purchase A/c'; crName = d.partyName || findName(d.partyId) || 'Supplier'; typeLabel = 'PURCHASE INV'; }
                 else if (d.type === 'in') {
                     drName = accounts.find(a => a.id === d.accountId)?.name || 'Cash/Bank';
@@ -21158,6 +21181,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     typeLabel = 'JOURNAL';
                 }
                 else if (d.type === 'manufacturing') { drName = 'Production (In)'; crName = 'Consumption (Out)'; typeLabel = 'MFG JOURNAL'; }
+                else if (d.type === 'purchase_apt') { drName = 'APT Purchase'; crName = d.partyName || findName(d.partyId) || 'Supplier'; typeLabel = 'APT PUR'; }
 
                 const productNamesStr = (d.items || []).map(i => getProductName(i.productId)).join(' ');
 
@@ -21277,8 +21301,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             const matchedItems = d.items?.filter(i => i.productId === activeFilter.id) || [];
                             if (matchedItems.length === 0) return;
 
-                            const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
-                            const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
+                            const isInward = ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(d.type);
+                            const isOutward = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(d.type);
                             if (!isInward && !isOutward) return; // Ignore non-stock invoices (Proforma, etc.)
 
                             const itemAmt = matchedItems.reduce((sum, i) => sum + (Number(i.quantity) * Number(i.rate)), 0);
@@ -21288,8 +21312,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             return; 
                         }
                         else if (['sales', 'purchase', 'party', 'daybook', 'user'].includes(activeFilter.type)) {
-                            if (activeFilter.type === 'sales' && d.type !== 'sales') return;
-                            if (activeFilter.type === 'purchase' && d.type !== 'purchase') return;
+                            if (activeFilter.type === 'sales' && d.type !== 'sales' && d.type !== 'sales_reg_apt' && d.type !== 'sales_unreg_apt') return;
+                            if (activeFilter.type === 'purchase' && d.type !== 'purchase' && d.type !== 'purchase_apt') return;
 
                             // 🛑 Check if this transaction matches the filtered entity
                             const isMainParty = activeFilter.type === 'party' && d.partyId === activeFilter.id;
@@ -21298,15 +21322,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                             if (!isMainParty && !isExpCredit && !isDaybook) return;
 
-                            const isDr = d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return';
-                            const isCr = d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return';
+                            const isDr = d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt' || d.type === 'debit_note' || d.type === 'purchase_return';
+                            const isCr = d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'credit_note' || d.type === 'sales_return';
 
                             if (isMainParty || isDaybook) {
                                 // Calculate total qty/rate for registers
                                 const totalQty = (d.items || []).reduce((acc, i) => acc + safeNum(i.quantity), 0);
                                 const avgRate = totalQty > 0 ? amt / totalQty : 0;
-                                const isSaleType = ['sales', 'debit_note', 'purchase_return'].includes(d.type);
-                                const isPurchaseType = ['purchase', 'credit_note', 'sales_return'].includes(d.type);
+                                const isSaleType = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type);
+                                const isPurchaseType = ['purchase', 'purchase_apt', 'credit_note', 'sales_return'].includes(d.type);
 
                                 // Logic: In registers (Sales/Purchase), we want to see the values in their natural columns
                                 // Sales -> Outward (Credit), Purchase -> Inward (Debit)
@@ -21876,8 +21900,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         const r = q > 0 ? (totalItemVal / q) : 0;
 
                         // Check Invoice Type consistency
-                        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(t.type);
-                        const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(t.type);
+                        const isInward = ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(t.type);
+                        const isOutward = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(t.type);
                         
                         const baseSign = isInward ? 1 : -1;
                         let signedFlow = (t.amountIn || t.amountOut || 0) * baseSign;
