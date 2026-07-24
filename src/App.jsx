@@ -627,7 +627,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.7.0 (July 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.7.1 (July 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -682,7 +682,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.0</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.1</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -706,7 +706,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.0</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.1</div>
                 </div>
             </div>
         </Modal>
@@ -5216,7 +5216,7 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.7.0";
+    const SYSTEM_VERSION = "2.7.1";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -8851,13 +8851,19 @@ export default function App() {
         }
         else if (['sales', 'purchase', 'debit_note', 'credit_note'].includes(type)) {
             const sortedInvoices = [...invoices]
-                .filter(inv => inv.type === type && inRange(inv.date))
+                .filter(inv => {
+                    if (inv.type === type) return inRange(inv.date);
+                    if (type === 'purchase' && inv.type === 'purchase_apt') return inRange(inv.date);
+                    if (type === 'sales' && (inv.type === 'sales_reg_apt' || inv.type === 'sales_unreg_apt')) return inRange(inv.date);
+                    return false;
+                })
                 .sort((a, b) => new Date(a.date) - new Date(b.date));
 
             sortedInvoices.forEach(inv => {
                 const party = parties.find(p => p.id === inv.partyId);
-                const totalQty = (inv.items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-                const totalAmt = Number(inv.grandTotal || inv.totalAmount || 0);
+                const totalQty = (inv.items || []).reduce((sum, item) => sum + Number(item.quantity || item.qty || 0), 0);
+                const isPurApt = inv.type === 'purchase_apt';
+                const totalAmt = isPurApt ? Number(inv.taxableValue || 0) : Number(inv.grandTotal || inv.totalAmount || 0);
                 const rate = totalQty > 0 ? totalAmt / totalQty : 0;
 
                 const isSales = type === 'sales' || type === 'debit_note';
@@ -8880,9 +8886,9 @@ export default function App() {
                     taxInvNo: inv.taxInvNo || '',
                     items: (inv.items || []).map(it => ({
                         name: products.find(p => p.id === it.productId)?.name || 'Unknown Item',
-                        qty: it.quantity,
+                        qty: it.quantity || it.qty,
                         rate: it.rate,
-                        amount: Number(it.quantity || 0) * Number(it.rate || 0)
+                        amount: Number(it.quantity || it.qty || 0) * Number(it.rate || 0)
                     }))
                 });
             });
@@ -9599,7 +9605,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.0</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.1</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -10577,10 +10583,11 @@ export default function App() {
                 title="Manage Items"
                 collectionName="products"
                 data={products}
-                listColumns={[{ key: 'group', label: 'Group' }]}
+                listColumns={[{ key: 'group', label: 'Group' }, { key: 'hscode', label: 'HS Code' }]}
                 userId={dataOwnerId || user.uid}
                 fields={[
                     { name: 'name', label: 'Item Name', type: 'text', required: true },
+                    { name: 'hscode', label: 'HS Code', type: 'text' },
                     {
                         name: 'group',
                         label: 'Under Group',
@@ -11411,11 +11418,9 @@ export default function App() {
                 taxRates={taxRates}
                 currencySymbol={currencySymbol}
                 onOpenLedger={(type, id) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
-                        setLedgerInitialState({ type, id });
-                        setActiveModal('ledgers');
-                    }, 100);
+                    setModalStack(s => [...s, 'tax_register']);
+                    setLedgerInitialState({ type, id });
+                    setActiveModal('ledgers');
                 }}
             />
 
@@ -12288,7 +12293,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.0</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.1</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -20987,13 +20992,17 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             } else if (filter.type === 'account' && hasAddlSplit && d.addlExpCreditId === filter.id) {
                                 amtOut += addlExpBase;
                             } else if (filter.type === 'tax') {
-                                const taxAmt = safeNum(d.taxAmount || 0);
+                                // Support appliedTaxes array from HS Code rules
+                                const matchedAppliedTax = (d.appliedTaxes || []).find(at =>
+                                  at.taxId === filter.id || (at.taxName || '').toLowerCase() === ((taxRates.find(t => t.id === filter.id)?.name || '').toLowerCase())
+                                );
+                                const taxAmt = matchedAppliedTax ? safeNum(matchedAppliedTax.calculatedAmount || 0) : safeNum(d.taxAmount || 0);
                                 if (!taxAmt) return;
 
                                 const taxNameNorm = String(d.taxName || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
                                 const filterNameNorm = String((taxRates.find(t => t.id === filter.id)?.name) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
                                 const filterIdNorm = String(filter.id || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
-                                const matchesTax = (d.taxId && d.taxId === filter.id)
+                                const matchesTax = matchedAppliedTax || (d.taxId && d.taxId === filter.id)
                                     || (!!taxNameNorm && !!filterNameNorm && taxNameNorm === filterNameNorm)
                                     || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
                                 if (!matchesTax) return;
@@ -21295,8 +21304,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         : null;
 
                     if (docType === 'inv') {
-                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
-                        const fAmt = (d.type === 'purchase') ? supplierForeign : foreignVal;
+                        // For purchase_apt, supplier sees only taxableValue (item cost), not taxes
+                        const isPurApt = d.type === 'purchase_apt';
+                        const aptSupplierAmt = isPurApt ? safeNum(d.taxableValue || 0) : 0;
+                        const amt = (d.type === 'purchase') ? supplierBase : (isPurApt ? aptSupplierAmt : baseVal);
+                        const fAmt = (d.type === 'purchase') ? supplierForeign : (isPurApt ? aptSupplierAmt : foreignVal);
                         if (activeFilter.type === 'item') {
                             const matchedItems = d.items?.filter(i => i.productId === activeFilter.id) || [];
                             if (matchedItems.length === 0) return;
@@ -21327,7 +21339,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                             if (isMainParty || isDaybook) {
                                 // Calculate total qty/rate for registers
-                                const totalQty = (d.items || []).reduce((acc, i) => acc + safeNum(i.quantity), 0);
+                                const totalQty = (d.items || []).reduce((acc, i) => acc + safeNum(i.quantity || i.qty), 0);
                                 const avgRate = totalQty > 0 ? amt / totalQty : 0;
                                 const isSaleType = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type);
                                 const isPurchaseType = ['purchase', 'purchase_apt', 'credit_note', 'sales_return'].includes(d.type);
@@ -21373,6 +21385,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 if (isDaybook) allTx.push(expRow);
                                 else row = expRow;
                             }
+
+                            // ✅ NEW: For purchase_apt, add a separate row for taxes credited to the selected party
+                            if (isPurApt && d.taxCreditTo && d.taxCreditTo.id && d.taxAmountTotal > 0) {
+                                const isTaxCreditMatch = activeFilter.type === 'party' && d.taxCreditTo.id === activeFilter.id;
+                                const isDaybookMatch = ['daybook', 'user'].includes(activeFilter.type);
+                                if (isTaxCreditMatch || isDaybookMatch) {
+                                    const taxRow = buildRow(doc, d, { amtIn: 0, amtOut: safeNum(d.taxAmountTotal), foreignIn: 0, foreignOut: 0 });
+                                    taxRow.drName = "Taxes & Duties (" + (d.refNo || 'N/A') + ")";
+                                    taxRow.crName = d.taxCreditTo.name || 'Tax Creditor';
+                                    taxRow.vchType = 'TAX CRT';
+                                    taxRow.particulars = taxRow.drName + ' / ' + taxRow.crName;
+                                    if (isDaybookMatch) allTx.push(taxRow);
+                                    else row = taxRow;
+                                }
+                            }
                         }
                         else if (activeFilter.type === 'expense' || activeFilter.type === 'direct_expense') {
                             const processExpList = (list) => {
@@ -21414,19 +21441,23 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         }
                         else if (activeFilter.type === 'tax') {
-                            const taxAmt = safeNum(d.taxAmount || 0);
+                            // Support appliedTaxes array from HS Code rules
+                            const matchedAppliedTax = (d.appliedTaxes || []).find(at =>
+                              at.taxId === activeFilter.id || (at.taxName || '').toLowerCase() === ((taxRates.find(t => t.id === activeFilter.id)?.name || '').toLowerCase())
+                            );
+                            const taxAmt = matchedAppliedTax ? safeNum(matchedAppliedTax.calculatedAmount || 0) : safeNum(d.taxAmount || 0);
                             if (!taxAmt) return;
 
                             const taxNameNorm = String(d.taxName || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
                             const filterNameNorm = String((taxRates.find(t => t.id === activeFilter.id)?.name) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
                             const filterIdNorm = String(activeFilter.id || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
-                            const matchesTax = (d.taxId && d.taxId === activeFilter.id)
+                            const matchesTax = matchedAppliedTax || (d.taxId && d.taxId === activeFilter.id)
                                 || (!!taxNameNorm && !!filterNameNorm && taxNameNorm === filterNameNorm)
                                 || (!!taxNameNorm && !!filterIdNorm && taxNameNorm === filterIdNorm);
                             if (!matchesTax) return;
 
-                            const isInputTax = d.type === 'purchase' || d.type === 'credit_note';
-                            const isOutputTax = d.type === 'sales' || d.type === 'debit_note';
+                            const isInputTax = d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'credit_note';
+                            const isOutputTax = d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt' || d.type === 'debit_note';
                             if (!isInputTax && !isOutputTax) return;
 
                             row = buildRow(doc, d, {
@@ -30682,19 +30713,36 @@ const TaxRegisterModal = ({ isOpen, onClose, onBack, dateRange, onDateChange, in
             // Process invoices - classify by tax type
             (invoices || []).forEach((inv) => {
                 if ((inv?.date || '') > closingDate) return;
-                if (!['sales', 'debit_note', 'purchase', 'credit_note'].includes(inv?.type)) return;
+                if (!['sales', 'debit_note', 'purchase', 'credit_note', 'purchase_apt', 'sales_reg_apt', 'sales_unreg_apt'].includes(inv?.type)) return;
 
-                const invTaxId = String(inv?.taxId || '').trim();
-                // Match by exact ID or by normalized name
-                const matchesTax = (invTaxId === taxId) || (normalize(inv?.taxName) === taxNameNorm);
-                if (!matchesTax) return;
+                // Get tax amount (check appliedTaxes array first for APT types)
+                let taxAmt = 0;
+                let matchesTax = false;
 
-                const taxAmt = safeNum(inv?.taxAmount);
+                if (inv.appliedTaxes && Array.isArray(inv.appliedTaxes)) {
+                    // Match against appliedTaxes array
+                    const matched = inv.appliedTaxes.find(at =>
+                        String(at.taxId || '').trim() === taxId ||
+                        normalize(at.taxName) === taxNameNorm
+                    );
+                    if (matched) {
+                        taxAmt = safeNum(matched.calculatedAmount || 0);
+                        matchesTax = true;
+                    }
+                }
+
+                if (!matchesTax) {
+                    const invTaxId = String(inv?.taxId || '').trim();
+                    matchesTax = (invTaxId === taxId) || (normalize(inv?.taxName) === taxNameNorm);
+                    if (!matchesTax) return;
+                    taxAmt = safeNum(inv?.taxAmount);
+                }
+
                 if (taxAmt <= 0) return;
 
-                // Input Tax (Purchase/Credit Note) = DR
-                // Output Tax (Sales/Debit Note) = CR
-                const isInputTax = ['purchase', 'credit_note'].includes(inv?.type);
+                // Input Tax (Purchase/Credit Note + purchase_apt) = DR
+                // Output Tax (Sales/Debit Note + sales_reg/unreg_apt) = CR
+                const isInputTax = ['purchase', 'purchase_apt', 'credit_note'].includes(inv?.type);
                 if (isInputTax) {
                     drAmount += taxAmt;
                 } else {

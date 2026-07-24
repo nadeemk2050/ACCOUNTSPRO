@@ -2470,7 +2470,7 @@ const PackagingSmartReportModal = ({
 
                         <div className="mt-12 flex items-center gap-3 px-6 py-3 bg-[#1e3264] text-white rounded-full text-[10px] font-black uppercase tracking-widest shadow-xl shadow-blue-900/30">
                             <AlertCircle size={14} className="text-blue-300" />
-                            Expected Release: Version 2.7.0
+                            Expected Release: Version 2.7.1
                         </div>
                     </div>
                 </div>
@@ -2479,7 +2479,7 @@ const PackagingSmartReportModal = ({
                 <div className="bg-white px-8 py-5 border-t border-slate-200 flex items-center justify-between text-slate-400">
                     <div className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
                         <Info size={14} />
-                        Accpro Intelligence Framework V2.7.0
+                        Accpro Intelligence Framework V2.7.1
                     </div>
                     <div className="flex gap-3">
                         <button disabled className="px-6 py-2.5 rounded-xl border border-slate-200 text-[10px] font-black uppercase tracking-widest opacity-50 cursor-not-allowed">

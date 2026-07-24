@@ -283,11 +283,11 @@ export default function TaxVoucherViewer({ data, onClose, parties = [], products
                 </div>
                 <div>
                   <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Rate</label>
-                  <div className="text-sm font-mono text-slate-800">₹{formatNum(voucher.rate)}</div>
+                  <div className="text-sm font-mono text-slate-800">{formatNum(voucher.rate)}</div>
                 </div>
                 <div>
                   <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Amount</label>
-                  <div className="text-sm font-mono font-medium text-slate-800">₹{formatNum(voucher.taxableValue)}</div>
+                  <div className="text-sm font-mono font-medium text-slate-800">{formatNum(voucher.taxableValue)}</div>
                 </div>
                 <div>
                   <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Tax</label>
@@ -299,15 +299,15 @@ export default function TaxVoucherViewer({ data, onClose, parties = [], products
               <div className="bg-slate-50 rounded-xl p-4 grid grid-cols-3 gap-4 text-center">
                 <div>
                   <div className="text-[9px] font-bold text-slate-400 uppercase">Taxable Value</div>
-                  <div className="text-base font-black font-mono text-slate-700">₹{formatNum(voucher.taxableValue)}</div>
+                  <div className="text-base font-black font-mono text-slate-700">{formatNum(voucher.taxableValue)}</div>
                 </div>
                 <div>
                   <div className="text-[9px] font-bold text-slate-400 uppercase">Tax Amount</div>
-                  <div className="text-base font-black font-mono text-blue-700">₹{formatNum((voucher.taxableValue||0) * (voucher.taxRate||0) / 100)}</div>
+                  <div className="text-base font-black font-mono text-blue-700">{formatNum((voucher.taxableValue||0) * (voucher.taxRate||0) / 100)}</div>
                 </div>
                 <div>
                   <div className="text-[9px] font-bold text-slate-400 uppercase">Grand Total</div>
-                  <div className="text-lg font-black font-mono text-green-700">₹{formatNum(voucher.total)}</div>
+                  <div className="text-lg font-black font-mono text-green-700">{formatNum(voucher.total)}</div>
                 </div>
               </div>
 
@@ -422,9 +422,9 @@ export default function TaxVoucherViewer({ data, onClose, parties = [], products
 
               {/* Totals */}
               <div className="bg-slate-50 rounded-xl p-3 grid grid-cols-3 gap-3 text-center">
-                <div><div className="text-[9px] font-bold text-slate-400 uppercase">Amount</div><div className="text-sm font-black font-mono text-slate-700">₹{formatNum(Number(eAmount||0) || (Number(eQty||0)*Number(eRate||0)))}</div></div>
-                <div><div className="text-[9px] font-bold text-slate-400 uppercase">Tax</div><div className="text-sm font-black font-mono text-blue-700">₹{formatNum(eTotal - (Number(eAmount||0) || (Number(eQty||0)*Number(eRate||0))))}</div></div>
-                <div><div className="text-[9px] font-bold text-slate-400 uppercase">Total</div><div className="text-base font-black font-mono text-green-700">₹{formatNum(eTotal)}</div></div>
+                <div><div className="text-[9px] font-bold text-slate-400 uppercase">Amount</div><div className="text-sm font-black font-mono text-slate-700">{formatNum(Number(eAmount||0) || (Number(eQty||0)*Number(eRate||0)))}</div></div>
+                <div><div className="text-[9px] font-bold text-slate-400 uppercase">Tax</div><div className="text-sm font-black font-mono text-blue-700">{formatNum(eTotal - (Number(eAmount||0) || (Number(eQty||0)*Number(eRate||0))))}</div></div>
+                <div><div className="text-[9px] font-bold text-slate-400 uppercase">Total</div><div className="text-base font-black font-mono text-green-700">{formatNum(eTotal)}</div></div>
               </div>
 
               {/* Action buttons */}
