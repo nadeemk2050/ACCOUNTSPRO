@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, addDoc, getDocs, query, orderBy, serverTimestamp, updateDoc, doc, getDoc, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, serverTimestamp, updateDoc, doc, getDoc, deleteDoc, where } from 'firebase/firestore';
 import { db } from './firebase';
 import HscodeRules from './HscodeRules';
 import TaxCalcRules from './TaxCalcRules';
@@ -120,6 +120,25 @@ export default function TaxModule({ onClose, parties = [], products = [], taxRat
 // ─── Shared helpers ─────────────────────────────────────────────────────────────
 const formatNum = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
 
+// Update product stock in real-time when APT vouchers are saved
+const updateProductStock = async (items, direction, productsList) => {
+  for (const item of items) {
+    if (!item.productName || !item.qty) continue;
+    const qty = Number(item.qty) * (direction === 'out' ? -1 : 1);
+    const prod = (productsList || []).find(p => p.name === item.productName);
+    if (!prod || !prod.id) continue;
+    try {
+      const current = Number(prod.currentStock || 0);
+      const updateData = { currentStock: current + qty };
+      // Also update purchase price if this is a purchase and rate is provided
+      if (direction === 'in' && Number(item.rate) > 0) {
+        updateData.purchasePrice = Number(item.rate);
+      }
+      await updateDoc(doc(db, 'products', prod.id), updateData);
+    } catch (e) { console.warn('[STOCK] Could not update stock for', item.productName, e.message); }
+  }
+};
+
 // ─── Purchase Tab ───────────────────────────────────────────────────────────────
 function PurchaseTab({ parties, products, taxRates, uid, entries, setEntries, keys }) {
   const [showForm, setShowForm] = useState(false);
@@ -222,8 +241,9 @@ function PurchaseTab({ parties, products, taxRates, uid, entries, setEntries, ke
     }
     const saveItems = items.map(item => {
       const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+      const prod = products.find(p => p.name === item.productName);
       return {
-        productName: item.productName, hscode: item.hscode || '',
+        productName: item.productName, productId: prod?.id || null, hscode: item.hscode || '',
         qty: Number(item.qty) || 0, rate: Number(item.rate) || 0, amount: rawVal,
         hsImpositions: item.hsImpositions || [], itemTaxTotal: Number(item.itemTaxTotal || 0), itemValue: rawVal, itemGrandTotal: rawVal + Number(item.itemTaxTotal || 0)
       };
@@ -246,6 +266,8 @@ function PurchaseTab({ parties, products, taxRates, uid, entries, setEntries, ke
         narration: 'GD Import: ' + (gdNo || 'N/A'), createdAt: serverTimestamp()
       });
     } catch(e) { console.warn('[TAX] Could not save to ACCPRO invoices:', e.message); }
+    // Update product stock in real-time
+    updateProductStock(saveItems, 'in', products).catch(() => {});
     setShowForm(false); resetForm();
     const snap = await getDocs(query(collection(db, 'tax_purchase'), orderBy('date','desc')));
     setEntries(prev => ({ ...prev, purchase: snap.docs.map(d => ({ id: d.id, ...d.data() })) }));
@@ -604,8 +626,9 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
         const saveItems = eItems.map(item => {
           const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
           const taxes = calcItemTaxes(item, hsRules);
+          const prod = products.find(p => p.name === item.productName);
           return {
-            productName: item.productName, hscode: item.hscode || '',
+            productName: item.productName, productId: prod?.id || null, hscode: item.hscode || '',
             qty: Number(item.qty) || 0, rate: Number(item.rate) || 0, amount: rawVal,
             hsImpositions: taxes.hsImpositions, itemTaxTotal: taxes.itemTaxTotal,
             itemValue: rawVal, itemGrandTotal: rawVal + taxes.itemTaxTotal
@@ -777,7 +800,7 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
   return (
     <div className="fixed inset-0 z-[10001] bg-black/40 flex items-center justify-center p-4 overflow-auto">
       <style>{`.evm input,.evm select{color:#1e293b!important;background:#fff!important}.evm select option{color:#1e293b!important}`}</style>
-      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full mx-auto overflow-hidden">
+      <div className={`bg-white rounded-2xl shadow-2xl mx-auto overflow-hidden ${isEditing && isMultiItem ? 'w-[95vw] max-w-5xl max-h-[95vh] overflow-y-auto' : 'max-w-2xl w-full'}`}>
         <div className="h-12 bg-[#1e3264] text-white flex items-center justify-between px-5">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded-md bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center text-[10px] font-black">TX</div>
@@ -1307,6 +1330,8 @@ function RegisteredTab({ parties, products, taxRates, uid, entries, setEntries, 
     } catch(e) {
       console.warn('[TAX] Could not save to ACCPRO invoices:', e.message);
     }
+    // Update product stock in real-time (registered sale → stock out)
+    updateProductStock([{ productName: selectedProduct, qty: Number(qty) }], 'out', products).catch(() => {});
 
     setShowForm(false);
     const snap = await getDocs(query(collection(db, 'tax_sales_registered'), orderBy('date','desc')));
@@ -1621,6 +1646,8 @@ function UnregisteredTab({ parties, products, taxRates, uid, entries, setEntries
     } catch(e) {
       console.warn('[TAX] Could not save to ACCPRO invoices:', e.message);
     }
+    // Update product stock in real-time (unregistered sale → stock out)
+    updateProductStock([{ productName: selectedProduct, qty: Number(qty) }], 'out', products).catch(() => {});
 
     setShowForm(false);
     const snap = await getDocs(query(collection(db, 'tax_sales_unregistered'), orderBy('date','desc')));

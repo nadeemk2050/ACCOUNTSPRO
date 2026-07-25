@@ -65,6 +65,13 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
     return itemVal + getTotalTaxes(tx);
   };
 
+  const getTotalQty = (tx) => {
+    if (tx.items && Array.isArray(tx.items) && tx.items.length > 0) {
+      return tx.items.reduce((s, i) => s + Number(i.qty || i.quantity || 0), 0);
+    }
+    return Number(tx.qty || 0);
+  };
+
   const voucherLabel = (type) => {
     switch(type) {
       case 'purchase_apt': return 'APT PUR';
@@ -100,7 +107,8 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
         (tx.refNo || '').toLowerCase().includes(s) ||
         (tx.hscode || '').toLowerCase().includes(s) ||
         (tx.partyName || '').toLowerCase().includes(s) ||
-        (tx.items || []).some(i => (i.productName || '').toLowerCase().includes(s))
+        (tx.items || []).some(i => (i.productName || '').toLowerCase().includes(s)) ||
+        (tx.productName || '').toLowerCase().includes(s)
       );
     }
 
@@ -112,9 +120,12 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
       else if (sortField === 'refNo') { va = a.refNo || ''; vb = b.refNo || ''; }
       else if (sortField === 'hscode') { va = a.hscode || ''; vb = b.hscode || ''; }
       else if (sortField === 'itemName') {
-        va = (a.items?.[0]?.productName || '').toLowerCase();
-        vb = (b.items?.[0]?.productName || '').toLowerCase();
+        const aItems = a.items && Array.isArray(a.items) ? a.items.map(i => i.productName).filter(Boolean).join(', ') : (a.productName || '');
+        const bItems = b.items && Array.isArray(b.items) ? b.items.map(i => i.productName).filter(Boolean).join(', ') : (b.productName || '');
+        va = aItems.toLowerCase();
+        vb = bItems.toLowerCase();
       }
+      else if (sortField === 'qty') { va = getTotalQty(a); vb = getTotalQty(b); }
       else if (sortField === 'assessedValue') { va = Number(a.taxableValue || 0); vb = Number(b.taxableValue || 0); }
       else if (sortField === 'cd') { va = getCD(a); vb = getCD(b); }
       else if (sortField === 'acd') { va = getACD(a); vb = getACD(b); }
@@ -132,6 +143,7 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
   }, [transactions, search, sortField, sortDir, vchFilter, fromDate, toDate]);
 
   const totals = useMemo(() => ({
+    totalQty: sorted.reduce((s, tx) => s + getTotalQty(tx), 0),
     itemValue: sorted.reduce((s, tx) => s + Number(tx.taxableValue || 0), 0),
     cd: sorted.reduce((s, tx) => s + getCD(tx), 0),
     acd: sorted.reduce((s, tx) => s + getACD(tx), 0),
@@ -234,6 +246,7 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
       {/* Summary bar */}
       <div className="px-5 py-2 bg-amber-50 border-b border-amber-100 flex gap-4 text-[10px] font-bold text-amber-800 flex-shrink-0 flex-wrap">
         <span>📦 Items: {formatNum(totals.itemValue)}</span>
+        <span>📦 Qty: {formatNum(totals.totalQty)}</span>
         <span>CD: {formatNum(totals.cd)}</span>
         <span>ACD: {formatNum(totals.acd)}</span>
         <span>RCD: {formatNum(totals.rcd)}</span>
@@ -259,6 +272,7 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
                     <th className="px-3 py-2.5 text-left text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('refNo')}>Ref No. <SortIcon field="refNo" /></th>
                     <th className="px-3 py-2.5 text-left text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('hscode')}>HS Code <SortIcon field="hscode" /></th>
                     <th className="px-3 py-2.5 text-left text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('itemName')}>Item Name <SortIcon field="itemName" /></th>
+                    <th className="px-3 py-2.5 text-right text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('qty')}>Qty <SortIcon field="qty" /></th>
                     <th className="px-3 py-2.5 text-right text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('assessedValue')}>Assessed Value <SortIcon field="assessedValue" /></th>
                     <th className="px-3 py-2.5 text-right text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('cd')}>CD <SortIcon field="cd" /></th>
                     <th className="px-3 py-2.5 text-right text-[9px] font-bold text-slate-400 uppercase cursor-pointer select-none hover:text-blue-600" onClick={() => toggleSort('acd')}>ACD <SortIcon field="acd" /></th>
@@ -272,14 +286,17 @@ export default function AllAptDaybook({ onClose, products = [], taxRates = [] })
                 </thead>
                 <tbody>
                   {sorted.map(tx => {
-                    const itemName = tx.items?.[0]?.productName || '-';
+                    const itemsList = tx.items && Array.isArray(tx.items) && tx.items.length > 0 ? tx.items : (tx.productName ? [{ productName: tx.productName, hscode: tx.hscode, qty: tx.qty }] : []);
+                    const itemName = itemsList.map(i => i.productName).filter(Boolean).join(', ') || '-';
+                    const hsCode = itemsList.map(i => i.hscode).filter(Boolean).join(', ') || tx.hscode || '-';
                     return (
                       <tr key={tx.id} className="border-t border-slate-100 hover:bg-amber-50">
                         <td className="px-3 py-2 text-slate-800">{tx.date}</td>
                         <td className="px-3 py-2"><span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${tx.type === 'purchase_apt' ? 'bg-red-50 text-red-700' : tx.type === 'sales_reg_apt' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>{voucherLabel(tx.type)}</span></td>
                         <td className="px-3 py-2 font-mono text-slate-800">{tx.refNo || '-'}</td>
-                        <td className="px-3 py-2 font-mono text-[10px] text-slate-500">{tx.hscode || '-'}</td>
-                        <td className="px-3 py-2 text-slate-800 max-w-[150px] truncate">{itemName}</td>
+                        <td className="px-3 py-2 font-mono text-[10px] text-slate-500">{hsCode}</td>
+                        <td className="px-3 py-2 text-slate-800 max-w-[180px] truncate" title={itemName}>{itemName}</td>
+                        <td className="px-3 py-2 text-right font-mono text-slate-800">{getTotalQty(tx)}</td>
                         <td className="px-3 py-2 text-right font-mono text-slate-800">{formatNum(tx.taxableValue)}</td>
                         <td className="px-3 py-2 text-right font-mono text-slate-800">{getCD(tx) ? formatNum(getCD(tx)) : '-'}</td>
                         <td className="px-3 py-2 text-right font-mono text-slate-800">{getACD(tx) ? formatNum(getACD(tx)) : '-'}</td>

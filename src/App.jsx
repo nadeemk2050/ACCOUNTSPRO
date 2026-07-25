@@ -6734,14 +6734,14 @@ export default function App() {
             if (inv.items) {
                 inv.items.forEach(item => {
                     if (!productIds.has(item.productId)) return;
-                    const qty = Number(item.quantity || 0);
+                    const qty = Number(item.quantity || item.qty || 0);
                     const iRate = Number(item.rate || 0);
-                    if (inv.type === 'purchase') {
+                    if (inv.type === 'purchase' || inv.type === 'purchase_apt') {
                         itemMap[item.productId] += qty;
                         if (inv.date >= lastRateMap[item.productId].date) {
                             lastRateMap[item.productId] = { rate: iRate, date: inv.date };
                         }
-                    } else if (inv.type === 'sales') {
+                    } else if (inv.type === 'sales' || inv.type === 'sales_reg_apt' || inv.type === 'sales_unreg_apt') {
                         itemMap[item.productId] -= qty;
                     }
                 });
@@ -6812,11 +6812,30 @@ export default function App() {
             });
             const movements = [];
 
-            // 1. Invoices
+            // 1. Invoices — Stock & Finance
             invDocs.forEach(doc => {
                 const d = doc.data();
                 if (!d.date || d.date > targetDate) return;
-                
+
+                // --- Stock Processing from Invoice Items ---
+                if (d.items && Array.isArray(d.items)) {
+                    d.items.forEach(i => {
+                        const pid = i.productId;
+                        if (!pid || !itemMap[pid]) return;
+                        const qty = Number(i.quantity || i.qty || 0);
+                        const rate = Number(i.rate || 0);
+                        if (d.type === 'purchase' || d.type === 'purchase_apt') {
+                            itemMap[pid].qty += qty;
+                            itemMap[pid].val += qty * rate;
+                        } else if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt') {
+                            let wac = 0;
+                            if (itemMap[pid].qty > 0) wac = itemMap[pid].val / itemMap[pid].qty;
+                            itemMap[pid].qty -= qty;
+                            itemMap[pid].val -= qty * wac;
+                        }
+                    });
+                }
+
                 // --- Finance Logic ---
                 const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                 const rate = Number(d.exchangeRate || 1);
@@ -7966,9 +7985,9 @@ export default function App() {
                 const grandTotalBase = Number(v.grandTotal || v.totalAmount || 0) * rate;
 
                 if (v.items) v.items.forEach(i => {
-                    const qty = Number(i.quantity);
-                    if (v.type === 'purchase') bal.products[i.productId] = (bal.products[i.productId] || 0) + qty;
-                    else if (v.type === 'sales') bal.products[i.productId] = (bal.products[i.productId] || 0) - qty;
+                    const qty = Number(i.quantity || i.qty || 0);
+                    if (v.type === 'purchase' || v.type === 'purchase_apt') bal.products[i.productId] = (bal.products[i.productId] || 0) + qty;
+                    else if (v.type === 'sales' || v.type === 'sales_reg_apt' || v.type === 'sales_unreg_apt') bal.products[i.productId] = (bal.products[i.productId] || 0) - qty;
                 });
 
                 if (v.partyId) {
@@ -21317,7 +21336,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             const isOutward = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(d.type);
                             if (!isInward && !isOutward) return; // Ignore non-stock invoices (Proforma, etc.)
 
-                            const itemAmt = matchedItems.reduce((sum, i) => sum + (Number(i.quantity) * Number(i.rate)), 0);
+                            const itemAmt = matchedItems.reduce((sum, i) => sum + (Number(i.quantity || i.qty || 0) * Number(i.rate || 0)), 0);
                             row = buildRow(doc, d, { amtIn: isInward ? itemAmt : 0, amtOut: isOutward ? itemAmt : 0, foreignIn: 0, foreignOut: 0 });
                             // ✅ Stop here for item ledger to prevent extra rows/expenses
                             if (row) allTx.push(row);
@@ -21926,8 +21945,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 } else {
                     const matchedItems = t.subItems ? t.subItems.filter(i => i.productId === filter.id) : [];
                     if (matchedItems.length > 0) {
-                        const q = matchedItems.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
-                        const totalItemVal = matchedItems.reduce((acc, i) => acc + ((Number(i.quantity) || 0) * (Number(i.rate) || 0)), 0);
+                        const q = matchedItems.reduce((acc, i) => acc + (Number(i.quantity || i.qty || 0) || 0), 0);
+                        const totalItemVal = matchedItems.reduce((acc, i) => acc + ((Number(i.quantity || i.qty || 0) || 0) * (Number(i.rate) || 0)), 0);
                         const r = q > 0 ? (totalItemVal / q) : 0;
 
                         // Check Invoice Type consistency
@@ -21949,7 +21968,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 }
             } else if (['purchase', 'sales'].includes(filter.type)) {
                 if (t.subItems) {
-                    const q = t.subItems.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
+                    const q = t.subItems.reduce((acc, i) => acc + (Number(i.quantity || i.qty || 0) || 0), 0);
                     if (filter.type === 'purchase') { dQtyIn = q; qtyInTotal += q; if (t.subItems.length === 1) dRateIn = t.subItems[0].rate; }
                     else { dQtyOut = q; qtyOutTotal += q; if (t.subItems.length === 1) dRateOut = t.subItems[0].rate; }
                 }
@@ -29837,15 +29856,15 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 // 1. Stock Processing (All Dates)
                 if (d.items && isLocMatch) {
                     d.items.forEach(i => {
-                        const qty = safeNum(i.quantity);
+                        const qty = safeNum(i.quantity || i.qty || 0);
                         const rate = safeNum(i.rate);
-                        if (d.type === 'purchase') {
-                            processStock(d.date, i.productId, qty, rate, 'in');
-                            trackRate(i.productId, rate, d.date, 'purchase');
+                        if (d.type === 'purchase' || d.type === 'purchase_apt') {
+                            processStock(d.date, i.productId || i.id, qty, rate, 'in');
+                            trackRate(i.productId || i.id, rate, d.date, 'purchase');
                         }
-                        if (d.type === 'sales') {
-                            processStock(d.date, i.productId, qty, rate, 'out');
-                            trackRate(i.productId, rate, d.date, 'sale'); // Fix: 'sale' vs 'sales'
+                        if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt') {
+                            processStock(d.date, i.productId || i.id, qty, rate, 'out');
+                            trackRate(i.productId || i.id, rate, d.date, 'sale');
                         }
                     });
                 }
@@ -29863,8 +29882,8 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     }
 
                     // Sales Account (Net) = subtotal only, excluding tax (same as Sales Register)
-                    if (d.type === 'sales') totalSales += (grandTotal - tax);
-                    if (d.type === 'purchase') {
+                    if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt') totalSales += (grandTotal - tax);
+                    if (d.type === 'purchase' || d.type === 'purchase_apt') {
                         const purePurchase = grandTotal - tax - docDirectExp;
                         totalPurchases += purePurchase;
 
@@ -29971,14 +29990,14 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
                 if (!isLocMatch || !Array.isArray(d.items)) return;
                 d.items.forEach(i => {
-                    const qty = safeNum(i.quantity);
+                    const qty = safeNum(i.quantity || i.qty || 0);
                     if (!qty || !d.date || d.date > range.to) return;
                     const rate = safeNum(i.rate);
-                    if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') {
-                        stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate });
+                    if (d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'credit_note' || d.type === 'sales_return') {
+                        stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate, amount: qty * rate });
                     }
-                    if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') {
-                        stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate });
+                    if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt' || d.type === 'debit_note' || d.type === 'purchase_return') {
+                        stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate, amount: qty * rate });
                     }
                 });
             });
