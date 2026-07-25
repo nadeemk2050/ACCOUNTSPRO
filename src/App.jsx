@@ -7210,7 +7210,8 @@ export default function App() {
                         refNo: docData.refNo || 'N/A',
                         amount: docData.totalAmount || docData.amount || 0,
                         description: `Bulk Deleted transaction ${id}`,
-                        docId: id
+                        docId: id,
+                        snapshotData: JSON.stringify(docData)
                     });
                     successCount++;
                 } catch (e) {
@@ -7352,7 +7353,8 @@ export default function App() {
                 refNo: docData.refNo || 'N/A',
                 amount: docData.totalAmount || docData.amount || docData.totalProducedValue || 0,
                 description: 'Transaction Deleted permanently',
-                docId: id
+                docId: id,
+                snapshotData: JSON.stringify(docData)
             });
 
             setToast({ type: 'success', title: 'Deleted!', message: 'Logged & Removed.' });
@@ -7360,6 +7362,127 @@ export default function App() {
 
         } catch (error) {
             console.error(error);
+            setToast({ type: 'error', title: 'Error', message: error.message });
+            return false;
+        }
+    };
+
+    const handleRestoreVoucher = async (docId, docType, voucherData) => {
+        if (!user) return false;
+        const targetUid = dataOwnerId || user.uid;
+
+        setToast({ type: 'loading', title: 'Restoring...', message: `Restoring ${docType} ${docId}...` });
+
+        try {
+            const collectionName = resolveVoucherCollection(docType);
+            const ref = doc(db, collectionName, docId);
+
+            const cleanData = {
+                ...voucherData,
+                userId: voucherData.userId || targetUid,
+                ownerId: voucherData.ownerId || targetUid,
+                updatedAt: serverTimestamp()
+            };
+
+            await setDoc(ref, cleanData, { merge: true });
+
+            const jumboBags = voucherData.jumboBags || voucherData.jumbo_bags || [];
+            if (collectionName === 'stock_journals' && jumboBags.length > 0) {
+                const batch = writeBatch(db);
+                jumboBags.forEach((b) => {
+                    if (b.isReusable) return;
+                    const bDocId = `${docId}_${b.bagNo}`.replace(/[^a-zA-Z0-9]/g, '_');
+                    const bRef = doc(db, 'jumbo_bags', bDocId);
+                    const normalizedBagNo = String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                    batch.set(bRef, {
+                        bagNo: normalizedBagNo,
+                        universalBagNo: b.universalBagNo || Date.now() + Math.floor(Math.random() * 1000),
+                        productId: b.productId,
+                        qty: Number(b.qty) || 0,
+                        stockJournalId: docId,
+                        stockJournalRefNo: voucherData.refNo || 'N/A',
+                        status: b.status || 'in_stock',
+                        date: voucherData.date || '',
+                        userId: targetUid,
+                        ownerId: targetUid
+                    }, { merge: true });
+                });
+                await batch.commit();
+            }
+
+            const soldBagsList = voucherData.soldBags || voucherData.jumboBags || [];
+            if (collectionName === 'invoices' && String(voucherData.type || '').toLowerCase() === 'sales' && soldBagsList.length > 0) {
+                const batch = writeBatch(db);
+                for (const bag of soldBagsList) {
+                    if (bag.id || bag.bagNo) {
+                        let bagDocId = bag.id;
+                        if (!bagDocId && bag.bagNo) {
+                            const srcJournalId = bag.stockJournalId || bag.purchaseId;
+                            if (srcJournalId) {
+                                bagDocId = `${srcJournalId}_${bag.bagNo}`.replace(/[^a-zA-Z0-9]/g, '_');
+                            }
+                        }
+                        if (bagDocId) {
+                            const bRef = doc(db, 'jumbo_bags', bagDocId);
+                            batch.update(bRef, {
+                                status: 'sold',
+                                salesId: docId,
+                                salesRefNo: voucherData.refNo || '',
+                                soldDate: voucherData.date || ''
+                            });
+                        }
+                    }
+                }
+                await batch.commit().catch(e => console.warn("Failed updating bag status during sales restore:", e));
+            }
+
+            if (voucherData.expenseJournalId && voucherData.journalExpenses) {
+                const jvRef = doc(db, 'journal_vouchers', voucherData.expenseJournalId);
+                const drRows = voucherData.journalExpenses.map(e => ({ type: 'dr', category: 'expense', id: e.expenseId, amount: e.amount }));
+                const crRows = voucherData.journalExpenses.map(e => {
+                    const isParty = parties.find(p => p.id === e.creditAccountId);
+                    const isAccount = accounts.find(a => a.id === e.creditAccountId);
+                    const isExpense = expenses.find(ex => ex.id === e.creditAccountId) || directExpenseAccounts.find(d => d.id === e.creditAccountId);
+                    const crCat = isParty ? 'party' : isAccount ? 'account' : isExpense ? 'expense' : 'account';
+                    return { type: 'cr', category: crCat, id: e.creditAccountId, amount: e.amount };
+                });
+                
+                const uniqueDrIds = [...new Set(drRows.map(r => r.id))];
+                const uniqueCrIds = [...new Set(crRows.map(r => r.id))];
+                const mainExpenseName = uniqueDrIds.length > 1 ? 'Multiple Expenses' : (expenses.find(e => e.id === uniqueDrIds[0])?.name || 'Direct Expense');
+                const mainCrName = uniqueCrIds.length > 1 ? 'Multiple Ledgers' : (parties.find(p => p.id === uniqueCrIds[0])?.name || accounts.find(a => a.id === uniqueCrIds[0])?.name || expenses.find(e => e.id === uniqueCrIds[0])?.name || 'Unknown');
+                const isMulti = uniqueDrIds.length > 1 || uniqueCrIds.length > 1 || drRows.length > 1;
+
+                const expensesAmountTotal = voucherData.journalExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+
+                const jvPayload = {
+                    date: voucherData.date, refNo: `${voucherData.refNo || 'AUTO'}-Exp`, narration: `Expenses for Mfg ${voucherData.refNo || ''}`,
+                    type: 'journal', userId: targetUid, rows: [...drRows, ...crRows], amount: expensesAmountTotal,
+                    drName: mainExpenseName, crName: mainCrName, isMulti: isMulti,
+                    linkedStockJournalId: docId, updatedAt: serverTimestamp(),
+                    createdAt: voucherData.createdAt || serverTimestamp()
+                };
+                await setDoc(jvRef, jvPayload, { merge: true });
+            }
+
+            await addDoc(collection(db, 'audit_logs'), {
+                date: serverTimestamp(),
+                ownerId: targetUid,
+                userId: user.uid,
+                userName: effectiveName,
+                action: 'RESTORED',
+                docType: docType.toUpperCase(),
+                refNo: voucherData.refNo || 'N/A',
+                amount: voucherData.totalAmount || voucherData.amount || voucherData.totalProducedValue || 0,
+                description: `Restored voucher ${docId}`,
+                docId: docId,
+                snapshotData: JSON.stringify(voucherData)
+            });
+
+            setToast({ type: 'success', title: 'Restored!', message: 'Voucher has been restored successfully.' });
+            return true;
+        } catch (error) {
+            console.error("Restore failed:", error);
             setToast({ type: 'error', title: 'Error', message: error.message });
             return false;
         }
@@ -12070,6 +12193,7 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 onScan={handleRunSystemScan}
                 onPurgeSoftDeleted={handlePurgeSoftDeletedVouchers}
+                onRestore={handleRestoreVoucher}
                 accounts={accounts}
                 parties={parties}
                 expenses={expenses}

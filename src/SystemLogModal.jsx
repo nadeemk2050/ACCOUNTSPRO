@@ -17,7 +17,7 @@ const parseDate = (d) => {
 };
 
 const SystemLogModal = ({
-  isOpen, onClose, onBack, zIndex, user, dataOwnerId, onScan, onPurgeSoftDeleted,
+  isOpen, onClose, onBack, zIndex, user, dataOwnerId, onScan, onPurgeSoftDeleted, onRestore,
   accounts = [], parties = [], expenses = [], incomeAccounts = [], products = [], subUsers = [], staff = [], locations = []
 }) => {
   const [allLogs, setAllLogs] = useState([]);
@@ -25,6 +25,30 @@ const SystemLogModal = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState(null);
   const [selectedLog, setSelectedLog] = useState(null);
+
+  const restorableSnapshot = useMemo(() => {
+    if (!selectedLog) return null;
+    if (selectedLog.snapshotData) {
+      try {
+        return JSON.parse(selectedLog.snapshotData);
+      } catch (e) {
+        console.warn("Failed to parse snapshotData direct", e);
+      }
+    }
+    if (selectedLog.docId) {
+      const match = allLogs
+        .filter(l => l.docId === selectedLog.docId && l.snapshotData)
+        .sort((a, b) => b.t - a.t)[0];
+      if (match) {
+        try {
+          return JSON.parse(match.snapshotData);
+        } catch (e) {
+          console.warn("Failed to parse snapshotData from match", e);
+        }
+      }
+    }
+    return null;
+  }, [selectedLog, allLogs]);
 
   // Temporary Cleanup for Ghost Invoice
   useEffect(() => {
@@ -410,12 +434,35 @@ const SystemLogModal = ({
                   {selectedLog.docType} • {selectedLog.refNo} • {selectedLog.statusText || selectedLog.action}
                 </p>
               </div>
-              <button onClick={() => setSelectedLog(null)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 transition-colors">
-                <X size={20} />
-              </button>
+              <div className="flex items-center gap-2">
+                {onRestore && restorableSnapshot && (
+                  <button
+                    onClick={async () => {
+                      const password = prompt("Enter Restore Password:");
+                      if (!password) return;
+                      if (password.toLowerCase() !== "abcd") {
+                        return alert("❌ Incorrect Password. Access Denied.");
+                      }
+                      if (window.confirm(`Are you sure you want to restore this ${selectedLog.docType} voucher (${selectedLog.refNo || 'N/A'})?`)) {
+                        const success = await onRestore(selectedLog.docId || selectedLog.id, selectedLog.docType, restorableSnapshot);
+                        if (success) {
+                          setSelectedLog(null);
+                          loadAllLogs();
+                        }
+                      }
+                    }}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white font-bold text-xs shadow-sm transition-colors mr-2 animate-pulse"
+                  >
+                    Restore Voucher
+                  </button>
+                )}
+                <button onClick={() => setSelectedLog(null)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
             </div>
             <div className="p-6 overflow-y-auto flex-1 bg-slate-50/50">
-              {!selectedLog.snapshotData ? (
+              {!restorableSnapshot ? (
                 <div className="flex flex-col items-center justify-center py-20 opacity-50">
                   <FileText size={48} className="mb-4 text-slate-400" />
                   <p className="text-slate-600 font-medium">Historical snapshot not available.</p>
@@ -427,7 +474,7 @@ const SystemLogModal = ({
                 <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4">
                   {(() => {
                     try {
-                      const parsed = JSON.parse(selectedLog.snapshotData);
+                      const parsed = restorableSnapshot;
                       return (
                         <div className="flex flex-col gap-4">
                           {/* Top Info Grid */}
@@ -578,7 +625,7 @@ const SystemLogModal = ({
                     } catch (e) {
                       return (
                         <div className="bg-red-50 text-red-700 p-4 rounded-lg font-mono text-xs overflow-x-auto whitespace-pre-wrap">
-                          {selectedLog.snapshotData}
+                          {JSON.stringify(restorableSnapshot, null, 2)}
                         </div>
                       );
                     }
