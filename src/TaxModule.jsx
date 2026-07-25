@@ -126,180 +126,144 @@ function PurchaseTab({ parties, products, taxRates, uid, entries, setEntries, ke
   const [gdNo, setGdNo] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedSupplier, setSelectedSupplier] = useState('');
-  const [selectedProduct, setSelectedProduct] = useState('');
-  const [hscode, setHscode] = useState('');
-  const [qty, setQty] = useState('');
-  const [rate, setRate] = useState('');
-  const [amount, setAmount] = useState('');
-  const [selectedTax, setSelectedTax] = useState('');
-  const [taxRate, setTaxRate] = useState(0);
-  const [total, setTotal] = useState(0);
   const [supSearch, setSupSearch] = useState('');
-  const [prodSearch, setProdSearch] = useState('');
   const [showSup, setShowSup] = useState(false);
-  const [showProd, setShowProd] = useState(false);
   const [viewingEntry, setViewingEntry] = useState(null);
   const [hsRules, setHsRules] = useState([]);
-  const [hsImpositions, setHsImpositions] = useState([]);
-  const [taxesTotal, setTaxesTotal] = useState(0);
   const [taxCreditTo, setTaxCreditTo] = useState({ id: '', name: '' });
   const [creditSearch, setCreditSearch] = useState('');
   const [showCredit, setShowCredit] = useState(false);
+  const [items, setItems] = useState([]);
 
-  // Load HS Code rules on mount
   useEffect(() => {
     getDocs(query(collection(db, 'hs_code_rules'), orderBy('createdAt', 'desc'))).then(snap => {
       setHsRules(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }).catch(() => {});
   }, []);
 
-  // When hscode or raw amount changes, look up rules and calculate taxes
-  const rawAmt = (() => { const a = Number(amount||0); const q = Number(qty||0); const r = Number(rate||0); return a > 0 ? a : (q * r); })();
-
-  useEffect(() => {
-    if (!hscode) { setHsImpositions([]); setTaxesTotal(0); return; }
-    const rule = hsRules.find(r => r.hsCode === hscode && (r.category === 'Import' || r.category === 'Local Purchase' || r.category === 'Both'));
-    if (!rule || !rule.impositions || rule.impositions.length === 0) {
-      setHsImpositions([]); setTaxesTotal(0);
-      return;
-    }
-
-    // Calculate cascading taxes
-    const imps = rule.impositions;
+  const calcItemTaxes = (item, hsRulesList) => {
+    const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+    if (!item.hscode || rawVal <= 0) return { hsImpositions: [], itemTaxTotal: 0 };
+    const rule = (hsRulesList || hsRules).find(r => r.hsCode === item.hscode && (r.category === 'Import' || r.category === 'Local Purchase' || r.category === 'Both'));
+    if (!rule || !rule.impositions || rule.impositions.length === 0) return { hsImpositions: [], itemTaxTotal: 0 };
     const results = [];
-    const taxAmountMap = {}; // taxId -> calculated amount
-
-    // Process in order so dependencies are already calculated
-    imps.forEach((imp, idx) => {
+    const taxAmountMap = {};
+    rule.impositions.forEach((imp, idx) => {
       let taxAmt;
-      if (imp.baseOn === 'assessed_value') {
-        taxAmt = rawAmt * imp.percentage / 100;
-      } else if (imp.baseOn === 'assessed_value_plus') {
-        // Sum all parent tax amounts referenced in plusTaxIds (or single plusTaxId for backward compat)
+      if (imp.baseOn === 'assessed_value') { taxAmt = rawVal * imp.percentage / 100; }
+      else if (imp.baseOn === 'assessed_value_plus') {
         const refTaxIds = imp.plusTaxIds || (imp.plusTaxId ? [imp.plusTaxId] : []);
         let parentTotal = 0;
         refTaxIds.forEach(ptId => { parentTotal += (taxAmountMap[ptId] || 0); });
-        taxAmt = (rawAmt + parentTotal) * imp.percentage / 100;
-      } else {
-        taxAmt = 0;
-      }
+        taxAmt = (rawVal + parentTotal) * imp.percentage / 100;
+      } else { taxAmt = 0; }
       taxAmountMap[imp.taxId] = taxAmt;
       results.push({ ...imp, calculatedAmount: taxAmt, index: idx });
     });
-
-    setHsImpositions(results);
-    setTaxesTotal(results.reduce((sum, r) => sum + r.calculatedAmount, 0));
-  }, [hscode, rawAmt, hsRules]);
-
-  const itemValue = rawAmt;
-  const grandTotal = itemValue + taxesTotal;
-
-  const onRateChange = (v) => {
-    setRate(v);
-    const q = Number(qty) || 0; const r = Number(v) || 0;
-    if (q > 0) setAmount(String(q * r));
+    return { hsImpositions: results, itemTaxTotal: results.reduce((s, r) => s + r.calculatedAmount, 0) };
   };
 
-  const onAmountChange = (v) => {
-    setAmount(v);
-    const q = Number(qty) || 0; const a = Number(v) || 0;
-    if (q > 0) setRate(String(a / q));
+  const addItem = () => {
+    setItems(prev => [...prev, { id: Date.now() + Math.random(), productName: '', hscode: '', qty: '', rate: '', amount: '', prodSearch: '', showProd: false, hsImpositions: [], itemTaxTotal: 0 }]);
   };
 
-  const onQtyChange = (v) => {
-    setQty(v);
-    const q = Number(v) || 0; const r = Number(rate) || 0; const a = Number(amount) || 0;
-    if (r > 0) setAmount(String(q * r));
-    else if (a > 0) setRate(String(a / (q || 1)));
+  const removeItem = (id) => setItems(prev => prev.filter(i => i.id !== id));
+
+  const updateItem = (id, field, value) => {
+    setItems(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      let updated = { ...item, [field]: value };
+      if (field === 'qty' || field === 'rate') {
+        const q = Number(field === 'qty' ? value : item.qty) || 0;
+        const r = Number(field === 'rate' ? value : item.rate) || 0;
+        if (q > 0 && r > 0) updated.amount = String(q * r);
+      }
+      const taxes = calcItemTaxes(updated, hsRules);
+      updated.hsImpositions = taxes.hsImpositions;
+      updated.itemTaxTotal = taxes.itemTaxTotal;
+      return updated;
+    }));
   };
 
-  // For backward compatibility: simple tax dropdown when no HS Code rules
-  const calcTotalSimple = (val) => {
-    const tax = taxRates.find(t => t.id === selectedTax);
-    const rPct = tax ? Number(tax.rate) || 0 : 0;
-    setTaxRate(rPct);
-    setTotal(val + (val * rPct / 100));
+  const totals = useMemo(() => {
+    let totalItemValue = 0, totalTaxes = 0;
+    const taxBreakdown = {};
+    items.forEach(item => {
+      const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+      totalItemValue += rawVal;
+      totalTaxes += Number(item.itemTaxTotal || 0);
+      (item.hsImpositions || []).forEach(imp => {
+        const key = imp.taxId || imp.taxName;
+        if (!taxBreakdown[key]) taxBreakdown[key] = { taxName: imp.taxName || taxRates.find(t => t.id === imp.taxId)?.name || 'Tax', percentage: imp.percentage, totalAmount: 0 };
+        taxBreakdown[key].totalAmount += Number(imp.calculatedAmount || 0);
+      });
+    });
+    return { totalItemValue, totalTaxes, grandTotal: totalItemValue + totalTaxes, taxBreakdown };
+  }, [items, taxRates]);
+
+  const allAppliedTaxes = useMemo(() => {
+    const map = {};
+    items.forEach(item => (item.hsImpositions || []).forEach(imp => {
+      const key = imp.taxId || imp.taxName;
+      if (!map[key]) map[key] = { ...imp, calculatedAmount: 0 };
+      map[key].calculatedAmount += Number(imp.calculatedAmount || 0);
+    }));
+    return Object.values(map);
+  }, [items]);
+
+  const hasAnyHsTaxes = items.some(i => (i.hsImpositions || []).length > 0);
+
+  const save = async () => {
+    if (!selectedSupplier || items.length === 0) { alert('Fill: Supplier and at least one item'); return; }
+    for (let i = 0; i < items.length; i++) {
+      if (!items[i].productName || !items[i].qty || (!items[i].rate && !items[i].amount)) {
+        alert('Item #' + (i+1) + ': Fill Product, Qty, and Rate or Amount'); return;
+      }
+    }
+    const saveItems = items.map(item => {
+      const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+      return {
+        productName: item.productName, hscode: item.hscode || '',
+        qty: Number(item.qty) || 0, rate: Number(item.rate) || 0, amount: rawVal,
+        hsImpositions: item.hsImpositions || [], itemTaxTotal: Number(item.itemTaxTotal || 0), itemValue: rawVal, itemGrandTotal: rawVal + Number(item.itemTaxTotal || 0)
+      };
+    });
+    const taxDocRef = await addDoc(collection(db, 'tax_purchase'), {
+      gdNo, date, supplierName: selectedSupplier,
+      items: saveItems, appliedTaxes: allAppliedTaxes, taxBreakdown: totals.taxBreakdown,
+      taxAmountTotal: totals.totalTaxes, itemValueTotal: totals.totalItemValue, grandTotal: totals.grandTotal,
+      taxCreditTo: hasAnyHsTaxes ? taxCreditTo : null, userId: uid, createdAt: serverTimestamp()
+    });
+    try {
+      const party = parties.find(p => p.name === selectedSupplier);
+      await addDoc(collection(db, 'invoices'), {
+        type: 'purchase_apt', date, refNo: gdNo || 'TAX-' + Date.now(), userId: uid,
+        partyId: party?.id || null, partyName: selectedSupplier,
+        items: saveItems, appliedTaxes: allAppliedTaxes, taxBreakdown: totals.taxBreakdown,
+        taxAmountTotal: totals.totalTaxes, itemValueTotal: totals.totalItemValue, grandTotal: totals.grandTotal,
+        taxCreditTo: hasAnyHsTaxes ? taxCreditTo : null, taxVoucherId: taxDocRef.id,
+        taxableValue: totals.totalItemValue, total: totals.grandTotal, totalAmount: totals.grandTotal, amount: totals.grandTotal,
+        narration: 'GD Import: ' + (gdNo || 'N/A'), createdAt: serverTimestamp()
+      });
+    } catch(e) { console.warn('[TAX] Could not save to ACCPRO invoices:', e.message); }
+    setShowForm(false); resetForm();
+    const snap = await getDocs(query(collection(db, 'tax_purchase'), orderBy('date','desc')));
+    setEntries(prev => ({ ...prev, purchase: snap.docs.map(d => ({ id: d.id, ...d.data() })) }));
+  };
+
+  const resetForm = () => {
+    setGdNo(''); setDate(new Date().toISOString().split('T')[0]);
+    setSelectedSupplier(''); setSupSearch(''); setItems([]);
+    setTaxCreditTo({ id: '', name: '' }); setCreditSearch('');
   };
 
   const filteredSuppliers = useMemo(() =>
-    supSearch ? parties.filter(s => (s.name||'').toLowerCase().includes(supSearch.toLowerCase())) : parties,
-    [parties, supSearch]
+    supSearch ? parties.filter(s => (s.name||'').toLowerCase().includes(supSearch.toLowerCase())) : parties, [parties, supSearch]
   );
 
   const filteredProducts = useMemo(() =>
-    prodSearch ? products.filter(p => (p.name||'').toLowerCase().includes(prodSearch.toLowerCase())) : products,
-    [products, prodSearch]
+    products, [products]
   );
-
-  const save = async () => {
-    if (!selectedSupplier || !selectedProduct || !qty || (!rate && !amount)) { alert('Fill: Supplier, Product, Qty, and Rate or Amount'); return; }
-    const tax = taxRates.find(t => t.id === selectedTax);
-    const finalAmount = Number(amount||0) || (Number(qty||0) * Number(rate||0));
-    const finalRate = Number(rate||0) || (finalAmount / (Number(qty||0) || 1));
-    const hasHscodeTaxes = hsImpositions.length > 0;
-    const saveTaxes = hasHscodeTaxes ? hsImpositions : [];
-    const saveTaxTotal = hasHscodeTaxes ? taxesTotal : ((tax ? Number(tax.rate)||0 : 0) * finalAmount / 100);
-    const saveGrandTotal = finalAmount + saveTaxTotal;
-
-    // Save to ACCPRO TAX collection
-    const taxDocRef = await addDoc(collection(db, 'tax_purchase'), {
-      gdNo, date, supplierName: selectedSupplier, productName: selectedProduct, hscode,
-      qty: Number(qty), rate: finalRate, taxableValue: finalAmount,
-      appliedTaxes: saveTaxes,
-      taxAmountTotal: saveTaxTotal,
-      grandTotal: saveGrandTotal,
-      taxCreditTo: hsImpositions.length > 0 ? taxCreditTo : null,
-      taxId: selectedTax||null, taxName: tax?.name||null, taxRate: hasHscodeTaxes ? 0 : Number(taxRate), total: saveGrandTotal,
-      userId: uid, createdAt: serverTimestamp()
-    });
-    
-    // Also save to ACCPRO's main invoices collection so it appears in ledgers
-    try {
-      const party = parties.find(p => p.name === selectedSupplier);
-      const item = products.find(p => p.name === selectedProduct);
-      await addDoc(collection(db, 'invoices'), {
-        type: 'purchase_apt',
-        date,
-        refNo: gdNo || `TAX-${Date.now()}`,
-        userId: uid,
-        partyId: party?.id || null,
-        partyName: selectedSupplier,
-        hscode,
-        appliedTaxes: saveTaxes,
-        taxAmountTotal: saveTaxTotal,
-        grandTotal: saveGrandTotal,
-        taxCreditTo: hsImpositions.length > 0 ? taxCreditTo : null,
-        taxVoucherId: taxDocRef.id,
-        items: [{
-          productId: item?.id || null,
-          productName: selectedProduct,
-          qty: Number(qty),
-          rate: finalRate,
-          amount: finalAmount
-        }],
-        taxableValue: finalAmount,
-        taxId: selectedTax||null,
-        taxName: tax?.name||null,
-        taxRate: hasHscodeTaxes ? 0 : Number(taxRate),
-        taxAmount: saveTaxTotal,
-        total: saveGrandTotal,
-        totalAmount: saveGrandTotal,
-        amount: saveGrandTotal,
-        narration: `GD Import: ${gdNo || 'N/A'}`,
-        createdAt: serverTimestamp()
-      });
-      console.log('[TAX] Also saved to ACCPRO invoices collection for ledger integration');
-    } catch(e) {
-      console.warn('[TAX] Could not save to ACCPRO invoices:', e.message);
-    }
-    
-    setShowForm(false); resetForm();
-    const snap = await getDocs(query(collection(db, 'tax_purchase'), orderBy('date','desc')));
-    const newEntries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    setEntries(prev => ({ ...prev, purchase: newEntries }));
-  };
-
-  const resetForm = () => { setGdNo(''); setDate(new Date().toISOString().split('T')[0]); setSelectedSupplier(''); setSelectedProduct(''); setHscode(''); setSupSearch(''); setProdSearch(''); setQty(''); setRate(''); setAmount(''); setSelectedTax(''); setTaxRate(0); setTotal(0); setHsImpositions([]); setTaxesTotal(0); setTaxCreditTo({ id: '', name: '' }); setCreditSearch(''); };
 
   return (
     <div>
@@ -313,87 +277,101 @@ function PurchaseTab({ parties, products, taxRates, uid, entries, setEntries, ke
 
       {showForm && (
         <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 mb-4">
+          {/* Header */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">GD No.(Ref)</label><input value={gdNo} onChange={e => setGdNo(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#1e3264]"/></div>
-            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#1e3264] text-slate-800"/></div>
-          </div>
-
-          <div className="relative">
-            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Supplier <span className="text-red-400">*</span></label>
-            <input value={supSearch} onFocus={() => setShowSup(true)} onBlur={() => setTimeout(() => setShowSup(false), 200)} onChange={e => setSupSearch(e.target.value)} placeholder="Type to search..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#1e3264]"/>
-            {showSup && filteredSuppliers.length > 0 && (
-              <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-40 overflow-y-auto">
-                {filteredSuppliers.slice(0, 30).map(s => (
-                  <div key={s.id} onMouseDown={() => { setSelectedSupplier(s.name); setSupSearch(s.name); setShowSup(false); }} className="px-3 py-2 text-xs hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800">{s.name}</div>
-                ))}
-              </div>
-            )}
-            {selectedSupplier && <div className="mt-1 text-[9px] text-green-600 font-medium">✓ {selectedSupplier}</div>}
-          </div>
-
-          <div className="relative">
-            <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Item <span className="text-red-400">*</span></label>
-            <input value={prodSearch} onFocus={() => setShowProd(true)} onBlur={() => setTimeout(() => setShowProd(false), 200)} onChange={e => setProdSearch(e.target.value)} placeholder="Type to search..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#1e3264] text-slate-800"/>
-            {showProd && filteredProducts.length > 0 && (
-              <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-40 overflow-y-auto">
-                {filteredProducts.slice(0, 30).map(p => (
-                  <div key={p.id} onMouseDown={() => { setSelectedProduct(p.name); setProdSearch(p.name); setHscode(p.hscode || ''); setShowProd(false); }} className="px-3 py-2 text-xs hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800">{p.name} {p.group && <span className="text-slate-600">({p.group})</span>}</div>
-                ))}
-              </div>
-            )}
-            {selectedProduct && <div className="mt-1 text-[9px] text-green-600 font-medium">✓ {selectedProduct}</div>}
-          </div>
-
-          {hscode && <div className="text-[10px] text-slate-500 -mt-2 ml-1">HS Code: <span className="font-mono font-bold text-slate-700">{hscode}</span></div>}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Qty</label><input type="number" value={qty} onChange={e => onQtyChange(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800"/></div>
-            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Rate</label><input type="number" value={rate} onChange={e => onRateChange(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800"/></div>
-            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Amount/Assessed Value</label><input type="number" value={amount} onChange={e => onAmountChange(e.target.value)} placeholder="Auto from Rate×Qty" className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800"/></div>
-          </div>
-
-          {/* ─── Tax Impositions from HS Code Rules ─── */}
-          {hsImpositions.length > 0 && (
-            <div className="bg-blue-50/50 rounded-xl border border-blue-100 p-3 space-y-2">
-              <div className="text-[9px] font-bold text-blue-600 uppercase">📋 Taxes & Duties (from HS Code Rules)</div>
-              {hsImpositions.map((imp, i) => (
-                <div key={i} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-blue-50">
-                  <div>
-                    <span className="text-xs font-bold text-slate-700">{imp.taxName || imp.taxId}</span>
-                    <span className="ml-2 text-[10px] text-slate-500">@ {imp.percentage}%</span>
-                    <span className="ml-2 text-[9px] text-slate-400">
-                      ({imp.baseOn === 'assessed_value' ? 'on Assessed Value' : 'on Value + ' + (imp.plusTaxName || imp.plusTaxId || 'other')})
-                    </span>
-                  </div>
-                  <div className="text-sm font-black font-mono text-blue-700">{formatNum(imp.calculatedAmount)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ─── Fallback: Simple Tax Dropdown (when no HS Code rules) ─── */}
-          {hsImpositions.length === 0 && (
-            <div>
-              <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Tax Rate (fallback)</label>
-              <select value={selectedTax} onChange={e => { setSelectedTax(e.target.value); calcTotalSimple(rawAmt); }} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none bg-white text-slate-800">
-                <option value="">No Tax</option>
-                {taxRates.map(t => <option key={t.id} value={t.id}>{t.name} ({Number(t.rate||0)}%)</option>)}
-              </select>
-            </div>
-          )}
-
-          {/* ─── Tax credited to (only when HS Code taxes exist) ─── */}
-          {hsImpositions.length > 0 && (
+            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">GD No.(Ref)</label><input value={gdNo} onChange={e => setGdNo(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800"/></div>
+            <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800"/></div>
             <div className="relative">
-              <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">
-                🏦 Taxes & Duties credited to <span className="text-red-400">*</span>
-              </label>
+              <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Supplier <span className="text-red-400">*</span></label>
+              <input value={supSearch} onFocus={() => setShowSup(true)} onBlur={() => setTimeout(() => setShowSup(false), 200)} onChange={e => setSupSearch(e.target.value)} placeholder="Type to search..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800"/>
+              {showSup && filteredSuppliers.length > 0 && (
+                <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                  {filteredSuppliers.slice(0, 30).map(s => (
+                    <div key={s.id} onMouseDown={() => { setSelectedSupplier(s.name); setSupSearch(s.name); setShowSup(false); }} className="px-3 py-2 text-xs hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800">{s.name}</div>
+                  ))}
+                </div>
+              )}
+              {selectedSupplier && <div className="mt-1 text-[9px] text-green-600 font-medium">✓ {selectedSupplier}</div>}
+            </div>
+          </div>
+
+          {/* Multi-Item Section */}
+          <div className="border-t border-slate-200 pt-3">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[9px] font-bold text-slate-400 uppercase">Items ({items.length})</span>
+              <button onClick={addItem} className="px-3 py-1.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-lg hover:bg-emerald-200">+ Add Item</button>
+            </div>
+            {items.length === 0 && (
+              <div className="text-center py-6 text-xs text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">No items added. Click <b>"+ Add Item"</b> to add products.</div>
+            )}
+            {items.map((item, idx) => {
+              const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+              const itemGrandTotal = rawVal + Number(item.itemTaxTotal || 0);
+              const filteredProds = products.filter(p => item.prodSearch ? (p.name||'').toLowerCase().includes(item.prodSearch.toLowerCase()) : true);
+              return (
+                <div key={item.id} className="bg-slate-50 rounded-xl border border-slate-200 p-3 mb-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold text-slate-500">Item #{idx + 1}</span>
+                    <button onClick={() => removeItem(item.id)} className="text-red-500 hover:text-red-700 text-[10px] font-bold">✕ Remove</button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                    <div className="relative">
+                      <label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Product</label>
+                      <input value={item.prodSearch || item.productName} onFocus={() => updateItem(item.id, 'showProd', true)} onBlur={() => setTimeout(() => updateItem(item.id, 'showProd', false), 200)}
+                        onChange={e => { updateItem(item.id, 'prodSearch', e.target.value); if (!e.target.value) updateItem(item.id, 'productName', ''); }}
+                        placeholder="Search product..." className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" />
+                      {item.showProd && filteredProds.length > 0 && (
+                        <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-32 overflow-y-auto">
+                          {filteredProds.slice(0, 20).map(p => (
+                            <div key={p.id} onMouseDown={() => {
+                              const updatedItem = { ...item, productName: p.name, prodSearch: '', showProd: false, hscode: p.hscode || '' };
+                              const taxes = calcItemTaxes(updatedItem, hsRules);
+                              updatedItem.hsImpositions = taxes.hsImpositions; updatedItem.itemTaxTotal = taxes.itemTaxTotal;
+                              setItems(prev => prev.map(i => i.id === item.id ? updatedItem : i));
+                            }} className="px-2 py-1.5 text-[10px] hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800">{p.name} {p.group && <span className="text-slate-400">({p.group})</span>}</div>
+                          ))}
+                        </div>
+                      )}
+                      {item.productName && <div className="text-[8px] text-green-600 font-medium mt-0.5">✓ {item.productName}</div>}
+                    </div>
+                    <div>
+                      <label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">HS Code</label>
+                      <div className="text-xs font-mono font-bold text-slate-700 px-2 py-1.5 bg-white rounded border border-slate-200">{item.hscode || '— Auto from product —'}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <div><label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Qty</label><input type="number" value={item.qty} onChange={e => updateItem(item.id, 'qty', e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" /></div>
+                    <div><label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Rate</label><input type="number" value={item.rate} onChange={e => updateItem(item.id, 'rate', e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" /></div>
+                    <div><label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Assessed Value</label><input type="number" value={item.amount} onChange={e => updateItem(item.id, 'amount', e.target.value)} placeholder="Auto" className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" /></div>
+                  </div>
+                  {item.hsImpositions.length > 0 && (
+                    <div className="bg-blue-50/50 rounded-lg border border-blue-100 p-2 space-y-0.5">
+                      <div className="text-[8px] font-bold text-blue-600 uppercase">Taxes for this item</div>
+                      {item.hsImpositions.map((imp, i) => (
+                        <div key={i} className="flex justify-between items-center text-[10px]">
+                          <span className="text-slate-600">{imp.taxName || taxRates.find(t => t.id === imp.taxId)?.name || 'Tax'} ({imp.percentage}%)</span>
+                          <span className="font-mono font-bold text-blue-700">{formatNum(imp.calculatedAmount)}</span>
+                        </div>
+                      ))}
+                      <div className="flex justify-between items-center text-[10px] border-t border-blue-100 pt-0.5 mt-0.5">
+                        <span className="font-bold text-slate-600">Item Total</span>
+                        <span className="font-mono font-bold text-slate-700">{formatNum(itemGrandTotal)}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Tax credited to */}
+          {hasAnyHsTaxes && (
+            <div className="relative">
+              <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">🏦 Taxes & Duties credited to <span className="text-red-400">*</span></label>
               <input value={creditSearch || taxCreditTo.name}
-                onFocus={() => setShowCredit(true)}
-                onBlur={() => setTimeout(() => setShowCredit(false), 200)}
+                onFocus={() => setShowCredit(true)} onBlur={() => setTimeout(() => setShowCredit(false), 200)}
                 onChange={e => { setCreditSearch(e.target.value); setTaxCreditTo({ id: '', name: '' }); }}
-                placeholder="Search party, bank, or cash account..."
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800" />
+                placeholder="Search party, bank, or cash account..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800" />
               {showCredit && (
                 <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-40 overflow-y-auto">
                   {parties.filter(p => creditSearch ? (p.name||'').toLowerCase().includes(creditSearch.toLowerCase()) : true).slice(0, 30).map(p => (
@@ -406,55 +384,57 @@ function PurchaseTab({ parties, products, taxRates, uid, entries, setEntries, ke
             </div>
           )}
 
-          {/* ─── 3 TOTALS ─── */}
-          <div className="bg-slate-50 rounded-xl p-3 grid grid-cols-3 gap-3 text-center">
-            <div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase">📦 Items Value</div>
-              <div className="text-sm font-black font-mono text-slate-700">{formatNum(itemValue)}</div>
+          {/* Totals */}
+          <div className="bg-slate-50 rounded-xl p-3 space-y-2">
+            <div className="flex justify-between items-center text-xs">
+              <span className="font-bold text-slate-500">📦 Total Items Value:</span>
+              <span className="font-mono font-bold text-slate-700">{formatNum(totals.totalItemValue)}</span>
             </div>
-            <div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase">🧾 Total Taxes & Duties</div>
-              <div className="text-sm font-black font-mono text-blue-700">
-                {formatNum(hsImpositions.length > 0 ? taxesTotal : (Number(amount||0) * (Number(taxRate)||0) / 100))}
+            {Object.keys(totals.taxBreakdown).length > 0 && (
+              <div className="border-t border-slate-200 pt-1 space-y-1">
+                <div className="text-[8px] font-bold text-slate-400 uppercase">🧾 Tax Breakup (Total of each tax type)</div>
+                {Object.entries(totals.taxBreakdown).map(([key, tb]) => (
+                  <div key={key} className="flex justify-between items-center text-[10px] pl-2">
+                    <span className="text-slate-600">{tb.taxName} <span className="text-slate-400">({tb.percentage}%)</span></span>
+                    <span className="font-mono font-bold text-blue-700">{formatNum(tb.totalAmount)}</span>
+                  </div>
+                ))}
               </div>
-              {hsImpositions.length > 0 && (
-                <div className="text-[8px] text-blue-400 mt-0.5">{hsImpositions.length} tax(es) applied</div>
-              )}
+            )}
+            <div className="flex justify-between items-center text-xs border-t border-slate-200 pt-1">
+              <span className="font-bold text-slate-500">🧾 Total Taxes & Duties:</span>
+              <span className="font-mono font-bold text-blue-700">{formatNum(totals.totalTaxes)}</span>
             </div>
-            <div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase">💰 Grand Total</div>
-              <div className="text-lg font-black font-mono text-green-700">
-                {formatNum(hsImpositions.length > 0 ? grandTotal : (Number(total) || 0))}
-              </div>
+            <div className="flex justify-between items-center text-sm border-t-2 border-slate-300 pt-1">
+              <span className="font-bold text-slate-700">💰 Grand Total:</span>
+              <span className="font-mono font-black text-green-700">{formatNum(totals.grandTotal)}</span>
             </div>
           </div>
 
-          <button onClick={save} className="w-full py-3 bg-[#1e3264] text-white text-sm font-bold rounded-xl hover:bg-[#2b5797] shadow-lg">Save Entry</button>
+          <button onClick={save} className="w-full py-3 bg-[#1e3264] text-white text-sm font-bold rounded-xl hover:bg-[#2b5797] shadow-lg">Save Entry ({items.length} item{items.length !== 1 ? 's' : ''})</button>
         </div>
       )}
 
-      {/* Table */}
+      {/* Entries Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {entries.length === 0 && <div className="text-center py-12 text-xs text-slate-400">No entries yet.</div>}
         {entries.length > 0 && (
           <table className="w-full text-xs">
             <thead className="bg-slate-50"><tr>
               <th className="text-left px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Date</th><th className="text-left px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">GD</th>
-              <th className="text-left px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Supplier</th><th className="text-left px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Product</th>
-              <th className="text-center px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">HS Code</th>
-              <th className="text-right px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Qty</th><th className="text-right px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Value</th>
+              <th className="text-left px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Supplier</th><th className="text-left px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Items</th>
+              <th className="text-right px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Value</th>
               <th className="text-right px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Tax</th><th className="text-right px-3 py-2.5 text-[9px] font-bold text-slate-400 uppercase">Total</th>
             </tr></thead>
             <tbody>
               {entries.map(e => (
                 <tr key={e.id} onClick={() => setViewingEntry(e)} className="border-t border-slate-100 hover:bg-blue-50 cursor-pointer">
                   <td className="px-3 py-2.5 text-slate-800">{e.date}</td><td className="px-3 py-2.5 font-mono text-slate-800">{e.gdNo}</td>
-                  <td className="px-3 py-2.5 font-medium text-slate-800">{e.supplierName}</td><td className="px-3 py-2.5 text-slate-800">{e.productName}</td>
-                  <td className="px-3 py-2.5 text-center font-mono text-[10px] text-slate-500">{e.hscode || '-'}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{e.qty}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{formatNum(e.taxableValue)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-800">{e.taxName ? <span className="text-blue-600">{e.taxName}</span> : '-'}</td>
-                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{formatNum(e.total)}</td>
+                  <td className="px-3 py-2.5 font-medium text-slate-800">{e.supplierName}</td>
+                  <td className="px-3 py-2.5 text-slate-800">{(e.items || []).length > 0 ? e.items.length + ' item(s)' : (e.productName || '-')}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-800">{formatNum(e.itemValueTotal || e.taxableValue || 0)}</td>
+                  <td className="px-3 py-2.5 text-right text-blue-700 font-bold">{formatNum(e.taxAmountTotal || 0)}</td>
+                  <td className="px-3 py-2.5 text-right font-bold text-slate-800">{formatNum(e.grandTotal || e.total || 0)}</td>
                 </tr>
               ))}
             </tbody>
@@ -494,28 +474,91 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
   const [prodSearch, setProdSearch] = useState('');
   const [showParty, setShowParty] = useState(false);
   const [showProd, setShowProd] = useState(false);
+  const [showPwdPrompt, setShowPwdPrompt] = useState(false);
+  const [pwdInput, setPwdInput] = useState('');
+  const [eCreditTo, setECreditTo] = useState({ id: '', name: '' });
+  const [eCreditSearch, setECreditSearch] = useState('');
+  const [eShowCredit, setEShowCredit] = useState(false);
+  // Multi-item state
+  const [eItems, setEItems] = useState([]);
+  const [hsRules, setHsRules] = useState([]);
 
   const isPurchase = collectionName === 'tax_purchase';
+  const isMultiItem = isPurchase && entry?.items && Array.isArray(entry.items) && entry.items.length > 0;
   const refLabel = isPurchase ? 'GD No.' : 'Ref No.';
   const partyLabel = isPurchase ? 'Supplier' : 'Customer';
   const refField = isPurchase ? 'gdNo' : 'refNo';
   const partyField = isPurchase ? 'supplierName' : 'customer';
+
+  // Load HS Code rules for multi-item tax recalculation
+  useEffect(() => {
+    getDocs(query(collection(db, 'hs_code_rules'), orderBy('createdAt', 'desc'))).then(snap => {
+      setHsRules(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }).catch(() => {});
+  }, []);
+
+  // Calculate per-item taxes using HS Code rules
+  const calcItemTaxes = (item, rules) => {
+    const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+    if (!item.hscode || rawVal <= 0) return { hsImpositions: [], itemTaxTotal: 0 };
+    const rule = (rules || hsRules).find(r => r.hsCode === item.hscode && (r.category === 'Import' || r.category === 'Local Purchase' || r.category === 'Both'));
+    if (!rule || !rule.impositions || rule.impositions.length === 0) return { hsImpositions: [], itemTaxTotal: 0 };
+    const results = [];
+    const taxAmountMap = {};
+    rule.impositions.forEach((imp, idx) => {
+      let taxAmt;
+      if (imp.baseOn === 'assessed_value') { taxAmt = rawVal * imp.percentage / 100; }
+      else if (imp.baseOn === 'assessed_value_plus') {
+        const refTaxIds = imp.plusTaxIds || (imp.plusTaxId ? [imp.plusTaxId] : []);
+        let parentTotal = 0;
+        refTaxIds.forEach(ptId => { parentTotal += (taxAmountMap[ptId] || 0); });
+        taxAmt = (rawVal + parentTotal) * imp.percentage / 100;
+      } else { taxAmt = 0; }
+      taxAmountMap[imp.taxId] = taxAmt;
+      results.push({ ...imp, calculatedAmount: taxAmt, index: idx });
+    });
+    return { hsImpositions: results, itemTaxTotal: results.reduce((s, r) => s + r.calculatedAmount, 0) };
+  };
 
   useEffect(() => {
     if (entry) {
       setERef(entry[refField] || entry.refNo || '');
       setEDate(entry.date || '');
       setEParty(entry[partyField] || entry.supplierName || entry.customer || '');
-      setEProduct(entry.productName || '');
-      setEQty(String(entry.qty || ''));
-      setERate(String(entry.rate || ''));
-      setEAmount(String(entry.taxableValue || ''));
+      setEProduct(entry.productName || (entry.items?.[0]?.productName) || '');
+      setEQty(String(entry.qty || (entry.items?.[0]?.qty) || ''));
+      setERate(String(entry.rate || (entry.items?.[0]?.rate) || ''));
+      setEAmount(String(entry.taxableValue || entry.itemValueTotal || ''));
       setETaxId(entry.taxId || '');
-      setETotal(entry.total || 0);
+      setETotal(entry.total || entry.grandTotal || 0);
       setECreditTo(entry.taxCreditTo || { id: '', name: '' });
       setECreditSearch(entry.taxCreditTo?.name || '');
+      // Load multi-item data
+      if (isMultiItem) {
+        setEItems(entry.items.map(item => ({ ...item, prodSearch: '', showProd: false })));
+      } else {
+        setEItems([]);
+      }
     }
-  }, [entry, refField, partyField]);
+  }, [entry, refField, partyField, isMultiItem]);
+
+  // For multi-item: compute totals
+  const eTotals = isMultiItem ? (() => {
+    let totalVal = 0, totalTax = 0;
+    const breakdown = {};
+    eItems.forEach(item => {
+      const v = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+      totalVal += v;
+      const t = Number(item.itemTaxTotal || 0);
+      totalTax += t;
+      (item.hsImpositions || []).forEach(imp => {
+        const key = imp.taxId || imp.taxName;
+        if (!breakdown[key]) breakdown[key] = { taxName: imp.taxName || taxRates.find(tx => tx.id === imp.taxId)?.name || 'Tax', percentage: imp.percentage, totalAmount: 0 };
+        breakdown[key].totalAmount += Number(imp.calculatedAmount || 0);
+      });
+    });
+    return { totalVal, totalTax, grandTotal: totalVal + totalTax, breakdown };
+  })() : null;
 
   useEffect(() => {
     const q = Number(eQty) || 0;
@@ -546,13 +589,66 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
 
   const filteredParties = parties.filter(s => partySearch ? (s.name||'').toLowerCase().includes(partySearch.toLowerCase()) : true);
   const filteredProducts = products.filter(p => prodSearch ? (p.name||'').toLowerCase().includes(prodSearch.toLowerCase()) : true);
-  const [showPwdPrompt, setShowPwdPrompt] = useState(false);
-  const [pwdInput, setPwdInput] = useState('');
-  const [eCreditTo, setECreditTo] = useState({ id: '', name: '' });
-  const [eCreditSearch, setECreditSearch] = useState('');
-  const [eShowCredit, setEShowCredit] = useState(false);
 
   const handleSave = async () => {
+    if (isMultiItem) {
+      // Multi-item save
+      if (!eParty || eItems.length === 0) { alert('Fill: ' + partyLabel + ' and at least one item'); return; }
+      for (let i = 0; i < eItems.length; i++) {
+        if (!eItems[i].productName || !eItems[i].qty || (!eItems[i].rate && !eItems[i].amount)) {
+          alert('Item #' + (i+1) + ': Fill Product, Qty, and Rate or Amount'); return;
+        }
+      }
+      setSaving(true);
+      try {
+        const saveItems = eItems.map(item => {
+          const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+          const taxes = calcItemTaxes(item, hsRules);
+          return {
+            productName: item.productName, hscode: item.hscode || '',
+            qty: Number(item.qty) || 0, rate: Number(item.rate) || 0, amount: rawVal,
+            hsImpositions: taxes.hsImpositions, itemTaxTotal: taxes.itemTaxTotal,
+            itemValue: rawVal, itemGrandTotal: rawVal + taxes.itemTaxTotal
+          };
+        });
+        // Aggregate taxes
+        const aggMap = {};
+        saveItems.forEach(item => (item.hsImpositions || []).forEach(imp => {
+          const key = imp.taxId || imp.taxName;
+          if (!aggMap[key]) aggMap[key] = { ...imp, calculatedAmount: 0 };
+          aggMap[key].calculatedAmount += Number(imp.calculatedAmount || 0);
+        }));
+        const allApplied = Object.values(aggMap);
+        const totalVal = saveItems.reduce((s, i) => s + i.itemValue, 0);
+        const totalTax = saveItems.reduce((s, i) => s + i.itemTaxTotal, 0);
+        const bundle = {
+          date: eDate, supplierName: eParty, items: saveItems,
+          appliedTaxes: allApplied, taxAmountTotal: totalTax, itemValueTotal: totalVal, grandTotal: totalVal + totalTax,
+          taxCreditTo: eCreditTo.name ? eCreditTo : null,
+          gdNo: eRef, updatedAt: serverTimestamp()
+        };
+        bundle[refField] = eRef;
+        await updateDoc(doc(db, collectionName, entry.id), bundle);
+        // Update linked invoice
+        const qInv = query(collection(db, 'invoices'), orderBy('createdAt', 'desc'));
+        const snap = await getDocs(qInv);
+        const linked = snap.docs.find(d => { const dd = d.data(); return dd.taxVoucherId === entry.id && dd.type === 'purchase_apt'; });
+        if (linked) {
+          await updateDoc(doc(db, 'invoices', linked.id), {
+            date: eDate, refNo: eRef || 'TAX-' + Date.now(), partyName: eParty,
+            items: saveItems, appliedTaxes: allApplied, taxAmountTotal: totalTax, itemValueTotal: totalVal, grandTotal: totalVal + totalTax,
+            taxCreditTo: eCreditTo.name ? eCreditTo : null, taxableValue: totalVal, total: totalVal + totalTax, totalAmount: totalVal + totalTax, amount: totalVal + totalTax, updatedAt: serverTimestamp()
+          });
+        }
+        if (onUpdated) onUpdated();
+        setIsEditing(false);
+        alert('✅ Updated successfully!');
+      } catch (e) { console.error('EntryViewerModal save error:', e); alert('Save failed: ' + e.message); }
+      setSaving(false);
+      return;
+    }
+
+    // Original single-item save
     if (!eParty || !eProduct || !eQty || (!eRate && !eAmount)) {
       alert('Fill: ' + partyLabel + ', Product, Qty, Rate/Amount');
       return;
@@ -701,7 +797,75 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
                 <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Date</label><div className="text-sm text-slate-800">{eDate || '—'}</div></div>
               </div>
               <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">{partyLabel}</label><div className="text-sm font-medium text-slate-800">{eParty || '—'}</div></div>
-              <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Item / Product</label><div className="text-sm text-slate-800">{eProduct || '—'}</div></div>
+
+              {isMultiItem ? (
+                /* ═══ MULTI-ITEM VIEW ═══ */
+                <div className="space-y-3">
+                  <div className="text-[9px] font-bold text-slate-400 uppercase">Items ({eItems.length})</div>
+                  {eItems.map((item, idx) => {
+                    const rawVal = Number(item.amount||0) || (Number(item.qty||0) * Number(item.rate||0));
+                    const imps = item.hsImpositions || [];
+                    return (
+                      <div key={idx} className="bg-slate-50 rounded-xl border border-slate-200 p-3">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-[10px] font-bold text-slate-500">Item #{idx + 1}</span>
+                          <span className="text-[10px] font-mono text-slate-500">{item.hscode || '—'}</span>
+                        </div>
+                        <div className="text-sm font-medium text-slate-800">{item.productName}</div>
+                        <div className="grid grid-cols-3 gap-2 mt-1 text-[10px]">
+                          <div>Qty: <span className="font-mono">{item.qty || 0}</span></div>
+                          <div>Rate: <span className="font-mono">{formatNum(Number(item.rate||0))}</span></div>
+                          <div>Value: <span className="font-mono font-bold">{formatNum(rawVal)}</span></div>
+                        </div>
+                        {imps.length > 0 && (
+                          <div className="mt-2 bg-blue-50/50 rounded-lg p-2 space-y-0.5">
+                            {imps.map((imp, i) => (
+                              <div key={i} className="flex justify-between text-[10px]">
+                                <span className="text-slate-600">{imp.taxName || taxRates.find(t => t.id === imp.taxId)?.name || 'Tax'} ({imp.percentage}%)</span>
+                                <span className="font-mono font-bold text-blue-700">{formatNum(imp.calculatedAmount)}</span>
+                              </div>
+                            ))}
+                            <div className="flex justify-between text-[10px] border-t border-blue-100 pt-0.5 mt-0.5 font-bold">
+                              <span className="text-slate-600">Item Total</span>
+                              <span className="font-mono text-slate-700">{formatNum(rawVal + Number(item.itemTaxTotal||0))}</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {/* Summary */}
+                  {eTotals && (
+                    <div className="bg-slate-50 rounded-xl p-4 space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="font-bold text-slate-500">📦 Total Items Value</span>
+                        <span className="font-mono font-bold text-slate-700">{formatNum(eTotals.totalVal)}</span>
+                      </div>
+                      {Object.keys(eTotals.breakdown).length > 0 && (
+                        <div className="border-t border-slate-200 pt-1 space-y-0.5">
+                          <div className="text-[8px] font-bold text-slate-400 uppercase">🧾 Tax Breakup</div>
+                          {Object.entries(eTotals.breakdown).map(([key, tb]) => (
+                            <div key={key} className="flex justify-between text-[10px] pl-2">
+                              <span className="text-slate-600">{tb.taxName} ({tb.percentage}%)</span>
+                              <span className="font-mono font-bold text-blue-700">{formatNum(tb.totalAmount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex justify-between text-xs border-t border-slate-200 pt-1">
+                        <span className="font-bold text-slate-500">🧾 Total Taxes</span>
+                        <span className="font-mono font-bold text-blue-700">{formatNum(eTotals.totalTax)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm border-t-2 border-slate-300 pt-1">
+                        <span className="font-bold text-slate-700">💰 Grand Total</span>
+                        <span className="font-mono font-black text-green-700">{formatNum(eTotals.grandTotal)}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* ═══ SINGLE-ITEM VIEW (original) ═══ */
+                <><div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Item / Product</label><div className="text-sm text-slate-800">{eProduct || '—'}</div></div>
               {entry.hscode && <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">HS Code</label><div className="text-sm font-mono text-slate-800">{entry.hscode}</div></div>}
               {isPurchase && eCreditTo.name && <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Tax Credit To</label><div className="text-sm font-medium text-green-700">✓ {eCreditTo.name}</div></div>}
               <div className="grid grid-cols-4 gap-4">
@@ -734,11 +898,166 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
                   {(entry.appliedTaxes?.length || 0) > 0 && <div className="text-[8px] text-blue-400">{entry.appliedTaxes.length} tax(es)</div>}
                 </div>
                 <div><div className="text-[9px] font-bold text-slate-400 uppercase">💰 Grand Total</div><div className="text-lg font-black font-mono text-green-700">{formatNum(entry.grandTotal || eTotal || 0)}</div></div>
-              </div>
+              </div></>
+              )}
               {entry.gstin && <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">GSTIN</label><div className="text-sm font-mono text-slate-800">{entry.gstin}</div></div>}
               <div className="text-[9px] text-slate-400 text-right">ID: {entry.id}</div>
             </div>
+          ) : isMultiItem ? (
+            /* ═══ MULTI-ITEM EDIT MODE ═══ */
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">{refLabel}</label>
+                  <input value={eRef} onChange={e => setERef(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800" /></div>
+                <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Date</label>
+                  <input type="date" value={eDate} onChange={e => setEDate(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800" /></div>
+              </div>
+              <div className="relative">
+                <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">{partyLabel}</label>
+                <input value={partySearch || eParty} onFocus={() => setShowParty(true)} onBlur={() => setTimeout(() => setShowParty(false), 200)} onChange={e => { setPartySearch(e.target.value); setEParty(''); }} placeholder={"Search " + partyLabel.toLowerCase() + "..."} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800" />
+                {showParty && filteredParties.length > 0 && (<div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-36 overflow-y-auto">{filteredParties.slice(0, 30).map(s => (<div key={s.id} onMouseDown={() => { setEParty(s.name); setPartySearch(''); setShowParty(false); }} className="px-3 py-2 text-xs hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800">{s.name}</div>))}</div>)}
+                {eParty && <div className="mt-1 text-[9px] text-green-600 font-medium">✓ {eParty}</div>}
+              </div>
+
+              <div className="border-t border-slate-200 pt-2">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">Items ({eItems.length})</span>
+                  <button onClick={() => setEItems(prev => [...prev, { id: Date.now() + Math.random(), productName: '', hscode: '', qty: '', rate: '', amount: '', prodSearch: '', showProd: false, hsImpositions: [], itemTaxTotal: 0 }])}
+                    className="px-3 py-1.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-lg hover:bg-emerald-200">+ Add Item</button>
+                </div>
+                {eItems.map((item, idx) => {
+                  const filteredProds = products.filter(p => item.prodSearch ? (p.name||'').toLowerCase().includes(item.prodSearch.toLowerCase()) : true);
+                  return (
+                    <div key={item.id || idx} className="bg-slate-50 rounded-xl border border-slate-200 p-3 mb-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold text-slate-500">Item #{idx + 1}</span>
+                        <button onClick={() => setEItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 text-[10px] font-bold">✕ Remove</button>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                        <div className="relative">
+                          <label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Product</label>
+                          <input value={item.prodSearch || item.productName} onFocus={() => setEItems(prev => prev.map((it, i) => i === idx ? { ...it, showProd: true } : it))} onBlur={() => setTimeout(() => setEItems(prev => prev.map((it, i) => i === idx ? { ...it, showProd: false } : it)), 200)}
+                            onChange={e => setEItems(prev => prev.map((it, i) => i === idx ? { ...it, prodSearch: e.target.value, productName: '' } : it))}
+                            placeholder="Search product..." className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" />
+                          {item.showProd && filteredProds.length > 0 && (
+                            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-32 overflow-y-auto">
+                              {filteredProds.slice(0, 20).map(p => (
+                                <div key={p.id} onMouseDown={() => {
+                                  const updated = { ...item, productName: p.name, prodSearch: '', showProd: false, hscode: p.hscode || '' };
+                                  const taxes = calcItemTaxes(updated, hsRules);
+                                  updated.hsImpositions = taxes.hsImpositions; updated.itemTaxTotal = taxes.itemTaxTotal;
+                                  setEItems(prev => prev.map((it, i) => i === idx ? updated : it));
+                                }} className="px-2 py-1.5 text-[10px] hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800">{p.name} {p.group && <span className="text-slate-400">({p.group})</span>}</div>
+                              ))}
+                            </div>
+                          )}
+                          {item.productName && <div className="text-[8px] text-green-600 font-medium mt-0.5">✓ {item.productName}</div>}
+                        </div>
+                        <div>
+                          <label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">HS Code</label>
+                          <div className="text-xs font-mono font-bold text-slate-700 px-2 py-1.5 bg-white rounded border border-slate-200">{item.hscode || '—'}</div>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 mb-2">
+                        <div><label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Qty</label><input type="number" value={item.qty} onChange={e => {
+                          const v = e.target.value;
+                          setEItems(prev => prev.map((it, i) => {
+                            if (i !== idx) return it;
+                            const u = { ...it, qty: v };
+                            const q = Number(v)||0; const r = Number(it.rate)||0;
+                            if (q > 0 && r > 0) u.amount = String(q * r);
+                            const taxes = calcItemTaxes(u, hsRules);
+                            u.hsImpositions = taxes.hsImpositions; u.itemTaxTotal = taxes.itemTaxTotal;
+                            return u;
+                          }));
+                        }} className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" /></div>
+                        <div><label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Rate</label><input type="number" value={item.rate} onChange={e => {
+                          const v = e.target.value;
+                          setEItems(prev => prev.map((it, i) => {
+                            if (i !== idx) return it;
+                            const u = { ...it, rate: v };
+                            const r = Number(v)||0; const q = Number(it.qty)||0;
+                            if (q > 0 && r > 0) u.amount = String(q * r);
+                            const taxes = calcItemTaxes(u, hsRules);
+                            u.hsImpositions = taxes.hsImpositions; u.itemTaxTotal = taxes.itemTaxTotal;
+                            return u;
+                          }));
+                        }} className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" /></div>
+                        <div><label className="text-[8px] font-bold text-slate-400 uppercase block mb-0.5">Assessed Value</label><input type="number" value={item.amount} onChange={e => {
+                          const v = e.target.value;
+                          setEItems(prev => prev.map((it, i) => {
+                            if (i !== idx) return it;
+                            const u = { ...it, amount: v };
+                            const taxes = calcItemTaxes(u, hsRules);
+                            u.hsImpositions = taxes.hsImpositions; u.itemTaxTotal = taxes.itemTaxTotal;
+                            return u;
+                          }));
+                        }} className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs outline-none text-slate-800" /></div>
+                      </div>
+                      {(item.hsImpositions || []).length > 0 && (
+                        <div className="bg-blue-50/50 rounded-lg border border-blue-100 p-2 space-y-0.5">
+                          <div className="text-[8px] font-bold text-blue-600 uppercase">Taxes for this item</div>
+                          {item.hsImpositions.map((imp, i) => (
+                            <div key={i} className="flex justify-between text-[10px]">
+                              <span className="text-slate-600">{imp.taxName || taxRates.find(t => t.id === imp.taxId)?.name || 'Tax'} ({imp.percentage}%)</span>
+                              <span className="font-mono font-bold text-blue-700">{formatNum(imp.calculatedAmount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Multi-item totals in edit */}
+              {eItems.length > 0 && (() => {
+                let tv = 0, tt = 0; const bd = {};
+                eItems.forEach(it => {
+                  const v = Number(it.amount||0) || (Number(it.qty||0) * Number(it.rate||0));
+                  tv += v; tt += Number(it.itemTaxTotal||0);
+                  (it.hsImpositions||[]).forEach(imp => {
+                    const k = imp.taxId || imp.taxName;
+                    if (!bd[k]) bd[k] = { taxName: imp.taxName || taxRates.find(tx => tx.id === imp.taxId)?.name || 'Tax', percentage: imp.percentage, totalAmount: 0 };
+                    bd[k].totalAmount += Number(imp.calculatedAmount||0);
+                  });
+                });
+                return (
+                  <div className="bg-slate-50 rounded-xl p-3 space-y-1">
+                    <div className="flex justify-between text-xs"><span className="font-bold text-slate-500">📦 Items Value</span><span className="font-mono font-bold text-slate-700">{formatNum(tv)}</span></div>
+                    {Object.keys(bd).length > 0 && <div className="border-t border-slate-200 pt-1 space-y-0.5">
+                      <div className="text-[8px] font-bold text-slate-400 uppercase">🧾 Tax Breakup</div>
+                      {Object.entries(bd).map(([k, tb]) => (
+                        <div key={k} className="flex justify-between text-[10px] pl-2"><span className="text-slate-600">{tb.taxName} ({tb.percentage}%)</span><span className="font-mono font-bold text-blue-700">{formatNum(tb.totalAmount)}</span></div>
+                      ))}
+                    </div>}
+                    <div className="flex justify-between text-xs border-t border-slate-200 pt-1"><span className="font-bold text-slate-500">🧾 Total Taxes</span><span className="font-mono font-bold text-blue-700">{formatNum(tt)}</span></div>
+                    <div className="flex justify-between text-sm border-t-2 border-slate-300 pt-1"><span className="font-bold text-slate-700">💰 Grand Total</span><span className="font-mono font-black text-green-700">{formatNum(tv + tt)}</span></div>
+                  </div>
+                );
+              })()}
+
+              {isPurchase && (
+                <div className="relative">
+                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">🏦 Taxes credited to</label>
+                  <input value={eCreditSearch} onFocus={() => setEShowCredit(true)} onBlur={() => setTimeout(() => setEShowCredit(false), 200)}
+                    onChange={e => { setECreditSearch(e.target.value); setECreditTo({ id: '', name: '' }); }}
+                    placeholder="Search party..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none text-slate-800" />
+                  {eShowCredit && parties.filter(p => (p.name||'').toLowerCase().includes(eCreditSearch.toLowerCase())).slice(0, 20).map(p => (
+                    <div key={p.id} onMouseDown={() => { setECreditTo({ id: p.id, name: p.name }); setECreditSearch(p.name); setEShowCredit(false); }}
+                      className="px-3 py-2 text-xs hover:bg-blue-50 border-b border-slate-50 cursor-pointer text-slate-800 bg-white">{p.name}</div>
+                  ))}
+                  {eCreditTo.name && <div className="mt-1 text-[9px] text-green-600 font-medium">✓ Credit to: {eCreditTo.name}</div>}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button onClick={handleSave} disabled={saving} className="flex-1 py-3 bg-[#1e3264] text-white text-sm font-bold rounded-xl hover:bg-[#2b5797] shadow-lg disabled:opacity-50">{saving ? '💾 Saving...' : '💾 Save Changes'}</button>
+                <button onClick={() => { setIsEditing(false); }} className="px-6 py-3 bg-slate-200 text-slate-700 text-sm font-bold rounded-xl hover:bg-slate-300">Cancel</button>
+              </div>
+            </div>
           ) : (
+            /* ═══ SINGLE-ITEM EDIT MODE (original) ═══ */
             <div className="space-y-3">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div><label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">{refLabel}</label>
