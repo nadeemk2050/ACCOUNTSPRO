@@ -27021,7 +27021,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     }, [globalDateCmd, isOpen]);
 
     // ✅ NEW: Valuation Method State
-    const [valuationMethod, setValuationMethod] = useState('wac'); // 'wac' | 'fifo' | 'last_purchase' | 'last_sold'
+    const [valuationMethod, setValuationMethod] = useState('fifo'); // 'fifo' | 'last_purchase' | 'last_sold'
 
     // ✅ HELPER: Auto-Shrink Text for Tally Look
     const getTallyShrinkStyle = (text, isGroup = false) => {
@@ -27060,13 +27060,16 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         if (valuationMethod === 'fifo') return 'FIFO';
         if (valuationMethod === 'last_purchase') return 'Last Purchase Rate';
         if (valuationMethod === 'last_sold') return 'Last Sold Price';
-        return 'Weighted Average Cost (WAC)';
+        return 'FIFO';
     }, [valuationMethod]);
 
     // ✅ NEW: Group Filter State
     // ✅ NEW: Group Filter State (If empty string -> Top Level View)
     const [currentGroupFilter, setCurrentGroupFilter] = useState(''); // '' means All/Top Level
     const [expandedGroups, setExpandedGroups] = useState(new Set());
+
+    // ✅ NEW: DTL / COND View Toggle (Detailed = all ledgers expanded, Condensed = groups only)
+    const [detailView, setDetailView] = useState(false);
 
     const toggleGroup = (groupName) => {
         setExpandedGroups(prev => {
@@ -27077,10 +27080,21 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         });
     };
 
+    // Toggle between Detailed (all ledgers listed under their group names) and Condensed (groups only)
+    const toggleDetailView = () => {
+        setDetailView(prev => {
+            const next = !prev;
+            // DTL -> expand every group so all ledgers are visible; COND -> collapse all to show only groups
+            setExpandedGroups(next ? new Set(stockGroups.map(g => g.name)) : new Set());
+            return next;
+        });
+    };
+
     useEffect(() => {
         if (!isOpen) {
             setExpandedGroups(new Set());
             setCurrentGroupFilter('');
+            setDetailView(false);
         }
     }, [isOpen]);
 
@@ -27336,7 +27350,6 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 const getRate = (meth, purRate, salRate, avgRate, fifoVal, qty) => {
                     if (meth === 'fifo') return qty !== 0 ? Math.abs(fifoVal / qty) : 0;
                     if (meth === 'last_sold') return salRate || purRate || avgRate || 0;
-                    if (meth === 'wac' || meth === 'purchase_avg' || meth === 'average_cost') return avgRate || purRate || 0;
                     return purRate || avgRate || 0;
                 };
 
@@ -27349,9 +27362,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 // ✅ FIX: Use Valuated Closing Value instead of always Average Cost
                 const closingVal = (valuationMethod === 'fifo')
                     ? fifoClosingVal
-                    : ((valuationMethod === 'wac' || valuationMethod === 'purchase_avg' || valuationMethod === 'average_cost')
-                        ? ledgerClosingVal
-                        : (closingQty * closingRate));
+                    : (closingQty * closingRate);
 
                 return {
                     id: i.id, name: i.name, group: i.group, unit: i.unit,
@@ -27359,7 +27370,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                     openingRate: openRate,
                     openingVal: (valuationMethod === 'fifo')
                         ? fifoOpeningVal
-                        : ((valuationMethod === 'wac' || valuationMethod === 'purchase_avg' || valuationMethod === 'average_cost') ? i.openingVal : (i.openingQty * openRate)),
+                        : (i.openingQty * openRate),
                     inQty: i.inQty,
                     inRate: i.inQty > 0 ? i.inVal / i.inQty : 0,
                     inVal: i.inVal,
@@ -27823,13 +27834,27 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 </select>
                             </div>
 
-                            {/* DATE RANGE TOGGLE */}
-                            <div className="relative">
+                            {/* PERIOD / DATE RANGE FIELD (click → opens Smart Calendar) */}
+                            <div className="relative flex items-center">
+                                <button
+                                    onClick={() => { setShowDate(false); if (onTriggerPeriodModal) onTriggerPeriodModal(); }}
+                                    className={`px-3 py-1 rounded-l border-r-0 border text-xs font-bold flex items-center gap-2 transition-colors ${(showDate || showDateMenu) ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-blue-50 hover:border-blue-300'}`}
+                                    title="Select Period — opens Smart Calendar (Alt+F2)"
+                                >
+                                    <Calendar size={16} className={showDate || showDateMenu ? 'text-white' : 'text-blue-600'} />
+                                    <span className={`text-[9px] uppercase font-black hidden sm:inline ${(showDate || showDateMenu) ? 'text-blue-100' : 'text-slate-400'}`}>Period:</span>
+                                    <span className={`font-black whitespace-nowrap ${(showDate || showDateMenu) ? 'text-white' : 'text-blue-800'}`}>
+                                        {dateRange.from === dateRange.to
+                                            ? toDisplayDate(dateRange.to)
+                                            : `${toDisplayDate(dateRange.from)} → ${toDisplayDate(dateRange.to)}`}
+                                    </span>
+                                </button>
                                 <button
                                     onClick={() => setShowDateMenu(!showDateMenu)}
-                                    className={`px-3 py-1 rounded border text-xs font-bold flex items-center gap-2 ${(showDate || showDateMenu) ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                                    className={`px-2 py-1 rounded-r border text-xs font-black transition-colors ${(showDate || showDateMenu) ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                                    title="Quick Menu (Today / Date Change / Period)"
                                 >
-                                    <Calendar size={16} /> <span>{dateRange.to} (F2)</span>
+                                    ▾
                                 </button>
                                 {showDateMenu && (
                                     <div className="absolute top-10 left-0 w-52 bg-white border border-slate-200 shadow-2xl rounded-xl py-2 z-[9999] animate-in fade-in zoom-in-95 ring-1 ring-black/5">
@@ -27897,12 +27922,23 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     value={valuationMethod}
                                     onChange={(e) => setValuationMethod(e.target.value)}
                                 >
-                                    <option value="wac">WAC (Weighted Average)</option>
                                     <option value="fifo">FIFO</option>
                                     <option value="last_purchase">Last Purchase Rate</option>
                                     <option value="last_sold">Last Sold Price</option>
                                 </select>
                             </div>
+
+                            {/* ✅ DTL / COND VIEW TOGGLE */}
+                            <button
+                                onClick={toggleDetailView}
+                                className={`uppercase text-[10px] font-black px-3 py-1.5 rounded border transition-colors ${detailView
+                                    ? "bg-slate-800 text-white border-slate-800 shadow-sm hover:bg-slate-900"
+                                    : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
+                                    }`}
+                                title={detailView ? "Detailed View — click to Condense to Groups Only" : "Condensed View — click to show all Ledgers (Detailed)"}
+                            >
+                                dtl/cond · {detailView ? "DTL" : "COND"}
+                            </button>
 
                             {/* ✅ ZERO ITEMS TOGGLE WITH COUNT */}
                             <button

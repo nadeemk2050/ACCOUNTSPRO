@@ -70,7 +70,7 @@ const UserManualModal = ({ isOpen, onClose }) => {
               icon={BookOpen}
               title="Dual Valuation"
               color="green"
-              desc="In Stock Inventory & Financial Reports, you can toggle between 'Weighted Average Cost' (Accounting View) and 'Last Sold Price' (Market View)."
+              desc="In Stock Inventory, Item Ledger & Financial Reports, choose a valuation type: FIFO, Last Purchase Rate, or Last Sold Price."
             />
 
           </div>

@@ -20,7 +20,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const ITEMS_PER_PAGE_DETAILED = 12;
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [viewFilter, setViewFilter] = useState('all');
-    const [itemValuationMethod, setItemValuationMethod] = useState('wac'); // 'wac' | 'fifo' | 'last_purchase' | 'last_sold'
+    const [itemValuationMethod, setItemValuationMethod] = useState('fifo'); // 'fifo' | 'last_purchase' | 'last_sold'
     const [showItemConfig, setShowItemConfig] = useState(false);
     const [showOpeningBalance, setShowOpeningBalance] = useState(true);
 
@@ -1194,7 +1194,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                             value={itemValuationMethod}
                                             onChange={(e) => setItemValuationMethod(e.target.value)}
                                         >
-                                            <option value="wac">WAC</option>
                                             <option value="fifo">FIFO</option>
                                             <option value="last_purchase">LAST PURCHASE</option>
                                             <option value="last_sold">LAST SOLD</option>

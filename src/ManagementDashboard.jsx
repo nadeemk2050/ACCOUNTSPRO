@@ -1944,7 +1944,7 @@ const ManagementDashboard = ({
                                         </div>
                                     </div>
 
-                                    <ActionCard title="Stock Inventory" desc="Recalculate weighted average costs and quantities." onClick={onRecalculateStock} color="blue" disabled={isRecalculating} />
+                                    <ActionCard title="Stock Inventory" desc="Recalculate stock costs and quantities." onClick={onRecalculateStock} color="blue" disabled={isRecalculating} />
                                     <ActionCard title="Party Balances" desc="Fix customer and supplier ledger mismatches." onClick={onRecalculateParties} color="green" disabled={isRecalculating} />
                                     <ActionCard title="Cash/Bank" desc="Re-align Cash/Bank balances." onClick={onRecalculateAccounts} color="purple" disabled={isRecalculating} />
                                     <ActionCard title="Expenses" desc="Sum up all expense journal entries." onClick={onRecalculateExpenses} color="orange" disabled={isRecalculating} />
@@ -1974,7 +1974,7 @@ const ManagementDashboard = ({
                                             <h4 className="text-2xl font-black text-green-200 tracking-tight">{isRecalculating ? 'Executing Logic...' : 'Execute New Recalculation Engine'}</h4>
                                             <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-2 text-xs font-bold text-green-100/70">
                                                 <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-green-400"></span> Rebuilds All Account & Customer Ledgers</span>
-                                                <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-green-400"></span> Recalculates Weighted Avg Stock Costs</span>
+                                                <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-green-400"></span> Recalculates Stock Costs</span>
                                                 <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-green-400"></span> Verifies Expense & Capital Entries</span>
                                                 <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-green-400"></span> Processes Cashier & Asset Transactions</span>
                                             </div>
