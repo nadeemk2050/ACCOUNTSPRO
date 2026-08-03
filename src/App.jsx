@@ -135,6 +135,7 @@ import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
 import ExportVoucherModal from './ExportVoucherModal.jsx';
 import ImportVoucherModal from './ImportVoucherModal.jsx';
 import BackupHistoryModal, { addBackupHistoryEntry } from './BackupHistoryModal.jsx';
+import EditToolsModal from './EditToolsModal.jsx';
 
 
 import { resolveStoredImages } from './storageAsset';
@@ -10083,6 +10084,12 @@ export default function App() {
                                         className="text-[#005994] font-black"
                                     />
                                     <MenuButton
+                                        label="AI & Edit Tools"
+                                        shortcut="T"
+                                        onClick={() => { setActiveModal('edit_tools'); onMenuClick(); setActiveSubMenu(null); }}
+                                        className="text-indigo-600 font-bold"
+                                    />
+                                    <MenuButton
                                         label="Management Hub"
                                         shortcut="H"
                                         onClick={() => { setActiveModal('management'); onMenuClick(); setActiveSubMenu(null); }}
@@ -11287,6 +11294,11 @@ export default function App() {
                 products={products}
                 units={units}
                 currencySymbol={currencySymbol}
+            />
+
+            <EditToolsModal
+                isOpen={activeModal === 'edit_tools'}
+                onClose={handleCloseModal}
             />
 
             {/* Simple List Modals - WITH SAFETY CHECKS */}
