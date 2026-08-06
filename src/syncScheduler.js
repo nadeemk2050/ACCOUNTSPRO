@@ -29,7 +29,7 @@ function acquireLock(companyId) {
   const token = `${now}-${Math.random().toString(36).slice(2)}`;
 
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(key) || (window.__syncLocks && JSON.stringify(window.__syncLocks[key]));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.expiresAt > now) {
@@ -45,13 +45,22 @@ function acquireLock(companyId) {
     acquiredAt: now,
     expiresAt: now + LOCK_TTL_MS,
   };
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn("Storage quota exceeded, could not acquire localStorage lock:", e);
+    if (!window.__syncLocks) window.__syncLocks = {};
+    window.__syncLocks[key] = value;
+  }
   return token;
 }
 
 function releaseLock(companyId, token) {
   const key = lockKey(companyId);
   try {
+    if (window.__syncLocks && window.__syncLocks[key]?.token === token) {
+      delete window.__syncLocks[key];
+    }
     const raw = localStorage.getItem(key);
     if (!raw) return;
     const parsed = JSON.parse(raw);
@@ -59,7 +68,9 @@ function releaseLock(companyId, token) {
       localStorage.removeItem(key);
     }
   } catch (_e) {
-    localStorage.removeItem(key);
+    try {
+      localStorage.removeItem(key);
+    } catch (_) {}
   }
 }
 

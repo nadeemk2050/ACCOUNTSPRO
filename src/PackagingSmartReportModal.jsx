@@ -3,7 +3,7 @@ import {
     X, Package, Search, Filter, Download, 
     Printer, Calendar, ChevronRight, ChevronLeft,
     TrendingUp, BarChart3, Layers, Box, Archive,
-    FileSearch, Info, AlertCircle, Clock, List, Recycle, Plus, Trash2
+    FileSearch, Info, AlertCircle, Clock, List, Recycle, Plus, Trash2, FileSpreadsheet, FileText
 } from 'lucide-react';
 import { 
     getFirestore, collection, query, where, onSnapshot, orderBy,
@@ -22,6 +22,7 @@ const PackagingSmartReportModal = ({
         from: '2025-01-01', 
         to: new Date().toISOString().split('T')[0]
     });
+    const [showManufSummary, setShowManufSummary] = useState(false);
 
     // --- Reusable Bags state ---
     const [reusableBags, setReusableBags] = useState([]);
@@ -509,6 +510,64 @@ const PackagingSmartReportModal = ({
         if (!b) return false;
         if (b.isRefill || b.isReusable || b.reusableBagId) return true;
         return reusableBags.some(rb => String(rb.bagNo || '').replace(/^#/, '').trim().toUpperCase() === String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase());
+    };
+
+    const getManufSummaryData = () => {
+        const sortedJournalsForSummary = [...stockJournals]
+            .filter(sj => {
+                const search = searchTerm.toLowerCase();
+                const ref = (sj.refNo || '').toLowerCase();
+                const prodItems = (sj.produced || []).map(p => getProductName(p.productId).toLowerCase()).join(' ');
+                const matchesSearch = ref.includes(search) || prodItems.includes(search);
+                
+                // Respect date range
+                const dateKey = normalizeDateKey(sj.date);
+                if (!dateKey) return matchesSearch;
+                return matchesSearch && dateKey >= dateRange.from && dateKey <= dateRange.to;
+            });
+
+        const consumedMap = {};
+        const producedMap = {};
+
+        sortedJournalsForSummary.forEach(sj => {
+            (sj.consumed || []).forEach(c => {
+                const pId = c.productId;
+                if (!consumedMap[pId]) {
+                    consumedMap[pId] = {
+                        productId: pId,
+                        name: getProductName(pId),
+                        pcs: 0,
+                        quantity: 0,
+                        weight: 0
+                    };
+                }
+                consumedMap[pId].pcs += Number(c.pcs || 0);
+                consumedMap[pId].quantity += Number(c.quantity || c.qty || 0);
+                consumedMap[pId].weight += Number(c.weight || 0);
+            });
+
+            (sj.produced || []).forEach(p => {
+                const pId = p.productId;
+                if (!producedMap[pId]) {
+                    producedMap[pId] = {
+                        productId: pId,
+                        name: getProductName(pId),
+                        pcs: 0,
+                        quantity: 0,
+                        weight: 0
+                    };
+                }
+                producedMap[pId].pcs += Number(p.pcs || 0);
+                producedMap[pId].quantity += Number(p.quantity || p.qty || 0);
+                producedMap[pId].weight += Number(p.weight || 0);
+            });
+        });
+
+        return {
+            consumedList: Object.values(consumedMap).sort((a, b) => b.quantity - a.quantity),
+            producedList: Object.values(producedMap).sort((a, b) => b.quantity - a.quantity),
+            totalVouchers: sortedJournalsForSummary.length
+        };
     };
 
     const getBagsForVoucher = (vch) => {
@@ -1880,6 +1939,20 @@ const PackagingSmartReportModal = ({
                             return (
                                 <div className="w-full h-full p-0 flex flex-col">
                                     <div className="bg-white border-none shadow-none overflow-hidden flex flex-col h-full">
+                                        <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-[10px] font-black uppercase tracking-widest">
+                                            <div className="flex items-center gap-3">
+                                                <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">{totalVouchersCount} Vouchers</span>
+                                                <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full border border-violet-200">{totalBagsProduced} Jumbo Bags</span>
+                                                <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200">{formatWeight(totalWeightProduced)} KG Produced</span>
+                                            </div>
+                                            <button
+                                                onClick={() => setShowManufSummary(true)}
+                                                className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-[9px] font-black px-4 py-2 rounded-xl transition-all border border-blue-500/20 shadow-md shadow-blue-500/10 cursor-pointer active:scale-95 uppercase tracking-widest"
+                                            >
+                                                <FileSpreadsheet size={12} />
+                                                Summary Report
+                                            </button>
+                                        </div>
                                         <div className="overflow-x-auto flex-1">
                                             <table className="w-full text-left border-collapse">
                                                 <thead>
@@ -2362,6 +2435,308 @@ const PackagingSmartReportModal = ({
                     </div>
                 </div>
             )}
+
+            {/* ===================== MANUFACTURING VOUCHERS SUMMARY REPORT MODAL ===================== */}
+            {showManufSummary && (() => {
+                const { consumedList, producedList, totalVouchers } = getManufSummaryData();
+                const totalConsumedPcs = consumedList.reduce((sum, i) => sum + i.pcs, 0);
+                const totalConsumedQty = consumedList.reduce((sum, i) => sum + i.quantity, 0);
+
+                const totalProducedPcs = producedList.reduce((sum, i) => sum + i.pcs, 0);
+                const totalProducedQty = producedList.reduce((sum, i) => sum + i.quantity, 0);
+
+                return (
+                    <div 
+                        className="fixed inset-0 flex items-center justify-center p-0 bg-[#f8fafc] animate-in fade-in duration-300"
+                        style={{ zIndex: zIndex + 150 }}
+                        onClick={() => setShowManufSummary(false)}
+                    >
+                        <div 
+                            className="bg-[#f8fafc] w-full h-full flex flex-col overflow-hidden animate-in fade-in duration-300"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {/* Modal Header */}
+                            <div className="bg-white px-8 py-5 border-b border-slate-200 flex items-center justify-between">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shadow-inner">
+                                        <FileSpreadsheet size={24} />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-xl font-black text-[#1e3264] uppercase tracking-tight">
+                                            Manufacturing Vouchers Summary Report
+                                        </h2>
+                                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                                            Period: {normalizeDate(dateRange.from)} to {normalizeDate(dateRange.to)} &middot; {totalVouchers} Vouchers
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    {/* Date Range Selector */}
+                                    <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-2xl border border-slate-200">
+                                        <div className="flex flex-col px-3 border-r border-slate-200">
+                                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Period From</span>
+                                            <input 
+                                                type="date" 
+                                                value={dateRange.from} 
+                                                onChange={e => setDateRange(prev => ({ ...prev, from: e.target.value }))}
+                                                className="bg-transparent text-[11px] font-black text-[#1e3264] outline-none"
+                                            />
+                                        </div>
+                                        <div className="flex flex-col px-3">
+                                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Period To</span>
+                                            <input 
+                                                type="date" 
+                                                value={dateRange.to} 
+                                                onChange={e => setDateRange(prev => ({ ...prev, to: e.target.value }))}
+                                                className="bg-transparent text-[11px] font-black text-[#1e3264] outline-none"
+                                            />
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={async () => {
+                                            const { jsPDF } = await import("jspdf");
+                                            const { default: autoTable } = await import("jspdf-autotable");
+                                            const doc = new jsPDF('l', 'mm', 'a4'); // Landscape
+                                            
+                                            // Add header title
+                                            doc.setFontSize(16);
+                                            doc.setTextColor(30, 50, 100); // #1e3264
+                                            doc.text("MANUFACTURING VOUCHERS SUMMARY REPORT", 14, 15);
+
+                                            doc.setFontSize(9);
+                                            doc.setTextColor(100);
+                                            doc.text(`Period: ${normalizeDate(dateRange.from)} to ${normalizeDate(dateRange.to)} | ${totalVouchers} Vouchers`, 14, 21);
+
+                                            // Table 1: Consumed (left side)
+                                            autoTable(doc, {
+                                                startY: 25,
+                                                margin: { left: 14 },
+                                                tableWidth: 125,
+                                                head: [['Consumed Material Name', 'Pcs', 'Quantity']],
+                                                body: [
+                                                    ...consumedList.map(item => [
+                                                        item.name,
+                                                        item.pcs > 0 ? item.pcs.toLocaleString() : '-',
+                                                        formatWeight(item.quantity)
+                                                    ]),
+                                                    ['Total:', totalConsumedPcs > 0 ? totalConsumedPcs.toLocaleString() : '-', formatWeight(totalConsumedQty)]
+                                                ],
+                                                theme: 'striped',
+                                                headStyles: { fillColor: [239, 68, 68] }, // Red header for consumed
+                                                styles: { fontSize: 8 },
+                                                columnStyles: {
+                                                    1: { halign: 'right' },
+                                                    2: { halign: 'right' }
+                                                }
+                                            });
+
+                                            // Table 2: Produced (right side)
+                                            autoTable(doc, {
+                                                startY: 25,
+                                                margin: { left: 148 },
+                                                tableWidth: 135,
+                                                head: [['Produced Product Name', 'Pcs', 'Quantity', 'Percentage (%)']],
+                                                body: [
+                                                    ...producedList.map(item => [
+                                                        item.name,
+                                                        item.pcs > 0 ? item.pcs.toLocaleString() : '-',
+                                                        formatWeight(item.quantity),
+                                                        `${(totalConsumedQty > 0 ? (item.quantity / totalConsumedQty) * 100 : 0).toFixed(2)} %`
+                                                    ]),
+                                                    [
+                                                        'Total:',
+                                                        totalProducedPcs > 0 ? totalProducedPcs.toLocaleString() : '-',
+                                                        formatWeight(totalProducedQty),
+                                                        `${(totalConsumedQty > 0 ? (totalProducedQty / totalConsumedQty) * 100 : 0).toFixed(2)} %`
+                                                    ]
+                                                ],
+                                                theme: 'striped',
+                                                headStyles: { fillColor: [16, 185, 129] }, // Green header for produced
+                                                styles: { fontSize: 8 },
+                                                columnStyles: {
+                                                    1: { halign: 'right' },
+                                                    2: { halign: 'right' },
+                                                    3: { halign: 'right' }
+                                                }
+                                            });
+
+                                            doc.save(`manufacturing_summary_${dateRange.from}_to_${dateRange.to}.pdf`);
+                                        }}
+                                        className="flex items-center gap-2 bg-red-50 hover:bg-red-100 text-red-700 text-[10px] font-black px-4 py-2.5 rounded-xl transition-all border border-red-200 cursor-pointer uppercase tracking-widest"
+                                    >
+                                        <FileText size={14} />
+                                        Download PDF
+                                    </button>
+                                    <button
+                                        onClick={async () => {
+                                            const XLSX = await import("xlsx");
+                                            const rows = [];
+                                            rows.push(["MANUFACTURING VOUCHERS SUMMARY REPORT"]);
+                                            rows.push([`Period: ${normalizeDate(dateRange.from)} to ${normalizeDate(dateRange.to)}`]);
+                                            rows.push([]); // blank line
+
+                                            // Table headers
+                                            rows.push([
+                                                "Consumed Material Name", "Consumed Pcs", "Consumed Quantity",
+                                                "",
+                                                "Produced Product Name", "Produced Pcs", "Produced Quantity", "Percentage (%)"
+                                            ]);
+
+                                            // Find max length between consumed and produced lists
+                                            const maxLen = Math.max(consumedList.length, producedList.length);
+
+                                            for (let i = 0; i < maxLen; i++) {
+                                                const cItem = consumedList[i];
+                                                const pItem = producedList[i];
+                                                
+                                                const row = [
+                                                    cItem ? cItem.name : "",
+                                                    cItem ? (cItem.pcs > 0 ? cItem.pcs : "") : "",
+                                                    cItem ? cItem.quantity : "",
+                                                    "", // gap
+                                                    pItem ? pItem.name : "",
+                                                    pItem ? (pItem.pcs > 0 ? pItem.pcs : "") : "",
+                                                    pItem ? pItem.quantity : "",
+                                                    pItem ? `${(totalConsumedQty > 0 ? (pItem.quantity / totalConsumedQty) * 100 : 0).toFixed(2)}%` : ""
+                                                ];
+                                                rows.push(row);
+                                            }
+
+                                            // Add Total rows
+                                            rows.push([
+                                                "Total Consumed:",
+                                                totalConsumedPcs > 0 ? totalConsumedPcs : 0,
+                                                totalConsumedQty,
+                                                "", // gap
+                                                "Total Produced:",
+                                                totalProducedPcs > 0 ? totalProducedPcs : 0,
+                                                totalProducedQty,
+                                                `${(totalConsumedQty > 0 ? (totalProducedQty / totalConsumedQty) * 100 : 0).toFixed(2)}%`
+                                            ]);
+
+                                            const ws = XLSX.utils.aoa_to_sheet(rows);
+                                            const wb = XLSX.utils.book_new();
+                                            XLSX.utils.book_append_sheet(wb, ws, "Summary Report");
+                                            XLSX.writeFile(wb, `manufacturing_summary_${dateRange.from}_to_${dateRange.to}.xlsx`);
+                                        }}
+                                        className="flex items-center gap-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-black px-4 py-2.5 rounded-xl transition-all border border-emerald-200 cursor-pointer uppercase tracking-widest"
+                                    >
+                                        <FileSpreadsheet size={14} />
+                                        Download XLSX
+                                    </button>
+                                    <button 
+                                        onClick={() => setShowManufSummary(false)}
+                                        className="w-10 h-10 rounded-full hover:bg-red-50 hover:text-red-500 text-slate-400 flex items-center justify-center transition-all active:scale-90"
+                                    >
+                                        <X size={24} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Modal Content - Two Columns Side-by-side (fit to page) */}
+                            <div className="flex-1 flex gap-6 p-6 overflow-hidden min-h-0">
+                                {/* Left Column: Consumed Items */}
+                                <div className="flex-1 bg-white rounded-3xl border border-slate-200/60 shadow-sm flex flex-col overflow-hidden">
+                                    <div className="bg-slate-50 px-6 py-4 border-b border-slate-200/60 flex items-center justify-between">
+                                        <h3 className="text-xs font-black text-slate-600 uppercase tracking-widest flex items-center gap-2">
+                                            <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span>
+                                            Total Consumed Materials (Used Items)
+                                        </h3>
+                                        <span className="bg-red-50 text-red-700 text-[9px] font-black px-2.5 py-0.5 rounded-full border border-red-100">
+                                            {consumedList.length} Items
+                                        </span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto">
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="bg-slate-50/50 sticky top-0 border-b border-slate-100">
+                                                <tr className="text-[9px] font-black text-slate-400 uppercase tracking-widest select-none">
+                                                    <th className="px-6 py-3">Material Name</th>
+                                                    <th className="px-6 py-3 text-right">Pcs</th>
+                                                    <th className="px-6 py-3 text-right">Quantity</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 text-xs">
+                                                {consumedList.map((item, idx) => (
+                                                    <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                        <td className="px-6 py-3.5 font-bold text-slate-700">{item.name}</td>
+                                                        <td className="px-6 py-3.5 text-right font-semibold text-slate-600">{item.pcs > 0 ? item.pcs.toLocaleString() : '-'}</td>
+                                                        <td className="px-6 py-3.5 text-right font-black text-slate-800">{formatWeight(item.quantity)}</td>
+                                                    </tr>
+                                                ))}
+                                                {consumedList.length === 0 && (
+                                                    <tr>
+                                                        <td colSpan="3" className="px-6 py-10 text-center text-slate-400 font-bold uppercase tracking-widest italic">
+                                                            No consumed items in selected period
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div className="bg-slate-50/80 px-6 py-4 border-t border-slate-200/60 grid grid-cols-3 items-center">
+                                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total:</span>
+                                        <span className="text-right text-xs font-black text-slate-700">{totalConsumedPcs > 0 ? totalConsumedPcs.toLocaleString() : '-'}</span>
+                                        <span className="text-right text-sm font-black text-slate-800">{formatWeight(totalConsumedQty)}</span>
+                                    </div>
+                                </div>
+
+                                {/* Right Column: Produced Items */}
+                                <div className="flex-1 bg-white rounded-3xl border border-slate-200/60 shadow-sm flex flex-col overflow-hidden">
+                                    <div className="bg-slate-50 px-6 py-4 border-b border-slate-200/60 flex items-center justify-between">
+                                        <h3 className="text-xs font-black text-slate-600 uppercase tracking-widest flex items-center gap-2">
+                                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                                            Total Produced Products
+                                        </h3>
+                                        <span className="bg-emerald-50 text-emerald-700 text-[9px] font-black px-2.5 py-0.5 rounded-full border border-emerald-100">
+                                            {producedList.length} Items
+                                        </span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto">
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="bg-slate-50/50 sticky top-0 border-b border-slate-100">
+                                                <tr className="text-[9px] font-black text-slate-400 uppercase tracking-widest select-none">
+                                                    <th className="px-6 py-3">Product Name</th>
+                                                    <th className="px-6 py-3 text-right">Pcs</th>
+                                                    <th className="px-6 py-3 text-right">Quantity</th>
+                                                    <th className="px-6 py-3 text-right">Percentage (%)</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 text-xs">
+                                                {producedList.map((item, idx) => {
+                                                    const pct = totalConsumedQty > 0 ? (item.quantity / totalConsumedQty) * 100 : 0;
+                                                    return (
+                                                        <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                            <td className="px-6 py-3.5 font-bold text-slate-700">{item.name}</td>
+                                                            <td className="px-6 py-3.5 text-right font-semibold text-slate-600">{item.pcs > 0 ? item.pcs.toLocaleString() : '-'}</td>
+                                                            <td className="px-6 py-3.5 text-right font-black text-slate-800">{formatWeight(item.quantity)}</td>
+                                                            <td className="px-6 py-3.5 text-right font-black text-blue-700">{pct.toFixed(2)} %</td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                                {producedList.length === 0 && (
+                                                    <tr>
+                                                        <td colSpan="4" className="px-6 py-10 text-center text-slate-400 font-bold uppercase tracking-widest italic">
+                                                            No produced items in selected period
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div className="bg-slate-50/80 px-6 py-4 border-t border-slate-200/60 grid grid-cols-4 items-center">
+                                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total:</span>
+                                        <span className="text-right text-xs font-black text-slate-700">{totalProducedPcs > 0 ? totalProducedPcs.toLocaleString() : '-'}</span>
+                                        <span className="text-right text-sm font-black text-slate-800">{formatWeight(totalProducedQty)}</span>
+                                        <span className="text-right text-sm font-black text-blue-700">
+                                            {totalConsumedQty > 0 ? ((totalProducedQty / totalConsumedQty) * 100).toFixed(2) : '0.00'} %
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
             </>
         );
     }
