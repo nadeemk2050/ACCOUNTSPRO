@@ -28734,38 +28734,95 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             const XLSX = await import("xlsx");
             const isInvReg = ['sales', 'purchase', 'debit_note', 'credit_note'].includes(registerType);
 
-            const dataToExport = registerType === 'manufacturing' ?
-                filteredData.map(item => ({
+            let dataToExport = [];
+            if (registerType === 'manufacturing') {
+                if (detailView) {
+                    filteredData.forEach(item => {
+                        // Main Voucher Row
+                        dataToExport.push({
+                            Date: item.date,
+                            "Vch No.": item.ref,
+                            "Particulars / Item Details": item.label,
+                            Type: "Main Voucher",
+                            "Bag Count": item.bagCount || 0,
+                            Qty: item.qty || 0,
+                            Rate: (item.amt && item.qty) ? (item.amt / item.qty) : 0,
+                            Amount: item.amt || 0,
+                            "Percent (%)": ""
+                        });
+
+                        // Consumed items
+                        if (item.consumedDetails && item.consumedDetails.length > 0) {
+                            item.consumedDetails.forEach(c => {
+                                dataToExport.push({
+                                    Date: "",
+                                    "Vch No.": "",
+                                    "Particulars / Item Details": `  ↳ ${c.name}`,
+                                    Type: "Consumed (Out)",
+                                    "Bag Count": "",
+                                    Qty: c.qty,
+                                    Rate: c.rate,
+                                    Amount: c.amount,
+                                    "Percent (%)": ""
+                                });
+                            });
+                        }
+
+                        // Produced items
+                        if (item.producedDetails && item.producedDetails.length > 0) {
+                            const totalConsumedQty = item.consumedDetails?.reduce((sum, c) => sum + Number(c.qty || 0), 0) || 0;
+                            item.producedDetails.forEach(p => {
+                                const pct = totalConsumedQty > 0 ? ((Number(p.qty || 0) / totalConsumedQty) * 100).toFixed(2) + '%' : '0.00%';
+                                dataToExport.push({
+                                    Date: "",
+                                    "Vch No.": "",
+                                    "Particulars / Item Details": `  ↳ ${p.name}`,
+                                    Type: "Produced (In)",
+                                    "Bag Count": "",
+                                    Qty: p.qty,
+                                    Rate: p.rate,
+                                    Amount: p.amount,
+                                    "Percent (%)": pct
+                                });
+                            });
+                        }
+                    });
+                } else {
+                    dataToExport = filteredData.map(item => ({
+                        Date: item.date,
+                        "Vch No.": item.ref,
+                        "Particulars / Item Details": item.label,
+                        Type: "Main Voucher",
+                        "Bag Count": item.bagCount || 0,
+                        Qty: item.qty || 0,
+                        Rate: (item.amt && item.qty) ? (item.amt / item.qty) : 0,
+                        Amount: item.amt || 0,
+                        "Percent (%)": ""
+                    }));
+                }
+            } else if (isInvReg) {
+                dataToExport = filteredData.map(item => ({
                     Date: item.date,
                     RefNo: item.ref,
-                    Item: item.label,
-                    Type: item.type === 'consumed' ? 'Consumed' : 'Produced',
+                    ...((registerType === 'purchase' || registerType === 'sales') ? { "Tax Inv No": item.taxInvNo || '' } : {}),
+                    Particulars: item.label,
                     Qty: item.qty || 0,
-                    Rate: (item.amt && item.qty) ? (item.amt / item.qty) : 0,
-                    Amount: item.amt || 0,
-                    Balance_Qty: item.balanceQty || 0,
-                    Balance_Amt: item.balanceAmt || 0
-                }))
-                : isInvReg ?
-                    filteredData.map(item => ({
-                        Date: item.date,
-                        RefNo: item.ref,
-                        ...((registerType === 'purchase' || registerType === 'sales') ? { "Tax Inv No": item.taxInvNo || '' } : {}),
-                        Particulars: item.label,
-                        Qty: item.qty || 0,
-                        Rate: item.rate || 0,
-                        Amount: item.totalAmt || 0
-                    }))
-                    :
-                    filteredData.map(item => ({
-                        Name: item.label,
-                        Period_Debit: item.debit || 0,
-                        Period_Credit: item.credit || 0,
-                        Balance: item.rawValue || 0
-                    }));
+                    Rate: item.rate || 0,
+                    Amount: item.totalAmt || 0
+                }));
+            } else {
+                dataToExport = filteredData.map(item => ({
+                    Name: item.label,
+                    Period_Debit: item.debit || 0,
+                    Period_Credit: item.credit || 0,
+                    Balance: item.rawValue || 0
+                }));
+            }
 
             dataToExport.push(registerType === 'manufacturing' ?
-                { Date: '', RefNo: 'TOTALS', Item: '', Type: '', Qty: '', Rate: '', Amount: displaySummary.credit, Balance_Qty: displaySummary.balance, Balance_Amt: displaySummary.balance }
+                (detailView ?
+                    { Date: '', "Vch No.": 'TOTALS', "Particulars / Item Details": '', Type: '', "Bag Count": displaySummary.totalBags, Qty: displaySummary.totalQty, Rate: '', Amount: displaySummary.totalVchAmt, "Percent (%)": '' }
+                    : { Date: '', "Vch No.": 'TOTALS', "Particulars / Item Details": '', Type: '', "Bag Count": displaySummary.totalBags, Qty: displaySummary.totalQty, Rate: '', Amount: displaySummary.totalVchAmt })
                 : isInvReg ?
                     { Date: '', RefNo: 'TOTALS', ...((registerType === 'purchase' || registerType === 'sales') ? { "Tax Inv No": '' } : {}), Particulars: '', Qty: displaySummary.totalQty, Rate: '', Amount: displaySummary.totalVchAmt }
                     : ['payment', 'receipt', 'contra'].includes(registerType) ?
@@ -28829,50 +28886,111 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             const isMfg = registerType === 'manufacturing';
             const isInvReg = ['sales', 'purchase', 'debit_note', 'credit_note'].includes(registerType);
 
-            const tableBody = isMfg ?
-                filteredData.map(item => [
-                    item.date,
-                    item.ref,
-                    item.label,
-                    item.type === 'consumed' ? 'Consumed' : 'Produced',
-                    item.bagCount || 0,
-                    Number(item.qty || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
-                    Number((item.amt && item.qty) ? (item.amt / item.qty) : 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
-                    Number(item.amt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
-                ])
-                : isInvReg ?
-                    filteredData.map(item => {
-                        const row = [
+            const tableBody = [];
+            if (isMfg) {
+                if (detailView) {
+                    filteredData.forEach(item => {
+                        tableBody.push([
                             item.date,
                             item.ref,
                             item.label,
-                            Number(item.qty || 0).toLocaleString(),
-                            Number(item.rate || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
-                            Number(item.totalAmt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
-                        ];
-                        if (registerType === 'purchase' || registerType === 'sales') {
-                            row.splice(2, 0, item.taxInvNo || '');
-                        }
-                        return row;
-                    })
-                    : ['payment', 'receipt', 'contra'].includes(registerType) ?
-                        filteredData.map(item => [
-                            item.date,
-                            item.ref,
-                            item.sourceAcc,
-                            item.targetDetails.map(td => `${td.name} (${Number(td.amount).toLocaleString()})`).join(', '),
-                            Number(item.totalAmt).toLocaleString(undefined, { minimumFractionDigits: 2 })
-                        ])
-                        :
-                        filteredData.map(item => [
-                            item.label,
-                            Number(item.debit || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
-                            Number(item.credit || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
-                            item.value
+                            "Main Voucher",
+                            item.bagCount || 0,
+                            Number(item.qty || 0).toLocaleString(undefined, { minimumFractionDigits: 3 }),
+                            Number((item.amt && item.qty) ? (item.amt / item.qty) : 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                            Number(item.amt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                            ""
                         ]);
 
+                        if (item.consumedDetails && item.consumedDetails.length > 0) {
+                            item.consumedDetails.forEach(c => {
+                                tableBody.push([
+                                    "",
+                                    "",
+                                    `  ↳ ${c.name}`,
+                                    "Consumed (Out)",
+                                    "",
+                                    Number(c.qty || 0).toLocaleString(undefined, { minimumFractionDigits: 3 }),
+                                    Number(c.rate || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                                    Number(c.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                                    ""
+                                ]);
+                            });
+                        }
+
+                        if (item.producedDetails && item.producedDetails.length > 0) {
+                            const totalConsumedQty = item.consumedDetails?.reduce((sum, c) => sum + Number(c.qty || 0), 0) || 0;
+                            item.producedDetails.forEach(p => {
+                                const pct = totalConsumedQty > 0 ? ((Number(p.qty || 0) / totalConsumedQty) * 100).toFixed(2) + '%' : '0.00%';
+                                tableBody.push([
+                                    "",
+                                    "",
+                                    `  ↳ ${p.name}`,
+                                    "Produced (In)",
+                                    "",
+                                    Number(p.qty || 0).toLocaleString(undefined, { minimumFractionDigits: 3 }),
+                                    Number(p.rate || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                                    Number(p.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                                    pct
+                                ]);
+                            });
+                        }
+                    });
+                } else {
+                    filteredData.forEach(item => {
+                        tableBody.push([
+                            item.date,
+                            item.ref,
+                            item.label,
+                            "Main Voucher",
+                            item.bagCount || 0,
+                            Number(item.qty || 0).toLocaleString(undefined, { minimumFractionDigits: 3 }),
+                            Number((item.amt && item.qty) ? (item.amt / item.qty) : 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                            Number(item.amt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                        ]);
+                    });
+                }
+            } else if (isInvReg) {
+                filteredData.forEach(item => {
+                    const row = [
+                        item.date,
+                        item.ref,
+                        item.label,
+                        Number(item.qty || 0).toLocaleString(),
+                        Number(item.rate || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                        Number(item.totalAmt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                    ];
+                    if (registerType === 'purchase' || registerType === 'sales') {
+                        row.splice(2, 0, item.taxInvNo || '');
+                    }
+                    tableBody.push(row);
+                });
+            } else if (['payment', 'receipt', 'contra'].includes(registerType)) {
+                filteredData.forEach(item => {
+                    tableBody.push([
+                        item.date,
+                        item.ref,
+                        item.sourceAcc,
+                        item.targetDetails.map(td => `${td.name} (${Number(td.amount).toLocaleString()})`).join(', '),
+                        Number(item.totalAmt).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                    ]);
+                });
+            } else {
+                filteredData.forEach(item => {
+                    tableBody.push([
+                        item.label,
+                        Number(item.debit || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                        Number(item.credit || 0).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                        item.value
+                    ]);
+                });
+            }
+
             tableBody.push(isMfg ?
-                ["", "TOTAL", "", "", "", "", "", Number(displaySummary.credit).toLocaleString()]
+                (detailView ?
+                    ["", "TOTAL", "", "", displaySummary.totalBags, Number(displaySummary.totalQty).toLocaleString(undefined, { minimumFractionDigits: 3 }), "", Number(displaySummary.totalVchAmt).toLocaleString(undefined, { minimumFractionDigits: 2 }), ""]
+                    : ["", "TOTAL", "", "", displaySummary.totalBags, Number(displaySummary.totalQty).toLocaleString(undefined, { minimumFractionDigits: 3 }), "", Number(displaySummary.totalVchAmt).toLocaleString(undefined, { minimumFractionDigits: 2 })]
+                )
                 : isInvReg ?
                     [
                         "", 
@@ -28891,7 +29009,9 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
             autoTable(doc, {
                 head: isMfg ?
-                    [["Date", "Ref No", "Item", "Type", "Bags", "Qty", "Rate", "Amount"]]
+                    (detailView ?
+                        [["Date", "Ref No", "Particulars / Item Details", "Type", "Bags", "Qty", "Rate", "Amount", "Percent"]]
+                        : [["Date", "Ref No", "Particulars / Item Details", "Type", "Bags", "Qty", "Rate", "Amount"]])
                     : isInvReg ?
                         ((registerType === 'purchase' || registerType === 'sales')
                             ? [["Date", "Ref No", "Tax Inv No", "Particulars", "Qty", "Rate", "Amount"]]
@@ -29261,46 +29381,58 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                         <td className="p-3 text-right font-mono font-black text-slate-700 border-r border-slate-100">{Number(item.qty || 0).toLocaleString(undefined, { minimumFractionDigits: 3 })}</td>
                                         <td className="p-3 text-right font-mono font-black text-rose-700 bg-rose-50/20 group-hover:bg-rose-50 transition-colors">{Number(item.amt || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                     </tr>
-                                    {detailView && (
-                                        <tr className="bg-slate-50/50" key={`${item.id}-detail`}>
-                                            <td colSpan="6" className="px-4 py-2 border-b border-slate-200 shadow-inner">
-                                                <div className="flex gap-6 text-xs">
-                                                    {/* CONSUMED (LEFT) */}
-                                                    <div className="flex-1 bg-white p-3 rounded-lg border border-red-100 shadow-sm">
-                                                        <div className="text-[10px] font-bold text-red-600 uppercase mb-2 tracking-wider flex justify-between border-b border-red-100 pb-1">
-                                                            <span>Consumed (Out)</span>
-                                                            <span>Qty</span>
+                                    {detailView && (() => {
+                                        const totalConsumedQty = item.consumedDetails?.reduce((sum, c) => sum + Number(c.qty || 0), 0) || 0;
+                                        return (
+                                            <tr className="bg-slate-50/50" key={`${item.id}-detail`}>
+                                                <td colSpan="6" className="px-4 py-2 border-b border-slate-200 shadow-inner">
+                                                    <div className="flex gap-6 text-xs">
+                                                        {/* CONSUMED (LEFT) */}
+                                                        <div className="flex-1 bg-white p-3 rounded-lg border border-red-100 shadow-sm">
+                                                            <div className="text-[10px] font-bold text-red-600 uppercase mb-2 tracking-wider flex justify-between border-b border-red-100 pb-1">
+                                                                <span>Consumed (Out)</span>
+                                                                <span>Qty</span>
+                                                            </div>
+                                                            <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
+                                                                {item.consumedDetails?.map((c, i) => (
+                                                                    <div key={i} className="flex justify-between items-center text-slate-700 border-b border-slate-50 pb-1 last:border-0 hover:bg-red-50/30 px-1 rounded">
+                                                                        <span className="truncate mr-2 font-medium">{c.name}</span>
+                                                                        <span className="font-mono text-slate-500">{Number(c.qty).toFixed(3)}</span>
+                                                                    </div>
+                                                                ))}
+                                                                {(!item.consumedDetails || item.consumedDetails.length === 0) && <div className="text-slate-400 italic text-center py-2">No Items</div>}
+                                                            </div>
                                                         </div>
-                                                        <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
-                                                            {item.consumedDetails?.map((c, i) => (
-                                                                <div key={i} className="flex justify-between items-center text-slate-700 border-b border-slate-50 pb-1 last:border-0 hover:bg-red-50/30 px-1 rounded">
-                                                                    <span className="truncate mr-2 font-medium">{c.name}</span>
-                                                                    <span className="font-mono text-slate-500">{Number(c.qty).toFixed(3)}</span>
+                                                        {/* PRODUCED (RIGHT) */}
+                                                        <div className="flex-1 bg-white p-3 rounded-lg border border-green-100 shadow-sm">
+                                                            <div className="text-[10px] font-bold text-green-600 uppercase mb-2 tracking-wider flex justify-between border-b border-green-100 pb-1">
+                                                                <span>Produced (In)</span>
+                                                                <div className="flex gap-4">
+                                                                    <span className="w-20 text-right">Qty</span>
+                                                                    <span className="w-16 text-right">Percent</span>
                                                                 </div>
-                                                            ))}
-                                                            {(!item.consumedDetails || item.consumedDetails.length === 0) && <div className="text-slate-400 italic text-center py-2">No Items</div>}
+                                                            </div>
+                                                            <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
+                                                                {item.producedDetails?.map((p, i) => {
+                                                                    const pct = totalConsumedQty > 0 ? ((Number(p.qty || 0) / totalConsumedQty) * 100).toFixed(2) + '%' : '0.00%';
+                                                                    return (
+                                                                        <div key={i} className="flex justify-between items-center text-slate-700 border-b border-slate-50 pb-1 last:border-0 hover:bg-green-50/30 px-1 rounded">
+                                                                            <span className="truncate mr-2 font-medium">{p.name}</span>
+                                                                            <div className="flex gap-4 font-mono text-slate-500 text-right">
+                                                                                <span className="w-20">{Number(p.qty).toFixed(3)}</span>
+                                                                                <span className="w-16 text-emerald-600 font-bold">{pct}</span>
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                                {(!item.producedDetails || item.producedDetails.length === 0) && <div className="text-slate-400 italic text-center py-2">No Items</div>}
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                    {/* PRODUCED (RIGHT) */}
-                                                    <div className="flex-1 bg-white p-3 rounded-lg border border-green-100 shadow-sm">
-                                                        <div className="text-[10px] font-bold text-green-600 uppercase mb-2 tracking-wider flex justify-between border-b border-green-100 pb-1">
-                                                            <span>Produced (In)</span>
-                                                            <span>Qty</span>
-                                                        </div>
-                                                        <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
-                                                            {item.producedDetails?.map((p, i) => (
-                                                                <div key={i} className="flex justify-between items-center text-slate-700 border-b border-slate-50 pb-1 last:border-0 hover:bg-green-50/30 px-1 rounded">
-                                                                    <span className="truncate mr-2 font-medium">{p.name}</span>
-                                                                    <span className="font-mono text-slate-500">{Number(p.qty).toFixed(3)}</span>
-                                                                </div>
-                                                            ))}
-                                                            {(!item.producedDetails || item.producedDetails.length === 0) && <div className="text-slate-400 italic text-center py-2">No Items</div>}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })()}
                                 </React.Fragment>
                                 ); })
                         ) : ['payment', 'receipt', 'contra'].includes(registerType) ? (
