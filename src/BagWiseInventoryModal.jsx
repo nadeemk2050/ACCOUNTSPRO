@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getFirestore, collection, query, where, getDocs, doc, getDoc, deleteDoc, documentId, updateDoc, onSnapshot } from 'firebase/firestore'; // Added updateDoc, onSnapshot
+import { getFirestore, collection, query, where, getDocs, doc, getDoc, deleteDoc, documentId, updateDoc, onSnapshot, deleteField, writeBatch } from 'firebase/firestore'; // Added updateDoc, onSnapshot, deleteField, writeBatch
 import { httpsCallable } from 'firebase/functions';
 import { functions as firebaseFunctions } from './firebase';
 
 
 import { Modal } from './components/Modal';
-import { Download, ArrowLeft, X, RefreshCw, History, TrendingUp, FileText, Search, Filter } from 'lucide-react';
+import { Download, ArrowLeft, X, RefreshCw, History, TrendingUp, FileText, Search, Filter, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { createPortal } from 'react-dom';
 
@@ -34,6 +34,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     const [showSearchField, setShowSearchField] = useState(false);
     const [deleteBagPrompt, setDeleteBagPrompt] = useState(null);
     const [deletePassword, setDeletePassword] = useState('');
+    const [forceReleaseBagPrompt, setForceReleaseBagPrompt] = useState(null);
+    const [forceReleasePassword, setForceReleasePassword] = useState('');
+    const [forceReleaseLoading, setForceReleaseLoading] = useState(false);
+    const [ghostCleanupLoading, setGhostCleanupLoading] = useState(false);
     const db = getFirestore();
     const getProductName = (id) => products.find(p => p.id === id)?.name || 'Unknown Item';
     const getBagSourceType = (bag = {}) => {
@@ -126,6 +130,50 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
         return () => unsubs.forEach(fn => fn && fn());
     }, [isOpen, user?.uid, dataOwnerId]);
+
+    // ✅ INVOICE-DRIVEN SOLD POOL: a bag is 'sold' ONLY while a LIVE (non-deleted) sales
+    // voucher references it by id or bag no. Stale jumbo_bags records (status:'sold' but no
+    // live invoice) are treated as available, so removed/deleted vouchers instantly free bags.
+    const normalizeBagNoKeyLocal = (bagNo) => String(bagNo || '').replace(/^#/, '').trim().toUpperCase();
+    const soldPoolRef = React.useRef({ ids: new Set(), bagNos: new Set() });
+    const computeEffectiveStatus = (bag = {}) => {
+        const pool = soldPoolRef.current;
+        const bagId = String(bag?.id || '').trim();
+        const bagNo = normalizeBagNoKeyLocal(bag?.bagNo);
+        const isSoldNow = (bagId && pool.ids.has(bagId)) || (bagNo && pool.bagNos.has(bagNo));
+        return isSoldNow ? 'sold' : 'in_stock';
+    };
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+        if (uidCandidates.length === 0) return;
+
+        const updatePoolFromInvoices = (invList) => {
+            const ids = new Set();
+            const bagNos = new Set();
+            invList.forEach(inv => {
+                [...(inv.soldBags || []), ...(inv.jumboBags || [])].forEach(b => {
+                    if (b?.id) ids.add(String(b.id).trim());
+                    if (b?.bagNo) bagNos.add(normalizeBagNoKeyLocal(b.bagNo));
+                });
+            });
+            soldPoolRef.current = { ids, bagNos };
+            // Re-mark current rows so the UI reflects the live pool immediately.
+            setBags(prev => prev.map(b => ({ ...b, effectiveStatus: computeEffectiveStatus(b) })));
+        };
+
+        const unsubs = uidCandidates.flatMap(uid => {
+            return ['userId', 'ownerId'].map(field => {
+                const qInv = query(collection(db, 'invoices'), where(field, '==', uid), where('type', '==', 'sales'));
+                return onSnapshot(qInv, (snap) => {
+                    updatePoolFromInvoices(snap.docs.map(d => d.data()).filter(d => !isVoucherDeleted(d)));
+                }, (err) => console.warn('Sold bag pool sync error:', err));
+            });
+        });
+
+        return () => unsubs.forEach(fn => fn && fn());
+    }, [isOpen, dataOwnerId, user?.uid]);
 
     const isFetching = React.useRef(false);
     const pendingSnapshotRef = React.useRef(null);
@@ -289,7 +337,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     return !(b.isDeleted || b.deleted || b.is_deleted || st === 'deleted' || st === 'bulk_deleted');
                 });
 
-                setBags(list);
+                setBags(list.map(b => ({ ...b, effectiveStatus: computeEffectiveStatus(b) })));
                 latestSnap = pendingSnapshotRef.current;
             } while (latestSnap);
         } catch (e) {
@@ -322,6 +370,94 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             }
         } else {
             alert("❌ Incorrect password.");
+        }
+    };
+
+    const handleForceReleaseBag = (bag) => {
+        if (!bag?.id) { alert('Cannot release: bag has no document ID.'); return; }
+        setForceReleaseBagPrompt(bag);
+        setForceReleasePassword('');
+    };
+
+    const confirmForceReleaseBag = async () => {
+        if (forceReleasePassword !== 'abcd') { alert('❌ Incorrect password.'); return; }
+        if (!forceReleaseBagPrompt) return;
+        setForceReleaseLoading(true);
+        try {
+            const targetBag = forceReleaseBagPrompt;
+            const bagIdRaw = String(targetBag?.id || '').trim();
+            const bagNoKey = normalizeBagNoKeyLocal(targetBag?.bagNo);
+            const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+
+            // 1) Reset the REAL jumbo_bags record(s) — by id AND by bagNo (covers temp/derived ids)
+            const resetPayload = {
+                status: 'in_stock',
+                salesId: deleteField(),
+                salesRefNo: deleteField(),
+                soldDate: deleteField(),
+                weightVariance: deleteField(),
+                varianceNote: deleteField()
+            };
+            const resetOps = [];
+            const isTempId = !bagIdRaw || bagIdRaw.startsWith('undefined') || bagIdRaw.startsWith('inv-') || bagIdRaw.startsWith('embedded-');
+            if (!isTempId) {
+                resetOps.push(updateDoc(doc(db, 'jumbo_bags', bagIdRaw), resetPayload).catch(e => console.warn('Force release by id failed', e)));
+            }
+            if (bagNoKey) {
+                for (const uid of uidCandidates) {
+                    for (const field of ['userId', 'ownerId']) {
+                        try {
+                            const snap = await getDocs(query(collection(db, 'jumbo_bags'), where(field, '==', uid), where('bagNo', '==', bagNoKey)));
+                            snap.docs.forEach(d => resetOps.push(updateDoc(d.ref, resetPayload).catch(e => console.warn('Force release by bagNo failed', e))));
+                        } catch (e) { /* non-critical */ }
+                    }
+                }
+            }
+            await Promise.all(resetOps);
+
+            // 2) SCRUB the bag from ANY live sales invoice that still holds it (by id or bagNo)
+            const scrubOps = [];
+            for (const uid of uidCandidates) {
+                for (const field of ['userId', 'ownerId']) {
+                    try {
+                        const invSnap = await getDocs(query(collection(db, 'invoices'), where(field, '==', uid), where('type', '==', 'sales')));
+                        for (const d of invSnap.docs) {
+                            const invData = d.data() || {};
+                            if (isVoucherDeleted(invData)) continue;
+                            const oldSold = [...(invData.soldBags || []), ...(invData.jumboBags || [])];
+                            const kept = oldSold.filter(b => {
+                                const bId = String(b?.id || '').trim();
+                                const bNo = normalizeBagNoKeyLocal(b?.bagNo);
+                                if (bagIdRaw && bId === bagIdRaw) return false;
+                                if (bagNoKey && bNo === bagNoKey) return false;
+                                return true;
+                            });
+                            if (kept.length !== oldSold.length) {
+                                const patch = {};
+                                if (Array.isArray(invData.soldBags)) patch.soldBags = kept;
+                                if (Array.isArray(invData.jumboBags)) patch.jumboBags = kept;
+                                scrubOps.push(updateDoc(doc(db, 'invoices', d.id), patch).catch(e => console.warn('Scrub invoice failed', e)));
+                            }
+                        }
+                    } catch (e) { /* non-critical */ }
+                }
+            }
+            await Promise.all(scrubOps);
+
+            // 3) Update local UI state + refresh
+            setBags(prev => prev.map(b => (b.id === bagIdRaw || normalizeBagNoKeyLocal(b.bagNo) === bagNoKey)
+                ? { ...b, status: 'in_stock', effectiveStatus: 'in_stock', salesId: undefined, salesRefNo: undefined, soldDate: undefined }
+                : b
+            ));
+            setForceReleaseBagPrompt(null);
+            setForceReleasePassword('');
+            alert(`✅ Bag #${targetBag.bagNo} fully released back to IN STOCK${scrubOps.length > 0 ? ` (scrubbed from ${scrubOps.length} voucher(s))` : ''}. You can now select it in any sales voucher.`);
+            await fetchBags();
+        } catch (err) {
+            console.error('Force release failed:', err);
+            alert('❌ Failed to release bag: ' + (err?.message || 'Unknown error'));
+        } finally {
+            setForceReleaseLoading(false);
         }
     };
 
@@ -446,6 +582,71 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             alert('Failed to recalculate: ' + (e?.message || 'Unknown error'));
         } finally {
             setRecalcLoading(false);
+        }
+    };
+
+    // ✅ CONSERVATIVE GHOST-RECORD CLEANUP (never deletes a real bag)
+    // Deletes ONLY jumbo_bags records whose id is a phantom (e.g. 'undefined_A331') AND that are
+    // either (a) a duplicate of a real record with the same bag number, or (b) completely unlinked
+    // (no source voucher). Any ghost that could be the ONLY copy of a real bag is kept and reported.
+    const handleCleanupGhostBags = async () => {
+        if (ghostCleanupLoading) return;
+        if (!window.confirm('Scan for ghost/duplicate bag records?\n\nThis will DELETE only records that are provably redundant: phantoms (like "undefined_A331") that duplicate a real bag, or completely unlinked records. Any record that could be the only copy of a real bag is KEPT. Continue?')) return;
+        setGhostCleanupLoading(true);
+        try {
+            const snap = await getDocs(collection(db, 'jumbo_bags'));
+            const allDocs = snap.docs.map(d => ({ id: d.id, ref: d.ref, ...d.data() }));
+
+            const ghosts = allDocs.filter(d => String(d.id || '').startsWith('undefined_'));
+            if (ghosts.length === 0) {
+                alert('✅ No ghost records found. Your bag database is clean.');
+                setGhostCleanupLoading(false);
+                return;
+            }
+
+            const normalizeNo = (no) => String(no || '').replace(/^#/, '').trim().toUpperCase();
+            const realByBagNo = new Map();
+            allDocs.filter(d => !String(d.id || '').startsWith('undefined_')).forEach(d => {
+                const key = normalizeNo(d.bagNo);
+                if (key && !realByBagNo.has(key)) realByBagNo.set(key, d);
+            });
+
+            const toDelete = [];
+            const kept = [];
+            ghosts.forEach(g => {
+                const key = normalizeNo(g.bagNo);
+                const hasDuplicate = key && realByBagNo.has(key);
+                const hasSource = !!(g.stockJournalId || g.purchaseId);
+                if (hasDuplicate || !hasSource) toDelete.push(g);
+                else kept.push(g);
+            });
+
+            const preview = toDelete.slice(0, 20).map((g, i) =>
+                `${i + 1}. ${g.id} (#${g.bagNo || '?'})${g.stockJournalId ? ' [MFG:' + g.stockJournalId + ']' : ''}${g.purchaseId ? ' [PUR:' + g.purchaseId + ']' : ''}`
+            ).join('\n');
+            const keptNote = kept.length > 0
+                ? `\n\n⚠️ KEPT ${kept.length} phantom(s) that may be the ONLY record of a real bag (has a source link) — NOT deleted.`
+                : '';
+
+            if (toDelete.length === 0) {
+                alert(`✅ Scan complete.\n\nFound ${ghosts.length} ghost record(s), but none were safe to auto-delete.${keptNote}`);
+                setGhostCleanupLoading(false);
+                return;
+            }
+
+            const ok = window.confirm(`Found ${ghosts.length} ghost record(s).\n\nSAFE TO DELETE (${toDelete.length}):\n${preview}${toDelete.length > 20 ? `\n...and ${toDelete.length - 20} more` : ''}${keptNote}\n\nDelete these ${toDelete.length} record(s)?`);
+            if (!ok) { setGhostCleanupLoading(false); return; }
+
+            const batch = writeBatch(db);
+            toDelete.forEach(g => batch.delete(g.ref));
+            await batch.commit();
+            alert(`✅ Deleted ${toDelete.length} ghost record(s).${keptNote}\n\nYour bag inventory is now clean.`);
+            await fetchBags();
+        } catch (e) {
+            console.error('Ghost cleanup failed:', e);
+            alert('Failed to clean ghost records: ' + (e?.message || 'Unknown error'));
+        } finally {
+            setGhostCleanupLoading(false);
         }
     };
 
@@ -654,18 +855,19 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     const getFilteredBags = () => {
         return bags.filter(b => {
+            const effStatus = b.effectiveStatus || b.status || 'in_stock';
             const name = getProductName(b.productId).toLowerCase();
             const bNo = (b.bagNo || '').toLowerCase();
             const ref = getBagRefNo(b).toLowerCase();
             const dateStr = (b.date || '').toLowerCase();
-            const statusStr = (b.status || '').toLowerCase();
+            const statusStr = effStatus.toLowerCase();
             const s = searchTerm.toLowerCase();
             const matchesSearch = name.includes(s) || bNo.includes(s) || ref.includes(s) || dateStr.includes(s) || statusStr.includes(s);
             const matchesProduct = !filterProductId || b.productId === filterProductId;
 
             // Period Filter Logic
             const bDate = b.dateKey || normalizeDateKey(b.date);
-            const sDate = b.soldDateKey || normalizeDateKey(b.soldDate);
+            const sDate = b.soldDateKey || normalizeDateKey(b.soldDate) || (effStatus === 'sold' ? bDate : '');
             let matchesDate = false;
 
             if (viewMode === 'in_stock') {
@@ -675,10 +877,10 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             } else {
                 // For 'all', show if either created or sold in period
                 matchesDate = (bDate >= dateRange.from && bDate <= dateRange.to) ||
-                    (b.status === 'sold' && sDate >= dateRange.from && sDate <= dateRange.to);
+                    (effStatus === 'sold' && sDate >= dateRange.from && sDate <= dateRange.to);
             }
 
-            const matchesMode = viewMode === 'all' ? true : b.status === viewMode;
+            const matchesMode = viewMode === 'all' ? true : effStatus === viewMode;
             return matchesSearch && matchesProduct && matchesMode && matchesDate;
         }).sort((a, b) => dateSortValue(b.date) - dateSortValue(a.date));
     };
@@ -692,7 +894,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             'Percent (%)': (b.percent && getBagSourceType(b) === 'manufactured') ? Number(b.percent).toFixed(2) : '',
             [`Weight (${baseUnitSymbol})`]: b.qty,
             'Source': getBagSourceType(b) === 'manufactured' ? 'Production' : getBagSourceType(b) === 'purchased' ? 'Purchase' : 'Unknown',
-            'Status': b.status === 'sold' ? 'SOLD' : 'IN STOCK'
+            'Status': (b.effectiveStatus || b.status) === 'sold' ? 'SOLD' : 'IN STOCK'
         }));
 
         const ws = XLSX.utils.json_to_sheet(data);
@@ -830,8 +1032,8 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             return bDate >= from && bDate <= to;
         });
         const periodSold = bags.filter(b => {
-            const sDate = b.soldDateKey || normalizeDateKey(b.soldDate);
-            return b.status === 'sold' && sDate >= from && sDate <= to;
+            const sDate = b.soldDateKey || normalizeDateKey(b.soldDate) || (b.effectiveStatus === 'sold' ? (b.dateKey || normalizeDateKey(b.date)) : '');
+            return (b.effectiveStatus || b.status) === 'sold' && sDate >= from && sDate <= to;
         });
 
         const mfg = periodBags.filter(b => getBagSourceType(b) === 'manufactured');
@@ -844,8 +1046,8 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             purWeight: pur.reduce((s, b) => s + b.qty, 0),
             soldCount: periodSold.length,
             soldWeight: periodSold.reduce((s, b) => s + b.qty, 0),
-            availCount: bags.filter(b => b.status === 'in_stock').length,
-            availWeight: bags.filter(b => b.status === 'in_stock').reduce((s, b) => s + b.qty, 0)
+            availCount: bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock').length,
+            availWeight: bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock').reduce((s, b) => s + b.qty, 0)
         };
     }, [bags, dateRange]);
 
@@ -917,6 +1119,15 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             >
                                 <RefreshCw size={14} className={recalcLoading ? 'animate-spin' : ''} />
                                 {recalcLoading ? 'Recalculating...' : 'Recalculate Bags'}
+                            </button>
+                            <button
+                                onClick={handleCleanupGhostBags}
+                                disabled={ghostCleanupLoading}
+                                className="p-2 bg-slate-700 text-white rounded hover:bg-slate-800 flex items-center gap-1 text-xs font-bold px-3 transition-all disabled:opacity-60 shadow-md"
+                                title="Delete ghost/duplicate bag records (e.g. undefined_A331). Safe: real bags are never deleted."
+                            >
+                                <Trash2 size={14} className={ghostCleanupLoading ? 'animate-pulse' : ''} />
+                                {ghostCleanupLoading ? 'Cleaning...' : 'Clean Ghost Bags'}
                             </button>
                             <div className="h-6 w-[1px] bg-slate-200 mx-1"></div>
                             <button
@@ -1067,14 +1278,25 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                             }
                                         </td>
                                         <td className="p-3 text-center">
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); handleDeleteBag(b); }}
-                                                disabled={!b.isOrphan}
-                                                className={`p-1 rounded transition-all ${b.isOrphan ? 'text-red-500 hover:text-red-700 hover:bg-red-50' : 'text-slate-300 cursor-not-allowed'}`}
-                                                title={b.isOrphan ? `Delete orphan bag${b.orphanReason ? ` (${b.orphanReason})` : ''}` : 'Linked bag: delete voucher first'}
-                                            >
-                                                <X size={16} />
-                                            </button>
+                                            <div className="flex items-center justify-center gap-1">
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleDeleteBag(b); }}
+                                                    disabled={!b.isOrphan}
+                                                    className={`p-1 rounded transition-all ${b.isOrphan ? 'text-red-500 hover:text-red-700 hover:bg-red-50' : 'text-slate-300 cursor-not-allowed'}`}
+                                                    title={b.isOrphan ? `Delete orphan bag${b.orphanReason ? ` (${b.orphanReason})` : ''}` : 'Linked bag: delete voucher first'}
+                                                >
+                                                    <X size={16} />
+                                                </button>
+                                                {(b.effectiveStatus || b.status) === 'sold' && (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); handleForceReleaseBag(b); }}
+                                                        className="p-1 rounded transition-all text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                                                        title={`Force release bag #${b.bagNo} back to In Stock (fixes orphaned sold status)`}
+                                                    >
+                                                        <RefreshCw size={14} />
+                                                    </button>
+                                                )}
+                                            </div>
                                         </td>
                                     </tr>
                                 ))}
@@ -1116,6 +1338,54 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             </div>
                         </div>
                     </div>
+                )}
+
+                {/* --- FORCE RELEASE BAG MODAL --- */}
+                {forceReleaseBagPrompt && createPortal(
+                    <div className="fixed inset-0 z-[13000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                        <div className="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-sm m-4 animate-in zoom-in-95 leading-normal">
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-lg font-black text-amber-700 uppercase tracking-tight flex items-center gap-2">
+                                    <RefreshCw size={18} className="text-amber-600" />
+                                    Force Release Bag
+                                </h3>
+                                <button onClick={() => setForceReleaseBagPrompt(null)} className="p-1 hover:bg-slate-100 rounded-full"><X size={18} /></button>
+                            </div>
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                                <p className="text-sm font-bold text-amber-800 mb-1">Bag #{forceReleaseBagPrompt.bagNo}</p>
+                                <p className="text-xs text-amber-700">This bag is marked as SOLD in the database but does not appear in the sales voucher. Releasing it will reset its status to IN STOCK so it can be selected again.</p>
+                                {forceReleaseBagPrompt.salesRefNo && (
+                                    <p className="text-[11px] text-amber-600 mt-2 font-mono">Currently linked to: <strong>{forceReleaseBagPrompt.salesRefNo}</strong></p>
+                                )}
+                            </div>
+                            <div className="mb-4">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Enter Password to Confirm</label>
+                                <input
+                                    type="password"
+                                    value={forceReleasePassword}
+                                    onChange={e => setForceReleasePassword(e.target.value)}
+                                    onKeyDown={e => e.key === 'Enter' && confirmForceReleaseBag()}
+                                    placeholder="Enter password..."
+                                    className="w-full p-3 border-2 border-slate-200 rounded-xl font-bold text-slate-800 focus:border-amber-500 outline-none transition-all"
+                                    autoFocus
+                                />
+                            </div>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setForceReleaseBagPrompt(null)}
+                                    className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition-all"
+                                >Cancel</button>
+                                <button
+                                    onClick={confirmForceReleaseBag}
+                                    disabled={forceReleaseLoading || !forceReleasePassword}
+                                    className="flex-1 bg-amber-600 text-white font-black py-3 rounded-xl hover:bg-amber-700 transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+                                >
+                                    {forceReleaseLoading ? <><RefreshCw size={14} className="animate-spin" /> Releasing...</> : 'Release Bag'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>,
+                    document.body
                 )}
 
                 {/* --- VOUCHER SELECTION MODAL --- */}
@@ -1196,7 +1466,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
-                                    {Object.entries(bags.filter(b => b.status === 'in_stock').reduce((acc, b) => {
+                                    {Object.entries(bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock').reduce((acc, b) => {
                                         const name = getProductName(b.productId);
                                         if (!acc[name]) acc[name] = { weight: 0, count: 0, id: b.productId };
                                         acc[name].weight += b.qty;
@@ -1354,6 +1624,15 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     >
                                         <RefreshCw size={14} className={recalcLoading ? 'animate-spin' : ''} />
                                         {recalcLoading ? 'Syncing...' : 'Recalculate Bag'}
+                                    </button>
+                                    <button
+                                        onClick={handleCleanupGhostBags}
+                                        disabled={ghostCleanupLoading}
+                                        className="bg-slate-700 hover:bg-slate-800 text-white px-3 py-1.5 rounded flex items-center gap-1.5 text-xs font-bold shadow-lg shadow-slate-500/20 active:scale-95 transition-all disabled:opacity-50"
+                                        title="Delete ghost/duplicate bag records (e.g. undefined_A331). Safe: real bags are never deleted."
+                                    >
+                                        <Trash2 size={14} className={ghostCleanupLoading ? 'animate-pulse' : ''} />
+                                        {ghostCleanupLoading ? 'Cleaning...' : 'Clean Ghost Bags'}
                                     </button>
                                     <button
                                         onClick={downloadBagDetailPDF}

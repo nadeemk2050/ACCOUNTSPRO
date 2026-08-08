@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { 
     getFirestore, collection, query, where, onSnapshot, orderBy,
-    doc, updateDoc, getDoc, getDocs, limit, addDoc, serverTimestamp, deleteDoc
+    doc, updateDoc, getDoc, getDocs, limit, addDoc, serverTimestamp, deleteDoc, deleteField
 } from 'firebase/firestore';
 import { RefreshCw, Check } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -46,6 +46,9 @@ const PackagingSmartReportModal = ({
     const [deleteBagPrompt, setDeleteBagPrompt] = useState(null);
     const [deletePassword, setDeletePassword] = useState('');
     const [detailModal, setDetailModal] = useState(null); // 'inward' | 'outward' | 'ready' | 'orphan' | null
+    const [forceReleaseBagPrompt, setForceReleaseBagPrompt] = useState(null);
+    const [forceReleasePassword, setForceReleasePassword] = useState('');
+    const [forceReleaseLoading, setForceReleaseLoading] = useState(false);
 
     const requestSort = (key) => {
         let direction = 'asc';
@@ -66,6 +69,179 @@ const PackagingSmartReportModal = ({
         setDeleteBagPrompt(bag);
         setDeletePassword('');
     };
+
+    const handleForceReleaseBag = (bag) => {
+        if (!bag || (!bag.bagNo && !bag.id)) {
+            alert('Cannot release: valid bag number or ID missing.');
+            return;
+        }
+        setForceReleaseBagPrompt(bag);
+        setForceReleasePassword('');
+    };
+
+    const confirmForceReleaseBag = async () => {
+        if (forceReleasePassword !== 'abcd') { alert('❌ Incorrect password.'); return; }
+        if (!forceReleaseBagPrompt) return;
+        setForceReleaseLoading(true);
+        try {
+            const rawBagNo = forceReleaseBagPrompt.bagNo || '';
+            const cleanBagNo = String(rawBagNo).replace(/^#/, '').trim().toUpperCase();
+            
+            console.log(`[FORCE RELEASE] Releasing bag cleanBagNo: "${cleanBagNo}"`);
+
+            // 1. Reset in jumbo_bags collection (unconstrained local search in RxDB/Dexie)
+            const snapJumbo = await getDocs(collection(db, 'jumbo_bags'));
+            let jumboResetCount = 0;
+            for (const d of snapJumbo.docs) {
+                const data = d.data() || {};
+                const bNo = String(data.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                const promptId = String(forceReleaseBagPrompt.id || '').trim();
+
+                if ((cleanBagNo && bNo === cleanBagNo) || (promptId && d.id === promptId)) {
+                    await updateDoc(d.ref, {
+                        status: 'in_stock',
+                        salesId: deleteField(),
+                        salesRefNo: deleteField(),
+                        soldDate: deleteField(),
+                        weightVariance: deleteField(),
+                        varianceNote: deleteField()
+                    });
+                    jumboResetCount++;
+                }
+            }
+            console.log(`[FORCE RELEASE] Reset ${jumboResetCount} jumbo_bags docs.`);
+
+            // 2. Clean invoices collection (unconstrained local search in RxDB/Dexie)
+            const snapInvoices = await getDocs(collection(db, 'invoices'));
+            let invoiceCleanCount = 0;
+            for (const invDoc of snapInvoices.docs) {
+                const invData = invDoc.data() || {};
+                let needsUpdate = false;
+
+                const cleanBagList = (arr) => {
+                    if (!Array.isArray(arr)) return arr;
+                    return arr.filter(b => {
+                        const bNo = typeof b === 'string' ? b : (b?.bagNo || b?.id || '');
+                        const cleanB = String(bNo).replace(/^#/, '').trim().toUpperCase();
+                        if (cleanBagNo && cleanB === cleanBagNo) {
+                            needsUpdate = true;
+                            return false;
+                        }
+                        return true;
+                    });
+                };
+
+                const newSoldBags = cleanBagList(invData.soldBags);
+                const newJumboBags = cleanBagList(invData.jumboBags);
+                const items = Array.isArray(invData.items) ? invData.items : [];
+                const newItems = items.map(item => {
+                    if (Array.isArray(item.selectedBags)) {
+                        return { ...item, selectedBags: cleanBagList(item.selectedBags) };
+                    }
+                    return item;
+                });
+
+                if (needsUpdate) {
+                    await updateDoc(invDoc.ref, {
+                        soldBags: newSoldBags,
+                        jumboBags: newJumboBags,
+                        items: newItems
+                    });
+                    invoiceCleanCount++;
+                }
+            }
+            console.log(`[FORCE RELEASE] Cleaned ${invoiceCleanCount} invoices.`);
+
+            // 3. Clean stock_journals collection (Manufacturing Vouchers)
+            const snapJournals = await getDocs(collection(db, 'stock_journals'));
+            let journalCleanCount = 0;
+            for (const sjDoc of snapJournals.docs) {
+                const sjData = sjDoc.data() || {};
+                let needsUpdate = false;
+
+                const cleanEmbeddedBags = (arr) => {
+                    if (!Array.isArray(arr)) return arr;
+                    return arr.map(b => {
+                        if (!b || typeof b !== 'object') return b;
+                        const bNo = String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                        if (cleanBagNo && bNo === cleanBagNo) {
+                            needsUpdate = true;
+                            const { salesId, salesRefNo, soldDate, status, ...rest } = b;
+                            return { ...rest, status: 'in_stock' };
+                        }
+                        return b;
+                    });
+                };
+
+                const newProducedBags = cleanEmbeddedBags(sjData.producedBags);
+                const newJumboBags = cleanEmbeddedBags(sjData.jumboBags);
+                const newJumbo_bags = cleanEmbeddedBags(sjData.jumbo_bags);
+
+                if (needsUpdate) {
+                    await updateDoc(sjDoc.ref, {
+                        producedBags: newProducedBags,
+                        jumboBags: newJumboBags,
+                        jumbo_bags: newJumbo_bags
+                    });
+                    journalCleanCount++;
+                }
+            }
+            console.log(`[FORCE RELEASE] Cleaned ${journalCleanCount} stock_journals.`);
+
+            // 4. Immediately update local state in React component
+            setBags(prev => prev.map(b => {
+                const bNo = String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                if (cleanBagNo && bNo === cleanBagNo) {
+                    const { salesId, salesRefNo, soldDate, ...rest } = b;
+                    return { ...rest, status: 'in_stock' };
+                }
+                return b;
+            }));
+
+            setSalesInvoices(prev => prev.map(inv => {
+                const cleanB = (arr) => Array.isArray(arr) ? arr.filter(b => String(b?.bagNo || b?.id || '').replace(/^#/, '').trim().toUpperCase() !== cleanBagNo) : [];
+                return {
+                    ...inv,
+                    soldBags: cleanB(inv.soldBags),
+                    jumboBags: cleanB(inv.jumboBags),
+                    items: Array.isArray(inv.items) ? inv.items.map(item => ({
+                        ...item,
+                        selectedBags: cleanB(item.selectedBags)
+                    })) : []
+                };
+            }));
+
+            setStockJournals(prev => prev.map(sj => {
+                const cleanEmbedded = (arr) => Array.isArray(arr) ? arr.map(b => {
+                    const bNo = String(b?.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                    if (cleanBagNo && bNo === cleanBagNo) {
+                        const { salesId, salesRefNo, soldDate, status, ...rest } = b;
+                        return { ...rest, status: 'in_stock' };
+                    }
+                    return b;
+                }) : arr;
+                return {
+                    ...sj,
+                    producedBags: cleanEmbedded(sj.producedBags),
+                    jumboBags: cleanEmbedded(sj.jumboBags),
+                    jumbo_bags: cleanEmbedded(sj.jumbo_bags)
+                };
+            }));
+
+            setForceReleaseBagPrompt(null);
+            setForceReleasePassword('');
+            alert(`✅ Bag #${cleanBagNo || forceReleaseBagPrompt.bagNo} has been completely force-released in local database and synchronized!\n\nIt is now restored to IN STOCK.`);
+        } catch (err) {
+            console.error('Force release failed:', err);
+            alert('❌ Failed to release bag: ' + (err?.message || 'Unknown error'));
+        } finally {
+            setForceReleaseLoading(false);
+        }
+    };
+
+
+
+
 
     const confirmDeleteOrphanBag = async () => {
         if (deletePassword === "abcd") {
@@ -472,35 +648,24 @@ const PackagingSmartReportModal = ({
         }));
     });
 
+    // INVOICE-DRIVEN SOLD STATE: a bag is 'sold' ONLY while a LIVE (non-deleted) sales
+    // invoice references it by id or bag no. Stale jumbo_bags records (status:'sold' but no
+    // live invoice) are treated as available, so bags removed from / deleted with their sales
+    // voucher instantly return to ready stock and never stick in BAGS OUT.
     const soldBagIdsGlobal = new Set(
-        [...bags.filter(b => normalizeStatusGlobal(b.status) === 'sold'), ...soldInvoiceBagPool]
-            .map(b => String(b.id || '').trim())
-            .filter(Boolean)
+        soldInvoiceBagPool.map(b => String(b.id || '').trim()).filter(Boolean)
     );
     const soldBagNosGlobal = new Set(
-        [...bags.filter(b => normalizeStatusGlobal(b.status) === 'sold'), ...soldInvoiceBagPool]
-            .map(b => String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase())
-            .filter(Boolean)
+        soldInvoiceBagPool.map(b => String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase()).filter(Boolean)
     );
 
     const isBagSoldGlobally = (bag) => {
         const bagId = String(bag?.id || '').trim();
         const bagNo = String(bag?.bagNo || '').replace(/^#/, '').trim().toUpperCase();
-        const dbBag = bagId ? bags.find(entry => String(entry.id || '').trim() === bagId) : null;
-        return (
-            normalizeStatusGlobal(bag?.status) === 'sold' ||
-            normalizeStatusGlobal(dbBag?.status) === 'sold' ||
-            (bagId && soldBagIdsGlobal.has(bagId)) ||
-            (bagNo && soldBagNosGlobal.has(bagNo)) ||
-            !!bag?.salesId ||
-            !!bag?.salesRefNo
-        );
+        return (bagId && soldBagIdsGlobal.has(bagId)) || (bagNo && soldBagNosGlobal.has(bagNo));
     };
 
-    const soldBagsInDateRange = [
-        ...bags.filter(b => normalizeStatusGlobal(b.status) === 'sold'),
-        ...soldInvoiceBagPool
-    ].filter((bag) => {
+    const soldBagsInDateRange = [...soldInvoiceBagPool].filter((bag) => {
         const bagDate = normalizeDateKey(bag.soldDate || bag.date);
         if (!bagDate) return true;
         return bagDate >= dateRange.from && bagDate <= dateRange.to;
@@ -1427,28 +1592,17 @@ const PackagingSmartReportModal = ({
                             };
 
                             const soldBagIds = new Set(
-                                [...soldFromBagCollection, ...soldFromSalesInvoices]
-                                    .map(b => String(b.id || '').trim())
-                                    .filter(Boolean)
+                                soldFromSalesInvoices.map(b => String(b.id || '').trim()).filter(Boolean)
                             );
                             const soldBagNos = new Set(
-                                [...soldFromBagCollection, ...soldFromSalesInvoices]
-                                    .map(b => String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase())
-                                    .filter(Boolean)
+                                soldFromSalesInvoices.map(b => String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase()).filter(Boolean)
                             );
 
+                            // Invoice-driven: a bag counts as sold only while a LIVE sales voucher holds it.
                             const isBagMarkedSold = (bag) => {
                                 const bagId = String(bag?.id || '').trim();
                                 const bagNo = String(bag?.bagNo || '').replace(/^#/, '').trim().toUpperCase();
-                                const dbBag = bagId ? bags.find(gb => String(gb.id || '').trim() === bagId) : null;
-                                return (
-                                    normalizeStatus(bag?.status) === 'sold' ||
-                                    normalizeStatus(dbBag?.status) === 'sold' ||
-                                    (bagId && soldBagIds.has(bagId)) ||
-                                    (bagNo && soldBagNos.has(bagNo)) ||
-                                    !!bag?.salesId ||
-                                    !!bag?.salesRefNo
-                                );
+                                return (bagId && soldBagIds.has(bagId)) || (bagNo && soldBagNos.has(bagNo));
                             };
 
                             // ✅ DYNAMICALLY FILTER LIST BY SUB-TAB VALUE
@@ -1828,6 +1982,17 @@ const PackagingSmartReportModal = ({
                                                                 <td className="px-6 py-0 text-right font-mono font-black text-[#1e3264] text-[10px] leading-none">
                                                                     {formatWeight(bag.qty)}
                                                                 </td>
+                                                                {readyStockSubTab === 'out' && (
+                                                                    <td className="px-3 py-0 text-center leading-none">
+                                                                        <button
+                                                                            onClick={(e) => { e.stopPropagation(); handleForceReleaseBag(bag); }}
+                                                                            className="p-1 rounded transition-all text-amber-500 hover:text-amber-700 hover:bg-amber-50"
+                                                                            title={`Force release bag #${bag.bagNo} back to IN STOCK`}
+                                                                        >
+                                                                            <RefreshCw size={12} />
+                                                                        </button>
+                                                                    </td>
+                                                                )}
                                                             </tr>
                                                         ))
                                                     ) : (
@@ -2436,7 +2601,57 @@ const PackagingSmartReportModal = ({
                 </div>
             )}
 
+            {/* FORCE RELEASE BAG MODAL */}
+            {forceReleaseBagPrompt && createPortal(
+                <div className="fixed inset-0 flex items-center justify-center bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200" style={{ zIndex: 999999 }}>
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4 border border-amber-200 animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center gap-3 mb-4 text-amber-700">
+                            <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center shrink-0 border border-amber-200">
+                                <RefreshCw size={20} />
+                            </div>
+                            <h3 className="font-black text-[14px] uppercase tracking-tight">Force Release Bag</h3>
+                        </div>
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                            <p className="text-[13px] font-black text-amber-800 mb-1">Bag #{forceReleaseBagPrompt.bagNo}</p>
+                            <p className="text-[11px] font-medium text-amber-700 leading-relaxed">
+                                This bag is marked SOLD in database but missing from the voucher. Releasing it will reset its status to <strong>IN STOCK</strong> so you can select it again.
+                            </p>
+                            {forceReleaseBagPrompt.salesRefNo && (
+                                <p className="text-[10px] text-amber-600 mt-2 font-mono">Linked to: <strong>{forceReleaseBagPrompt.salesRefNo}</strong></p>
+                            )}
+                        </div>
+                        <input type="text" style={{ display: 'none' }} autoComplete="username" />
+                        <input
+                            type="password"
+                            placeholder="Enter password..."
+                            className="w-full px-4 py-2 border-2 border-amber-200 rounded-xl mb-4 text-[14px] font-bold outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-100 transition-all"
+                            value={forceReleasePassword}
+                            onChange={(e) => setForceReleasePassword(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && confirmForceReleaseBag()}
+                            autoFocus
+                        />
+                        <div className="flex items-center gap-3 justify-end">
+                            <button
+                                onClick={(e) => { e.stopPropagation(); setForceReleaseBagPrompt(null); setForceReleasePassword(''); }}
+                                className="px-5 py-2 rounded-xl text-[11px] font-black uppercase text-slate-500 hover:bg-slate-100 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={(e) => { e.stopPropagation(); confirmForceReleaseBag(); }}
+                                disabled={forceReleaseLoading || !forceReleasePassword}
+                                className="px-5 py-2 rounded-xl text-[11px] font-black uppercase bg-amber-500 text-white hover:bg-amber-600 shadow-lg shadow-amber-200 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2"
+                            >
+                                {forceReleaseLoading ? <><RefreshCw size={12} className="animate-spin" /> Releasing...</> : 'Release to Stock'}
+                            </button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+
             {/* ===================== MANUFACTURING VOUCHERS SUMMARY REPORT MODAL ===================== */}
+
             {showManufSummary && (() => {
                 const { consumedList, producedList, totalVouchers } = getManufSummaryData();
                 const totalConsumedPcs = consumedList.reduce((sum, i) => sum + i.pcs, 0);

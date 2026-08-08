@@ -272,18 +272,18 @@ const deriveRemainingBags = ({ globalBags = [], stockJournals = [], soldInvoiceB
     const activeJournalIds = new Set(activeStockJournals.map((j) => String(j?.id || '').trim()).filter(Boolean));
     const activeJournalRefs = new Set(activeStockJournals.map((j) => String(j?.refNo || '').trim().toLowerCase()).filter(Boolean));
 
-    const soldSources = [
-        ...globalBags.filter((b) => normalizeBagStatus(b?.status) === 'sold'),
-        ...soldInvoiceBagPool
-    ];
-
+    // ✅ SOLD STATE IS INVOICE-DRIVEN (single source of truth = LIVE sales vouchers).
+    // A bag counts as sold/allocated ONLY while an active (non-deleted) sales invoice
+    // references it by id or bag no. Stale jumbo_bags records (status:'sold' but no live
+    // invoice) are treated as available — this instantly frees any bag that was removed
+    // from its sales voucher or whose sales voucher was deleted.
     const soldBagIds = new Set(
-        soldSources
+        soldInvoiceBagPool
             .map((b) => String(b?.id || '').trim())
             .filter(Boolean)
     );
     const soldBagNos = new Set(
-        soldSources
+        soldInvoiceBagPool
             .map((b) => normalizeBagNoKey(b?.bagNo))
             .filter(Boolean)
     );
@@ -336,10 +336,8 @@ const deriveRemainingBags = ({ globalBags = [], stockJournals = [], soldInvoiceB
 
         const bagId = String(bag?.id || '').trim();
         const bagNo = normalizeBagNoKey(bag?.bagNo);
+        // Invoice-driven check: only a bag referenced by a LIVE sales voucher is blocked.
         const isSold = (
-            normalizeBagStatus(bag?.status) === 'sold' ||
-            !!bag?.salesId ||
-            !!bag?.salesRefNo ||
             (bagId && soldBagIds.has(bagId)) ||
             (bagNo && soldBagNos.has(bagNo))
         );
@@ -7160,6 +7158,21 @@ export default function App() {
                             if (docRef) {
                                 bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', docRef))));
                             }
+                            // Sweep bags embedded in the deleted voucher snapshot (catches records
+                            // whose salesId/salesRefNo were stored in a mismatched format).
+                            const embeddedB = [...(docData.soldBags || []), ...(docData.jumboBags || [])];
+                            const embBIds = embeddedB.map(x => String(x?.id || '').trim()).filter(Boolean);
+                            if (embBIds.length > 0) {
+                                for (let i = 0; i < embBIds.length; i += 10) {
+                                    bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', 'in', embBIds.slice(i, i + 10)))));
+                                }
+                            }
+                            const embBNos = [...new Set(embeddedB.map(x => normalizeBagNoKey(x?.bagNo)).filter(Boolean))];
+                            if (embBNos.length > 0) {
+                                for (let i = 0; i < embBNos.length; i += 10) {
+                                    bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('bagNo', 'in', embBNos.slice(i, i + 10)))));
+                                }
+                            }
                         } else {
                             bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
                             bagQueries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
@@ -7178,6 +7191,14 @@ export default function App() {
                             if (sn.empty) return;
                             sn.docs.forEach(d => {
                                 if (processedBagIds.has(d.id)) return;
+                                // Safety guard: never revert a bag that belongs to ANOTHER live voucher.
+                                if (isSalesVoucher && docData) {
+                                    const dData = d.data() || {};
+                                    const belongs =
+                                        String(dData.salesId || '') === String(id) ||
+                                        (docRef && String(dData.salesRefNo || '') === String(docRef));
+                                    if (!belongs) return;
+                                }
                                 processedBagIds.add(d.id);
 
                                 if (isSalesVoucher) {
@@ -7296,6 +7317,21 @@ export default function App() {
                     if (ref) {
                         queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', ref))));
                     }
+                    // Sweep bags embedded in the deleted voucher snapshot (catches records
+                    // whose salesId/salesRefNo were stored in a mismatched format).
+                    const embedded = [...(docData.soldBags || []), ...(docData.jumboBags || [])];
+                    const embIds = embedded.map(b => String(b?.id || '').trim()).filter(Boolean);
+                    if (embIds.length > 0) {
+                        for (let i = 0; i < embIds.length; i += 10) {
+                            queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('salesId', 'in', embIds.slice(i, i + 10)))));
+                        }
+                    }
+                    const embNos = [...new Set(embedded.map(b => normalizeBagNoKey(b?.bagNo)).filter(Boolean))];
+                    if (embNos.length > 0) {
+                        for (let i = 0; i < embNos.length; i += 10) {
+                            queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('bagNo', 'in', embNos.slice(i, i + 10)))));
+                        }
+                    }
                 } else {
                     queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('stockJournalId', '==', id))));
                     queries.push(getDocs(query(collection(db, 'jumbo_bags'), where('purchaseId', '==', id))));
@@ -7314,6 +7350,14 @@ export default function App() {
                     if (sn.empty) return;
                     sn.docs.forEach(d => {
                         if (processedBagIds.has(d.id)) return;
+                        // Safety guard: never revert a bag that belongs to ANOTHER live voucher.
+                        if (isSalesVoucher && docData) {
+                            const dData = d.data() || {};
+                            const belongs =
+                                String(dData.salesId || '') === String(id) ||
+                                (ref && String(dData.salesRefNo || '') === String(ref));
+                            if (!belongs) return;
+                        }
                         processedBagIds.add(d.id);
                         
                         if (isSalesVoucher) { // Sales Reversal
@@ -15657,9 +15701,29 @@ const InvoiceModal = (props) => {
                     const snapOld = await getDocs(qOld);
                     bagsToDelete = snapOld.docs.map(d => d.id);
                 } else if (voucherType === 'sales') {
-                    const qOld = query(collection(db, 'jumbo_bags'), where('salesId', '==', initialData.id));
-                    const snapOld = await getDocs(qOld);
-                    bagsToRevert = snapOld.docs.map(d => d.id);
+                    // ROBUST: match by BOTH salesId (doc id) AND salesRefNo (ref no), because
+                    // older/stale bag records may store the voucher reference in either field.
+                    const revertIdSet = new Set();
+                    const qOldId = query(collection(db, 'jumbo_bags'), where('salesId', '==', initialData.id));
+                    const qOldRef = initialData.refNo
+                        ? query(collection(db, 'jumbo_bags'), where('salesRefNo', '==', initialData.refNo))
+                        : null;
+                    const [snapOldId, snapOldRef] = await Promise.all([
+                        getDocs(qOldId),
+                        qOldRef ? getDocs(qOldRef) : Promise.resolve({ docs: [] })
+                    ]);
+                    [...snapOldId.docs, ...(snapOldRef ? snapOldRef.docs : [])].forEach(d => revertIdSet.add(d.id));
+
+                    // Also catch any embedded bag snapshot whose real record points back here.
+                    const oldEmbedded = [...(initialData.soldBags || []), ...(initialData.jumboBags || [])];
+                    for (const ob of oldEmbedded) {
+                        if (!ob?.id || revertIdSet.has(String(ob.id).trim())) continue;
+                        try {
+                            const snapB = await getDocs(query(collection(db, 'jumbo_bags'), where('salesId', '==', String(ob.id).trim())));
+                            snapB.docs.forEach(d => revertIdSet.add(d.id));
+                        } catch (e) { /* non-critical */ }
+                    }
+                    bagsToRevert = [...revertIdSet];
                 }
             }
 
@@ -15770,7 +15834,22 @@ const InvoiceModal = (props) => {
                             }
 
                             const bagData = bagSnap.data() || {};
-                            const soldElsewhere = bagData.status === 'sold' && bagData.salesId && bagData.salesId !== invoiceRef.id;
+                            // Invoice-driven "sold elsewhere" check: only block if the OTHER sales
+                            // voucher is still LIVE and actually holds this bag. A stale status:'sold'
+                            // record whose voucher was deleted is treated as available.
+                            let soldElsewhere = false;
+                            if (bagData.status === 'sold' && bagData.salesId && String(bagData.salesId) !== String(invoiceRef.id)) {
+                                const otherInv = (invoices || []).find(inv => String(inv.id || '') === String(bagData.salesId));
+                                const otherLive = otherInv && !isVoucherDeleted(otherInv);
+                                const otherBagNo = normalizeBagNoKey(bagData.bagNo);
+                                const otherBagId = String(bagData.id || b.id || '').trim();
+                                const otherHolds = otherLive && [...(otherInv.soldBags || []), ...(otherInv.jumboBags || [])].some(ob => {
+                                    const obNo = normalizeBagNoKey(ob?.bagNo);
+                                    const obId = String(ob?.id || '').trim();
+                                    return (obNo && obNo === otherBagNo) || (obId && obId === otherBagId);
+                                });
+                                soldElsewhere = otherHolds;
+                            }
                             if (soldElsewhere) {
                                 throw new Error(`Bag ${bagData.bagNo || b.bagNo || b.id} is already sold in another voucher.`);
                             }
@@ -27403,6 +27482,26 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
     // ✅ FIX: Re-run report when date range, valuation method, or location changes
     useEffect(() => { if (isOpen) generateReport(); }, [isOpen, valuationMethod, products, stockGroups, dateRange.from, dateRange.to, selectedLoc]);
+
+    // ✅ LIVE BAG COUNTS: re-generate automatically whenever jumbo_bags or sales invoices change,
+    // so bag counts in the Stock Summary stay in sync with every voucher/bag CRUD action.
+    useEffect(() => {
+        if (!isOpen) return;
+        const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+        if (uidCandidates.length === 0) return;
+        const liveUnsubs = uidCandidates.flatMap((uid) =>
+            ['userId', 'ownerId'].flatMap((field) => {
+                const qBags = query(collection(db, 'jumbo_bags'), where(field, '==', uid));
+                const qInv = query(collection(db, 'invoices'), where(field, '==', uid), where('type', '==', 'sales'));
+                return [
+                    onSnapshot(qBags, () => generateReport(), (e) => console.warn('StockSummary bags live-sync err:', e)),
+                    onSnapshot(qInv, () => generateReport(), (e) => console.warn('StockSummary invoices live-sync err:', e))
+                ];
+            })
+        );
+        return () => liveUnsubs.forEach((u) => u && u());
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, dataOwnerId, user?.uid]);
 
 
     // ✅ NEW: CALCULATE EFFECTIVE ADDITIVE SETTINGS (Ancestors override)
