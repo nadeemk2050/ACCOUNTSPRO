@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { 
     getFirestore, collection, query, where, onSnapshot, orderBy,
-    doc, updateDoc, getDoc, getDocs, limit, addDoc, serverTimestamp, deleteDoc, deleteField
+    doc, updateDoc, getDoc, getDocs, limit, addDoc, serverTimestamp, deleteDoc, deleteField, writeBatch
 } from 'firebase/firestore';
 import { RefreshCw, Check } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -28,6 +28,7 @@ const PackagingSmartReportModal = ({
     const [reusableBags, setReusableBags] = useState([]);
     const [showMakeReusableModal, setShowMakeReusableModal] = useState(false);
     const [selectedReusableBag, setSelectedReusableBag] = useState(null);
+    const [reusableSubTab, setReusableSubTab] = useState('all'); // 'all' | 'deactivated'
     const [newReusableBagNo, setNewReusableBagNo] = useState('');
     const [savingReusable, setSavingReusable] = useState(false);
     
@@ -49,6 +50,8 @@ const PackagingSmartReportModal = ({
     const [forceReleaseBagPrompt, setForceReleaseBagPrompt] = useState(null);
     const [forceReleasePassword, setForceReleasePassword] = useState('');
     const [forceReleaseLoading, setForceReleaseLoading] = useState(false);
+    const [spoofFixLoading, setSpoofFixLoading] = useState(false);
+    const [manualBagNosInput, setManualBagNosInput] = useState('');
 
     const requestSort = (key) => {
         let direction = 'asc';
@@ -586,6 +589,269 @@ const PackagingSmartReportModal = ({
         }
     };
 
+    // ✅ DETECT & FIX "SPOOFED" REUSABLE BAGS
+    // Finds sellable jumbo_bags records that actually belong to the reusable registry (matched by
+    // bag number OR product name), marks them REUSABLE so they leave sellable inventory everywhere,
+    // and DEACTIVATES their reusable registry entry so they appear under "Deactivated Reusable Bags".
+    const handleFixSpoofedReusableBags = async () => {
+        if (spoofFixLoading) return;
+        setSpoofFixLoading(true);
+        try {
+            const targetUid = dataOwnerId || user?.uid;
+            if (!targetUid) return;
+            const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            const sharedToken = (a, b) => {
+                const na = norm(a), nb = norm(b);
+                if (!na || !nb) return false;
+                if (na === nb) return true;
+                if (na.length >= 4 && nb.length >= 4 && (na.includes(nb) || nb.includes(na))) return true;
+                const wa = na.split(' ').filter(w => w.length >= 4);
+                const wb = nb.split(' ').filter(w => w.length >= 4);
+                return wa.some(w => wb.some(t => w.includes(t) || t.includes(w)));
+            };
+
+            const [regSnap, bagSnap, sjSnap] = await Promise.all([
+                getDocs(query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', targetUid))),
+                getDocs(collection(db, 'jumbo_bags')),
+                getDocs(collection(db, 'stock_journals'))
+            ]);
+            const registry = regSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            const allBags = bagSnap.docs.map(d => ({ id: d.id, ref: d.ref, ...d.data() }));
+            const journals = sjSnap.docs.map(d => ({ id: d.id, ref: d.ref, ...d.data() }));
+
+            // CONSERVATIVE MATCH: a bag is a spoofed reusable bag ONLY if BOTH signals agree:
+            //  (1) its bag number shares a meaningful token with a registry name, AND
+            //  (2) its product name matches that SAME registry name.
+            // This precisely targets the spoofed containers (e.g. #1CAPS2026 of "HD PP CAPS")
+            // and never touches unrelated bags/vouchers.
+            const isSpoofed = (bag, bagProduct) => {
+                if (!bag || typeof bag !== 'object') return null;
+                if (bag.isReusable || norm(bag.status) === 'reusable') return null;
+                const bagNoN = norm(bag.bagNo);
+                if (!bagNoN) return null;
+                for (const reg of registry) {
+                    const rbNo = norm(reg.bagNo);
+                    if (!rbNo) continue;
+                    const noMatch = sharedToken(bag.bagNo, reg.bagNo);
+                    const prodMatch = bagProduct && sharedToken(bagProduct, reg.bagNo);
+                    if (noMatch && prodMatch) return reg;
+                }
+                return null;
+            };
+
+            // 1) Scan standalone jumbo_bags collection
+            const jumboFixes = [];
+            allBags.forEach(bag => {
+                const bagProduct = products.find(p => p.id === bag.productId)?.name || '';
+                const reg = isSpoofed(bag, bagProduct);
+                if (reg) jumboFixes.push({ bag, reg });
+            });
+
+            // 2) Scan embedded bags inside manufacturing vouchers (BOM entries)
+            const journalFixes = [];
+            journals.forEach(sj => {
+                const arrays = {
+                    jumboBags: Array.isArray(sj.jumboBags) ? sj.jumboBags : [],
+                    jumbo_bags: Array.isArray(sj.jumbo_bags) ? sj.jumbo_bags : [],
+                    producedBags: Array.isArray(sj.producedBags) ? sj.producedBags : [],
+                    produced: Array.isArray(sj.produced) ? sj.produced : []
+                };
+                const allEmbedded = [
+                    ...arrays.jumboBags,
+                    ...arrays.jumbo_bags,
+                    ...arrays.producedBags,
+                    ...arrays.produced.flatMap(p => [
+                        ...(Array.isArray(p.jumboBags) ? p.jumboBags : []),
+                        ...(Array.isArray(p.jumbo_bags) ? p.jumbo_bags : [])
+                    ])
+                ];
+                allEmbedded.forEach(b => {
+                    if (!b || typeof b !== 'object') return;
+                    const bagProduct = products.find(p => p.id === b.productId)?.name || '';
+                    const reg = isSpoofed(b, bagProduct);
+                    if (reg) journalFixes.push({ journal: sj, bag: b, reg });
+                });
+            });
+
+            console.log('[SpoofFix] scan:', { registry: registry.length, jumbo: allBags.length, journals: journals.length, jumboFixes: jumboFixes.length, journalFixes: journalFixes.length });
+
+            const totalFixes = jumboFixes.length + journalFixes.length;
+            if (totalFixes === 0) {
+                alert('✅ No spoofed bags detected — all sellable bags look correct.');
+                setSpoofFixLoading(false);
+                return;
+            }
+
+            const previewLines = [
+                ...jumboFixes.slice(0, 30).map((f, i) =>
+                    `${i + 1}. Bag #${f.bag.bagNo} (${products.find(p => p.id === f.bag.productId)?.name || '-'}) → registry "${f.reg.bagNo}"`
+                ),
+                ...journalFixes.slice(0, 30).map((f, i) =>
+                    `${jumboFixes.length + i + 1}. BOM ${f.journal.refNo || f.journal.id} → Bag #${f.bag.bagNo} (${products.find(p => p.id === f.bag.productId)?.name || '-'}) → registry "${f.reg.bagNo}"`
+                )
+            ];
+
+            const ok = window.confirm(
+                `Found ${totalFixes} sellable bag(s) matching reusable registry entries (${jumboFixes.length} in bag store, ${journalFixes.length} embedded in BOM vouchers).\n\nThey will be:\n• Marked REUSABLE → removed from sellable inventory\n• Registry entry DEACTIVATED → shown under "Deactivated Reusable Bags"\n\nONLY these exact bags are modified — no other bag or voucher is touched.\n\n${previewLines.join('\n')}\n\nProceed?`
+            );
+            if (!ok) { setSpoofFixLoading(false); return; }
+
+            let bagCount = 0;
+
+            // Apply A: mark standalone jumbo_bags records reusable
+            if (jumboFixes.length > 0) {
+                const bagBatch = writeBatch(db);
+                jumboFixes.forEach(f => {
+                    bagBatch.update(f.bag.ref, {
+                        isReusable: true,
+                        allowMultiFilling: true,
+                        status: 'reusable',
+                        reusableBagId: f.reg.id || null,
+                        updatedAt: serverTimestamp()
+                    });
+                    bagCount++;
+                });
+                await bagBatch.commit();
+            }
+
+            // Apply B: mark embedded bags reusable inside the matching BOM vouchers
+            const journalIds = [...new Set(journalFixes.map(f => f.journal.id))];
+            for (const jid of journalIds) {
+                const sj = journals.find(j => j.id === jid);
+                if (!sj) continue;
+                const markBags = (arr) => Array.isArray(arr)
+                    ? arr.map(b => {
+                        if (!b || typeof b !== 'object') return b;
+                        const bagProduct = products.find(p => p.id === b.productId)?.name || '';
+                        const reg = isSpoofed(b, bagProduct);
+                        if (!reg) return b;
+                        return { ...b, isReusable: true, allowMultiFilling: true, status: 'reusable', reusableBagId: reg.id || null };
+                    })
+                    : arr;
+                const patch = {};
+                if (Array.isArray(sj.jumboBags)) patch.jumboBags = markBags(sj.jumboBags);
+                if (Array.isArray(sj.jumbo_bags)) patch.jumbo_bags = markBags(sj.jumbo_bags);
+                if (Array.isArray(sj.producedBags)) patch.producedBags = markBags(sj.producedBags);
+                if (Array.isArray(sj.produced)) {
+                    patch.produced = sj.produced.map(p => ({
+                        ...p,
+                        jumboBags: markBags(p.jumboBags),
+                        jumbo_bags: markBags(p.jumbo_bags)
+                    }));
+                }
+                if (Object.keys(patch).length > 0) {
+                    await updateDoc(doc(db, 'stock_journals', jid), patch);
+                    bagCount += journalFixes.filter(f => f.journal.id === jid).length;
+                }
+            }
+
+            // Apply C: deactivate the matching reusable registry entries
+            const regIds = [...new Set([...jumboFixes, ...journalFixes].map(f => f.reg.id).filter(Boolean))];
+            for (const rid of regIds) {
+                await updateDoc(doc(db, 'reusable_jumbo_bags', rid), {
+                    status: 'closed',
+                    lastDate: new Date().toISOString().split('T')[0],
+                    updatedAt: serverTimestamp()
+                });
+            }
+
+            alert(`✅ Fixed ${bagCount} bag(s): marked REUSABLE & removed from sellable inventory (${jumboFixes.length} from bag store, ${journalFixes.length} from BOM vouchers). Deactivated ${regIds.length} reusable registry entr(y/ies) — now under "Deactivated Reusable Bags".`);
+        } catch (e) {
+            console.error('Spoofed-bag fix failed:', e);
+            alert('Failed: ' + (e?.message || 'Unknown error'));
+        } finally {
+            setSpoofFixLoading(false);
+        }
+    };
+
+    // ✅ MANUAL FIX BY EXACT BAG NUMBER (deterministic — no fuzzy matching)
+    // User types the exact bag numbers; the tool marks those bags REUSABLE (removed from
+    // sellable/ready stock — both in the bag store and inside BOM vouchers) and deactivates
+    // their reusable registry entries so they appear under "Deactivated Reusable Bags".
+    const handleManualFixBags = async () => {
+        const typed = (manualBagNosInput || '').split(',').map(s => s.trim().replace(/^#/, '').toUpperCase()).filter(Boolean);
+        if (typed.length === 0) { alert('Enter at least one bag number (comma separated).'); return; }
+        if (spoofFixLoading) return;
+        if (!window.confirm(`Mark these bag(s) as REUSABLE (removed from sellable/ready stock) and deactivate their reusable registry entry?\n\n${typed.join(', ')}\n\nOnly these exact bag numbers are affected — no other bag or voucher is touched. Proceed?`)) return;
+        setSpoofFixLoading(true);
+        try {
+            const targetUid = dataOwnerId || user?.uid;
+            const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            const targetSet = new Set(typed.map(norm));
+
+            // 1. Standalone bag records in jumbo_bags
+            const bagSnap = await getDocs(collection(db, 'jumbo_bags'));
+            const matchingBags = bagSnap.docs.filter(d => targetSet.has(norm(d.data().bagNo)));
+
+            // 2. BOM vouchers that embed any of these bag numbers
+            const embedHit = (arr) => Array.isArray(arr) && arr.some(b => b && typeof b === 'object' && targetSet.has(norm(b.bagNo)));
+            const sjSnap = await getDocs(collection(db, 'stock_journals'));
+            const journalIds = sjSnap.docs
+                .filter(d => {
+                    const sj = d.data();
+                    return embedHit(sj.jumboBags) || embedHit(sj.jumbo_bags) || embedHit(sj.producedBags) ||
+                        (Array.isArray(sj.produced) && sj.produced.some(p => embedHit(p.jumboBags) || embedHit(p.jumbo_bags)));
+                })
+                .map(d => d.id);
+
+            // 3. Reusable registry entries to deactivate (token match with typed numbers)
+            const regSnap = await getDocs(query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', targetUid)));
+            const regIds = new Set();
+            regSnap.docs.forEach(d => {
+                const rbNo = norm(d.data().bagNo);
+                const hit = typed.some(n => {
+                    const nn = norm(n);
+                    const tokens = rbNo.split(' ').filter(w => w.length >= 4);
+                    return nn.includes(rbNo) || rbNo.includes(nn) || tokens.some(t => nn.includes(t));
+                });
+                if (hit) regIds.add(d.id);
+            });
+
+            let count = 0;
+            // Apply A: mark standalone bag records reusable
+            if (matchingBags.length > 0) {
+                const batch = writeBatch(db);
+                matchingBags.forEach(d => {
+                    batch.update(d.ref, { isReusable: true, allowMultiFilling: true, status: 'reusable', updatedAt: serverTimestamp() });
+                    count++;
+                });
+                await batch.commit();
+            }
+            // Apply B: mark embedded bags reusable inside BOM vouchers
+            for (const jid of journalIds) {
+                const sjRef = doc(db, 'stock_journals', jid);
+                const sjDoc = await getDoc(sjRef);
+                if (!sjDoc.exists()) continue;
+                const sj = sjDoc.data();
+                const markBags = (arr) => Array.isArray(arr) ? arr.map(b => {
+                    if (!b || typeof b !== 'object') return b;
+                    return targetSet.has(norm(b.bagNo)) ? { ...b, isReusable: true, allowMultiFilling: true, status: 'reusable' } : b;
+                }) : arr;
+                const patch = {};
+                if (Array.isArray(sj.jumboBags)) patch.jumboBags = markBags(sj.jumboBags);
+                if (Array.isArray(sj.jumbo_bags)) patch.jumbo_bags = markBags(sj.jumbo_bags);
+                if (Array.isArray(sj.producedBags)) patch.producedBags = markBags(sj.producedBags);
+                if (Array.isArray(sj.produced)) patch.produced = sj.produced.map(p => ({ ...p, jumboBags: markBags(p.jumboBags), jumbo_bags: markBags(p.jumbo_bags) }));
+                if (Object.keys(patch).length > 0) {
+                    await updateDoc(sjRef, patch);
+                    count++;
+                }
+            }
+            // Apply C: deactivate registry entries
+            for (const rid of regIds) {
+                await updateDoc(doc(db, 'reusable_jumbo_bags', rid), { status: 'closed', lastDate: new Date().toISOString().split('T')[0], updatedAt: serverTimestamp() });
+            }
+
+            setManualBagNosInput('');
+            alert(`✅ Done: marked ${count} bag record(s) as REUSABLE (removed from sellable/ready stock) and deactivated ${regIds.size} reusable registry entr(y/ies).\n\nThey now appear under "Deactivated Reusable Bags".`);
+        } catch (e) {
+            console.error('Manual bag fix failed:', e);
+            alert('Failed: ' + (e?.message || 'Unknown error'));
+        } finally {
+            setSpoofFixLoading(false);
+        }
+    };
+
     if (!isOpen) return null;
 
 
@@ -673,7 +939,7 @@ const PackagingSmartReportModal = ({
 
     const isBagReusable = (b) => {
         if (!b) return false;
-        if (b.isRefill || b.isReusable || b.reusableBagId) return true;
+        if (b.isRefill || b.isReusable || b.reusableBagId || b.allowMultiFilling === true) return true;
         return reusableBags.some(rb => String(rb.bagNo || '').replace(/^#/, '').trim().toUpperCase() === String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase());
     };
 
@@ -2256,7 +2522,9 @@ const PackagingSmartReportModal = ({
                                 </div>
                             );
                         })() : viewingDetail === 'reusable_bags' ? (() => {
+                            // DEACTIVATED TAB shows only reusable bags that were made and then closed/deactivated.
                             const filteredReusable = reusableBags.filter(rb => {
+                                if (reusableSubTab === 'deactivated' && rb.status !== 'closed') return false;
                                 const search = searchTerm.toLowerCase();
                                 return (rb.bagNo || '').toLowerCase().includes(search);
                             }).sort((a, b) => (a.bagNo || '').localeCompare(b.bagNo || '', undefined, { numeric: true }));
@@ -2274,12 +2542,61 @@ const PackagingSmartReportModal = ({
                                                 Bags approved for multiple reuses — select in manufacturing allocation
                                             </p>
                                         </div>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={handleFixSpoofedReusableBags}
+                                                disabled={spoofFixLoading}
+                                                className="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-800 text-white text-[11px] font-black rounded-xl shadow-lg shadow-slate-700/20 active:scale-95 transition-all uppercase tracking-widest disabled:opacity-60"
+                                                title="Detect bags wrongly shown in sellable inventory that belong to the reusable registry, mark them reusable and deactivate them"
+                                            >
+                                                <AlertCircle size={15} />
+                                                {spoofFixLoading ? 'Fixing...' : 'Detect & Fix Spoofed Bags'}
+                                            </button>
+                                            <button
+                                                onClick={() => setShowMakeReusableModal(true)}
+                                                className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-black rounded-xl shadow-lg shadow-teal-600/20 active:scale-95 transition-all uppercase tracking-widest"
+                                            >
+                                                <Plus size={15} />
+                                                Make Reusable Bags
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* SUB-TABS: All / Deactivated */}
+                                    <div className="flex items-center gap-2 flex-wrap">
                                         <button
-                                            onClick={() => setShowMakeReusableModal(true)}
-                                            className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-black rounded-xl shadow-lg shadow-teal-600/20 active:scale-95 transition-all uppercase tracking-widest"
+                                            onClick={() => setReusableSubTab('all')}
+                                            className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${reusableSubTab === 'all' ? 'bg-teal-700 text-white shadow-lg shadow-teal-700/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                                         >
-                                            <Plus size={15} />
-                                            Make Reusable Bags
+                                            All Reusable Bags ({reusableBags.length})
+                                        </button>
+                                        <button
+                                            onClick={() => setReusableSubTab('deactivated')}
+                                            className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${reusableSubTab === 'deactivated' ? 'bg-slate-700 text-white shadow-lg shadow-slate-700/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                            title="Show reusable bags that were made and then deactivated"
+                                        >
+                                            Deactivated Reusable Bags ({reusableBags.filter(rb => rb.status === 'closed').length})
+                                        </button>
+                                    </div>
+
+                                    {/* MANUAL FIX BY EXACT BAG NUMBER */}
+                                    <div className="flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Manual Fix:</span>
+                                        <input
+                                            type="text"
+                                            value={manualBagNosInput}
+                                            onChange={(e) => setManualBagNosInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === 'Enter' && handleManualFixBags()}
+                                            placeholder="e.g. 1CAPS2026, 1FINES2026, 1LABELS2026, 1WASTE2026"
+                                            className="flex-1 min-w-[220px] px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-teal-400"
+                                        />
+                                        <button
+                                            onClick={handleManualFixBags}
+                                            disabled={spoofFixLoading}
+                                            className="px-4 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all disabled:opacity-60"
+                                            title="Mark these exact bag numbers as reusable (removed from sellable) and deactivate their registry entries"
+                                        >
+                                            {spoofFixLoading ? 'Fixing...' : 'Fix Specified Bags'}
                                         </button>
                                     </div>
 
@@ -2321,10 +2638,13 @@ const PackagingSmartReportModal = ({
                                                                 )}
                                                             </td>
                                                             <td className="px-6 py-3 text-[11px] font-bold">
-                                                                {rb.status === 'active'
-                                                                    ? <span className="text-emerald-600 flex items-center gap-1"><Check size={13} /> YES — Active &amp; Refillable</span>
-                                                                    : <span className="text-slate-400 flex items-center gap-1"><X size={13} /> NO — Closed</span>
-                                                                }
+                                                                {reusableSubTab === 'deactivated' ? (
+                                                                    <span className="text-teal-700 flex items-center gap-1"><Recycle size={13} /> Reused {rb.refillCount || (Array.isArray(rb.usageHistory) ? rb.usageHistory.reduce((s, h) => s + Number(h.fillCount || 1), 0) : 0)} time(s)</span>
+                                                                ) : rb.status === 'active' ? (
+                                                                    <span className="text-emerald-600 flex items-center gap-1"><Check size={13} /> YES — Active &amp; Refillable</span>
+                                                                ) : (
+                                                                    <span className="text-slate-400 flex items-center gap-1"><X size={13} /> NO — Closed</span>
+                                                                )}
                                                             </td>
                                                             <td className="px-6 py-3">
                                                                 <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter border ${rb.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
@@ -2346,9 +2666,9 @@ const PackagingSmartReportModal = ({
                                                     {filteredReusable.length === 0 && (
                                                         <tr>
                                                             <td colSpan="8" className="px-6 py-20 text-center text-slate-400 font-bold uppercase tracking-widest italic">
-                                                                No reusable bags registered yet.
+                                                                {reusableSubTab === 'deactivated' ? 'No deactivated reusable bags found.' : 'No reusable bags registered yet.'}
                                                                 <br/>
-                                                                <span className="text-[10px] opacity-60">Click "Make Reusable Bags" to add one.</span>
+                                                                <span className="text-[10px] opacity-60">{reusableSubTab === 'deactivated' ? 'Close an active reusable bag and it will appear here.' : 'Click "Make Reusable Bags" to add one.'}</span>
                                                             </td>
                                                         </tr>
                                                     )}

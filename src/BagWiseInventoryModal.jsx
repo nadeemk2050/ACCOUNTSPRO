@@ -175,6 +175,12 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         return () => unsubs.forEach(fn => fn && fn());
     }, [isOpen, dataOwnerId, user?.uid]);
 
+    const isReusableLike = (b) => {
+        if (!b) return false;
+        const st = String(b.status || '').trim().toLowerCase();
+        return b.isReusable === true || b.allowMultiFilling === true || !!b.reusableBagId || st === 'reusable';
+    };
+
     const isFetching = React.useRef(false);
     const pendingSnapshotRef = React.useRef(null);
     const fetchBags = async (snap = null) => {
@@ -880,7 +886,11 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     (effStatus === 'sold' && sDate >= dateRange.from && sDate <= dateRange.to);
             }
 
-            const matchesMode = viewMode === 'all' ? true : effStatus === viewMode;
+            const matchesMode = viewMode === 'all'
+                ? true
+                : viewMode === 'in_stock'
+                    ? (effStatus === 'in_stock' && !isReusableLike(b)) // reusable containers are NOT sellable
+                    : effStatus === viewMode;
             return matchesSearch && matchesProduct && matchesMode && matchesDate;
         }).sort((a, b) => dateSortValue(b.date) - dateSortValue(a.date));
     };
@@ -1046,8 +1056,8 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             purWeight: pur.reduce((s, b) => s + b.qty, 0),
             soldCount: periodSold.length,
             soldWeight: periodSold.reduce((s, b) => s + b.qty, 0),
-            availCount: bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock').length,
-            availWeight: bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock').reduce((s, b) => s + b.qty, 0)
+            availCount: bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock' && !isReusableLike(b)).length,
+            availWeight: bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock' && !isReusableLike(b)).reduce((s, b) => s + b.qty, 0)
         };
     }, [bags, dateRange]);
 
@@ -1466,7 +1476,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
-                                    {Object.entries(bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock').reduce((acc, b) => {
+                                    {Object.entries(bags.filter(b => (b.effectiveStatus || b.status) === 'in_stock' && !isReusableLike(b)).reduce((acc, b) => {
                                         const name = getProductName(b.productId);
                                         if (!acc[name]) acc[name] = { weight: 0, count: 0, id: b.productId };
                                         acc[name].weight += b.qty;
