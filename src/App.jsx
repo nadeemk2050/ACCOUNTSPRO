@@ -25286,10 +25286,28 @@ const PaymentModal = (props) => {
             const targetUid = dataOwnerId || user.uid;
             // Payment voucher (out) → show PURCHASE bills; Receipt voucher (in) → show SALES bills
             const invType = type === 'in' ? 'sales' : 'purchase';
-            const snap = await getDocs(query(collection(db, 'invoices'), where('userId', '==', targetUid), where('type', '==', invType), limit(500)));
-            let all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            if (partyId) all = all.filter(inv => inv.partyId === partyId);
+
+            // Fetch by BOTH userId AND ownerId — restored/imported data may store ownership either way.
+            // No limit: we need ALL of this party's bills to compute accurate remaining balances.
+            const [snapUser, snapOwner] = await Promise.all([
+                getDocs(query(collection(db, 'invoices'), where('userId', '==', targetUid), where('type', '==', invType))),
+                getDocs(query(collection(db, 'invoices'), where('ownerId', '==', targetUid), where('type', '==', invType)))
+            ]);
+            const mergedMap = new Map();
+            [...snapUser.docs, ...snapOwner.docs].forEach(d => mergedMap.set(d.id, { id: d.id, ...d.data() }));
+            let all = [...mergedMap.values()];
+
+            // Filter to this party — by party id, and fall back to party NAME (handles cases where a
+            // party was re-created after a restore and the invoice still references the old id).
+            const selectedParty = liveParties.find(p => p.id === partyId);
+            const partyNameKey = String(selectedParty?.name || '').trim().toLowerCase();
+            all = all.filter(inv => {
+                if (inv.partyId === partyId) return true;
+                return !!partyNameKey && String(inv.partyName || '').trim().toLowerCase() === partyNameKey;
+            });
+
             all.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+            console.log('[PayAgainst] loaded', invType, 'bills for party', partyId, '→', all.length);
             setPayAgainstPurchases(all);
 
             // Build already-paid map: invoiceId → sum of payments tagged to that bill
