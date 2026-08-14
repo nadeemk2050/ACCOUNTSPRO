@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
-import { getDB } from './localDB';
+import { getDB, getActiveCompanyId } from './localDB';
+import { sqlite, isSqliteAvailable } from './sqliteBridge';
 
 export const getFirestore = () => ({});
 export const initializeFirestore = (app, settings) => ({});
@@ -93,13 +94,125 @@ const matches = (id, docData, constraints) => {
     return true;
 };
 
-export const getDocs = async (q) => {
-    console.warn(`[getDocs] start for ${q.path || q}`);
+// ⚡ SQLite fast-path helpers (Electron desktop only) ------------------------
+const SQLITE_ENABLED = (() => { try { return isSqliteAvailable(); } catch (e) { return false; } })();
+const sqliteCompanyId = () => getActiveCompanyId() || '__master__';
+const sqliteMirrored = new Set();
+const sqliteMirrorPromises = {};
+
+/**
+ * One-time import of a company's RxDB offline_records into SQLite.
+ * Runs once per company per app session (tracked by `sqliteMirrored`).
+ */
+async function importCompanyToSqlite(cid) {
     const db = await getDB();
+    if (!db || !db.offline_records) return false;
+    const docs = await db.offline_records.find().exec();
+    const rows = (docs || []).map(d => d.toJSON());
+    if (rows.length > 0) await sqlite.putRecords(cid, rows);
+    try { await sqlite.setMeta(`mirrored_v1_${cid}`, String(Date.now())); } catch (e) { /* non-fatal */ }
+    console.log(`[SQLITE] Imported ${rows.length} records for company "${cid}"`);
+    return true;
+}
+
+function ensureSqliteMirror(cid) {
+    if (sqliteMirrored.has(cid)) return Promise.resolve(true);
+    if (sqliteMirrorPromises[cid]) return sqliteMirrorPromises[cid];
+    sqliteMirrorPromises[cid] = importCompanyToSqlite(cid)
+        .then((okVal) => { sqliteMirrored.add(cid); return okVal; })
+        .catch((e) => { console.warn('[SQLITE] import failed:', e?.message || e); sqliteMirrored.add(cid); return false; });
+    return sqliteMirrorPromises[cid];
+}
+
+/** Mirror a single doc write to SQLite (non-fatal on failure). */
+async function sqliteMirrorDoc(cid, doc) {
+    if (!SQLITE_ENABLED || !doc || !doc.id) return;
+    try { await sqlite.putRecord(cid, doc); } catch (e) { /* non-fatal mirror */ }
+}
+
+/** Mirror a deletion to SQLite (non-fatal on failure). */
+async function sqliteMirrorRemove(cid, id) {
+    if (!SQLITE_ENABLED || !id) return;
+    try { await sqlite.removeRecord(cid, id); } catch (e) { /* non-fatal mirror */ }
+}
+
+function emptySnapshot() {
+    return { docs: [], size: 0, empty: true, forEach: () => { }, map: () => [], filter: () => [], some: () => false, index: () => undefined, docChanges: () => [] };
+}
+
+/** Build a Firestore-like snapshot from plain { id, data } rows, applying constraints. */
+function buildDocsSnapshot(queryPath, results, q) {
+    let list = results || [];
+    if (q && q.constraints) {
+        const order = q.constraints.find(c => c.type === 'orderBy');
+        if (order) {
+            list = [...list].sort((a, b) => {
+                const va = a.data?.[order.field];
+                const vb = b.data?.[order.field];
+                if (va < vb) return order.dir === 'asc' ? -1 : 1;
+                if (va > vb) return order.dir === 'asc' ? 1 : -1;
+                return 0;
+            });
+        }
+        const lim = q.constraints.find(c => c.type === 'limit');
+        if (lim) list = list.slice(0, lim.num);
+    }
+    const snapshot = {
+        docs: list.map(r => ({
+            id: r.id,
+            data: () => r.data,
+            exists: () => true,
+            ref: { id: r.id, path: `${queryPath}/${r.id}` },
+            metadata: { fromCache: true, hasPendingWrites: false }
+        })),
+        size: list.length,
+        empty: list.length === 0,
+        metadata: { fromCache: true, hasPendingWrites: false },
+        forEach(cb) { snapshot.docs.forEach(cb); },
+        map(cb) { return snapshot.docs.map(cb); },
+        filter(cb) { return snapshot.docs.filter(cb); },
+        some(cb) { return snapshot.docs.some(cb); },
+        index(idx) { return snapshot.docs[idx]; },
+        docChanges: () => []
+    };
+    return snapshot;
+}
+
+export const getDocs = async (q) => {
     const queryPath = q.path || q;
 
+    // ⚡ Fast path: read from the SQLite mirror (Electron desktop)
+    if (SQLITE_ENABLED) {
+        try {
+            const cid = sqliteCompanyId();
+            await ensureSqliteMirror(cid);
+            const { rows } = await sqlite.getRecords(cid, queryPath);
+            const results = (rows || []).filter(r => matches(r.id, r.data, q.constraints));
+
+            // Safety: if SQLite has nothing for this collection but RxDB does (stale/missing
+            // mirror or company-context mismatch), fall back to RxDB — the authoritative store.
+            if (results.length === 0) {
+                const db2 = await getDB();
+                if (db2 && db2.offline_records) {
+                    const rxDocs = await db2.offline_records.find({ selector: { collectionName: queryPath } }).exec();
+                    if (rxDocs.length > 0) {
+                        const rxResults = (rxDocs || []).map(d => d.toJSON()).filter(d => matches(d.id, d.data, q.constraints));
+                        console.log(`[rxfs][sqlite] getDocs ${queryPath} → RxDB fallback (${rxResults.length})`);
+                        return buildDocsSnapshot(queryPath, rxResults, q);
+                    }
+                }
+            }
+
+            console.log(`[rxfs][sqlite] getDocs ${queryPath} → ${results.length}`);
+            return buildDocsSnapshot(queryPath, results, q);
+        } catch (e) {
+            console.warn('[rxfs][sqlite] getDocs fallback to RxDB:', e?.message || e);
+        }
+    }
+
+    const db = await getDB();
     // Safety check for collection
-    if (!db.offline_records) return { docs: [], size: 0, empty: true, forEach: () => { }, map: () => [], filter: () => [], some: () => false };
+    if (!db.offline_records) return emptySnapshot(queryPath);
 
     let docs = [];
     try {
@@ -109,63 +222,18 @@ export const getDocs = async (q) => {
     } catch (e) {
         console.error("EXEC ERROR:", e);
     }
-    console.warn(`[getDocs] find finished for ${queryPath}`);
 
     // Map and filter docs
-    let results = (docs || []).map(d => d.toJSON())
+    const results = (docs || []).map(d => d.toJSON())
         .filter(d => matches(d.id, d.data, q.constraints));
 
-    // sorting
-    if (q.constraints) {
-        const order = q.constraints.find(c => c.type === 'orderBy');
-        if (order) {
-            results.sort((a, b) => {
-                const va = a.data[order.field];
-                const vb = b.data[order.field];
-                if (va < vb) return order.dir === 'asc' ? -1 : 1;
-                if (va > vb) return order.dir === 'asc' ? 1 : -1;
-                return 0;
-            });
-        }
-        const lim = q.constraints.find(c => c.type === 'limit');
-        if (lim) {
-            results = results.slice(0, lim.num);
-        }
-    }
-
-    const snapshot = {
-        docs: results.map(r => ({
-            id: r.id,
-            data: () => r.data,
-            exists: () => true,
-            ref: { id: r.id, path: `${queryPath}/${r.id}` },
-            metadata: { fromCache: true, hasPendingWrites: false }
-        })),
-        size: results.length,
-        empty: results.length === 0,
-        metadata: { fromCache: true, hasPendingWrites: false },
-        forEach(cb) { snapshot.docs.forEach(cb); },
-        map(cb) { return snapshot.docs.map(cb); },
-        filter(cb) { return snapshot.docs.filter(cb); },
-        some(cb) { return snapshot.docs.some(cb); },
-        index(idx) { return snapshot.docs[idx]; },
-        docChanges: () => []
-    };
-    console.warn(`[getDocs] finished for ${queryPath}`); return snapshot;
+    return buildDocsSnapshot(queryPath, results, q);
 };
 
-export const getDoc = async (docRef) => {
-    const db = await getDB();
-    if (!db.offline_records || !docRef || !docRef.path) return { id: '', ref: docRef, exists: () => false, data: () => undefined };
-
-    const parts = docRef.path.split('/');
-    const id = parts[parts.length - 1];
-    const colName = parts.slice(0, -1).join('/');
-    const rxDoc = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
-
-    const snap = {
+function makeDocSnapshot(docRef, id) {
+    return {
         id,
-        ref: { id, path: docRef.path },
+        ref: { id, path: docRef?.path },
         metadata: { fromCache: true, hasPendingWrites: false },
         exists: () => false,
         data: () => undefined,
@@ -175,6 +243,42 @@ export const getDoc = async (docRef) => {
         filter: () => [],
         some: () => false
     };
+}
+
+export const getDoc = async (docRef) => {
+    if (!docRef || !docRef.path) return { id: '', ref: docRef, exists: () => false, data: () => undefined };
+
+    const parts = docRef.path.split('/');
+    const id = parts[parts.length - 1];
+    const colName = parts.slice(0, -1).join('/');
+
+    // ⚡ Fast path: read from the SQLite mirror (Electron desktop)
+    if (SQLITE_ENABLED) {
+        try {
+            const cid = sqliteCompanyId();
+            await ensureSqliteMirror(cid);
+            const { record } = await sqlite.getRecord(cid, id);
+            const snap = makeDocSnapshot(docRef, id);
+            if (record && record.collectionName === colName) {
+                snap.exists = () => true;
+                snap.data = () => record.data;
+                return snap;
+            }
+            if (id === 'nadeem_dev_uid') {
+                snap.exists = () => true;
+                snap.data = () => ({ name: 'Nadeem Al Saham', role: 'developer', email: 'nadeemalsaham@gmail.com', ownerId: 'offline-admin' });
+            }
+            return snap;
+        } catch (e) {
+            console.warn('[rxfs][sqlite] getDoc fallback to RxDB:', e?.message || e);
+        }
+    }
+
+    const db = await getDB();
+    if (!db.offline_records) return makeDocSnapshot(docRef, id);
+    const rxDoc = await db.offline_records.findOne({ selector: { id, collectionName: colName } }).exec();
+
+    const snap = makeDocSnapshot(docRef, id);
 
     if (rxDoc) {
         const data = rxDoc.toJSON();
@@ -226,6 +330,17 @@ export const onSnapshot = (q, callback) => {
                 callback(snap);
             });
         } else {
+            // ⚡ Fast first render from SQLite (Electron); the RxDB subscription keeps it reactive afterwards
+            if (SQLITE_ENABLED) {
+                try {
+                    const cid = sqliteCompanyId();
+                    ensureSqliteMirror(cid).then(() => sqlite.getRecords(cid, queryPath)).then(({ rows }) => {
+                        if (isUnsubscribed) return;
+                        const mapped = (rows || []).filter(d => matches(d.id, d.data, q.constraints));
+                        if (mapped.length > 0) callback(buildDocsSnapshot(queryPath, mapped, q));
+                    }).catch(() => { /* non-fatal */ });
+                } catch (e) { /* ignore */ }
+            }
             const rxQuery = db.offline_records.find({ selector: { collectionName: queryPath } });
             subscription = rxQuery.$.subscribe(rxDocs => {
                 console.log(`[onSnapshot] Collection update for ${queryPath}`);
@@ -301,6 +416,9 @@ export const addDoc = async (colRef, data) => {
         timestamp: Date.now()
     });
 
+    // ⚡ Mirror to SQLite (Electron fast read store)
+    sqliteMirrorDoc(sqliteCompanyId(), { id: newId, collectionName: colRef.path, data: cleanData, timestamp: Date.now() });
+
     // Notify sync layer
     try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id: newId, collectionName: colRef.path, operation: 'INSERT' }); } catch(e) {}
 
@@ -336,6 +454,8 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                 } else {
                     await exist.patch({ data: cleanData, timestamp: Date.now() });
                 }
+                // ⚡ Mirror to SQLite
+                sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: options.merge ? { ...JSON.parse(JSON.stringify(exist.toJSON().data || {})), ...cleanData } : cleanData, timestamp: Date.now(), lastSync: exist.toJSON().lastSync });
                 // Notify sync layer for updates on existing docs
                 try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             } else if (existAny) {
@@ -343,6 +463,8 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                 const anyData = JSON.parse(JSON.stringify(existAny.toJSON().data || {}));
                 const nextData = options.merge ? { ...anyData, ...cleanData } : cleanData;
                 await existAny.patch({ collectionName: colName, data: nextData, timestamp: Date.now() });
+                // ⚡ Mirror to SQLite
+                sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: nextData, timestamp: Date.now(), lastSync: existAny.toJSON().lastSync });
                 try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             } else {
                 await db.offline_records.insert({
@@ -351,6 +473,8 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                     data: cleanData,
                     timestamp: Date.now()
                 });
+                // ⚡ Mirror to SQLite
+                sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: cleanData, timestamp: Date.now() });
                 // Notify for new inserts too (backup)
                 try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'INSERT' }); } catch(e) {}
             }
@@ -389,14 +513,20 @@ export const updateDoc = async (docRef, data) => {
             // Try finding by id only (collectionName might differ)
             const existAny = await db.offline_records.findOne({ selector: { id } }).exec();
             if (!existAny) return;
-            await existAny.patch({ data: { ...existAny.toJSON().data, ...cleanData }, timestamp: Date.now() });
+            const mergedAny = { ...existAny.toJSON().data, ...cleanData };
+            await existAny.patch({ data: mergedAny, timestamp: Date.now() });
+            // ⚡ Mirror to SQLite
+            sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: mergedAny, timestamp: Date.now(), lastSync: existAny.toJSON().lastSync });
             // Notify sync layer
             try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             return;
         }
         try {
             const existingData = JSON.parse(JSON.stringify(exist.toJSON().data || {}));
-            await exist.patch({ data: { ...existingData, ...cleanData }, timestamp: Date.now() });
+            const merged = { ...existingData, ...cleanData };
+            await exist.patch({ data: merged, timestamp: Date.now() });
+            // ⚡ Mirror to SQLite
+            sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: merged, timestamp: Date.now(), lastSync: exist.toJSON().lastSync });
             // Notify sync layer directly (backup for RxDB $ observable)
             try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
             return;
@@ -426,6 +556,8 @@ export const deleteDoc = async (docRef) => {
         if (!fresh) return; // already deleted
         try {
             await fresh.remove();
+            // ⚡ Mirror deletion to SQLite
+            sqliteMirrorRemove(sqliteCompanyId(), id);
             // Notify sync layer
             try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'DELETE' }); } catch(e) {}
             return; // success

@@ -4,10 +4,47 @@ import { Timestamp } from '@firebase/firestore';
 // Import directly from @firebase/* so Vite's 'firebase/firestore' → rxfs.js alias is bypassed
 import { collection, doc, setDoc, onSnapshot, getDoc, writeBatch, getDocs, deleteDoc, query, where } from '@firebase/firestore';
 import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { sqlite as sqliteBridge } from './sqliteBridge';
 
 
 const activeSyncs = {}; // record of companyId -> unsubscribe function
 let liveAuthPromise = null;
+
+// ⚡ SQLite fast-read mirror (Electron desktop only). Keeps the SQLite store in
+// sync with RxDB after cloud pulls / lastSync patches so the fast read path
+// never shows stale data.
+const sqliteEnabled = (() => { try { return sqliteBridge.isAvailable(); } catch (e) { return false; } })();
+
+async function sqliteMirror(companyId, docs) {
+    if (!sqliteEnabled || !Array.isArray(docs) || docs.length === 0) return;
+    try {
+        await sqliteBridge.putRecords(String(companyId || ''), docs.map(d => ({
+            id: d?.id,
+            collectionName: d?.collectionName || '',
+            data: (d && d.data !== undefined) ? d.data : d,
+            timestamp: Number(d?.timestamp) || 0,
+            lastSync: Number(d?.lastSync) || 0
+        })));
+    } catch (e) { /* non-fatal mirror */ }
+}
+
+async function sqliteMirrorDoc(companyId, doc) {
+    if (!sqliteEnabled || !doc || !doc.id) return;
+    try {
+        await sqliteBridge.putRecord(String(companyId || ''), {
+            id: doc.id,
+            collectionName: doc.collectionName || '',
+            data: doc.data !== undefined ? doc.data : doc,
+            timestamp: Number(doc.timestamp) || 0,
+            lastSync: Number(doc.lastSync) || 0
+        });
+    } catch (e) { /* non-fatal mirror */ }
+}
+
+async function sqliteMirrorRemove(companyId, id) {
+    if (!sqliteEnabled || !id) return;
+    try { await sqliteBridge.removeRecord(String(companyId || ''), id); } catch (e) { /* non-fatal mirror */ }
+}
 
 // Helper to ensure data is a plain JSON object (avoids DataCloneError in RxDB/BroadcastChannel)
 function wash(data) {
@@ -252,6 +289,8 @@ export const startLiveSync = async (companyId) => {
                             try {
                                 markRemoteApplied(id);
                                 await fresh.remove();
+                                // ⚡ Mirror deletion to SQLite
+                                sqliteMirrorRemove(companyId, id);
                                 console.log(`[SYNC] Pull deletion: successfully deleted local doc ${id}`);
                                 break; // success
                             } catch (e) {
@@ -344,6 +383,9 @@ export const startLiveSync = async (companyId) => {
                         }
                     }
 
+                    // ⚡ Mirror pulled inserts to SQLite (idempotent upsert)
+                    sqliteMirror(companyId, toInsert);
+
                     // Concurrent Upsert / Patch existing records
                     if (toUpdate.length > 0) {
                         toUpdate.forEach(u => markRemoteApplied(u.data.id));
@@ -357,6 +399,9 @@ export const startLiveSync = async (companyId) => {
                             }
                         }));
                     }
+
+                    // ⚡ Mirror pulled updates to SQLite
+                    sqliteMirror(companyId, toUpdate.map(u => u.data));
                 }
                 
                 // Update local storage so we don't pull these again next time
@@ -420,6 +465,8 @@ export const startLiveSync = async (companyId) => {
                         const rxdoc = await rxdb.offline_records.findOne({ selector: { id } }).exec();
                         if (rxdoc) {
                             await rxdoc.incrementalPatch({ lastSync: Date.now() });
+                            // ⚡ Mirror updated lastSync to SQLite
+                            sqliteMirrorDoc(companyId, rxdoc.toJSON());
                             console.log(`[SYNC] Updated local lastSync for ${id}`);
                         }
                     } catch(e) {}
@@ -469,6 +516,8 @@ export const startLiveSync = async (companyId) => {
                 // Update lastSync
                 try {
                     await fresh.incrementalPatch({ lastSync: Date.now() });
+                    // ⚡ Mirror updated lastSync to SQLite
+                    sqliteMirrorDoc(companyId, fresh.toJSON());
                 } catch(e) {}
             } catch (err) {
                 console.error('[SYNC] Direct notify error:', err);

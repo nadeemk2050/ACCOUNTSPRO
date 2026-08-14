@@ -3,6 +3,10 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// 🗄️ SQLite local store (fast read mirror for the renderer)
+const { initSqlite } = require('./electron-sqlite.cjs');
+initSqlite();
+
 console.log("ELECTRON BOOTING...");
 
 function createWindow() {
@@ -43,6 +47,31 @@ function createWindow() {
 
     win.webContents.on('did-fail-load', (e, code, desc) => {
         console.error("Content failed to load:", code, desc);
+    });
+
+    // 🐞 Forward renderer console messages to the main terminal (debug aid)
+    win.webContents.on('console-message', (event, levelOrDetails, messageOrUndefined) => {
+        try {
+            let lvl = levelOrDetails;
+            let msg = messageOrUndefined;
+            if (levelOrDetails && typeof levelOrDetails === 'object') {
+                lvl = levelOrDetails.level;
+                msg = levelOrDetails.message;
+            }
+            const prefix = `[RENDERER:${lvl}]`;
+            // Only forward sync / sqlite / error-relevant logs to avoid spam
+            if (msg && !(
+                msg.includes('[SYNC]') ||
+                msg.includes('[SQLITE]') ||
+                msg.includes('[sqlite]') ||
+                msg.includes('[LIVE]') ||
+                msg.includes('[rxfs]') ||
+                msg.includes('ERROR') ||
+                msg.includes('error') ||
+                msg.includes('Failed')
+            )) return;
+            console.log(prefix, msg);
+        } catch (e) { /* ignore */ }
     });
 }
 
