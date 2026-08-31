@@ -21504,7 +21504,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     details: detailedItems,
                     narration: d.narration || d.description || '',
                     createdBy: d.createdBy,
-                    bagCount: extra.bagCount || 0,
+                    bagCount: safeNum(d.bagCount || 0) || (Array.isArray(d.soldBags) ? d.soldBags.length : 0) || (Array.isArray(d.jumboBags) ? d.jumboBags.length : 0) || safeNum(extra.bagCount || 0),
                     paymentTerms: d.paymentTerms || null,
                     invoiceTotal: safeNum(d.totalAmount || d.amount || 0),
                     searchStr: `${d.refNo} ${d.taxInvNo || ''} ${drName} ${crName} ${extra.amtIn} ${extra.amtOut} ${d.description || ''} ${d.narration || ''} ${findUserName(d.createdBy)} ${productNamesStr}`.toLowerCase(),
@@ -22126,6 +22126,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         let qtyTotalSum = 0;
         let qtyInTotal = 0;
         let qtyOutTotal = 0;
+        let totalBags = 0;
         let runningQty = openingQty;
 
         detailedList = detailedList.map(t => {
@@ -22192,6 +22193,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             if (!t.isOpening) {
                 runningTotal += (dr - cr);
                 runningQty += (dQtyIn - dQtyOut);
+                totalBags += safeNum(t.bagCount || 0);
             }
 
             const clsRate = (runningQty !== 0) ? Math.abs(runningTotal / runningQty) : 0;
@@ -22295,6 +22297,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         const sum = {
             debit: 0, credit: 0, balance: 0, count: detailedList.filter(t => !t.isOpening).length,
             totalQtyIn: qtyInTotal, totalQtyOut: qtyOutTotal, avgRate: 0,
+            totalBags: totalBags,
             openingBalance: openingBal,
             openingQty: openingQty,
             openingRate: openingRate
@@ -23222,7 +23225,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         }
     };
 
-    // --- KEYBOARD SHORTCUTS (Alt+S: Breakup, Alt+D: Detailed, Alt+Arrows: Navigation) ---
+    // --- KEYBOARD SHORTCUTS (Alt+S: Breakup, Alt+D: Detailed, Alt+B/N: Date, Alt+Arrows: Pagination) ---
     useEffect(() => {
         const handleKeys = (e) => {
             if (!isOpen) return;
@@ -23239,10 +23242,24 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 setExpandDetails(prev => !prev);
             }
 
-            // Alt+Left/Right: Move Date Range (Previous/Next)
+            // Alt+B / Alt+N: Move Date Range (Previous / Next) — skip while typing
+            if (e.altKey && (e.key.toLowerCase() === 'b' || e.key.toLowerCase() === 'n')) {
+                const isTyping = e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || (e.target.closest && e.target.closest('[contenteditable="true"]'));
+                if (!isTyping) {
+                    e.preventDefault();
+                    moveDateRange(e.key.toLowerCase() === 'b' ? -1 : 1);
+                }
+            }
+
+            // Alt+Left/Right: Pagination (Previous / Next Page) — skip while typing
             if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-                e.preventDefault();
-                moveDateRange(e.key === 'ArrowLeft' ? -1 : 1);
+                const isTyping = e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || (e.target.closest && e.target.closest('[contenteditable="true"]'));
+                if (!isTyping) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    if (e.key === 'ArrowLeft') setCurrentPage(p => Math.max(1, p - 1));
+                    else setCurrentPage(p => Math.min(totalPages, p + 1));
+                }
             }
 
             // ESC: if drilled into a breakup period, go back to breakup view instead of closing
@@ -23254,7 +23271,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
         window.addEventListener('keydown', handleKeys);
         return () => window.removeEventListener('keydown', handleKeys);
-    }, [isOpen, moveDateRange, savedBreakupState]);
+    }, [isOpen, moveDateRange, savedBreakupState, totalPages]);
 
     if (!isOpen) return null;
     const isSalesPurchaseRegister = ['sales', 'purchase'].includes(filter.type);
@@ -23264,8 +23281,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} hideHeader={true} maxWidth="max-w-[100vw]" defaultMaximized={true} removePadding={true}>
             <div className="flex flex-col h-screen max-h-screen bg-white font-sans text-xs select-none overflow-hidden text-slate-900 border-2 border-[#2b5797]">
                 
-                {/* --- CONSOLIDATED TALLY HEADER (SINGLE LINE) --- */}
-                <div className="bg-[#dceaff] text-[#1e3264] p-0.5 px-3 flex justify-between items-center text-[11px] font-black border-b border-blue-400 shadow-sm z-[100] h-10">
+                {/* --- CONSOLIDATED TALLY HEADER (SINGLE LINE, NO WRAP) --- */}
+                <div className="bg-[#dceaff] text-[#1e3264] p-0.5 px-3 flex justify-between items-center flex-nowrap text-[11px] font-black border-b border-blue-400 shadow-sm z-[100] h-10">
                     <div className="flex items-center gap-2">
                         <button onClick={savedBreakupState ? restoreBreakupView : onBack} className="p-1 hover:bg-blue-200 rounded-sm text-[#2b5797] transition-colors" title={savedBreakupState ? `Back to ${savedBreakupState.summaryMode.toUpperCase()} View (ESC)` : 'Go Back'}><ArrowLeft size={18} /></button>
                         {savedBreakupState && (
@@ -23335,6 +23352,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <option value="out">PAYMENT</option>
                                 <option value="contra">CONTRA</option>
                                 <option value="journal">JOURNAL</option>
+                                <option value="manufacturing">STOCK JOURNAL</option>
                             </select>
                          </div>
 
@@ -23767,7 +23785,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     ) : isSalesPurchaseRegister ? (
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
-                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={5 + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','ref','cust','part'].filter(c => hiddenCols.has(c)).length}>TOP TOTALS:</th>
+                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={6 + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','ref','cust','part','bags'].filter(c => hiddenCols.has(c)).length}>TOP TOTALS:</th>
+                                                {!hiddenCols.has('bags') && <th className="p-1.5 border-r border-slate-300 text-center font-black text-orange-600">{summary.totalBags || 0}</th>}
                                                 {!hiddenCols.has('qty') && <th className="p-1.5 border-r border-slate-300 text-right font-black">RECS: {summary.count || 0}</th>}
                                                 {!hiddenCols.has('rate') && <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3((summary.totalQtyIn || 0) + (summary.totalQtyOut || 0))}</th>}
                                                 {!hiddenCols.has('amount') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-500">-</th>}
@@ -23784,6 +23803,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 )}
                                                 {!hiddenCols.has('cust') && <th className="p-1.5 border-r border-slate-300 text-left w-40"><HideCol name="CUSTOMER" id="cust" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('part') && <th className="p-1.5 border-r border-slate-300 text-left"><HideCol name="PARTICULARS" id="part" onHide={toggleColumn} /></th>}
+                                                {!hiddenCols.has('bags') && <th className="p-1.5 border-r border-slate-300 text-center w-16"><HideCol name="BAGS" id="bags" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('qty') && <th className="p-1.5 border-r border-slate-300 text-right w-28"><HideCol name="QTY" id="qty" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('rate') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="RATE" id="rate" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('amount') && <th className="p-1.5 border-r border-slate-300 text-right w-32 cursor-pointer select-none" onClick={() => toggleSortOrder('amount_asc', 'amount_desc')}><HideCol name={`AMOUNT (${displayCurrency})`} id="amount" onHide={toggleColumn} /></th>}
@@ -23845,7 +23865,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         <tr>
                                             <td colSpan={
                                                 isSalesPurchaseRegister 
-                                                    ? (10 - ['check','date','ref','cust','part','qty','rate','amount','due_date','payment'].filter(c => hiddenCols.has(c)).length + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0)) 
+                                                    ? (11 - ['check','date','ref','cust','part','bags','qty','rate','amount','due_date','payment'].filter(c => hiddenCols.has(c)).length + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0)) 
                                                     : (isTallyItemLedger 
                                                         ? (11 - ['check','date','vch','part','ref','item_qty_in','debit','item_qty_out','credit','qty_bal','bal'].filter(c => hiddenCols.has(c)).length) 
                                                         : (8 - ['check','date','vch','part','ref','debit','credit','bal'].filter(c => hiddenCols.has(c)).length + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0)))
@@ -23993,6 +24013,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                 </div>
                                                             </td>
                                                         )}
+                                                        {!hiddenCols.has('bags') && <td className="p-1.5 border-r border-slate-100 text-center font-black text-orange-700">{safeNum(row.bagCount || 0) > 0 ? safeNum(row.bagCount || 0) : '-'}</td>}
                                                         {!hiddenCols.has('qty') && <td className="p-1.5 border-r border-slate-100 text-right font-black text-slate-800">{format3((safeNum(row.qtyIn) + safeNum(row.qtyOut)))}</td>}
                                                         {!hiddenCols.has('rate') && <td className="p-1.5 border-r border-slate-100 text-right font-black text-slate-700">{(() => {
                                                             const rIn = row.rateIn;
@@ -24084,9 +24105,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         {/* Pagination Area */}
                         {totalPages > 1 && (
                             <div className="bg-[#f0f5fc] border-t border-slate-300 p-1 px-4 flex justify-between items-center z-20">
-                                <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="px-3 py-1 bg-white border border-blue-200 rounded-sm text-[10px] font-black hover:bg-blue-50 disabled:opacity-30">Previous</button>
+                                <button title="Previous Page (Alt+←)" disabled={currentPage === 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="px-3 py-1 bg-white border border-blue-200 rounded-sm text-[10px] font-black hover:bg-blue-50 disabled:opacity-30">Previous</button>
                                 <span className="text-[10px] font-black uppercase tracking-tighter text-blue-900 opacity-60">Page {currentPage} of {totalPages}</span>
-                                <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} className="px-3 py-1 bg-white border border-blue-200 rounded-sm text-[10px] font-black hover:bg-blue-50 disabled:opacity-30">Next Page</button>
+                                <button title="Next Page (Alt+→)" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} className="px-3 py-1 bg-white border border-blue-200 rounded-sm text-[10px] font-black hover:bg-blue-50 disabled:opacity-30">Next Page</button>
                             </div>
                         )}
                     </div>
