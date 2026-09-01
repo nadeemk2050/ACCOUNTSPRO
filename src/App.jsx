@@ -27177,10 +27177,13 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         };
     };
 
+    const [showGrossProfit, setShowGrossProfit] = useState(false);
+
     // ✅ Reset to Default View (Closing / Today) on every open
     useEffect(() => {
         if (isOpen) {
             setViewMode('closing');
+            setShowGrossProfit(false);
             setDateRange({ from: today, to: today });
             // console.log("Stock Summary Reset to Default");
         }
@@ -27225,6 +27228,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             setExpandedGroups(new Set());
             setCurrentGroupFilter('');
             setDetailView(false);
+            setShowGrossProfit(false);
         }
     }, [isOpen]);
 
@@ -27885,6 +27889,20 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     const showIn = viewMode === 'inward' || viewMode === 'all';
     const showOut = viewMode === 'outward' || viewMode === 'all';
     const showCls = viewMode === 'closing' || viewMode === 'all';
+    const showGP = showGrossProfit && (viewMode === 'all' || viewMode === 'closing');
+
+    // ✅ GP PER TON FORMULA:
+    // - Last Sold Price: Gross Profit / (Sales Qty + Closing Qty)
+    // - Last Purchase Rate (or standard): Gross Profit / Sales Qty
+    const calcPerTonGP = (grossProfit, outQty, closingQty) => {
+        if (valuationMethod === 'last_sold') {
+            const divisor = (outQty || 0) + (closingQty || 0);
+            return (Math.abs(divisor) > 0.00001) ? (grossProfit / divisor) : null;
+        } else {
+            const divisor = outQty || 0;
+            return (Math.abs(divisor) > 0.00001) ? (grossProfit / divisor) : null;
+        }
+    };
 
     // --- PDF DOWNLOAD ---
     // --- PDF DOWNLOAD ---
@@ -27903,6 +27921,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             if (showIn) tableHead[0].push('In Qty', 'In Rate', 'In Val');
             if (showOut) tableHead[0].push('Out Qty', 'Out Rate', 'Out Val');
             if (showCls) tableHead[0].push('Closing Qty', 'Closing Rate', 'Closing Val');
+            if (showGP) tableHead[0].push('Gross Profit', 'Per Ton GP');
 
             const tableBody = finalFilteredData.map(row => { // Use finalFilteredData
                 let r = [row.name];
@@ -27918,6 +27937,11 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 if (showIn) r.push(q(row.inQty), rt(row.inRate || (row.inQty ? row.inVal / row.inQty : 0)), v(row.inVal));
                 if (showOut) r.push(q(row.outQty), rt(row.outRate || (row.outQty ? row.outVal / row.outQty : 0)), v(row.outVal));
                 if (showCls) r.push(q(row.closingQty), rt(row.closingRate || (row.closingQty ? row.closingVal / row.closingQty : 0)), v(row.closingVal));
+                if (showGP) {
+                    const rowGp = (row.outVal + row.closingVal) - (row.inVal + row.openingVal);
+                    const rowPerTon = calcPerTonGP(rowGp, row.outQty, row.closingQty);
+                    r.push(v(rowGp), rowPerTon !== null ? rt(rowPerTon) : '-');
+                }
                 return r;
             });
 
@@ -27926,6 +27950,11 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             if (showIn) totalRow.push(formatQty(totals.inQty), '', formatCurrency(totals.inVal));
             if (showOut) totalRow.push(formatQty(totals.outQty), '', formatCurrency(totals.outVal));
             if (showCls) totalRow.push(formatQty(totals.closingQty), '', formatCurrency(totals.closingVal));
+            if (showGP) {
+                const totGp = (totals.outVal + totals.closingVal) - (totals.inVal + totals.openingVal);
+                const totPerTon = calcPerTonGP(totGp, totals.outQty, totals.closingQty);
+                totalRow.push(formatCurrency(totGp), totPerTon !== null ? formatCurrency(totPerTon) : '-');
+            }
             tableBody.push(totalRow);
 
             autoTable(doc, { head: tableHead, body: tableBody, startY: 30, theme: 'grid', styles: { fontSize: 8 } });
@@ -27934,6 +27963,169 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         } catch (e) {
             console.error("PDF Failed", e);
             alert("Failed to load PDF library");
+        }
+    };
+
+    // --- XLSX DOWNLOAD (Current Scene View: DTL / COND / Filtered / Gross Profit) ---
+    const handleDownloadExcel = async () => {
+        try {
+            const XLSX = await import("xlsx");
+
+            const rows = [];
+
+            // 1. Title & Filter Header
+            rows.push([`${currentGroupFilter || "Stock Summary"} Report`]);
+            rows.push([`Period: ${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}`]);
+            rows.push([`Valuation: ${valuationLabel}`]);
+            if (selectedLoc) {
+                const locObj = locations.find(l => l.id === selectedLoc);
+                rows.push([`Location: ${locObj ? locObj.name : selectedLoc}`]);
+            }
+            rows.push([`View Mode: ${detailView ? 'Detailed (DTL)' : 'Condensed (COND)'} | ${viewMode.toUpperCase()}`]);
+            rows.push([]); // blank row
+
+            // 2. Column Headers
+            const headerRow = ['Particulars'];
+            if (showOpn && !hiddenCols.has('opn')) {
+                headerRow.push('Opening Qty');
+                if (!isRestricted) {
+                    if (!hiddenCols.has('opn_rate')) headerRow.push('Opening Rate');
+                    if (!hiddenCols.has('opn_val')) headerRow.push('Opening Value');
+                }
+            }
+            if (showIn && !hiddenCols.has('in')) {
+                headerRow.push('Inward Qty');
+                if (!isRestricted) {
+                    if (!hiddenCols.has('in_rate')) headerRow.push('Inward Rate');
+                    if (!hiddenCols.has('in_val')) headerRow.push('Inward Value');
+                }
+            }
+            if (showOut && !hiddenCols.has('out')) {
+                headerRow.push('Outward Qty');
+                if (!isRestricted) {
+                    if (!hiddenCols.has('out_rate')) headerRow.push('Outward Rate');
+                    if (!hiddenCols.has('out_val')) headerRow.push('Outward Value');
+                }
+            }
+            if (showCls && !hiddenCols.has('cls')) {
+                headerRow.push('Closing Qty');
+                if (!isRestricted) {
+                    if (!hiddenCols.has('cls_rate')) headerRow.push('Closing Rate');
+                    if (!hiddenCols.has('cls_val')) headerRow.push('Closing Value');
+                }
+            }
+            if (showGP && !hiddenCols.has('gp')) {
+                if (!hiddenCols.has('gp_val')) headerRow.push('Gross Profit');
+                if (!isRestricted && !hiddenCols.has('gp_rate')) headerRow.push('Per Ton GP');
+            }
+            rows.push(headerRow);
+
+            // 3. Data Rows (Current Scene: detailed/condensed, search, filter)
+            finalFilteredData.forEach(row => {
+                const isGroup = row.type === 'group';
+                const prefix = isGroup ? '  '.repeat(row.level || 0) : '    '.repeat(row.level || 0);
+                const nameDisplay = `${prefix}${row.name}${row.bagCount > 0 ? ` (${row.bagCount} Bags)` : ''}`;
+                
+                const r = [nameDisplay];
+                
+                const getRate = (qty, val, rateProp) => {
+                    if (rateProp !== undefined && rateProp !== null && rateProp !== 0) return rateProp;
+                    return (qty && qty !== 0) ? (val / qty) : 0;
+                };
+
+                if (showOpn && !hiddenCols.has('opn')) {
+                    r.push(Number((row.openingQty || 0).toFixed(3)));
+                    if (!isRestricted) {
+                        if (!hiddenCols.has('opn_rate')) r.push(Number(getRate(row.openingQty, row.openingVal, row.openingRate).toFixed(2)));
+                        if (!hiddenCols.has('opn_val')) r.push(Number((row.openingVal || 0).toFixed(2)));
+                    }
+                }
+                if (showIn && !hiddenCols.has('in')) {
+                    r.push(Number((row.inQty || 0).toFixed(3)));
+                    if (!isRestricted) {
+                        if (!hiddenCols.has('in_rate')) r.push(Number(getRate(row.inQty, row.inVal, row.inRate).toFixed(2)));
+                        if (!hiddenCols.has('in_val')) r.push(Number((row.inVal || 0).toFixed(2)));
+                    }
+                }
+                if (showOut && !hiddenCols.has('out')) {
+                    r.push(Number((row.outQty || 0).toFixed(3)));
+                    if (!isRestricted) {
+                        if (!hiddenCols.has('out_rate')) r.push(Number(getRate(row.outQty, row.outVal, row.outRate).toFixed(2)));
+                        if (!hiddenCols.has('out_val')) r.push(Number((row.outVal || 0).toFixed(2)));
+                    }
+                }
+                if (showCls && !hiddenCols.has('cls')) {
+                    r.push(Number((row.closingQty || 0).toFixed(3)));
+                    if (!isRestricted) {
+                        if (!hiddenCols.has('cls_rate')) r.push(Number(getRate(row.closingQty, row.closingVal, row.closingRate).toFixed(2)));
+                        if (!hiddenCols.has('cls_val')) r.push(Number((row.closingVal || 0).toFixed(2)));
+                    }
+                }
+                if (showGP && !hiddenCols.has('gp')) {
+                    const rowGp = (row.outVal + row.closingVal) - (row.inVal + row.openingVal);
+                    const rowPerTon = calcPerTonGP(rowGp, row.outQty, row.closingQty);
+                    if (!hiddenCols.has('gp_val')) r.push(Number(rowGp.toFixed(2)));
+                    if (!isRestricted && !hiddenCols.has('gp_rate')) r.push(rowPerTon !== null ? Number(rowPerTon.toFixed(2)) : '-');
+                }
+                rows.push(r);
+            });
+
+            // 4. Grand Total Row
+            const totalRow = ['GRAND TOTAL'];
+            if (showOpn && !hiddenCols.has('opn')) {
+                totalRow.push(Number((totals.openingQty || 0).toFixed(3)));
+                if (!isRestricted) {
+                    if (!hiddenCols.has('opn_rate')) totalRow.push('-');
+                    if (!hiddenCols.has('opn_val')) totalRow.push(Number((totals.openingVal || 0).toFixed(2)));
+                }
+            }
+            if (showIn && !hiddenCols.has('in')) {
+                totalRow.push(Number((totals.inQty || 0).toFixed(3)));
+                if (!isRestricted) {
+                    if (!hiddenCols.has('in_rate')) totalRow.push('-');
+                    if (!hiddenCols.has('in_val')) totalRow.push(Number((totals.inVal || 0).toFixed(2)));
+                }
+            }
+            if (showOut && !hiddenCols.has('out')) {
+                totalRow.push(Number((totals.outQty || 0).toFixed(3)));
+                if (!isRestricted) {
+                    if (!hiddenCols.has('out_rate')) totalRow.push('-');
+                    if (!hiddenCols.has('out_val')) totalRow.push(Number((totals.outVal || 0).toFixed(2)));
+                }
+            }
+            if (showCls && !hiddenCols.has('cls')) {
+                totalRow.push(Number((totals.closingQty || 0).toFixed(3)));
+                if (!isRestricted) {
+                    if (!hiddenCols.has('cls_rate')) totalRow.push('-');
+                    if (!hiddenCols.has('cls_val')) totalRow.push(Number((totals.closingVal || 0).toFixed(2)));
+                }
+            }
+            if (showGP && !hiddenCols.has('gp')) {
+                const totGp = (totals.outVal + totals.closingVal) - (totals.inVal + totals.openingVal);
+                const totPerTon = calcPerTonGP(totGp, totals.outQty, totals.closingQty);
+                if (!hiddenCols.has('gp_val')) totalRow.push(Number(totGp.toFixed(2)));
+                if (!isRestricted && !hiddenCols.has('gp_rate')) totalRow.push(totPerTon !== null ? Number(totPerTon.toFixed(2)) : '-');
+            }
+            rows.push(totalRow);
+
+            // 5. Generate Sheet & Workbook
+            const ws = XLSX.utils.aoa_to_sheet(rows);
+            
+            const colWidths = [{ wch: 36 }];
+            for (let i = 1; i < headerRow.length; i++) {
+                colWidths.push({ wch: 16 });
+            }
+            ws['!cols'] = colWidths;
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Stock Summary");
+            
+            const sanitizedTitle = (currentGroupFilter || "Stock_Summary").replace(/[^a-zA-Z0-9_-]/g, '_');
+            XLSX.writeFile(wb, `${sanitizedTitle}_${dateRange.from}_to_${dateRange.to}.xlsx`);
+
+        } catch (e) {
+            console.error("Excel Export Failed", e);
+            alert("Failed to export Excel file: " + (e.message || e));
         }
     };
 
@@ -27975,7 +28167,12 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                             {/* VIEW MODE */}
                             <div className="flex items-center gap-1 bg-blue-50 px-2 py-1 rounded border border-blue-100">
                                 <Eye size={16} className="text-blue-600" />
-                                <select className="bg-transparent text-xs font-bold text-blue-700 outline-none cursor-pointer" value={viewMode} onChange={e => setViewMode(e.target.value)}>
+                                <select className="bg-transparent text-xs font-bold text-blue-700 outline-none cursor-pointer" value={viewMode} onChange={e => {
+                                    setViewMode(e.target.value);
+                                    if (e.target.value !== 'all' && showGrossProfit) {
+                                        setShowGrossProfit(false);
+                                    }
+                                }}>
                                     <option value="all">All Together (Opn/In/Out/Cls)</option>
                                     <option value="closing">Closing Balance Only</option>
                                     <option value="opening">Opening Balance Only</option>
@@ -28064,7 +28261,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 </button>
                             )}
 
-                            {/* ✅ NEW: VALUATION METHOD SELECTOR */}
+                            {/* ✅ NEW: VALUATION METHOD SELECTOR (Restricted to Last Purchase & Last Sold when Gross Profit active) */}
                             <div className="flex items-center gap-1 bg-yellow-50 px-2 py-1 rounded border border-yellow-200">
                                 <span className="text-[10px] font-bold text-yellow-700 uppercase">Valuation:</span>
                                 <select
@@ -28072,7 +28269,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     value={valuationMethod}
                                     onChange={(e) => setValuationMethod(e.target.value)}
                                 >
-                                    <option value="fifo">FIFO</option>
+                                    {!showGrossProfit && <option value="fifo">FIFO</option>}
                                     <option value="last_purchase">Last Purchase Rate</option>
                                     <option value="last_sold">Last Sold Price</option>
                                 </select>
@@ -28103,6 +28300,30 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     {itemCountsBadge.active} / {itemCountsBadge.total}
                                 </span>
                             </button>
+
+                            {/* ✅ SHOW / HIDE GROSS PROFIT BUTTON */}
+                            <button
+                                onClick={() => {
+                                    if (!showGrossProfit) {
+                                        setShowGrossProfit(true);
+                                        setViewMode('all');
+                                        if (valuationMethod === 'fifo') {
+                                            setValuationMethod('last_purchase');
+                                        }
+                                    } else {
+                                        setShowGrossProfit(false);
+                                        setViewMode('closing');
+                                    }
+                                }}
+                                className={`uppercase text-[10px] font-black px-3 py-1.5 rounded border transition-all flex items-center gap-1.5 shadow-sm ${showGrossProfit
+                                    ? "bg-emerald-700 text-white border-emerald-800 hover:bg-emerald-800 ring-2 ring-emerald-400/40"
+                                    : "bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+                                    }`}
+                                title={showGrossProfit ? "Hide Gross Profit (Return to Closing Balances)" : "Show Gross Profit (Opens All Together View)"}
+                            >
+                                <TrendingUp size={14} className={showGrossProfit ? "text-emerald-200" : "text-emerald-600"} />
+                                <span>{showGrossProfit ? "HIDE GROSS PROFIT" : "SHOW GROSS PROFIT"}</span>
+                            </button>
                         </div>
                     )}
 
@@ -28115,6 +28336,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
                     <div className="flex items-center gap-1">
                         <button onClick={handleDownloadPDF} className="p-2 text-red-600 hover:bg-red-50 rounded-full" title="Export PDF"><FileText size={20} /></button>
+                        <button onClick={handleDownloadExcel} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-full" title="Export Excel (XLSX)"><FileSpreadsheet size={20} /></button>
                         <button onClick={generateReport} className="bg-blue-600 text-white p-2 rounded-full shadow hover:bg-blue-700 active:scale-95 transition-transform">
                             {loading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Search size={18} />}
                         </button>
@@ -28134,7 +28356,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                     {/* The "Zoomable & Unified Scroll" Wrapper */}
                     <div
                         style={{
-                            minWidth: viewMode === 'all' ? 'max-content' : '100%',
+                            minWidth: (viewMode === 'all' || showGP) ? 'max-content' : '100%',
                             transform: `scale(${zoomScale})`,
                             transformOrigin: 'top left',
                         }}
@@ -28150,12 +28372,14 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                         {showIn && !hiddenCols.has('in') && <th colSpan={isRestricted ? "1" : (3 - ['in_rate', 'in_val'].filter(k => hiddenCols.has(k)).length)} className="p-1 border border-slate-500 text-green-800"><HideCol name="Inwards" id="in" onHide={toggleColumn} color="#166534" /></th>}
                                         {showOut && !hiddenCols.has('out') && <th colSpan={isRestricted ? "1" : (3 - ['out_rate', 'out_val'].filter(k => hiddenCols.has(k)).length)} className="p-1 border border-slate-500 text-red-800"><HideCol name="Outwards" id="out" onHide={toggleColumn} color="#991b1b" /></th>}
                                         {showCls && !hiddenCols.has('cls') && <th colSpan={isRestricted ? "1" : (3 - ['cls_rate', 'cls_val'].filter(k => hiddenCols.has(k)).length)} className="p-1 border border-slate-500 text-blue-800"><HideCol name="Closing Balance" id="cls" onHide={toggleColumn} color="#1e40af" /></th>}
+                                        {showGP && !hiddenCols.has('gp') && <th colSpan={isRestricted ? "1" : (2 - ['gp_val', 'gp_rate'].filter(k => hiddenCols.has(k)).length)} className="p-1 border border-slate-500 text-emerald-900 bg-[#d8eed8]"><HideCol name="Gross Profit" id="gp" onHide={toggleColumn} color="#065f46" /></th>}
                                     </tr>
                                     <tr className="uppercase font-black text-center text-[10px]">
                                         {showOpn && !hiddenCols.has('opn') && <><th className="p-1 border border-slate-500 w-24">Quantity</th>{!isRestricted && <>{!hiddenCols.has('opn_rate') && <th className="p-1 border border-slate-500 w-20"><HideCol name="Rate" id="opn_rate" onHide={toggleColumn} /></th>}{!hiddenCols.has('opn_val') && <th className="p-1 border border-slate-500 w-28"><HideCol name="Value" id="opn_val" onHide={toggleColumn} /></th>}</>}</>}
                                         {showIn && !hiddenCols.has('in') && <><th className="p-1 border border-slate-500 w-24">Quantity</th>{!isRestricted && <>{!hiddenCols.has('in_rate') && <th className="p-1 border border-slate-500 w-20"><HideCol name="Rate" id="in_rate" onHide={toggleColumn} /></th>}{!hiddenCols.has('in_val') && <th className="p-1 border border-slate-500 w-28"><HideCol name="Value" id="in_val" onHide={toggleColumn} /></th>}</>}</>}
                                         {showOut && !hiddenCols.has('out') && <><th className="p-1 border border-slate-500 w-24">Quantity</th>{!isRestricted && <>{!hiddenCols.has('out_rate') && <th className="p-1 border border-slate-500 w-20"><HideCol name="Rate" id="out_rate" onHide={toggleColumn} /></th>}{!hiddenCols.has('out_val') && <th className="p-1 border border-slate-500 w-28"><HideCol name="Value" id="out_val" onHide={toggleColumn} /></th>}</>}</>}
                                         {showCls && !hiddenCols.has('cls') && <><th className="p-1 border border-slate-500 w-24">Quantity</th>{!isRestricted && <>{!hiddenCols.has('cls_rate') && <th className="p-1 border border-slate-500 w-20"><HideCol name="Rate" id="cls_rate" onHide={toggleColumn} /></th>}{!hiddenCols.has('cls_val') && <th className="p-1 border border-slate-500 w-28 text-blue-900 bg-blue-50/20"><HideCol name="Value" id="cls_val" onHide={toggleColumn} /></th>}</>}</>}
+                                        {showGP && !hiddenCols.has('gp') && <>{!hiddenCols.has('gp_val') && <th className="p-1 border border-slate-500 w-28 text-emerald-900 bg-emerald-50/40"><HideCol name="Gross Profit" id="gp_val" onHide={toggleColumn} /></th>}{!isRestricted && <>{!hiddenCols.has('gp_rate') && <th className="p-1 border border-slate-500 w-28 text-emerald-900 bg-emerald-50/40"><HideCol name="Per Ton GP" id="gp_rate" onHide={toggleColumn} /></th>}</>}</>}
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -28211,6 +28435,28 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                                     {showIn && !hiddenCols.has('in') && renderGroupCell(row.inQty, row.inVal, 'text-green-800', 'in')}
                                                     {showOut && !hiddenCols.has('out') && renderGroupCell(row.outQty, row.outVal, 'text-red-800', 'out')}
                                                     {showCls && !hiddenCols.has('cls') && renderGroupCell(row.closingQty, row.closingVal, 'text-blue-800', 'cls')}
+                                                    {showGP && !hiddenCols.has('gp') && (() => {
+                                                        const rowGp = (row.outVal + row.closingVal) - (row.inVal + row.openingVal);
+                                                        const perTon = calcPerTonGP(rowGp, row.outQty, row.closingQty);
+                                                        return (
+                                                            <React.Fragment key={`${row.id}-group-gp`}>
+                                                                {!hiddenCols.has('gp_val') && (
+                                                                    <td className={`p-1.5 pr-2 text-right border border-slate-500 font-black whitespace-nowrap ${rowGp >= 0 ? 'text-emerald-900 bg-emerald-100/30' : 'text-red-900 bg-red-100/30'}`}>
+                                                                        {showVal ? formatCurrency(rowGp) : '-'}
+                                                                    </td>
+                                                                )}
+                                                                {!isRestricted && (
+                                                                    <React.Fragment>
+                                                                        {!hiddenCols.has('gp_rate') && (
+                                                                            <td className={`p-1 pr-2 text-right border border-slate-500 font-bold text-[9px] italic whitespace-nowrap ${rowGp >= 0 ? 'text-emerald-800' : 'text-red-800'}`}>
+                                                                                {(showVal && perTon !== null) ? formatCurrency(perTon) : '-'}
+                                                                            </td>
+                                                                        )}
+                                                                    </React.Fragment>
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    })()}
                                                 </tr>
                                             );
                                         } else {
@@ -28228,6 +28474,28 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                                     {showIn && !hiddenCols.has('in') && renderCell(row.inQty, row.inVal, 'text-green-700', false, 'in')}
                                                     {showOut && !hiddenCols.has('out') && renderCell(row.outQty, row.outVal, 'text-red-700', false, 'out')}
                                                     {showCls && !hiddenCols.has('cls') && renderCell(row.closingQty, row.closingVal, 'text-blue-900 font-black', true, 'cls')}
+                                                    {showGP && !hiddenCols.has('gp') && (() => {
+                                                        const rowGp = (row.outVal + row.closingVal) - (row.inVal + row.openingVal);
+                                                        const perTon = calcPerTonGP(rowGp, row.outQty, row.closingQty);
+                                                        return (
+                                                            <React.Fragment key={`${row.id}-item-gp`}>
+                                                                {!hiddenCols.has('gp_val') && (
+                                                                    <td className={`p-1 pr-2 text-right border border-slate-300 font-black whitespace-nowrap ${rowGp >= 0 ? 'text-emerald-800 bg-emerald-50/20' : 'text-red-700 bg-red-50/20'}`}>
+                                                                        {showVal ? formatCurrency(rowGp) : '-'}
+                                                                    </td>
+                                                                )}
+                                                                {!isRestricted && (
+                                                                    <React.Fragment>
+                                                                        {!hiddenCols.has('gp_rate') && (
+                                                                            <td className={`p-1 pr-2 text-right border border-slate-300 font-semibold text-[10px] whitespace-nowrap ${rowGp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                                                                                {(showVal && perTon !== null) ? formatCurrency(perTon) : '-'}
+                                                                            </td>
+                                                                        )}
+                                                                    </React.Fragment>
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    })()}
                                                 </tr>
                                             );
                                         }
@@ -28257,6 +28525,28 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                                 )}
                                             </>
                                         )}
+                                        {showGP && !hiddenCols.has('gp') && (() => {
+                                            const totGp = (totals.outVal + totals.closingVal) - (totals.inVal + totals.openingVal);
+                                            const totPerTon = calcPerTonGP(totGp, totals.outQty, totals.closingQty);
+                                            return (
+                                                <>
+                                                    {!hiddenCols.has('gp_val') && (
+                                                        <td className={`p-1 pr-2 border border-slate-900 font-black text-base whitespace-nowrap ${totGp >= 0 ? 'text-emerald-900 bg-emerald-100/40' : 'text-red-900 bg-red-100/40'}`}>
+                                                            {formatCurrency(totGp)}
+                                                        </td>
+                                                    )}
+                                                    {!isRestricted && (
+                                                        <>
+                                                            {!hiddenCols.has('gp_rate') && (
+                                                                <td className={`p-1 pr-2 border border-slate-900 font-black text-sm whitespace-nowrap ${totGp >= 0 ? 'text-emerald-900' : 'text-red-900'}`}>
+                                                                    {totPerTon !== null ? formatCurrency(totPerTon) : '-'}
+                                                                </td>
+                                                            )}
+                                                        </>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
                                     </tr>
                                 </tfoot>
                             </table>
