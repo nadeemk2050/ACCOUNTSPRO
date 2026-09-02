@@ -25,6 +25,7 @@
     "files": [
       "dist/**/*",
       "electron-main.cjs",
+      "electron-sqlite.cjs",
       "package.json"
     ],
     "win": {
