@@ -27187,16 +27187,26 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     };
 
     const [showGrossProfit, setShowGrossProfit] = useState(false);
+    const [reportData, setReportData] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [selectedLoc, setSelectedLoc] = useState('');
 
-    // ✅ Reset to Default View (Closing / Today) on every open
-    useEffect(() => {
-        if (isOpen) {
-            setViewMode('closing');
-            setShowGrossProfit(false);
-            setDateRange({ from: today, to: today });
-            // console.log("Stock Summary Reset to Default");
-        }
-    }, [isOpen, today]);
+    // UI States
+    const [fontSize, setFontSize] = useState(11);
+    const [showSearch, setShowSearch] = useState(false);
+    const [showDate, setShowDate] = useState(false);
+    const [showZeroBalance, setShowZeroBalance] = useState(false);
+
+    // Refs to ensure live snapshot listeners and async calls always read the latest settings
+    const dateRangeRef = useRef(dateRange);
+    useEffect(() => { dateRangeRef.current = dateRange; }, [dateRange]);
+
+    const valuationMethodRef = useRef(valuationMethod);
+    useEffect(() => { valuationMethodRef.current = valuationMethod; }, [valuationMethod]);
+
+    const selectedLocRef = useRef(selectedLoc);
+    useEffect(() => { selectedLocRef.current = selectedLoc; }, [selectedLoc]);
 
     const valuationLabel = useMemo(() => {
         if (valuationMethod === 'fifo') return 'FIFO';
@@ -27205,7 +27215,6 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         return 'FIFO';
     }, [valuationMethod]);
 
-    // ✅ NEW: Group Filter State
     // ✅ NEW: Group Filter State (If empty string -> Top Level View)
     const [currentGroupFilter, setCurrentGroupFilter] = useState(''); // '' means All/Top Level
     const [expandedGroups, setExpandedGroups] = useState(new Set());
@@ -27232,37 +27241,18 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         });
     };
 
-    useEffect(() => {
-        if (!isOpen) {
-            setExpandedGroups(new Set());
-            setCurrentGroupFilter('');
-            setDetailView(false);
-            setShowGrossProfit(false);
-        }
-    }, [isOpen]);
-
-    const [reportData, setReportData] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [searchTerm, setSearchTerm] = useState('');
-    const [selectedLoc, setSelectedLoc] = useState('');
-
-    // UI States
-    const [fontSize, setFontSize] = useState(11);
-    const [showSearch, setShowSearch] = useState(false);
-    const [showDate, setShowDate] = useState(false);
-
-    // ✅ NEW: Toggle for Zero Balance Items
-    const [showZeroBalance, setShowZeroBalance] = useState(false);
-
     // --- CHECK RESTRICTION ---
     const isRestricted = userRole === 'data_entry_1';
 
     // --- GENERATE REPORT LOGIC ---
-    const generateReport = async () => {
+    const generateReport = async (customRange = null) => {
         setLoading(true);
         try {
-            const startDate = dateRange.from;
-            const endDate = dateRange.to;
+            const activeRange = customRange || dateRangeRef.current || dateRange;
+            const startDate = activeRange.from;
+            const endDate = activeRange.to;
+            const activeValuation = valuationMethodRef.current || valuationMethod;
+            const activeLoc = selectedLocRef.current !== undefined ? selectedLocRef.current : selectedLoc;
             const targetUid = dataOwnerId || user.uid;
 
             const qInvConstraints = [where('userId', '==', targetUid)];
@@ -27412,7 +27402,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             let movementSeq = 0;
 
             allInvoices.forEach(d => {
-                if (selectedLoc && d.locationId !== selectedLoc) return;
+                if (activeLoc && d.locationId !== activeLoc) return;
 
                 const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
                 const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
@@ -27442,7 +27432,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             });
 
             stockJournalsFromSnap.forEach(d => {
-                if (selectedLoc && d.locationId !== selectedLoc) return;
+                if (activeLoc && d.locationId !== activeLoc) return;
                 (d.produced || []).forEach(item => {
                     const qtyRaw = Number(item.quantity || 0);
                     if (!item.productId || qtyRaw === 0) return;
@@ -27503,9 +27493,9 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
                 const avgRate = (closingQty !== 0) ? Math.abs(ledgerClosingVal / closingQty) : 0;
                 // ✅ Valuation method (FIFO, Last Purchase/Prod Rate, Last Sold Price) ONLY affects Closing Stock
-                const closingRate = getRate(valuationMethod, i.lastPurchaseRate, i.lastSaleRate, avgRate, fifoClosingVal, closingQty);
+                const closingRate = getRate(activeValuation, i.lastPurchaseRate, i.lastSaleRate, avgRate, fifoClosingVal, closingQty);
 
-                const closingVal = (valuationMethod === 'fifo')
+                const closingVal = (activeValuation === 'fifo')
                     ? fifoClosingVal
                     : (closingQty * closingRate);
 
@@ -27535,23 +27525,37 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     // ✅ FIX: Re-run report when date range, valuation method, or location changes
     useEffect(() => { if (isOpen) generateReport(); }, [isOpen, valuationMethod, products, stockGroups, dateRange.from, dateRange.to, selectedLoc]);
 
-    // ✅ LIVE BAG COUNTS: re-generate automatically whenever jumbo_bags or sales invoices change,
-    // so bag counts in the Stock Summary stay in sync with every voucher/bag CRUD action.
+    // ✅ LIVE SYNC: re-generate automatically whenever jumbo_bags, invoices, or stock journals change,
+    // so data in the Stock Summary stays in sync with every remote or background voucher CRUD action.
     useEffect(() => {
         if (!isOpen) return;
         const uidCandidates = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
         if (uidCandidates.length === 0) return;
+
+        let debounceTimer = null;
+        const triggerLiveSync = () => {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                generateReport();
+            }, 300);
+        };
+
         const liveUnsubs = uidCandidates.flatMap((uid) =>
             ['userId', 'ownerId'].flatMap((field) => {
                 const qBags = query(collection(db, 'jumbo_bags'), where(field, '==', uid));
-                const qInv = query(collection(db, 'invoices'), where(field, '==', uid), where('type', '==', 'sales'));
+                const qInv = query(collection(db, 'invoices'), where(field, '==', uid));
+                const qMfg = query(collection(db, 'stock_journals'), where(field, '==', uid));
                 return [
-                    onSnapshot(qBags, () => generateReport(), (e) => console.warn('StockSummary bags live-sync err:', e)),
-                    onSnapshot(qInv, () => generateReport(), (e) => console.warn('StockSummary invoices live-sync err:', e))
+                    onSnapshot(qBags, triggerLiveSync, (e) => console.warn('StockSummary bags live-sync err:', e)),
+                    onSnapshot(qInv, triggerLiveSync, (e) => console.warn('StockSummary invoices live-sync err:', e)),
+                    onSnapshot(qMfg, triggerLiveSync, (e) => console.warn('StockSummary mfg live-sync err:', e))
                 ];
             })
         );
-        return () => liveUnsubs.forEach((u) => u && u());
+        return () => {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            liveUnsubs.forEach((u) => u && u());
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, dataOwnerId, user?.uid]);
 
