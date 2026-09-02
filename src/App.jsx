@@ -6525,11 +6525,20 @@ export default function App() {
         setActiveSubMenu(null);
     }
 
-    const handleStockItemClick = (itemId) => {
+    const handleStockItemClick = (itemOrId, dRange) => {
         // ✅ FIX: Preserve modal stack so back button returns to Stock Summary
         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
         onMenuClick();
-        setLedgerInitialState({ type: 'item', id: itemId });
+        const itemId = (typeof itemOrId === 'object' && itemOrId !== null) ? (itemOrId.id || itemOrId) : itemOrId;
+        const rangeObj = (dRange && typeof dRange === 'object') ? dRange : (typeof itemOrId === 'object' ? itemOrId : null);
+        const start = rangeObj?.from || rangeObj?.startDate || '';
+        const end = rangeObj?.to || rangeObj?.endDate || '';
+        setLedgerInitialState({
+            type: 'item',
+            id: itemId,
+            startDate: start,
+            endDate: end
+        });
         setActiveModal('ledgers');
     };
 
@@ -27191,7 +27200,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
     const valuationLabel = useMemo(() => {
         if (valuationMethod === 'fifo') return 'FIFO';
-        if (valuationMethod === 'last_purchase') return 'Last Purchase Rate';
+        if (valuationMethod === 'last_purchase') return 'Last Purchase/Prod Rate';
         if (valuationMethod === 'last_sold') return 'Last Sold Price';
         return 'FIFO';
     }, [valuationMethod]);
@@ -27376,11 +27385,11 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
                 // B. Historical Rates (Up to startDate)
                 if (date < startDate) {
-                    if (type === 'in' && date >= row.histPurchaseDate) {
+                    if (type === 'in' && rate > 0 && date >= row.histPurchaseDate) {
                         row.histPurchaseDate = date;
                         row.histPurchaseRate = rate;
                     }
-                    if (type === 'out' && date >= row.histSaleDate) {
+                    if (type === 'out' && rate > 0 && date >= row.histSaleDate) {
                         row.histSaleDate = date;
                         row.histSaleRate = rate;
                     }
@@ -27388,11 +27397,11 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
                 // C. Overall Rates (Up to endDate)
                 if (date <= endDate) {
-                    if (type === 'in' && date >= row.lastPurchaseDate) {
+                    if (type === 'in' && rate > 0 && date >= row.lastPurchaseDate) {
                         row.lastPurchaseDate = date;
                         row.lastPurchaseRate = rate;
                     }
-                    if (type === 'out' && date >= row.lastSaleDate) {
+                    if (type === 'out' && rate > 0 && date >= row.lastSaleDate) {
                         row.lastSaleDate = date;
                         row.lastSaleRate = rate;
                     }
@@ -27488,12 +27497,14 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 };
 
                 const startAvg = i.openingQty !== 0 ? Math.abs(i.openingVal / i.openingQty) : 0;
-                const openRate = getRate(valuationMethod, i.histPurchaseRate, i.histSaleRate, startAvg, fifoOpeningVal, i.openingQty);
+                // ✅ FIXED RULE: Opening Stock ALWAYS fetches Last Purchase/Production Rate from history (up to startDate)
+                const openRate = i.histPurchaseRate || startAvg || 0;
+                const openingVal = i.openingQty * openRate;
 
                 const avgRate = (closingQty !== 0) ? Math.abs(ledgerClosingVal / closingQty) : 0;
+                // ✅ Valuation method (FIFO, Last Purchase/Prod Rate, Last Sold Price) ONLY affects Closing Stock
                 const closingRate = getRate(valuationMethod, i.lastPurchaseRate, i.lastSaleRate, avgRate, fifoClosingVal, closingQty);
 
-                // ✅ FIX: Use Valuated Closing Value instead of always Average Cost
                 const closingVal = (valuationMethod === 'fifo')
                     ? fifoClosingVal
                     : (closingQty * closingRate);
@@ -27502,9 +27513,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                     id: i.id, name: i.name, group: i.group, unit: i.unit,
                     openingQty: i.openingQty,
                     openingRate: openRate,
-                    openingVal: (valuationMethod === 'fifo')
-                        ? fifoOpeningVal
-                        : (i.openingQty * openRate),
+                    openingVal: openingVal,
                     inQty: i.inQty,
                     inRate: i.inQty > 0 ? i.inVal / i.inQty : 0,
                     inVal: i.inVal,
@@ -27822,7 +27831,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 const row = finalFilteredData[focusedRowIdx];
                 if (!row) return;
                 if (row.type === 'group') toggleGroup(row.name);
-                else if (onItemClick) onItemClick(row.id);
+                else if (onItemClick) onItemClick(row.id, dateRange);
             } else if (e.key === 'ArrowLeft') {
                 e.preventDefault();
                 const row = finalFilteredData[focusedRowIdx];
@@ -27831,7 +27840,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, focusedRowIdx, finalFilteredData, expandedGroups, onItemClick, toggleGroup]);
+    }, [isOpen, focusedRowIdx, finalFilteredData, expandedGroups, onItemClick, toggleGroup, dateRange]);
 
     useEffect(() => {
         if (focusedRowRef.current) focusedRowRef.current.scrollIntoView({ block: 'nearest' });
@@ -28270,7 +28279,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     onChange={(e) => setValuationMethod(e.target.value)}
                                 >
                                     {!showGrossProfit && <option value="fifo">FIFO</option>}
-                                    <option value="last_purchase">Last Purchase Rate</option>
+                                    <option value="last_purchase">Last Purchase/Prod Rate</option>
                                     <option value="last_sold">Last Sold Price</option>
                                 </select>
                             </div>
@@ -28463,7 +28472,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                             const level = row.level || 0;
                                             const bgShade = level === 0 ? 'bg-[#fdf6ea]' : level === 1 ? 'bg-[#fefaf2]' : 'bg-[#fffdf9]';
                                             return (
-                                                <tr ref={isFocused ? focusedRowRef : null} key={row.id} className={`transition-colors text-right text-xs cursor-pointer ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : `hover:bg-blue-50/50 ${bgShade}`}`} onClick={() => { setFocusedRowIdx(rowIdx); if (onItemClick) onItemClick(row.id); }}>
+                                                <tr ref={isFocused ? focusedRowRef : null} key={row.id} className={`transition-colors text-right text-xs cursor-pointer ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : `hover:bg-blue-50/50 ${bgShade}`}`} onClick={() => { setFocusedRowIdx(rowIdx); if (onItemClick) onItemClick(row.id, dateRange); }}>
                                                     <td className={`p-1 px-2 border border-slate-300 text-left sticky left-0 ${isFocused ? 'bg-blue-200/60' : bgShade} z-10 w-44 sm:w-64`}>
                                                         <div className="flex items-center justify-between gap-2 min-w-0" style={{ paddingLeft: `${(level * 16) + 8}px` }}>
                                                             <span className="font-semibold text-slate-800 flex-1 min-w-0" style={getTallyShrinkStyle(row.name, false)}>{row.name}</span>
@@ -30519,6 +30528,8 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     closingQty: Number(p.openingStock || 0), // Will be adjusted
                     
                     // Tracking for Valuation
+                    histPurchaseRate: Number(p.purchasePrice || 0),
+                    histPurchaseDate: '1970-01-01',
                     lastPurchaseRate: Number(p.purchasePrice || 0),
                     lastPurchaseDate: '1970-01-01',
                     lastSaleRate: Number(p.salePrice || 0),
@@ -30532,13 +30543,22 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             // Helper: Track Latest Rates (Only up to the TO date — for point-in-time accuracy)
             const trackRate = (pid, rate, date, type) => {
                 if (!itemMap[pid]) return;
-                if (date > range.to) return; // Ignore future invoices beyond the report end date
                 const r = Number(rate);
                 if (!r) return; // Ignore zero rates
                 if (type === 'purchase') {
-                    if (date >= itemMap[pid].lastPurchaseDate) { itemMap[pid].lastPurchaseDate = date; itemMap[pid].lastPurchaseRate = r; }
+                    if (date < range.from && date >= itemMap[pid].histPurchaseDate) {
+                        itemMap[pid].histPurchaseDate = date;
+                        itemMap[pid].histPurchaseRate = r;
+                    }
+                    if (date <= range.to && date >= itemMap[pid].lastPurchaseDate) {
+                        itemMap[pid].lastPurchaseDate = date;
+                        itemMap[pid].lastPurchaseRate = r;
+                    }
                 } else {
-                    if (date >= itemMap[pid].lastSaleDate) { itemMap[pid].lastSaleDate = date; itemMap[pid].lastSaleRate = r; }
+                    if (date <= range.to && date >= itemMap[pid].lastSaleDate) {
+                        itemMap[pid].lastSaleDate = date;
+                        itemMap[pid].lastSaleRate = r;
+                    }
                 }
             };
 
@@ -30809,11 +30829,20 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             });
             const fifoClosingValue = layersValue(fifoLayersForClosing);
 
+            // ✅ FIXED RULE: Opening Stock ALWAYS fetches historical Last Purchase/Prod rate (up to range.from)
             let totalOpeningStockValue = 0;
-            let totalClosingStockValue = 0;
+            Object.values(itemMap).forEach(i => {
+                let opRate = i.histPurchaseRate;
+                if (!opRate || opRate === 0) {
+                    const prod = products.find(p => p.id === i.id);
+                    opRate = Number(prod?.purchasePrice || prod?.openingRate || 0);
+                }
+                totalOpeningStockValue += (i.openingQty * opRate);
+            });
 
+            // Valuation method (FIFO, Last Purchase/Prod Rate, Last Sold Price) ONLY affects Closing Stock
+            let totalClosingStockValue = 0;
             if (valuationMethod === 'fifo') {
-                totalOpeningStockValue = fifoOpeningValue;
                 totalClosingStockValue = fifoClosingValue;
             } else {
                 Object.values(itemMap).forEach(i => {
@@ -30829,7 +30858,6 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
                     }
 
-                    totalOpeningStockValue += (i.openingQty * valRate);
                     totalClosingStockValue += (i.closingQty * valRate);
                 });
             }
@@ -31012,7 +31040,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
             // Valuation Label
             let valLabel = "FIFO";
-            if (valuationMethod === 'last_purchase') valLabel = "Last Purch. Rate";
+            if (valuationMethod === 'last_purchase') valLabel = "Last Purchase/Prod Rate";
             if (valuationMethod === 'last_sale') valLabel = "Last Sold Rate";
 
             const assets = [
@@ -31079,7 +31107,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
                         <div className="flex bg-black/20 p-1 rounded-md border border-white/10">
                             <button onClick={() => setValuationMethod('fifo')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'fifo' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>FIFO</button>
-                            <button onClick={() => setValuationMethod('last_purchase')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_purchase' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST PURCH. RATE</button>
+                            <button onClick={() => setValuationMethod('last_purchase')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_purchase' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST PURCH/PROD RATE</button>
                             <button onClick={() => setValuationMethod('last_sale')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'last_sale' ? 'bg-[#e2f1f8]/20 text-white shadow-lg' : 'text-white/40 hover:text-white'}`}>LAST SOLD RATE</button>
                         </div>
                     </div>

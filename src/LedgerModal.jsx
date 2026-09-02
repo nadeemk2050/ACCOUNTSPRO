@@ -1195,7 +1195,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                             onChange={(e) => setItemValuationMethod(e.target.value)}
                                         >
                                             <option value="fifo">FIFO</option>
-                                            <option value="last_purchase">LAST PURCHASE</option>
+                                            <option value="last_purchase">LAST PURCH/PROD RATE</option>
                                             <option value="last_sold">LAST SOLD</option>
                                         </select>
                                     </div>

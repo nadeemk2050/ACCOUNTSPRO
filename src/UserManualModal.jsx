@@ -70,7 +70,7 @@ const UserManualModal = ({ isOpen, onClose }) => {
               icon={BookOpen}
               title="Dual Valuation"
               color="green"
-              desc="In Stock Inventory, Item Ledger & Financial Reports, choose a valuation type: FIFO, Last Purchase Rate, or Last Sold Price."
+              desc="In Stock Inventory, Item Ledger & Financial Reports, choose a valuation type: FIFO, Last Purchase/Prod Rate, or Last Sold Price."
             />
 
           </div>
