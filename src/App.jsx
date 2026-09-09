@@ -136,6 +136,7 @@ import ExportVoucherModal from './ExportVoucherModal.jsx';
 import ImportVoucherModal from './ImportVoucherModal.jsx';
 import ImportPaymentExcelModal from './ImportPaymentExcelModal.jsx';
 import V201VerifyReportModal from './V201VerifyReportModal.jsx';
+import V311ReportModal from './V311ReportModal.jsx';
 import BackupHistoryModal, { addBackupHistoryEntry } from './BackupHistoryModal.jsx';
 import EditToolsModal from './EditToolsModal.jsx';
 
@@ -12408,6 +12409,7 @@ export default function App() {
                 onFilterSave={setSavedLedgerFilter}
                 currencySymbol={currencySymbol}
                 displayCompanyName={displayCompanyName}
+                companyProfile={companyProfile}
             />
 
             {/* NEW UNIT MANAGER */}
@@ -20789,7 +20791,7 @@ const HideCol = ({ name, id, onHide, color = 'inherit' }) => (
 );
 
 // --- UPDATED LEDGER MODAL (With Collapsible Tools & Persistent Header) ---
-const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker, displayCompanyName }) => {
+const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userRole, parties, partiesRef, products, productsRef, expenses, directExpenseAccounts = [], incomeAccounts, accounts, accountsRef, capitalAccounts, assetAccounts, taxRates, subUsers = [], initialState, onViewTransaction, onDeleteTransaction, onBulkDelete, savedFilter, onFilterSave, currencySymbol, globalDateCmd, onAddToFavorites, onOpenVoucherPicker, displayCompanyName, companyProfile }) => {
 
     // Filters
     const [filter, setFilter] = useState({ type: 'daybook', id: '', startDate: '', endDate: '' });
@@ -20854,6 +20856,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     };
     const restoreColumns = () => setHiddenCols(new Set());
     const [showV201, setShowV201] = useState(false); // UAE V201 VAT pre-verification report (tax ledgers)
+    const [showV311, setShowV311] = useState(false); // UAE FTA VAT 311 Common Template legal reports (tax ledgers)
 
     // ✅ NEW: Refs for Realtime Data
     const rawDataRef = useRef({ inv: [], pay: [], jv: [], mfg: [] });
@@ -24268,10 +24271,28 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             isOpen={showV201 && filter.type === 'tax'}
             onClose={() => setShowV201(false)}
             onBack={() => setShowV201(false)}
+            onGenerateV311={() => setShowV311(true)}
             user={user}
             dataOwnerId={dataOwnerId}
             parties={parties}
             taxRates={taxRates}
+            taxId={filter.type === 'tax' ? filter.id : null}
+            taxName={filter.type === 'tax' ? (taxRates.find(t => t.id === filter.id)?.name || null) : null}
+            currencySymbol={currencySymbol}
+        />
+
+        {/* UAE FTA VAT 311 Common Template legal reports (contextual: individual Tax Ledger view) */}
+        <V311ReportModal
+            isOpen={showV311 && filter.type === 'tax'}
+            onClose={() => setShowV311(false)}
+            onBack={() => setShowV311(false)}
+            user={user}
+            dataOwnerId={dataOwnerId}
+            parties={parties}
+            products={products}
+            taxRates={taxRates}
+            companyProfile={companyProfile}
+            displayCompanyName={displayCompanyName}
             taxId={filter.type === 'tax' ? filter.id : null}
             taxName={filter.type === 'tax' ? (taxRates.find(t => t.id === filter.id)?.name || null) : null}
             currencySymbol={currencySymbol}

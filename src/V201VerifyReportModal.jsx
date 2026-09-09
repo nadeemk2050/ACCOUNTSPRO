@@ -66,7 +66,8 @@ export default function V201VerifyReportModal({
     parties = [], taxRates = [],
     products = [], locations = [],
     taxId = null, taxName = null,
-    currencySymbol = 'AED'
+    currencySymbol = 'AED',
+    onGenerateV311 = null,
 }) {
     const uid = dataOwnerId || user?.uid || '';
     const currentTax = taxRates.find(t => t.id === taxId) || null;
@@ -639,6 +640,13 @@ export default function V201VerifyReportModal({
                             <button onClick={downloadPDF} className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[9.5px] font-black flex items-center gap-1 border border-white/20 transition-colors" title="Export PDF">
                                 <FileText size={12} /> PDF
                             </button>
+                            {onGenerateV311 && (
+                                <button onClick={onGenerateV311}
+                                    className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-[9.5px] font-black flex items-center gap-1 border border-amber-600/40 transition-colors shadow-sm"
+                                    title="Verify first, then generate the official UAE FTA VAT 311 Common Template legal reports (Box 1 Sales / Box 9 Purchases)">
+                                    <ShieldCheck size={12} /> VAT 311 Reports
+                                </button>
+                            )}
                             <button onClick={onClose} className="p-1.5 hover:bg-white/15 rounded-lg transition-colors" title="Close"><X size={17} /></button>
                         </div>
                     </div>
