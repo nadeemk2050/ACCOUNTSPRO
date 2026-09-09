@@ -134,6 +134,8 @@ import ApiKeyModal from './ApiKeyModal';
 import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
 import ExportVoucherModal from './ExportVoucherModal.jsx';
 import ImportVoucherModal from './ImportVoucherModal.jsx';
+import ImportPaymentExcelModal from './ImportPaymentExcelModal.jsx';
+import V201VerifyReportModal from './V201VerifyReportModal.jsx';
 import BackupHistoryModal, { addBackupHistoryEntry } from './BackupHistoryModal.jsx';
 import EditToolsModal from './EditToolsModal.jsx';
 
@@ -12157,6 +12159,7 @@ export default function App() {
                     onRestore={handleRestore}
                     onExportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('export_voucher'); }}
                     onImportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_voucher'); }}
+                    onImportPaymentExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_payment_excel'); }}
                     onShowBackupLog={() => { setModalStack(s => [...s, 'management']); setActiveModal('backup_log'); }}
                     onChangePassword={handleChangePassword}
                     onManageUsers={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_users'); }}
@@ -12240,6 +12243,16 @@ export default function App() {
                 onClose={handleCloseModal}
                 user={user}
                 dataOwnerId={dataOwnerId}
+            />
+
+            {/* Import Payment Voucher From Excel Modal */}
+            <ImportPaymentExcelModal
+                isOpen={activeModal === 'import_payment_excel'}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
             />
 
             {/* Backup/Restore History Modal */}
@@ -20840,6 +20853,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         });
     };
     const restoreColumns = () => setHiddenCols(new Set());
+    const [showV201, setShowV201] = useState(false); // UAE V201 VAT pre-verification report (tax ledgers)
 
     // ✅ NEW: Refs for Realtime Data
     const rawDataRef = useRef({ inv: [], pay: [], jv: [], mfg: [] });
@@ -23287,6 +23301,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const isBreakupMode = summaryMode !== 'detailed';
     
     return (
+        <>
         <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} hideHeader={true} maxWidth="max-w-[100vw]" defaultMaximized={true} removePadding={true}>
             <div className="flex flex-col h-screen max-h-screen bg-white font-sans text-xs select-none overflow-hidden text-slate-900 border-2 border-[#2b5797]">
                 
@@ -23465,6 +23480,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         )}
                         <button onClick={downloadExcel} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors shrink-0">XLS</button>
                         <button onClick={downloadPDF} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors shrink-0">PDF</button>
+
+                        {filter.type === 'tax' && (
+                            <button
+                                onClick={() => setShowV201(true)}
+                                className="px-2 py-1 bg-gradient-to-r from-emerald-700 to-emerald-500 border border-emerald-800 rounded-[2px] text-[9.5px] font-black text-white hover:brightness-110 transition-all shrink-0 shadow-sm"
+                                title="Open UAE V201 VAT Return Pre-Verification report for this tax ledger (supplier-wise input VAT reconciliation)"
+                            >
+                                <ShieldCheck size={11} className="inline mr-1 -mt-0.5" />V201 VERIFY REPORT
+                            </button>
+                        )}
  
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
 
@@ -24237,6 +24262,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 </div>
 
         </Modal>
+
+        {/* UAE V201 VAT Return Pre-Verification (contextual: individual Tax Ledger view) */}
+        <V201VerifyReportModal
+            isOpen={showV201 && filter.type === 'tax'}
+            onClose={() => setShowV201(false)}
+            onBack={() => setShowV201(false)}
+            user={user}
+            dataOwnerId={dataOwnerId}
+            parties={parties}
+            taxRates={taxRates}
+            taxId={filter.type === 'tax' ? filter.id : null}
+            taxName={filter.type === 'tax' ? (taxRates.find(t => t.id === filter.id)?.name || null) : null}
+            currencySymbol={currencySymbol}
+        />
+        </>
     );
 };
 
@@ -33505,4 +33545,5 @@ function GlobalItemSearchModal({ isOpen, onClose, zIndex, products = [], stockGr
         </Modal>
     );
 }
+
 

@@ -6,7 +6,8 @@ import {
     Briefcase, Archive, ShieldAlert, ShoppingBag, Zap, RefreshCw,
     DownloadCloud, UploadCloud, ShieldCheck, Key,
     BarChart2, History, Building2, Ruler, Coins, ReceiptText, MapPin,
-    Users, Truck, PlusCircle, Trash, FileImage, Eye, Pencil, Edit3
+    Users, Truck, PlusCircle, Trash, FileImage, Eye, Pencil, Edit3,
+    FileSpreadsheet
 } from 'lucide-react';
 import { db, auth } from './firebase';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
@@ -39,6 +40,7 @@ const ManagementDashboard = ({
     onRestore,
     onExportVoucher,
     onImportVoucher,
+    onImportPaymentExcel,
     onShowBackupLog,
     functions,
     dataOwnerId,
@@ -1889,6 +1891,13 @@ const ManagementDashboard = ({
                                         onClick={onImportVoucher}
                                         color="teal"
                                         icon={<UploadCloud />}
+                                    />
+                                    <ActionCard
+                                        title="Import Paym Vch from Excel"
+                                        desc="Import Payment vouchers from Tally or Excel spreadsheets."
+                                        onClick={onImportPaymentExcel}
+                                        color="emerald"
+                                        icon={<FileSpreadsheet />}
                                     />
                                     <ActionCard
                                         title="Backup History"
