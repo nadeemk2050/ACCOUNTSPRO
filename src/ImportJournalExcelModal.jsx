@@ -4,7 +4,8 @@ import {
     FileText, Sparkles, Download, Clock, CheckCircle2,
     AlertCircle, Layers, ArrowRight, ShieldCheck, AlertTriangle,
     RefreshCw, Filter, Search, Plus, ExternalLink, RotateCcw,
-    Check, HelpCircle, ChevronRight, Lock, DollarSign, Database
+    Check, HelpCircle, ChevronRight, Lock, DollarSign, Database,
+    BookOpen, Scale
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -17,7 +18,7 @@ import {
     getBatchHistory
 } from './utils/excelImportEngine';
 
-export default function ImportPaymentExcelModal({
+export default function ImportJournalExcelModal({
     isOpen,
     onClose,
     onBack,
@@ -28,7 +29,10 @@ export default function ImportPaymentExcelModal({
     parties = [],
     expenses = [],
     directExpenseAccounts = [],
-    payments = [],
+    incomeAccounts = [],
+    capitalAccounts = [],
+    assetAccounts = [],
+    journalVouchers = [],
     effectiveName = 'Admin',
     currencySymbol = 'AED',
     showToast
@@ -55,7 +59,8 @@ export default function ImportPaymentExcelModal({
         isOpen: false,
         rowId: null,
         name: '',
-        type: 'party', // 'party' | 'account' | 'expense'
+        type: 'expense', // 'expense' | 'party' | 'account' | 'income' | 'capital' | 'asset'
+        partyRole: 'supplier',
         isSubmitting: false
     });
 
@@ -64,7 +69,7 @@ export default function ImportPaymentExcelModal({
     // Refresh history on open
     useEffect(() => {
         if (isOpen) {
-            setHistoryList(getBatchHistory());
+            setHistoryList(getBatchHistory().filter(h => h.voucherType === 'journal' || h.docLabel === 'Journal' || !h.voucherType));
         }
     }, [isOpen]);
 
@@ -88,6 +93,7 @@ export default function ImportPaymentExcelModal({
         return quarantinedRows.filter(row => {
             if (solutionFilter === 'DUPLICATES') return row.issues.some(i => i.rule === 'RULE_1_DUPLICATE_REF');
             if (solutionFilter === 'MISSING_MASTERS') return row.issues.some(i => i.rule === 'RULE_2_MISSING_MASTER');
+            if (solutionFilter === 'UNBALANCED') return row.issues.some(i => i.rule === 'RULE_4_UNBALANCED_JOURNAL');
             if (solutionFilter === 'FUZZY') return row.issues.some(i => i.rule === 'RULE_5_FUZZY_MATCH');
             if (solutionFilter === 'FX') return row.issues.some(i => i.rule === 'RULE_3_MISSING_FX');
             if (solutionFilter === 'PERIOD_LOCKED') return row.issues.some(i => i.rule === 'RULE_6_PERIOD_LOCK');
@@ -106,17 +112,20 @@ export default function ImportPaymentExcelModal({
         setImportResult(null);
 
         try {
-            const parsed = await parseUniversalFile(file, { voucherMode: 'payment' });
+            const parsed = await parseUniversalFile(file, { voucherMode: 'journal' });
             setParsedData(parsed);
 
             // Run Validation Middleware (Rules 1-6)
             const validation = validateImportBatch(parsed.vouchers, {
-                existingVouchers: payments,
+                existingVouchers: journalVouchers,
                 masters: {
                     accounts,
                     parties,
                     expenses,
-                    directExpenseAccounts
+                    directExpenseAccounts,
+                    incomeAccounts,
+                    capitalAccounts,
+                    assetAccounts
                 },
                 companyProfile
             });
@@ -131,7 +140,7 @@ export default function ImportPaymentExcelModal({
                     showToast({
                         type: 'warning',
                         title: 'Validation Issues Detected',
-                        message: `${validation.quarantinedRows.length} transactions routed to Solution Centre for review.`
+                        message: `${validation.quarantinedRows.length} journal transactions routed to Solution Centre.`
                     });
                 }
             } else {
@@ -140,12 +149,12 @@ export default function ImportPaymentExcelModal({
                     showToast({
                         type: 'success',
                         title: 'File Validated Cleanly',
-                        message: `All ${validation.cleanRows.length} vouchers are ready for batch ingestion.`
+                        message: `All ${validation.cleanRows.length} journal vouchers are ready for batch ingestion.`
                     });
                 }
             }
         } catch (err) {
-            console.error('[ImportExcel] Parse error:', err);
+            console.error('[ImportJournalExcel] Parse error:', err);
             alert(`Failed to parse file: ${err.message}`);
         } finally {
             setIsParsing(false);
@@ -158,7 +167,7 @@ export default function ImportPaymentExcelModal({
     const handleAutoRenumber = (rowId) => {
         setQuarantinedRows(prev => prev.map(row => {
             if (row.id !== rowId) return row;
-            const newVchNo = `${row.vchNo}-IMP`;
+            const newVchNo = `${row.vchNo}-JRNL-IMP`;
             const updatedIssues = row.issues.filter(i => i.rule !== 'RULE_1_DUPLICATE_REF');
             const stillHasIssues = updatedIssues.some(i => i.type === 'CRITICAL');
             return {
@@ -172,21 +181,28 @@ export default function ImportPaymentExcelModal({
     };
 
     // Rule 5: Accept Fuzzy Match
-    const handleAcceptFuzzy = (rowId, suggestion) => {
+    const handleAcceptFuzzy = (rowId, suggestion, targetField = 'all') => {
         setQuarantinedRows(prev => prev.map(row => {
             if (row.id !== rowId) return row;
-            const updatedSplits = (row.resolvedSplits || []).map(s => ({
-                ...s,
-                targetId: suggestion.id,
-                targetName: suggestion.name,
-                matchedMaster: suggestion
-            }));
-            const updatedIssues = row.issues.filter(i => i.rule !== 'RULE_5_FUZZY_MATCH');
+            const updatedDr = (row.resolvedDrRows || row.drRows || []).map(d => {
+                if (d.targetName.trim().toLowerCase() === (suggestion.originalName || '').toLowerCase() || !d.targetId) {
+                    return { ...d, targetId: suggestion.id, targetName: suggestion.name, matchedMaster: suggestion, category: suggestion.type || d.category };
+                }
+                return d;
+            });
+            const updatedCr = (row.resolvedCrRows || row.crRows || []).map(c => {
+                if (c.targetName.trim().toLowerCase() === (suggestion.originalName || '').toLowerCase() || !c.targetId) {
+                    return { ...c, targetId: suggestion.id, targetName: suggestion.name, matchedMaster: suggestion, category: suggestion.type || c.category };
+                }
+                return c;
+            });
+
+            const updatedIssues = row.issues.filter(i => !(i.rule === 'RULE_5_FUZZY_MATCH' && i.suggestion?.id === suggestion.id));
             const stillHasIssues = updatedIssues.some(i => i.type === 'CRITICAL');
             return {
                 ...row,
-                paidTo: suggestion.name,
-                resolvedSplits: updatedSplits,
+                resolvedDrRows: updatedDr,
+                resolvedCrRows: updatedCr,
                 issues: updatedIssues,
                 status: stillHasIssues ? 'WARNING' : 'VALID',
                 isResolved: !stillHasIssues
@@ -195,19 +211,20 @@ export default function ImportPaymentExcelModal({
     };
 
     // Rule 2: Open Create Missing Master Modal
-    const handleOpenCreateMaster = (row, missingName, missingType = 'party') => {
+    const handleOpenCreateMaster = (row, missingName, missingType = 'expense') => {
         setCreateMasterModal({
             isOpen: true,
             rowId: row.id,
-            name: missingName || row.paidTo || '',
+            name: missingName || '',
             type: missingType,
+            partyRole: 'supplier',
             isSubmitting: false
         });
     };
 
     // Rule 2: Execute Missing Master Creation
     const handleConfirmCreateMaster = async () => {
-        const { rowId, name, type } = createMasterModal;
+        const { rowId, name, type, partyRole } = createMasterModal;
         if (!name.trim()) return alert('Name cannot be empty');
 
         setCreateMasterModal(prev => ({ ...prev, isSubmitting: true }));
@@ -215,6 +232,7 @@ export default function ImportPaymentExcelModal({
             const created = await createMissingMaster({
                 name,
                 type,
+                partyRole,
                 dataOwnerId,
                 user,
                 effectiveName
@@ -224,54 +242,48 @@ export default function ImportPaymentExcelModal({
             if (type === 'party') parties.push(created);
             else if (type === 'account') accounts.push(created);
             else if (type === 'expense') expenses.push(created);
+            else if (type === 'direct_expense') directExpenseAccounts.push(created);
+            else if (type === 'income') incomeAccounts.push(created);
+            else if (type === 'capital') capitalAccounts.push(created);
+            else if (type === 'asset') assetAccounts.push(created);
 
             // Update row in quarantined list
             setQuarantinedRows(prev => prev.map(row => {
                 if (row.id !== rowId) return row;
-                const updatedSplits = (row.resolvedSplits || []).map(s => {
-                    if (s.targetName.trim().toLowerCase() === name.trim().toLowerCase() || !s.targetId) {
-                        return {
-                            ...s,
-                            targetId: created.id,
-                            targetName: created.name,
-                            matchedMaster: created,
-                            category: type
-                        };
+                const updatedDr = (row.resolvedDrRows || row.drRows || []).map(d => {
+                    if (d.targetName.trim().toLowerCase() === name.trim().toLowerCase() || !d.targetId) {
+                        return { ...d, targetId: created.id, targetName: created.name, matchedMaster: created, category: type };
                     }
-                    return s;
+                    return d;
+                });
+                const updatedCr = (row.resolvedCrRows || row.crRows || []).map(c => {
+                    if (c.targetName.trim().toLowerCase() === name.trim().toLowerCase() || !c.targetId) {
+                        return { ...c, targetId: created.id, targetName: created.name, matchedMaster: created, category: type };
+                    }
+                    return c;
                 });
 
-                let updatedPaidFrom = row.matchedPaidFrom;
-                if (type === 'account' && row.paidFrom.trim().toLowerCase() === name.trim().toLowerCase()) {
-                    updatedPaidFrom = { match: created, type: 'account', score: 1.0, isExact: true };
-                }
+                const updatedIssues = row.issues.filter(i => !(i.rule === 'RULE_2_MISSING_MASTER' && i.missingName?.trim().toLowerCase() === name.trim().toLowerCase()));
+                const stillHasIssues = updatedIssues.some(i => i.type === 'CRITICAL');
 
-                const updatedIssues = row.issues.filter(i => {
-                    if (i.rule === 'RULE_2_MISSING_MASTER') {
-                        return i.missingName?.trim().toLowerCase() !== name.trim().toLowerCase();
-                    }
-                    return true;
-                });
-
-                const stillHasCritical = updatedIssues.some(i => i.type === 'CRITICAL');
                 return {
                     ...row,
-                    matchedPaidFrom: updatedPaidFrom,
-                    resolvedSplits: updatedSplits,
+                    resolvedDrRows: updatedDr,
+                    resolvedCrRows: updatedCr,
                     issues: updatedIssues,
-                    status: stillHasCritical ? 'WARNING' : 'RESOLVED',
-                    isResolved: !stillHasCritical
+                    status: stillHasIssues ? 'WARNING' : 'RESOLVED',
+                    isResolved: !stillHasIssues
                 };
             }));
 
+            setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'expense', partyRole: 'supplier', isSubmitting: false });
             if (showToast) {
                 showToast({
                     type: 'success',
                     title: 'Master Created',
-                    message: `Master "${created.name}" created. Status updated to RESOLVED.`
+                    message: `Ledger "${name}" created. Transaction status updated to RESOLVED.`
                 });
             }
-            setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', isSubmitting: false });
         } catch (err) {
             console.error('[CreateMaster] Error:', err);
             alert(`Failed to create master: ${err.message}`);
@@ -279,31 +291,24 @@ export default function ImportPaymentExcelModal({
         }
     };
 
-    // Move Resolved Row to Ready to Import Queue
+    // Insert Resolved Transaction into Ready Queue
     const handleInsertResolvedTransaction = (rowId) => {
         const row = quarantinedRows.find(r => r.id === rowId);
         if (!row) return;
 
-        // Ensure default paidFrom account if missing
-        let finalRow = { ...row };
-        if (!finalRow.matchedPaidFrom && accounts.length > 0) {
-            const defaultCash = accounts.find(a => /cash/i.test(a.name)) || accounts[0];
-            finalRow.matchedPaidFrom = { match: defaultCash, type: 'account', score: 1.0, isExact: true };
-        }
-
         setQuarantinedRows(prev => prev.filter(r => r.id !== rowId));
-        setCleanRows(prev => [...prev, { ...finalRow, status: 'VALID' }]);
+        setCleanRows(prev => [...prev, { ...row, status: 'VALID', issues: [] }]);
 
         if (showToast) {
             showToast({
                 type: 'success',
-                title: 'Transaction Approved',
-                message: `Voucher "${row.vchNo}" moved to Ready to Import queue.`
+                title: 'Transaction Enqueued',
+                message: `Voucher ${row.vchNo} moved to Ready to Ingest queue.`
             });
         }
     };
 
-    // Abort/Discard Quarantined Transaction
+    // Abort Transaction
     const handleAbortTransaction = (rowId) => {
         setQuarantinedRows(prev => prev.filter(r => r.id !== rowId));
         if (showToast) {
@@ -332,7 +337,7 @@ export default function ImportPaymentExcelModal({
         }));
     };
 
-    // --- BATCH IMPORT EXECUTION ---
+    // --- BATCH IMPORT EXECUTION (JOURNAL: voucherType: 'journal') ---
     const handleExecuteImport = async () => {
         if (cleanRows.length === 0) return alert('No valid transactions in the Ready to Import queue.');
 
@@ -345,7 +350,9 @@ export default function ImportPaymentExcelModal({
                 dataOwnerId,
                 effectiveName,
                 companyProfile,
-                currencySymbol
+                currencySymbol,
+                voucherType: 'journal',
+                docLabel: 'Journal'
             });
 
             setImportProgress(100);
@@ -356,8 +363,8 @@ export default function ImportPaymentExcelModal({
             if (showToast) {
                 showToast({
                     type: 'success',
-                    title: 'Batch Import Completed',
-                    message: `Successfully ingested ${result.totalImported} payment vouchers. Batch ID: ${result.batchImportId}`
+                    title: 'Batch Journal Import Completed',
+                    message: `Successfully ingested ${result.totalImported} journal vouchers. Batch ID: ${result.batchImportId}`
                 });
             }
         } catch (err) {
@@ -370,7 +377,7 @@ export default function ImportPaymentExcelModal({
 
     // --- BATCH ROLLBACK HANDLER ---
     const handleRollbackBatch = async (batchId) => {
-        if (!confirm(`Are you sure you want to ROLLBACK Batch ${batchId}?\nThis will permanently delete all imported vouchers and revert account balance changes.`)) {
+        if (!confirm(`Are you sure you want to ROLLBACK Batch ${batchId}?\nThis will permanently delete all imported journal vouchers and revert ledger balance changes.`)) {
             return;
         }
 
@@ -386,7 +393,7 @@ export default function ImportPaymentExcelModal({
                 showToast({
                     type: 'success',
                     title: 'Batch Rolled Back',
-                    message: `Rollback complete: ${res.deletedCount} vouchers removed.`
+                    message: `Rollback complete: ${res.deletedCount} journal vouchers removed.`
                 });
             }
         } catch (err) {
@@ -404,32 +411,34 @@ export default function ImportPaymentExcelModal({
 
         if (type === 'standard') {
             const sampleData = [
-                ['Date', 'Voucher No', 'Paid From', 'Paid To', 'Amount', 'Currency', 'Exchange Rate', 'Narration'],
-                ['2026-04-01', 'PAY-1001', 'Main Cash', 'Al Falah Trading LLC', 5000, 'BASE', 1.0, 'Payment against Inv 402'],
-                ['2026-04-02', 'PAY-1002', 'Commercial Bank', 'Office Rent Expense', 1200, 'BASE', 1.0, 'April 2026 Rent'],
-                ['2026-04-03', 'PAY-1003', 'Main Cash', 'Haris Fuel Petrol', 180, 'BASE', 1.0, 'Fuel vehicle 71439']
+                ['Date', 'Voucher No', 'Dr Ledger (Debit)', 'Cr Ledger (Credit)', 'Amount', 'Currency', 'Exchange Rate', 'Narration'],
+                ['2026-04-01', 'JV-3001', 'Depreciation Expense', 'Accumulated Depreciation', 4500, 'BASE', 1.0, 'Annual vehicle depreciation'],
+                ['2026-04-02', 'JV-3002', 'Office Stationery Exp', 'Petty Cash Custodian', 750, 'BASE', 1.0, 'Month end stationery adjustment'],
+                ['2026-04-03', 'JV-3003', 'Al Falah Trading LLC', 'Sunrise Trading FZE', 12000, 'BASE', 1.0, 'Inter-party balance settlement']
             ];
             ws = XLSX.utils.aoa_to_sheet(sampleData);
         } else {
-            // Tally Columnar format sample
+            // Tally Columnar Journal format
             const sampleData = [
                 ['AL SHAMS AL MUSHRIQAH METAL SCRAP TR'],
                 ['SAJJA INDUSTRIAL AREA, SHARJAH'],
-                ['Payment Register'],
+                ['Journal Register'],
                 ['1-Feb-2026 to 28-Feb-2026'],
-                ['Date', 'Particulars', 'Party', 'Voucher Type', 'Voucher No.', 'Voucher Ref. No.', 'Voucher Ref. Date', 'Narration', 'Quantity', 'Rate', 'Value', 'Gross Total', 'WALIUL CONTRA', 'RIZWAN CONTRA', 'HARIS CAR PETROLE', 'LABOUR EXP'],
-                ['01-02-2026', 'Naheedullah AlAN CO KH', '', 'Payment', '11012', '', null, 'Supplier Settlement', null, null, null, 1420, 1420, null, null, null],
-                ['01-02-2026', 'WALIUL CONTRA', '', 'Payment', '11017', '', null, 'Vehicle & Labor Expense', null, null, null, 306, null, null, 150, 156]
+                ['Date', 'Particulars', 'Voucher Type', 'Voucher No.', 'Debit Amount', 'Credit Amount', 'Narration'],
+                ['01-02-2026', 'Depreciation Expense', 'Journal', '3101', 4500, null, 'Plant & Machinery Depreciation'],
+                ['01-02-2026', 'Accumulated Depreciation', 'Journal', '3101', null, 4500, 'Plant & Machinery Depreciation'],
+                ['02-02-2026', 'Vehicle Repair Exp', 'Journal', '3102', 1200, null, 'Accrued maintenance provision'],
+                ['02-02-2026', 'Accrued Expenses Payable', 'Journal', '3102', null, 1200, 'Accrued maintenance provision']
             ];
             ws = XLSX.utils.aoa_to_sheet(sampleData);
         }
 
-        XLSX.utils.book_append_sheet(wb, ws, 'Template');
-        XLSX.writeFile(wb, `AccPro_Payment_Template_${type}.xlsx`);
+        XLSX.utils.book_append_sheet(wb, ws, 'Journal Template');
+        XLSX.writeFile(wb, `AccPro_Journal_Template_${type}.xlsx`);
     };
 
     return (
-        <div className="fixed inset-0 z-[100] bg-gradient-to-br from-[#090d16] via-[#0f172a] to-[#090d16] text-white font-sans flex flex-col animate-in fade-in duration-300">
+        <div className="fixed inset-0 z-[100] bg-gradient-to-br from-[#0c0d24] via-[#12133a] to-[#0c0d24] text-white font-sans flex flex-col animate-in fade-in duration-300">
             {/* TOP HEADER */}
             <div className="h-16 bg-black/40 backdrop-blur-md border-b border-white/10 flex items-center justify-between px-6 shrink-0 shadow-lg">
                 <div className="flex items-center gap-4">
@@ -438,27 +447,27 @@ export default function ImportPaymentExcelModal({
                         className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-all text-xs font-semibold group"
                         title="Back to Management Hub (Esc)"
                     >
-                        <ArrowLeft size={16} className="group-hover:-translate-x-0.5 transition-transform text-emerald-400" />
+                        <ArrowLeft size={16} className="group-hover:-translate-x-0.5 transition-transform text-indigo-400" />
                         <span>Back</span>
                     </button>
 
                     <div className="h-6 w-px bg-white/10" />
 
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
-                            <FileSpreadsheet size={22} />
+                        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 shadow-[0_0_20px_rgba(99,102,241,0.15)]">
+                            <Scale size={22} />
                         </div>
                         <div>
                             <div className="flex items-center gap-2">
                                 <h1 className="text-base font-bold text-white tracking-tight leading-tight">
-                                    IMP PAYM VCHR XLSX XML CSV
+                                    IMP JRNL VCHR XLSX XML CSV
                                 </h1>
-                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    Universal Engine
+                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                                    Double-Entry Engine
                                 </span>
                             </div>
                             <p className="text-[11px] text-slate-400 font-medium leading-none mt-1">
-                                Automated Validation, Interactive Master Resolution, Multi-Receiver Payout Bundling
+                                Automated Validation, Debit/Credit Balance Verification & Multi-Leg Batch Ingestion
                             </p>
                         </div>
                     </div>
@@ -466,7 +475,7 @@ export default function ImportPaymentExcelModal({
 
                 <div className="flex items-center gap-3">
                     {fileName && (
-                        <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-emerald-400">
+                        <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-indigo-400">
                             <FileSpreadsheet size={14} />
                             <span>{fileName}</span>
                             <span className="text-slate-500">({fileSize})</span>
@@ -489,12 +498,12 @@ export default function ImportPaymentExcelModal({
                         onClick={() => setActiveTab('upload')}
                         className={`flex items-center gap-2.5 px-4 py-2 rounded-xl text-xs font-bold transition-all border shrink-0 ${
                             activeTab === 'upload'
-                                ? 'bg-white/10 text-white border-emerald-500/50 shadow-md ring-1 ring-emerald-500/20'
+                                ? 'bg-white/10 text-white border-indigo-500/50 shadow-md ring-1 ring-indigo-500/20'
                                 : 'bg-white/[0.02] text-slate-400 hover:text-slate-200 border-white/5 hover:bg-white/[0.05]'
                         }`}
                     >
-                        <UploadCloud size={16} className={activeTab === 'upload' ? 'text-emerald-400' : 'text-slate-400'} />
-                        <span>1. Upload & Parse</span>
+                        <UploadCloud size={16} className={activeTab === 'upload' ? 'text-indigo-400' : 'text-slate-400'} />
+                        <span>1. Upload Journals</span>
                     </button>
 
                     {/* Tab 2: Solution Centre */}
@@ -515,19 +524,19 @@ export default function ImportPaymentExcelModal({
                         )}
                     </button>
 
-                    {/* Tab 3: Ready to Import */}
+                    {/* Tab 3: Ready to Ingest */}
                     <button
                         onClick={() => setActiveTab('ready')}
                         className={`flex items-center gap-2.5 px-4 py-2 rounded-xl text-xs font-bold transition-all border shrink-0 relative ${
                             activeTab === 'ready'
-                                ? 'bg-white/10 text-white border-emerald-500/50 shadow-md ring-1 ring-emerald-500/20'
+                                ? 'bg-white/10 text-white border-indigo-500/50 shadow-md ring-1 ring-indigo-500/20'
                                 : 'bg-white/[0.02] text-slate-400 hover:text-slate-200 border-white/5 hover:bg-white/[0.05]'
                         }`}
                     >
-                        <CheckCircle2 size={16} className={activeTab === 'ready' ? 'text-emerald-400' : 'text-slate-400'} />
-                        <span>3. Ready to Import</span>
+                        <CheckCircle2 size={16} className={activeTab === 'ready' ? 'text-indigo-400' : 'text-slate-400'} />
+                        <span>3. Ready to Ingest</span>
                         {cleanRows.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-black">
+                            <span className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-[10px] font-black">
                                 {cleanRows.length} Clean
                             </span>
                         )}
@@ -543,7 +552,7 @@ export default function ImportPaymentExcelModal({
                         }`}
                     >
                         <History size={16} className={activeTab === 'history' ? 'text-blue-400' : 'text-slate-400'} />
-                        <span>Import History & Rollback</span>
+                        <span>Journal History & Rollback</span>
                         {historyList.length > 0 && (
                             <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-mono">
                                 {historyList.length}
@@ -561,7 +570,7 @@ export default function ImportPaymentExcelModal({
                         }`}
                     >
                         <FileText size={16} className={activeTab === 'instructions' ? 'text-purple-400' : 'text-slate-400'} />
-                        <span>Instructions & Templates</span>
+                        <span>Templates & Guide</span>
                     </button>
                 </div>
             </div>
@@ -574,16 +583,16 @@ export default function ImportPaymentExcelModal({
                 {activeTab === 'upload' && (
                     <div className="max-w-4xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Hero Card */}
-                        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/20 p-6 shadow-xl">
+                        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-950/40 via-slate-900/60 to-indigo-950/30 border border-indigo-500/20 p-6 shadow-xl">
                             <div className="space-y-1">
-                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <Sparkles size={12} /> Auto-Detection & Real-Time Validation Pipeline
+                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-black uppercase tracking-wider mb-2">
+                                    <Sparkles size={12} /> Double-Entry Journal Ingestion Pipeline (XLSX / XML / CSV)
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Upload Payment Vouchers Excel
+                                    Upload Journal Vouchers (Excel, XML, CSV)
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl">
-                                    Drop your exported spreadsheet from Tally Prime (e.g. Columnar Register) or any standard Excel file. Our engine validates duplicates, master entities, FX rates, and fiscal periods automatically.
+                                    Drop your exported spreadsheet from Tally Prime (Journal Register), Tally XML Data Interchange, or custom CSV file. The engine validates double-entry balance (Total Dr == Total Cr), matches all ledger masters, and groups multi-leg entries automatically!
                                 </p>
                             </div>
                         </div>
@@ -596,7 +605,7 @@ export default function ImportPaymentExcelModal({
                                 if (e.dataTransfer.files?.[0]) handleFileUpload(e.dataTransfer.files[0]);
                             }}
                             onClick={() => fileInputRef.current?.click()}
-                            className="border-2 border-dashed border-white/10 hover:border-emerald-500/50 rounded-3xl p-12 bg-white/[0.02] hover:bg-white/[0.04] flex flex-col items-center justify-center text-center transition-all cursor-pointer group shadow-inner"
+                            className="border-2 border-dashed border-white/10 hover:border-indigo-500/50 rounded-3xl p-12 bg-white/[0.02] hover:bg-white/[0.04] flex flex-col items-center justify-center text-center transition-all cursor-pointer group shadow-inner"
                         >
                             <input
                                 ref={fileInputRef}
@@ -608,23 +617,23 @@ export default function ImportPaymentExcelModal({
                                 }}
                             />
 
-                            <div className="w-20 h-20 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-5 group-hover:scale-110 transition-transform shadow-[0_0_30px_rgba(16,185,129,0.15)]">
-                                {isParsing ? <RefreshCw className="animate-spin" size={36} /> : <UploadCloud size={40} />}
+                            <div className="w-20 h-20 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mb-5 group-hover:scale-110 transition-transform shadow-[0_0_30px_rgba(99,102,241,0.15)]">
+                                {isParsing ? <RefreshCw className="animate-spin" size={36} /> : <Scale size={40} />}
                             </div>
 
                             <h3 className="text-lg font-bold text-white tracking-tight mb-2">
-                                {isParsing ? 'Parsing & Running Validation Rules...' : 'Click to Browse or Drag & Drop File'}
+                                {isParsing ? 'Parsing Journals & Verifying Balance...' : 'Click to Browse or Drag & Drop File'}
                             </h3>
                             <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
-                                Supports <span className="text-emerald-400 font-semibold">XLSX</span>, <span className="text-emerald-400 font-semibold">XML (Tally Interchange)</span>, and <span className="text-emerald-400 font-semibold">CSV</span> files. Automatically bundles multi-receiver payouts!
+                                Supports <span className="text-indigo-400 font-semibold">XLSX</span>, <span className="text-indigo-400 font-semibold">XML (Tally Interchange)</span>, and <span className="text-indigo-400 font-semibold">CSV</span> files. Verifies Dr/Cr balance and consolidates multi-leg journals!
                             </p>
 
                             <button
                                 type="button"
-                                className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2"
+                                className="px-6 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-black text-xs uppercase tracking-wider shadow-lg shadow-indigo-500/20 transition-all flex items-center gap-2"
                             >
                                 <FileSpreadsheet size={16} />
-                                <span>Select Excel File</span>
+                                <span>Select Journal File (XLSX, XML, CSV)</span>
                             </button>
                         </div>
 
@@ -633,17 +642,17 @@ export default function ImportPaymentExcelModal({
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 animate-in fade-in duration-300">
                                 <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between">
                                     <div>
-                                        <div className="text-[10px] uppercase font-bold text-slate-400">Total Vouchers Parsed</div>
+                                        <div className="text-[10px] uppercase font-bold text-slate-400">Total Journals Parsed</div>
                                         <div className="text-2xl font-black text-white">{parsedData.vouchers.length}</div>
                                     </div>
                                     <Layers className="text-blue-400" size={28} />
                                 </div>
-                                <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
+                                <div className="p-4 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between">
                                     <div>
-                                        <div className="text-[10px] uppercase font-bold text-emerald-400">Ready for Import</div>
-                                        <div className="text-2xl font-black text-emerald-400">{cleanRows.length}</div>
+                                        <div className="text-[10px] uppercase font-bold text-indigo-400">Ready for Ingestion</div>
+                                        <div className="text-2xl font-black text-indigo-400">{cleanRows.length}</div>
                                     </div>
-                                    <CheckCircle2 className="text-emerald-400" size={28} />
+                                    <CheckCircle2 className="text-indigo-400" size={28} />
                                 </div>
                                 <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
                                     <div>
@@ -658,21 +667,20 @@ export default function ImportPaymentExcelModal({
                 )}
 
                 {/* ========================================================
-                    TAB 2: SOLUTION CENTRE (TRANSACTIONS TO BE SOLVED)
+                    TAB 2: SOLUTION CENTRE (JOURNALS)
                    ======================================================== */}
                 {activeTab === 'solution_centre' && (
                     <div className="max-w-6xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
-                        {/* Header Banner */}
                         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-amber-950/40 via-slate-900/60 to-amber-950/30 border border-amber-500/30 shadow-xl">
                             <div>
                                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <AlertTriangle size={12} /> Discrepancy Quarantine & Master Resolution
+                                    <AlertTriangle size={12} /> Journal Discrepancy Quarantine
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Solution Centre: {quarantinedRows.length} Transactions Requiring Attention
+                                    Journal Solution Centre: {quarantinedRows.length} Items Requiring Attention
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                    Resolve missing masters, duplicates, fuzzy matches, and currency rates interactively. Once solved, transactions turn green and move to the Ready Queue.
+                                    Resolve missing ledgers, unbalanced Dr/Cr entries, or duplicate voucher numbers. Once resolved, the badge turns green and moves to the Ready Queue.
                                 </p>
                             </div>
 
@@ -680,12 +688,13 @@ export default function ImportPaymentExcelModal({
                             <div className="flex items-center gap-1.5 flex-wrap">
                                 {[
                                     { id: 'ALL', label: 'All Issues' },
-                                    { id: 'MISSING_MASTERS', label: 'Missing Masters' },
+                                    { id: 'UNBALANCED', label: 'Unbalanced Dr/Cr' },
+                                    { id: 'MISSING_MASTERS', label: 'Missing Ledgers' },
                                     { id: 'DUPLICATES', label: 'Duplicates' },
                                     { id: 'FUZZY', label: 'Fuzzy Matches' },
                                     { id: 'FX', label: 'FX Rates' },
                                     { id: 'PERIOD_LOCKED', label: 'Period Locked' }
-                                ].map(f => (
+                               ].map(f => (
                                     <button
                                         key={f.id}
                                         onClick={() => setSolutionFilter(f.id)}
@@ -704,16 +713,16 @@ export default function ImportPaymentExcelModal({
                         {/* Quarantined Items List */}
                         {filteredQuarantined.length === 0 ? (
                             <div className="p-16 rounded-3xl bg-white/[0.02] border border-white/5 flex flex-col items-center justify-center text-center">
-                                <CheckCircle2 size={48} className="text-emerald-400 mb-3" />
-                                <h3 className="text-base font-bold text-white">All Discrepancies Resolved!</h3>
+                                <CheckCircle2 size={48} className="text-indigo-400 mb-3" />
+                                <h3 className="text-base font-bold text-white">All Journal Discrepancies Resolved!</h3>
                                 <p className="text-xs text-slate-400 max-w-md mt-1 mb-4">
-                                    There are no pending quarantined transactions under this filter. You can proceed to the Ready to Import queue.
+                                    There are no pending quarantined journal transactions under this filter.
                                 </p>
                                 <button
                                     onClick={() => setActiveTab('ready')}
-                                    className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-2"
+                                    className="px-5 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-bold flex items-center gap-2"
                                 >
-                                    <span>Proceed to Ready to Import</span>
+                                    <span>Proceed to Ready Queue</span>
                                     <ChevronRight size={16} />
                                 </button>
                             </div>
@@ -726,7 +735,7 @@ export default function ImportPaymentExcelModal({
                                             key={row.id}
                                             className={`rounded-2xl border p-5 transition-all ${
                                                 isResolved
-                                                    ? 'bg-emerald-950/20 border-emerald-500/40 ring-1 ring-emerald-500/20'
+                                                    ? 'bg-indigo-950/20 border-indigo-500/40 ring-1 ring-indigo-500/20'
                                                     : 'bg-white/[0.02] border-white/10 hover:border-white/20'
                                             }`}
                                         >
@@ -734,7 +743,7 @@ export default function ImportPaymentExcelModal({
                                                 <div className="flex items-center gap-3">
                                                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs ${
                                                         isResolved
-                                                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                                            ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
                                                             : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                                                     }`}>
                                                         {isResolved ? <Check size={18} /> : '!'}
@@ -746,25 +755,36 @@ export default function ImportPaymentExcelModal({
                                                             <span className="text-[11px] text-slate-400">· Row: <b className="text-slate-200">#{row.rowNumber}</b></span>
                                                             {row.isMultiSplit && (
                                                                 <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
-                                                                    Multi-Receiver ({row.splits?.length || 2} Parties)
+                                                                    Multi-Leg Entry
                                                                 </span>
                                                             )}
                                                         </div>
                                                         <div className="text-sm font-bold text-white mt-0.5">
-                                                            Paid To: <span className="text-emerald-400">{row.paidTo || 'N/A'}</span>
-                                                            {row.paidFrom && (
-                                                                <span className="text-slate-400 font-normal"> · From: <b className="text-slate-200">{row.paidFrom}</b></span>
-                                                            )}
+                                                            Dr: <span className="text-indigo-400">{row.paidTo || (row.drRows?.map(r=>r.targetName).join(', ')) || 'N/A'}</span>
+                                                            <span className="text-slate-400 font-normal"> · Cr: <b className="text-slate-200">{row.paidFrom || (row.crRows?.map(r=>r.targetName).join(', ')) || 'N/A'}</b></span>
                                                         </div>
-                                                        {row.isMultiSplit && row.splits && row.splits.length > 1 && (
-                                                            <div className="mt-2 p-2 rounded-lg bg-black/30 border border-white/5 space-y-1">
-                                                                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Receivers Breakdown:</div>
-                                                                {row.splits.map((s, sIdx) => (
-                                                                    <div key={sIdx} className="flex items-center justify-between text-xs text-slate-300 font-mono">
-                                                                        <span>· {s.targetName}</span>
-                                                                        <span className="font-bold text-emerald-400">{currencySymbol} {s.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                                                                    </div>
-                                                                ))}
+
+                                                        {/* Dr and Cr Visual Breakdown */}
+                                                        {row.isMultiSplit && (
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                                                                <div className="p-2 rounded-lg bg-black/30 border border-indigo-500/20 space-y-1">
+                                                                    <div className="text-[10px] uppercase font-bold text-indigo-400">Debit (Dr) Entries:</div>
+                                                                    {(row.drRows || []).map((dr, dIdx) => (
+                                                                        <div key={dIdx} className="flex items-center justify-between text-xs text-slate-300 font-mono">
+                                                                            <span className="truncate max-w-[140px]">· {dr.targetName}</span>
+                                                                            <span className="font-bold text-indigo-400">{currencySymbol} {dr.amount?.toLocaleString()}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                                <div className="p-2 rounded-lg bg-black/30 border border-purple-500/20 space-y-1">
+                                                                    <div className="text-[10px] uppercase font-bold text-purple-400">Credit (Cr) Entries:</div>
+                                                                    {(row.crRows || []).map((cr, cIdx) => (
+                                                                        <div key={cIdx} className="flex items-center justify-between text-xs text-slate-300 font-mono">
+                                                                            <span className="truncate max-w-[140px]">· {cr.targetName}</span>
+                                                                            <span className="font-bold text-purple-400">{currencySymbol} {cr.amount?.toLocaleString()}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
                                                             </div>
                                                         )}
                                                     </div>
@@ -776,15 +796,14 @@ export default function ImportPaymentExcelModal({
                                                             {currencySymbol} {row.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                                         </div>
                                                         <div className="text-[10px] text-slate-400 font-mono">
-                                                            {row.currency} @ {row.exchangeRate}
+                                                            Dr: {row.totalDr?.toLocaleString()} | Cr: {row.totalCr?.toLocaleString()}
                                                         </div>
                                                     </div>
 
-                                                    {/* Final Action Button when Resolved */}
                                                     {isResolved ? (
                                                         <button
                                                             onClick={() => handleInsertResolvedTransaction(row.id)}
-                                                            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 animate-in zoom-in-95"
+                                                            className="px-4 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-indigo-500/20 animate-in zoom-in-95"
                                                         >
                                                             <CheckCircle2 size={16} />
                                                             <span>Insert Transaction</span>
@@ -818,20 +837,17 @@ export default function ImportPaymentExcelModal({
                                                             <span>{issue.message}</span>
                                                         </div>
 
-                                                        {/* Action Buttons based on Rule */}
                                                         <div className="flex items-center gap-2 shrink-0">
-                                                            {/* Rule 2: Missing Master Creation */}
                                                             {issue.rule === 'RULE_2_MISSING_MASTER' && (
                                                                 <button
                                                                     onClick={() => handleOpenCreateMaster(row, issue.missingName, issue.missingType)}
                                                                     className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
                                                                 >
                                                                     <Plus size={14} />
-                                                                    <span>Create Missing Master?</span>
+                                                                    <span>Create Missing Ledger?</span>
                                                                 </button>
                                                             )}
 
-                                                            {/* Rule 5: Fuzzy Suggestion Link */}
                                                             {issue.rule === 'RULE_5_FUZZY_MATCH' && issue.suggestion && (
                                                                 <button
                                                                     onClick={() => handleAcceptFuzzy(row.id, issue.suggestion)}
@@ -842,18 +858,16 @@ export default function ImportPaymentExcelModal({
                                                                 </button>
                                                             )}
 
-                                                            {/* Rule 1: Duplicate Reference Renumber */}
                                                             {issue.rule === 'RULE_1_DUPLICATE_REF' && (
                                                                 <button
                                                                     onClick={() => handleAutoRenumber(row.id)}
                                                                     className="px-3 py-1 rounded-lg bg-purple-500 hover:bg-purple-400 text-white font-bold text-xs flex items-center gap-1.5"
                                                                 >
                                                                     <RotateCcw size={14} />
-                                                                    <span>Auto-Renumber (-IMP)</span>
+                                                                    <span>Auto-Renumber (-JRNL-IMP)</span>
                                                                 </button>
                                                             )}
 
-                                                            {/* Rule 3: Missing FX Rate Input */}
                                                             {issue.rule === 'RULE_3_MISSING_FX' && (
                                                                 <div className="flex items-center gap-2">
                                                                     <input
@@ -881,21 +895,21 @@ export default function ImportPaymentExcelModal({
                 )}
 
                 {/* ========================================================
-                    TAB 3: READY TO IMPORT (VERIFIED QUEUE)
+                    TAB 3: READY TO IMPORT (JOURNALS)
                    ======================================================== */}
                 {activeTab === 'ready' && (
                     <div className="max-w-6xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Header Summary Banner */}
-                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/30 shadow-xl">
+                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-indigo-950/40 via-slate-900/60 to-indigo-950/30 border border-indigo-500/30 shadow-xl">
                             <div>
-                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <CheckCircle2 size={12} /> Verified & Audit-Ready Ingestion Queue
+                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-black uppercase tracking-wider mb-2">
+                                    <CheckCircle2 size={12} /> Verified & Balanced Journal Ingestion Queue
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Ready to Ingest: {cleanRows.length} Payment Vouchers
+                                    Ready to Ingest: {cleanRows.length} Journal Vouchers
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                    Total Amount: <b className="text-emerald-400 font-mono text-sm">{currencySymbol} {cleanRows.reduce((sum, r) => sum + (r.amount || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</b>. All records meet integrity rules and master links.
+                                    Total Value: <b className="text-indigo-400 font-mono text-sm">{currencySymbol} {cleanRows.reduce((sum, r) => sum + (r.amount || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</b>. All entries are double-entry verified and balanced.
                                 </p>
                             </div>
 
@@ -904,7 +918,7 @@ export default function ImportPaymentExcelModal({
                                 onClick={handleExecuteImport}
                                 className={`px-6 py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-xl transition-all ${
                                     cleanRows.length > 0 && !isImporting
-                                        ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20 hover:scale-105 active:scale-95'
+                                        ? 'bg-indigo-500 hover:bg-indigo-400 text-white shadow-indigo-500/20 hover:scale-105 active:scale-95'
                                         : 'bg-white/10 text-slate-500 border border-white/5 cursor-not-allowed'
                                 }`}
                             >
@@ -916,7 +930,7 @@ export default function ImportPaymentExcelModal({
                                 ) : (
                                     <>
                                         <Database size={16} />
-                                        <span>Execute Batch Import ({cleanRows.length} Vouchers)</span>
+                                        <span>Execute Batch Import ({cleanRows.length} Journals)</span>
                                     </>
                                 )}
                             </button>
@@ -928,10 +942,10 @@ export default function ImportPaymentExcelModal({
                                 <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
                                 <input
                                     type="text"
-                                    placeholder="Search by Voucher No or Party..."
+                                    placeholder="Search by Voucher No or Ledger..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="w-full pl-9 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
+                                    className="w-full pl-9 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
                                 />
                             </div>
                             <div className="text-xs text-slate-400 font-mono">
@@ -948,8 +962,8 @@ export default function ImportPaymentExcelModal({
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">#</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Date</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Voucher No</th>
-                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Paid From (Credit)</th>
-                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Paid To (Debit)</th>
+                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Debit (Dr) Ledgers</th>
+                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Credit (Cr) Ledgers</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Narration</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px] text-right">Amount ({currencySymbol})</th>
                                         </tr>
@@ -959,13 +973,13 @@ export default function ImportPaymentExcelModal({
                                             .filter(r => {
                                                 if (!searchQuery) return true;
                                                 const q = searchQuery.toLowerCase();
-                                                return r.vchNo.toLowerCase().includes(q) || r.paidTo.toLowerCase().includes(q);
+                                                return r.vchNo.toLowerCase().includes(q) || r.paidTo.toLowerCase().includes(q) || r.paidFrom.toLowerCase().includes(q);
                                             })
                                             .map((row, idx) => (
                                                 <tr key={row.id || idx} className="hover:bg-white/[0.03] transition-colors">
                                                     <td className="py-2.5 px-4 text-slate-500 font-mono">{idx + 1}</td>
                                                     <td className="py-2.5 px-4 font-mono text-slate-300">{row.date}</td>
-                                                    <td className="py-2.5 px-4 font-mono font-bold text-emerald-400">
+                                                    <td className="py-2.5 px-4 font-mono font-bold text-indigo-400">
                                                         <div className="flex items-center gap-1.5">
                                                             <span>{row.vchNo}</span>
                                                             {row.isMultiSplit && (
@@ -975,22 +989,41 @@ export default function ImportPaymentExcelModal({
                                                             )}
                                                         </div>
                                                     </td>
-                                                    <td className="py-2.5 px-4 text-slate-200">{row.paidFrom || 'Main Cash'}</td>
                                                     <td className="py-2.5 px-4 font-bold text-white">
                                                         <div className="flex items-center gap-2">
                                                             <span className="truncate max-w-[200px]">{row.paidTo}</span>
-                                                            {row.isMultiSplit && (
-                                                                <span className="shrink-0 px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
-                                                                    {row.splits?.length || 2} Receivers
+                                                            {row.drRows && row.drRows.length > 1 && (
+                                                                <span className="shrink-0 px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                                                                    {row.drRows.length} Dr
                                                                 </span>
                                                             )}
                                                         </div>
-                                                        {row.isMultiSplit && row.splits && row.splits.length > 1 && (
+                                                        {row.drRows && row.drRows.length > 1 && (
                                                             <div className="text-[10px] text-slate-400 font-normal mt-1 space-y-0.5 bg-black/20 p-1.5 rounded-lg border border-white/5">
-                                                                {row.splits.map((s, si) => (
-                                                                    <div key={si} className="flex items-center justify-between text-slate-300">
-                                                                        <span className="truncate max-w-[150px] text-slate-400">· {s.targetName}</span>
-                                                                        <span className="font-mono font-semibold text-emerald-400">{currencySymbol} {s.amount?.toLocaleString()}</span>
+                                                                {row.drRows.map((d, di) => (
+                                                                    <div key={di} className="flex items-center justify-between text-slate-300">
+                                                                        <span className="truncate max-w-[140px] text-slate-400">· {d.targetName}</span>
+                                                                        <span className="font-mono font-semibold text-indigo-400">{currencySymbol} {d.amount?.toLocaleString()}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="py-2.5 px-4 font-bold text-white">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="truncate max-w-[200px]">{row.paidFrom}</span>
+                                                            {row.crRows && row.crRows.length > 1 && (
+                                                                <span className="shrink-0 px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
+                                                                    {row.crRows.length} Cr
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {row.crRows && row.crRows.length > 1 && (
+                                                            <div className="text-[10px] text-slate-400 font-normal mt-1 space-y-0.5 bg-black/20 p-1.5 rounded-lg border border-white/5">
+                                                                {row.crRows.map((c, ci) => (
+                                                                    <div key={ci} className="flex items-center justify-between text-slate-300">
+                                                                        <span className="truncate max-w-[140px] text-slate-400">· {c.targetName}</span>
+                                                                        <span className="font-mono font-semibold text-purple-400">{currencySymbol} {c.amount?.toLocaleString()}</span>
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -1010,17 +1043,17 @@ export default function ImportPaymentExcelModal({
                 )}
 
                 {/* ========================================================
-                    TAB 4: IMPORT HISTORY & BATCH ROLLBACK (RULE 7)
+                    TAB 4: IMPORT HISTORY & BATCH ROLLBACK (JOURNALS)
                    ======================================================== */}
                 {activeTab === 'history' && (
                     <div className="max-w-5xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         <div className="flex items-center justify-between p-6 rounded-2xl bg-gradient-to-r from-blue-950/40 via-slate-900/60 to-blue-950/30 border border-blue-500/30 shadow-xl">
                             <div>
                                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <History size={12} /> Audit Trail & Batch Isolation
+                                    <History size={12} /> Journal Audit Trail
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Batch Import History & Rollback Centre
+                                    Journal Import History & Rollback Centre
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
                                     Every import session receives an isolated Batch ID. You can inspect logs or initiate a full atomic rollback anytime.
@@ -1030,70 +1063,55 @@ export default function ImportPaymentExcelModal({
 
                         {historyList.length === 0 ? (
                             <div className="p-16 rounded-3xl bg-white/[0.02] border border-white/5 flex flex-col items-center justify-center text-center">
-                                <Clock size={48} className="text-blue-400/40 mb-3" />
-                                <h3 className="text-base font-bold text-white">No Batch Import Sessions Recorded</h3>
-                                <p className="text-xs text-slate-400 max-w-md mt-1">
-                                    Once an import batch completes, it will appear here with full audit metrics and rollback controls.
+                                <Clock size={40} className="text-slate-500 mb-3" />
+                                <h3 className="text-base font-bold text-white">No Journal Import History Found</h3>
+                                <p className="text-xs text-slate-400 max-w-xs mt-1">
+                                    Transactions imported through this module will appear here for audit tracking.
                                 </p>
                             </div>
                         ) : (
-                            <div className="space-y-3">
-                                {historyList.map((batch) => {
-                                    const isRolledBack = batch.status === 'ROLLED_BACK';
-                                    return (
-                                        <div
-                                            key={batch.batchImportId}
-                                            className={`p-5 rounded-2xl border transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
-                                                isRolledBack
-                                                    ? 'bg-rose-950/10 border-rose-500/20 opacity-70'
-                                                    : 'bg-white/[0.02] border-white/10 hover:border-white/20'
-                                            }`}
-                                        >
-                                            <div className="space-y-1">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-mono text-xs font-black text-white">{batch.batchImportId}</span>
-                                                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
-                                                        isRolledBack
-                                                            ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
-                                                            : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                                                    }`}>
-                                                        {batch.status}
-                                                    </span>
-                                                </div>
-                                                <div className="text-xs text-slate-400">
-                                                    Imported by <b className="text-slate-200">{batch.user}</b> on{' '}
-                                                    <span className="font-mono">{new Date(batch.timestamp).toLocaleString()}</span>
-                                                </div>
+                            <div className="space-y-4">
+                                {historyList.map((item) => (
+                                    <div
+                                        key={item.id}
+                                        className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-white/20 transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4"
+                                    >
+                                        <div className="space-y-1">
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-mono text-xs font-black text-indigo-400">{item.batchImportId}</span>
+                                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                                                    item.status === 'ROLLED_BACK'
+                                                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                                        : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+                                                }`}>
+                                                    {item.status || 'INGESTED'}
+                                                </span>
                                             </div>
-
-                                            <div className="flex items-center gap-6">
-                                                <div className="text-right">
-                                                    <div className="text-sm font-bold text-white">
-                                                        {batch.count} Vouchers
-                                                    </div>
-                                                    <div className="text-xs font-mono text-emerald-400 font-bold">
-                                                        {currencySymbol} {batch.totalAmount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                                    </div>
-                                                </div>
-
-                                                {!isRolledBack && (
-                                                    <button
-                                                        disabled={rollbackingId === batch.batchImportId}
-                                                        onClick={() => handleRollbackBatch(batch.batchImportId)}
-                                                        className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:border-rose-500/50 text-xs font-bold transition-all flex items-center gap-1.5"
-                                                    >
-                                                        {rollbackingId === batch.batchImportId ? (
-                                                            <RefreshCw className="animate-spin" size={14} />
-                                                        ) : (
-                                                            <RotateCcw size={14} />
-                                                        )}
-                                                        <span>Rollback Batch</span>
-                                                    </button>
-                                                )}
+                                            <div className="text-xs text-slate-400">
+                                                <span>Imported on: <b className="text-slate-200">{new Date(item.timestamp).toLocaleString()}</b></span>
+                                                <span> · Total: <b className="text-white">{item.totalImported} Journal Vouchers</b></span>
+                                                <span> · Operator: <b className="text-slate-200">{item.effectiveName || 'Admin'}</b></span>
                                             </div>
                                         </div>
-                                    );
-                                })}
+
+                                        <div>
+                                            {item.status !== 'ROLLED_BACK' && (
+                                                <button
+                                                    disabled={rollbackingId === item.batchImportId}
+                                                    onClick={() => handleRollbackBatch(item.batchImportId)}
+                                                    className="px-4 py-2 rounded-xl bg-white/5 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:border-rose-500 text-xs font-bold transition-all flex items-center gap-1.5"
+                                                >
+                                                    {rollbackingId === item.batchImportId ? (
+                                                        <RefreshCw className="animate-spin" size={14} />
+                                                    ) : (
+                                                        <RotateCcw size={14} />
+                                                    )}
+                                                    <span>Rollback Batch</span>
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         )}
                     </div>
@@ -1104,53 +1122,75 @@ export default function ImportPaymentExcelModal({
                    ======================================================== */}
                 {activeTab === 'instructions' && (
                     <div className="max-w-4xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
-                        {/* Banner */}
-                        <div className="p-6 rounded-2xl bg-gradient-to-r from-purple-950/40 via-slate-900/60 to-purple-950/30 border border-purple-500/30 shadow-xl">
-                            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                <FileText size={12} /> Standard Specifications
-                            </div>
-                            <h2 className="text-xl font-bold text-white tracking-tight">
-                                Excel Format Guidelines & Sample Templates
+                        <div className="p-6 rounded-2xl bg-gradient-to-r from-purple-950/40 via-slate-900/60 to-purple-950/30 border border-purple-500/20 shadow-xl">
+                            <h2 className="text-xl font-bold text-white tracking-tight mb-2">
+                                Download Pre-Configured Journal Templates
                             </h2>
-                            <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                Download pre-configured Excel templates or review the automated rules enforced by the import engine.
+                            <p className="text-xs text-slate-400 max-w-xl mb-6">
+                                Use our sample templates to ensure your column names and formatting are 100% compliant with AccPro and Tally Prime double-entry rules.
                             </p>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3">
+                                    <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm">
+                                        <FileSpreadsheet size={18} />
+                                        <span>Standard AccPro Journal Template</span>
+                                    </div>
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                        Clean tabular format with `Date`, `Voucher No`, `Dr Ledger (Debit)`, `Cr Ledger (Credit)`, `Amount`, and `Narration`.
+                                    </p>
+                                    <button
+                                        onClick={() => handleDownloadTemplate('standard')}
+                                        className="px-4 py-2 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 text-xs font-bold flex items-center gap-2"
+                                    >
+                                        <Download size={14} />
+                                        <span>Download Standard Template (.xlsx)</span>
+                                    </button>
+                                </div>
+
+                                <div className="p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3">
+                                    <div className="flex items-center gap-2 text-purple-400 font-bold text-sm">
+                                        <Layers size={18} />
+                                        <span>Tally Prime Journal Register Template</span>
+                                    </div>
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                        Columnar register exported directly from Tally Prime ({'Display > Account Books > Journal Register > Export'}).
+                                    </p>
+                                    <button
+                                        onClick={() => handleDownloadTemplate('tally')}
+                                        className="px-4 py-2 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 text-xs font-bold flex items-center gap-2"
+                                    >
+                                        <Download size={14} />
+                                        <span>Download Tally Format (.xlsx)</span>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
 
-                        {/* Download Buttons Card */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3">
-                                <div className="flex items-center gap-2 font-bold text-white text-sm">
-                                    <FileSpreadsheet className="text-emerald-400" size={18} />
-                                    <span>Standard AccPro Template</span>
+                        {/* Rules Guide */}
+                        <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/10 space-y-4">
+                            <h3 className="text-sm font-bold text-white uppercase tracking-wider text-indigo-400">
+                                Double-Entry Import Rules Summary
+                            </h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-300">
+                                <div className="p-3 rounded-xl bg-black/20 border border-white/5 space-y-1">
+                                    <div className="font-bold text-white flex items-center gap-1.5">
+                                        <Scale size={14} className="text-indigo-400" />
+                                        <span>Total Debit = Total Credit Balance</span>
+                                    </div>
+                                    <p className="text-slate-400">
+                                        Every journal voucher must balance. Imbalances are automatically intercepted and routed to the Solution Centre.
+                                    </p>
                                 </div>
-                                <p className="text-xs text-slate-400 leading-relaxed">
-                                    Clean flat format with Date, Voucher No, Paid From, Paid To, Amount, and Narration columns.
-                                </p>
-                                <button
-                                    onClick={() => handleDownloadTemplate('standard')}
-                                    className="px-4 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold text-xs flex items-center gap-2"
-                                >
-                                    <Download size={14} />
-                                    <span>Download Standard (.xlsx)</span>
-                                </button>
-                            </div>
-
-                            <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3">
-                                <div className="flex items-center gap-2 font-bold text-white text-sm">
-                                    <FileSpreadsheet className="text-blue-400" size={18} />
-                                    <span>Tally Columnar Template</span>
+                                <div className="p-3 rounded-xl bg-black/20 border border-white/5 space-y-1">
+                                    <div className="font-bold text-white flex items-center gap-1.5">
+                                        <Sparkles size={14} className="text-indigo-400" />
+                                        <span>1-Click Missing Master Creation</span>
+                                    </div>
+                                    <p className="text-slate-400">
+                                        Missing ledgers can be created instantly in-line, turning the transaction to RESOLVED immediately.
+                                    </p>
                                 </div>
-                                <p className="text-xs text-slate-400 leading-relaxed">
-                                    Replicates Tally Prime's columnar register with Cashier/Contra columns and multi-split expense heads.
-                                </p>
-                                <button
-                                    onClick={() => handleDownloadTemplate('tally')}
-                                    className="px-4 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold text-xs flex items-center gap-2"
-                                >
-                                    <Download size={14} />
-                                    <span>Download Tally Format (.xlsx)</span>
-                                </button>
                             </div>
                         </div>
                     </div>
@@ -1158,70 +1198,72 @@ export default function ImportPaymentExcelModal({
             </div>
 
             {/* ========================================================
-                RULE 2: CREATE MISSING MASTER DIALOG MODAL
+                INLINE MISSING MASTER CREATION MODAL
                ======================================================== */}
             {createMasterModal.isOpen && (
-                <div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="bg-[#0f172a] border border-white/20 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+                <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="max-w-md w-full rounded-2xl bg-[#12133a] border border-indigo-500/40 p-6 shadow-2xl space-y-4 animate-in zoom-in-95">
                         <div className="flex items-center justify-between pb-3 border-b border-white/10">
                             <div className="flex items-center gap-2">
-                                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
-                                    <Plus size={18} />
-                                </div>
-                                <div>
-                                    <h3 className="text-sm font-bold text-white">Create Missing Master Record</h3>
-                                    <p className="text-[10px] text-slate-400">Rule 2: Interactive Master Generation</p>
-                                </div>
+                                <Plus className="text-indigo-400" size={18} />
+                                <h3 className="text-sm font-bold text-white">Create Missing Ledger Master</h3>
                             </div>
                             <button
-                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', isSubmitting: false })}
+                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'expense', partyRole: 'supplier', isSubmitting: false })}
                                 className="text-slate-400 hover:text-white"
                             >
-                                <X size={18} />
+                                <X size={16} />
                             </button>
                         </div>
 
-                        <div className="space-y-4">
+                        <div className="space-y-3">
                             <div>
-                                <label className="text-xs font-bold text-slate-300 block mb-1">Master Entity Name</label>
+                                <label className="block text-xs font-bold text-slate-300 mb-1">Ledger Name</label>
                                 <input
                                     type="text"
                                     value={createMasterModal.name}
                                     onChange={(e) => setCreateMasterModal(prev => ({ ...prev, name: e.target.value }))}
-                                    className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white text-xs font-bold focus:outline-none focus:border-amber-500"
+                                    className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/20 text-xs text-white focus:outline-none focus:border-indigo-500"
                                 />
                             </div>
 
                             <div>
-                                <label className="text-xs font-bold text-slate-300 block mb-1">Entity Classification</label>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {[
-                                        { id: 'party', label: 'Supplier / Party' },
-                                        { id: 'account', label: 'Cash / Bank' },
-                                        { id: 'expense', label: 'Expense Head' }
-                                    ].map(t => (
-                                        <button
-                                            key={t.id}
-                                            type="button"
-                                            onClick={() => setCreateMasterModal(prev => ({ ...prev, type: t.id }))}
-                                            className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all text-center ${
-                                                createMasterModal.type === t.id
-                                                    ? 'bg-amber-500 text-slate-950 border-amber-500'
-                                                    : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
-                                            }`}
-                                        >
-                                            {t.label}
-                                        </button>
-                                    ))}
-                                </div>
+                                <label className="block text-xs font-bold text-slate-300 mb-1">Account Category</label>
+                                <select
+                                    value={createMasterModal.type}
+                                    onChange={(e) => setCreateMasterModal(prev => ({ ...prev, type: e.target.value }))}
+                                    className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/20 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                >
+                                    <option value="expense">Expense (Administrative)</option>
+                                    <option value="direct_expense">Direct Expense (COGS)</option>
+                                    <option value="party">Party / Counterparty (Debtor/Creditor)</option>
+                                    <option value="account">Bank / Cash Account</option>
+                                    <option value="income">Income / Revenue Head</option>
+                                    <option value="asset">Fixed Asset</option>
+                                    <option value="capital">Capital Account</option>
+                                </select>
                             </div>
+
+                            {createMasterModal.type === 'party' && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-300 mb-1">Party Role</label>
+                                    <select
+                                        value={createMasterModal.partyRole}
+                                        onChange={(e) => setCreateMasterModal(prev => ({ ...prev, partyRole: e.target.value }))}
+                                        className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/20 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                    >
+                                        <option value="supplier">Sundry Creditor (Supplier / Payee)</option>
+                                        <option value="customer">Sundry Debtor (Customer / Payer)</option>
+                                    </select>
+                                </div>
+                            )}
                         </div>
 
-                        <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+                        <div className="pt-2 flex items-center justify-end gap-2">
                             <button
                                 type="button"
-                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', isSubmitting: false })}
-                                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold"
+                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'expense', partyRole: 'supplier', isSubmitting: false })}
+                                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-400"
                             >
                                 Cancel
                             </button>
@@ -1229,7 +1271,7 @@ export default function ImportPaymentExcelModal({
                                 type="button"
                                 disabled={createMasterModal.isSubmitting}
                                 onClick={handleConfirmCreateMaster}
-                                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-amber-500/20"
+                                className="px-5 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-indigo-500/20"
                             >
                                 {createMasterModal.isSubmitting ? (
                                     <RefreshCw className="animate-spin" size={14} />
@@ -1242,15 +1284,6 @@ export default function ImportPaymentExcelModal({
                     </div>
                 </div>
             )}
-
-            {/* SUBTLE FOOTER */}
-            <div className="h-10 bg-black/40 border-t border-white/5 px-6 flex items-center justify-between text-[10px] text-slate-500 font-medium shrink-0">
-                <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    <span>AccPro Enterprise Ingestion Pipeline · Solution Centre Active</span>
-                </div>
-                <div>Batch Engine v2.7.1</div>
-            </div>
         </div>
     );
 }

@@ -135,6 +135,8 @@ import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
 import ExportVoucherModal from './ExportVoucherModal.jsx';
 import ImportVoucherModal from './ImportVoucherModal.jsx';
 import ImportPaymentExcelModal from './ImportPaymentExcelModal.jsx';
+import ImportReceiptExcelModal from './ImportReceiptExcelModal.jsx';
+import ImportJournalExcelModal from './ImportJournalExcelModal.jsx';
 import V201VerifyReportModal from './V201VerifyReportModal.jsx';
 import V311ReportModal from './V311ReportModal.jsx';
 import BackupHistoryModal, { addBackupHistoryEntry } from './BackupHistoryModal.jsx';
@@ -12161,6 +12163,8 @@ export default function App() {
                     onExportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('export_voucher'); }}
                     onImportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_voucher'); }}
                     onImportPaymentExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_payment_excel'); }}
+                    onImportReceiptExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_receipt_excel'); }}
+                    onImportJournalExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_journal_excel'); }}
                     onShowBackupLog={() => { setModalStack(s => [...s, 'management']); setActiveModal('backup_log'); }}
                     onChangePassword={handleChangePassword}
                     onManageUsers={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_users'); }}
@@ -12254,6 +12258,54 @@ export default function App() {
                 user={user}
                 dataOwnerId={dataOwnerId}
                 companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                payments={payments}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+
+            {/* Import Receipt Voucher From Excel Modal */}
+            <ImportReceiptExcelModal
+                isOpen={activeModal === 'import_receipt_excel'}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                incomeAccounts={incomeAccounts}
+                payments={payments}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+
+            {/* Import Journal Voucher From Excel Modal */}
+            <ImportJournalExcelModal
+                isOpen={activeModal === 'import_journal_excel'}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                incomeAccounts={incomeAccounts}
+                capitalAccounts={capitalAccounts}
+                assetAccounts={assetAccounts}
+                journalVouchers={journalVouchers}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
             />
 
             {/* Backup/Restore History Modal */}

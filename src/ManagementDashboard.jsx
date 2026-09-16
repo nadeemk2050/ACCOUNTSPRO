@@ -41,6 +41,8 @@ const ManagementDashboard = ({
     onExportVoucher,
     onImportVoucher,
     onImportPaymentExcel,
+    onImportReceiptExcel,
+    onImportJournalExcel,
     onShowBackupLog,
     functions,
     dataOwnerId,
@@ -1893,10 +1895,24 @@ const ManagementDashboard = ({
                                         icon={<UploadCloud />}
                                     />
                                     <ActionCard
-                                        title="Import Paym Vch from Excel"
-                                        desc="Import Payment vouchers from Tally or Excel spreadsheets."
+                                        title="IMP PAYM VCHR XLSX XML CSV"
+                                        desc="Universal Import: Excel, XML & CSV with multi-receiver payout bundling."
                                         onClick={onImportPaymentExcel}
                                         color="emerald"
+                                        icon={<FileSpreadsheet />}
+                                    />
+                                    <ActionCard
+                                        title="IMP RECPT VCHR XLSX XML CSV"
+                                        desc="Universal Import: Excel, XML & CSV with multi-giver collection bundling."
+                                        onClick={onImportReceiptExcel}
+                                        color="teal"
+                                        icon={<FileSpreadsheet />}
+                                    />
+                                    <ActionCard
+                                        title="IMP JRNL VCHR XLSX XML CSV"
+                                        desc="Universal Import: Excel, XML & CSV with double-entry Dr/Cr balance verification."
+                                        onClick={onImportJournalExcel}
+                                        color="indigo"
                                         icon={<FileSpreadsheet />}
                                     />
                                     <ActionCard
