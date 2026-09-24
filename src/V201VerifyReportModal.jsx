@@ -64,7 +64,7 @@ export default function V201VerifyReportModal({
     isOpen, onClose, onBack,
     user, dataOwnerId,
     parties = [], taxRates = [],
-    products = [], locations = [],
+    locations = [],
     taxId = null, taxName = null,
     currencySymbol = 'AED',
     onGenerateV311 = null,
@@ -87,11 +87,9 @@ export default function V201VerifyReportModal({
     const [invoices, setInvoices] = useState([]);
     const [payments, setPayments] = useState([]);
     const [journals, setJournals] = useState([]);
-    const [prods, setProds] = useState(products);
     const [locs, setLocs] = useState(locations);
 
     // Sync external props if provided
-    useEffect(() => { if (products?.length) setProds(products); }, [products]);
     useEffect(() => { if (locations?.length) setLocs(locations); }, [locations]);
 
     // Reset on open / tax change
@@ -117,18 +115,19 @@ export default function V201VerifyReportModal({
         mk('invoices', setInvoices);
         mk('payments', setPayments);
         mk('journal_vouchers', setJournals);
-        if (!prods.length) mk('products', setProds);
         if (!locs.length) mk('locations', setLocs, false);
         return () => subs.forEach(u => u && u());
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, uid]);
 
-    // Master lookups
-    const productName = (id) => prods.find(p => p.id === id)?.name || '';
-    const productUnit = (id) => prods.find(p => p.id === id)?.unitName || prods.find(p => p.id === id)?.unit || '';
-    const locName = (id) => locs.find(l => l.id === id)?.name || '';
-    const partyName = (id) => parties.find(p => p.id === id)?.name || '';
-    const partyTrn = (id) => parties.find(p => p.id === id)?.trn || '';
+    // Master lookups — Map-based for O(1) access (keeps large datasets fast)
+    const partyMap = useMemo(() => new Map((parties || []).map(p => [p.id, p])), [parties]);
+    const locMap = useMemo(() => new Map((locs || []).map(l => [l.id, l])), [locs]);
+    const taxMap = useMemo(() => new Map((taxRates || []).map(t => [String(t.id || '').trim(), t])), [taxRates]);
+
+    const locName = (id) => locMap.get(id)?.name || '';
+    const partyName = (id) => partyMap.get(id)?.name || '';
+    const partyTrn = (id) => partyMap.get(id)?.trn || '';
 
     // Payment maps (period-scoped)
     const { paidByBill } = useMemo(() => {
@@ -156,9 +155,10 @@ export default function V201VerifyReportModal({
         const zeroRatedSales = [];
 
         const flag = (r) => {
-            r.variation = safeNum(r.actualVat) - safeNum(r.theoretical);
-            r.flag = Math.abs(r.variation) > TOL;
-            r.searchStr = `${r.supplier || ''} ${r.trn || ''} ${r.voucherNo || r.ref || ''} ${r.invRef || r.taxInvNo || ''} ${r.itemName || r.details || ''} ${r.location || ''}`.toLowerCase();
+            const hasTheo = r.theoretical !== null && r.theoretical !== undefined && !isNaN(Number(r.theoretical));
+            r.variation = hasTheo ? safeNum(r.actualVat) - safeNum(r.theoretical) : null;
+            r.flag = hasTheo && Math.abs(r.variation) > TOL;
+            r.searchStr = `${r.supplier || ''} ${r.trn || ''} ${r.voucherNo || r.ref || ''} ${r.invRef || r.taxInvNo || ''} ${r.details || ''} ${r.location || ''}`.toLowerCase();
             return r;
         };
 
@@ -254,7 +254,7 @@ export default function V201VerifyReportModal({
             const isTaxEntry = (r) => {
                 if (norm(r.category) !== 'tax') return false;
                 const rid = String(r.id || '').trim();
-                const taxRateById = taxRates.find(t => String(t.id || '').trim() === rid);
+                const taxRateById = taxMap.get(rid);
                 if (taxId) {
                     if (rid === taxId) return true;
                     if (taxRateById && String(taxRateById.id || '').trim() === taxId) return true;
@@ -275,17 +275,27 @@ export default function V201VerifyReportModal({
                 const baseFromOthers = others.reduce((s, r) => s + safeNum(r.amount), 0);
 
                 if (tx.type === 'dr') {
-                    const gross = baseFromOthers || safeNum(jv.amount || 0);
-                    const base = Math.max(0, gross - vatAmt);
+                    /*
+                     * Manual journal input VAT. A taxable base can only be trusted when the voucher
+                     * has EXACTLY ONE other leg (the supplier gross = net + VAT). With multiple mixed
+                     * legs the base is NOT derivable — we then show it as unknown (“—”) instead of
+                     * fabricating a base, which previously raised false REVIEW variations.
+                     */
+                    const singleOther = others.length === 1 ? safeNum(others[0].amount) : 0;
+                    const derivable = singleOther > 0 && (singleOther - vatAmt) > 0;
+                    const base = derivable ? (singleOther - vatAmt) : null;
                     inputRows.push(flag({
                         source: 'JV', kind: 'input',
                         supplier: supId ? (partyName(supId) || supId) : (jv.drName || jv.crName || 'Unattributed Journal'),
                         trn: supId ? partyTrn(supId) : '',
                         date: jv.date, ref: jv.refNo || 'JV', taxInvNo: '',
                         details: jv.narration || jv.description || `${jv.drName || ''} / ${jv.crName || ''}`,
-                        amountPaid: 0, invoiceTotal: gross, stdRated: base,
-                        actualVat: vatAmt, theoretical: base * (ratePct / 100),
+                        amountPaid: 0, invoiceTotal: singleOther || safeNum(jv.amount || 0),
+                        stdRated: base,
+                        actualVat: vatAmt,
+                        theoretical: derivable ? base * (ratePct / 100) : null,
                         manualOnly: true,
+                        baseUnknown: !derivable,
                     }));
                 } else {
                     outputRows.push({
@@ -322,54 +332,35 @@ export default function V201VerifyReportModal({
             let netBase = safeNum(inv.taxableValue || 0);
             if (netBase <= 0) netBase = Math.max(0, total - taxAmt);
 
-            // Taxable line value = qty × ORIGINAL rate (pre-expense capitalization). For sales
-            // 'include' mode rates were REDUCED at save time, for purchases they were RAISED;
-            // originalRate always holds the true customer/supplier-charged rate that VAT used.
-            const lineValue = (it) => {
+            /*
+             * SALES — ONE ROW PER TAX INVOICE.
+             * Item-level columns (item name / qty / rate) are not required for VAT verification,
+             * so the row is the tax invoice itself: Tax Invoice No + Customer + TRN + Value + VAT.
+             * Value = Σ qty × ORIGINAL rate (pre-expense capitalization) — the amount VAT was
+             * charged on — falling back to the invoice net base when no usable item lines exist.
+             */
+            const itemsNet = (Array.isArray(inv.items) ? inv.items : []).reduce((sum, it) => {
                 const origRate = safeNum(it.originalRate);
-                if (origRate > 0) return safeNum(it.quantity) * origRate;
-                return safeNum(it.total) || (safeNum(it.quantity) * safeNum(it.rate));
-            };
-            const items = (Array.isArray(inv.items) ? inv.items : [])
-                .map(it => ({ ...it, _net: lineValue(it) }))
-                .filter(it => it._net > 0);
+                const v = origRate > 0
+                    ? (safeNum(it.quantity) * origRate)
+                    : (safeNum(it.total) || (safeNum(it.quantity) * safeNum(it.rate)));
+                return sum + (v > 0 ? v : 0);
+            }, 0);
+            const netValue = itemsNet > 0 ? itemsNet : netBase;
 
-            if (items.length === 0) {
-                // Invoice without item lines — single transaction row
-                salesRows.push(flag({
-                    source: 'INV', kind: 'output',
-                    location, supplier: cust, trn: custTrn,
-                    voucherNo: inv.refNo || '', invRef: inv.taxInvNo || '', date: inv.date,
-                    itemName: inv.narration || inv.description || '(No item detail)',
-                    qty: 0, unit: '', rate: 0, value: netBase,
-                    amountPaid: 0, stdRated: netBase,
-                    actualVat: taxAmt, theoretical: netBase * (ratePct / 100),
-                }));
-            } else {
-                const sumNet = items.reduce((s, it) => s + it._net, 0);
-                items.forEach(it => {
-                    const value = it._net;
-                    const share = sumNet > 0 ? (value / sumNet) : (1 / items.length);
-                    const vatShare = taxAmt * share;
-                    const theo = value * (ratePct / 100);
-                    salesRows.push(flag({
-                        source: 'INV', kind: 'output',
-                        location, supplier: cust, trn: custTrn,
-                        voucherNo: inv.refNo || '', invRef: inv.taxInvNo || '', date: inv.date,
-                        itemName: productName(it.productId) || it.productName || it.name || '(Item)',
-                        qty: safeNum(it.quantity), unit: productUnit(it.productId) || it.unit || '',
-                        rate: safeNum(it.rate), value,
-                        amountPaid: 0, stdRated: value,
-                        actualVat: vatShare, theoretical: theo,
-                        pieces: safeNum(it.pieces),
-                    }));
-                });
-            }
+            salesRows.push(flag({
+                source: 'INV', kind: 'output',
+                location, supplier: cust, trn: custTrn,
+                voucherNo: inv.refNo || '', invRef: inv.taxInvNo || '', date: inv.date,
+                value: netValue,
+                amountPaid: 0, stdRated: netValue,
+                actualVat: taxAmt, theoretical: netValue * (ratePct / 100),
+            }));
         });
 
         return { inputRows, salesRows, outputRows, zeroRated, zeroRatedSales };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [invoices, journals, payments, from, to, parties, prods, locs, taxId, taxName, ratePct, paidByBill, isOpen]);
+    }, [invoices, journals, payments, from, to, parties, locs, taxId, taxName, ratePct, paidByBill, isOpen]);
 
     // ── Scope-aware rows ───────────────────────────────────────────────────
     const scopeRows = scope === 'input' ? build.inputRows : build.salesRows;
@@ -385,37 +376,42 @@ export default function V201VerifyReportModal({
         const map = new Map();
         visibleRows.forEach(r => {
             const key = `${r.supplier}__${r.trn}__${r.location || ''}`;
-            if (!map.has(key)) map.set(key, { supplier: r.supplier, trn: r.trn, location: r.location || '', count: 0, amountPaid: 0, stdRated: 0, actualVat: 0, theoretical: 0, variation: 0, flag: false, manualOnly: false });
+            if (!map.has(key)) map.set(key, { supplier: r.supplier, trn: r.trn, location: r.location || '', count: 0, amountPaid: 0, stdRated: 0, actualVat: 0, theoretical: 0, variation: 0, flag: false, manualOnly: false, unknownBase: false });
             const g = map.get(key);
             g.count += 1;
             g.amountPaid += safeNum(r.amountPaid);
-            g.stdRated += safeNum(r.stdRated);
+            if (r.stdRated !== null && r.stdRated !== undefined) g.stdRated += safeNum(r.stdRated);
             g.actualVat += safeNum(r.actualVat);
-            g.theoretical += safeNum(r.theoretical);
-            g.variation += safeNum(r.variation);
+            if (r.theoretical !== null && r.theoretical !== undefined) g.theoretical += safeNum(r.theoretical);
+            if (r.variation !== null && r.variation !== undefined) g.variation += safeNum(r.variation);
             if (r.flag) g.flag = true;
             if (r.manualOnly) g.manualOnly = true;
+            if (r.baseUnknown) g.unknownBase = true;
         });
         return Array.from(map.values()).sort((a, b) => Math.abs(b.actualVat) - Math.abs(a.actualVat));
     }, [visibleRows]);
 
     const totals = useMemo(() => {
-        const t = { groups: groupRows.length, rows: visibleRows.length, paid: 0, std: 0, actual: 0, theo: 0, var: 0, flagged: 0, noTrn: 0 };
+        const t = { groups: groupRows.length, rows: visibleRows.length, paid: 0, std: 0, actual: 0, theo: 0, var: 0, flagged: 0, noTrn: 0, manual: 0 };
         visibleRows.forEach(r => {
             t.paid += safeNum(r.amountPaid);
-            t.std += safeNum(r.stdRated);
+            if (r.stdRated !== null && r.stdRated !== undefined) t.std += safeNum(r.stdRated);
             t.actual += safeNum(r.actualVat);
-            t.theo += safeNum(r.theoretical);
-            t.var += safeNum(r.variation);
+            if (r.theoretical !== null && r.theoretical !== undefined) t.theo += safeNum(r.theoretical);
+            if (r.variation !== null && r.variation !== undefined) t.var += safeNum(r.variation);
             if (r.flag) t.flagged++;
             if (!r.trn) t.noTrn++;
+            if (r.baseUnknown) t.manual++;
         });
         return t;
     }, [visibleRows, groupRows]);
 
+    const fmtOrDash = (v, f = fmt2) => (v === null || v === undefined || v === '' ? '—' : f(v));
+
     const outputTotal = useMemo(() => build.outputRows.reduce((s, r) => s + safeNum(r.vat), 0), [build.outputRows]);
 
     const fmtFlag = (n) => {
+        if (n === null || n === undefined) return <span className="text-slate-300 font-bold">—</span>;
         const v = safeNum(n);
         if (Math.abs(v) < TOL) return <span className="text-emerald-600 font-black">{fmt3(v)}</span>;
         return <span className="text-rose-600 font-black">{v < 0 ? '▼ ' : '▲ '}{fmt3(v)}</span>;
@@ -434,7 +430,6 @@ export default function V201VerifyReportModal({
             const XLSX = await import('xlsx');
             const meta = headerMeta();
             const wb = XLSX.utils.book_new();
-            const line = ['V201 VERIFY REPORT', meta.tax, meta.period, `Currency: ${meta.cur}   •   Theoretical VAT = ${rateLabel} of net value   •   Tolerance: ${TOL}`];
 
             if (scope === 'input') {
                 const rows = viewMode === 'supplier'
@@ -443,84 +438,49 @@ export default function V201VerifyReportModal({
                         [`Amount Paid (${meta.cur})`]: +safeNum(g.amountPaid).toFixed(2),
                         [`Std-Rated Supplies (${meta.cur})`]: +safeNum(g.stdRated).toFixed(2),
                         [`Actual VAT (${meta.cur})`]: +safeNum(g.actualVat).toFixed(2),
-                        [`Theoretical ${rateLabel} (${meta.cur})`]: +safeNum(g.theoretical).toFixed(2),
-                        [`Variation (${meta.cur})`]: +safeNum(g.variation).toFixed(2),
-                        'Status': g.flag ? 'REVIEW' : (g.trn ? 'OK' : 'NO TRN'),
+                        'Status': g.flag ? 'REVIEW' : (g.unknownBase ? 'MANUAL JV' : (g.trn ? 'OK' : 'NO TRN')),
                     }))
                     : visibleRows.map(r => ({
                         'Supplier Name': r.supplier, 'TRN': r.trn || '', 'Date': r.date, 'Vch/Ref': r.ref,
                         'Tax Inv No.': r.taxInvNo, 'Transaction Details': r.details, 'Source': r.source,
                         [`Amount Paid (${meta.cur})`]: +safeNum(r.amountPaid).toFixed(2),
-                        [`Std-Rated Supplies (${meta.cur})`]: +safeNum(r.stdRated).toFixed(2),
+                        [`Std-Rated Supplies (${meta.cur})`]: (r.stdRated === null || r.stdRated === undefined) ? '' : +safeNum(r.stdRated).toFixed(2),
                         [`Actual VAT (${meta.cur})`]: +safeNum(r.actualVat).toFixed(2),
-                        [`Theoretical ${rateLabel} (${meta.cur})`]: +safeNum(r.theoretical).toFixed(2),
-                        [`Variation (${meta.cur})`]: +safeNum(r.variation).toFixed(2),
-                        'Status': r.flag ? 'REVIEW' : (r.trn ? 'OK' : 'NO TRN'),
+                        'Status': r.flag ? 'REVIEW' : (r.baseUnknown ? 'MANUAL JV' : (!r.trn ? 'NO TRN' : 'OK')),
                     }));
-                const ws = XLSX.utils.json_to_sheet(rows, { origin: 'A6' });
-                XLSX.utils.sheet_add_aoa([line, []], { origin: 'A1' });
-                XLSX.utils.sheet_add_aoa([['PURCHASE (INPUT VAT) — SUPPLIER VERIFICATION']], { origin: 'A4' });
-                ws['!cols'] = [{ wch: 26 }, { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 20 }, { wch: 16 }, { wch: 10 }];
+                // CLEAN SHEET for VAT-app upload: column headers on row 1, data from row 2 —
+                // no title/period/currency/tolerance rows, no section captions, and no
+                // Theoretical/Variation analysis columns (actual figures only).
+                const ws = XLSX.utils.json_to_sheet(rows);
+                ws['!cols'] = viewMode === 'supplier'
+                    ? [{ wch: 26 }, { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 20 }, { wch: 16 }, { wch: 10 }]
+                    : [{ wch: 26 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 40 }, { wch: 8 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 10 }];
                 XLSX.utils.book_append_sheet(wb, ws, 'Purchase (Input)');
             } else {
                 // SALE tab — exact reference layout
                 const rows = viewMode === 'supplier'
                     ? groupRows.map(g => ({
-                        'Customer Name': g.supplier, 'TRN': g.trn || '', 'Lines': g.count,
+                        'Customer Name': g.supplier, 'TRN': g.trn || '', 'Invoices': g.count,
                         [`Net Value (${meta.cur})`]: +safeNum(g.stdRated).toFixed(2),
                         [`Actual Output VAT (${meta.cur})`]: +safeNum(g.actualVat).toFixed(2),
-                        [`VAT Check ${rateLabel} (${meta.cur})`]: +safeNum(g.theoretical).toFixed(2),
-                        [`Variation (${meta.cur})`]: +safeNum(g.variation).toFixed(2),
                         'Status': g.flag ? 'REVIEW' : (g.trn ? 'OK' : 'NO TRN'),
                     }))
                     : visibleRows.map(r => ({
-                        'Location': r.location || '',
                         'Voucher No.': r.voucherNo,
-                        'Voucher Ref. No.': r.invRef,
-                        'Voucher Ref. Date': r.date,
-                        'TRN': r.trn || '',
-                        'ITEM NAME': r.itemName,
-                        'Quantity': r.qty ? +safeNum(r.qty).toFixed(3) : '',
-                        'Rate': r.rate ? +safeNum(r.rate).toFixed(3) : '',
-                        'Value': +safeNum(r.value || r.stdRated).toFixed(3),
+                        'Tax Invoice No.': r.invRef,
+                        'Voucher Date': r.date,
+                        'Customer Name': r.supplier,
+                        'Customer TRN': String(r.trn || ''),
+                        'Net Value': +safeNum(r.value || r.stdRated).toFixed(3),
                         'VAT (Actual Collected)': +safeNum(r.actualVat).toFixed(3),
-                        [`VAT Check (Theoretical ${rateLabel})`]: +safeNum(r.theoretical).toFixed(3),
-                        'Variation / Difference': +safeNum(r.variation).toFixed(3),
                     }));
-                const ws = XLSX.utils.json_to_sheet(rows, { origin: 'A6' });
-                XLSX.utils.sheet_add_aoa([line, []], { origin: 'A1' });
-                XLSX.utils.sheet_add_aoa([['SALES (OUTPUT VAT) — SALE TAB VERIFICATION']], { origin: 'A4' });
-                ws['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 18 }, { wch: 34 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 20 }, { wch: 16 }];
+                // CLEAN SHEET for VAT-app upload: headers row 1, data row 2 onward (no
+                // Theoretical/Variation analysis columns — actual figures only).
+                const ws = XLSX.utils.json_to_sheet(rows);
+                ws['!cols'] = viewMode === 'supplier'
+                    ? [{ wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 16 }, { wch: 20 }, { wch: 10 }]
+                    : [{ wch: 16 }, { wch: 20 }, { wch: 12 }, { wch: 30 }, { wch: 18 }, { wch: 14 }, { wch: 16 }];
                 XLSX.utils.book_append_sheet(wb, ws, 'SALE');
-            }
-
-            // Output VAT journal reference
-            const outWs = XLSX.utils.json_to_sheet(build.outputRows.map(r => ({
-                'Date': r.date, 'Vch/Ref': r.ref, 'Counter Party': r.party,
-                'Details': r.details, [`Base (${meta.cur})`]: +safeNum(r.base).toFixed(2),
-                [`Output VAT ${rateLabel} (${meta.cur})`]: +safeNum(r.vat).toFixed(2),
-            })), { origin: 'A4' });
-            XLSX.utils.sheet_add_aoa([['OUTPUT VAT — JOURNAL ENTRIES (Reference)', meta.period], []], { origin: 'A1' });
-            outWs['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 46 }, { wch: 16 }, { wch: 18 }];
-            XLSX.utils.book_append_sheet(wb, outWs, 'Output VAT (Journal)');
-
-            if (scope === 'input' && build.zeroRated.length) {
-                const zWs = XLSX.utils.json_to_sheet(build.zeroRated.map(r => ({
-                    'Supplier': r.supplier, 'TRN': r.trn || '', 'Date': r.date, 'Ref': r.ref,
-                    'Tax Inv No.': r.taxInvNo, 'Details': r.details, [`Total (${meta.cur})`]: +safeNum(r.total).toFixed(2)
-                })), { origin: 'A4' });
-                XLSX.utils.sheet_add_aoa([['PURCHASES WITHOUT VAT (Zero-rated / Review)', meta.period], []], { origin: 'A1' });
-                zWs['!cols'] = [{ wch: 26 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 46 }, { wch: 16 }];
-                XLSX.utils.book_append_sheet(wb, zWs, 'No-VAT Purchases');
-            }
-            if (scope === 'output' && build.zeroRatedSales.length) {
-                const zWs = XLSX.utils.json_to_sheet(build.zeroRatedSales.map(r => ({
-                    'Customer': r.supplier, 'TRN': r.trn || '', 'Location': r.location, 'Date': r.date,
-                    'Ref': r.ref, 'Tax Inv No.': r.taxInvNo, 'Details': r.details, [`Total (${meta.cur})`]: +safeNum(r.total).toFixed(2)
-                })), { origin: 'A4' });
-                XLSX.utils.sheet_add_aoa([['SALES WITHOUT VAT (Zero-rated / Exempt / Review)', meta.period], []], { origin: 'A1' });
-                zWs['!cols'] = [{ wch: 24 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 40 }, { wch: 16 }];
-                XLSX.utils.book_append_sheet(wb, zWs, 'No-VAT Sales');
             }
 
             XLSX.writeFile(wb, `V201_Verify_${scope === 'input' ? 'Purchase' : 'Sale'}_${from}_${to}.xlsx`);
@@ -533,8 +493,18 @@ export default function V201VerifyReportModal({
     const downloadPDF = async () => {
         try {
             const jsPDFModule = await import('jspdf');
-            const { default: autoTable } = await import('jspdf-autotable');
-            const jsPDF = jsPDFModule.default;
+            const atModule = await import('jspdf-autotable');
+            // jspdf v3 exposes the constructor as the NAMED export (`{ jsPDF }`) — the same
+            // pattern every other working PDF export in this app uses. Fall back defensively for
+            // CJS/ESM interop shapes so `new jsPDF()` never throws.
+            const jsPDF = jsPDFModule.jsPDF
+                || (jsPDFModule.default && jsPDFModule.default.jsPDF)
+                || jsPDFModule.default;
+            const autoTable = (typeof atModule.default === 'function')
+                ? atModule.default
+                : (atModule.autoTable || (atModule.default && atModule.default.default));
+            if (typeof jsPDF !== 'function') throw new Error('jsPDF constructor unavailable');
+            if (typeof autoTable !== 'function') throw new Error('jspdf-autotable unavailable');
             const doc = new jsPDF({ orientation: 'landscape' });
             const meta = headerMeta();
             const pageW = doc.internal.pageSize.getWidth();
@@ -550,18 +520,18 @@ export default function V201VerifyReportModal({
 
             const headSales = viewMode === 'supplier'
                 ? [['Customer Name', 'TRN', 'Lines', 'Net Value', 'Actual Output VAT', `VAT Check ${rateLabel}`, 'Variation', 'Status']]
-                : [['Location', 'Vch No.', 'Vch Ref. No.', 'Date', 'TRN', 'Item Name', 'Qty', 'Rate', 'Value', 'VAT (Actual)', `VAT Check ${rateLabel}`, 'Variation']];
+                : [['Voucher No.', 'Tax Invoice No.', 'Voucher Date', 'Customer Name', 'Customer TRN', 'Net Value', 'VAT (Actual)', `VAT Check ${rateLabel}`, 'Variation']];
             const bodySales = viewMode === 'supplier'
                 ? groupRows.map(g => [g.supplier, g.trn || '-', String(g.count), fmt2(g.stdRated), fmt2(g.actualVat), fmt2(g.theoretical), fmt2(g.variation), g.flag ? 'REVIEW' : (g.trn ? 'OK' : 'NO TRN')])
-                : visibleRows.map(r => [r.location || '-', r.voucherNo, r.invRef, fmtDate(r.date), r.trn || '-', r.itemName, r.qty ? fmt3(r.qty) : '', r.rate ? fmt3(r.rate) : '', fmt3(r.value || r.stdRated), fmt3(r.actualVat), fmt3(r.theoretical), fmt3(r.variation)]);
+                : visibleRows.map(r => [r.voucherNo || '-', r.invRef || '-', fmtDate(r.date), r.supplier, r.trn || '-', fmt3(r.value || r.stdRated), fmt3(r.actualVat), fmt3(r.theoretical), fmt3(r.variation)]);
             const headInput = viewMode === 'supplier'
                 ? [['Supplier Name', 'TRN', 'Vch', 'Amount Paid', 'Std. Rated Supplies', 'Actual VAT', `Theoretical ${rateLabel}`, 'Variation', 'Status']]
                 : [['Supplier Name', 'TRN', 'Date', 'Vch/Ref', 'Tax Inv No.', 'Transaction Details', 'Src', 'Amount Paid', 'Std. Rated', 'Actual VAT', `Theo ${rateLabel}`, 'Variation']];
             const bodyInput = viewMode === 'supplier'
-                ? groupRows.map(g => [g.supplier, g.trn || '-', String(g.count), fmt2(g.amountPaid), fmt2(g.stdRated), fmt2(g.actualVat), fmt2(g.theoretical), fmt2(g.variation), g.flag ? 'REVIEW' : (g.trn ? 'OK' : 'NO TRN')])
-                : visibleRows.map(r => [r.supplier, r.trn || '-', fmtDate(r.date), r.ref, r.taxInvNo, r.details || '-', r.source, fmt2(r.amountPaid), fmt2(r.stdRated), fmt2(r.actualVat), fmt2(r.theoretical), fmt2(r.variation)]);
+                ? groupRows.map(g => [g.supplier, g.trn || '-', String(g.count), fmt2(g.amountPaid), fmt2(g.stdRated), fmt2(g.actualVat), fmt2(g.theoretical), fmt2(g.variation), g.flag ? 'REVIEW' : (g.unknownBase ? 'MANUAL JV' : (g.trn ? 'OK' : 'NO TRN'))])
+                : visibleRows.map(r => [r.supplier, r.trn || '-', fmtDate(r.date), r.ref, r.taxInvNo, r.details || '-', r.source, fmt2(r.amountPaid), fmtOrDash(r.stdRated), fmt2(r.actualVat), fmtOrDash(r.theoretical), fmtOrDash(r.variation)]);
 
-            autoTable(doc, {
+            const tblResult = autoTable(doc, {
                 startY: 26,
                 head: isSales ? headSales : headInput,
                 body: isSales ? bodySales : bodyInput,
@@ -569,17 +539,24 @@ export default function V201VerifyReportModal({
                 styles: { fontSize: 7, cellPadding: 1.5 },
                 headStyles: { fillColor: isSales ? [12, 74, 110] : [16, 87, 55], fontSize: 7 },
                 alternateRowStyles: { fillColor: isSales ? [240, 247, 250] : [245, 250, 247] },
-                columnStyles: isSales && viewMode !== 'supplier' ? { 5: { cellWidth: 62 } } : (isSales ? {} : (viewMode !== 'supplier' ? { 4: { cellWidth: 20 }, 5: { cellWidth: 78 } } : {})),
+                columnStyles: isSales && viewMode !== 'supplier' ? { 3: { cellWidth: 62 } } : (isSales ? {} : (viewMode !== 'supplier' ? { 4: { cellWidth: 20 }, 5: { cellWidth: 78 } } : {})),
             });
 
-            const fy = doc.lastAutoTable.finalY + 4;
+            // jspdf-autotable v5 returns the table; older/newer builds expose doc.lastAutoTable.
+            // Fall back to a safe position so the footer never throws.
+            const finalY = (tblResult && typeof tblResult.finalY === 'number')
+                ? tblResult.finalY
+                : (doc.lastAutoTable && typeof doc.lastAutoTable.finalY === 'number'
+                    ? doc.lastAutoTable.finalY
+                    : (doc.internal.pageSize.getHeight() - 22));
+            const fy = finalY + 4;
             doc.setFillColor(isSales ? 215 : 220, isSales ? 232 : 235, isSales ? 240 : 225);
             doc.rect(margin, fy, pageW - 2 * margin, 8, 'F');
             doc.setFontSize(8); doc.setFont(undefined, 'bold'); doc.setTextColor(isSales ? 12 : 16, isSales ? 74 : 87, isSales ? 110 : 55);
             const totalTxt = isSales
                 ? `TOTALS   |   Customers: ${totals.groups}   Lines: ${totals.rows}   Net Value: ${fmt2(totals.std)}   Output VAT: ${fmt2(totals.actual)}   VAT Check: ${fmt2(totals.theo)}   Variation: ${fmt2(totals.var)}   |   Flagged: ${totals.flagged}   Missing TRN: ${totals.noTrn}`
                 : `TOTALS   |   Paid: ${fmt2(totals.paid)}   Std. Rated: ${fmt2(totals.std)}   Actual VAT: ${fmt2(totals.actual)}   Theoretical: ${fmt2(totals.theo)}   Variation: ${fmt2(totals.var)}   |   Flagged: ${totals.flagged}   Missing TRN: ${totals.noTrn}`;
-            doc.text(totalTxt, margin + 1, fy + 5.5);
+            doc.text(totalTxt, margin + 1, fy + 5.5, { maxWidth: pageW - (2 * margin) - 2 });
             doc.save(`V201_Verify_${scope === 'input' ? 'Purchase' : 'Sale'}_${from}_${to}.pdf`);
         } catch (e) {
             console.error('[V201] PDF export error', e);
@@ -612,6 +589,7 @@ export default function V201VerifyReportModal({
 
     const StatusBadge = ({ r }) => {
         if (r.flag) return <span className="text-[8.5px] font-black text-rose-600 bg-rose-100 px-1.5 py-0.5 rounded uppercase">Review</span>;
+        if (r.unknownBase) return <span className="text-[8.5px] font-black text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded uppercase" title="Manual journal entry — taxable base not derivable from the voucher">Manual JV</span>;
         if (!r.trn) return <span className="text-[8.5px] font-black text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded uppercase">No TRN</span>;
         return <span className="text-[8.5px] font-black text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded uppercase">OK</span>;
     };
@@ -694,7 +672,7 @@ export default function V201VerifyReportModal({
 
                         <div className="flex items-center rounded-lg border border-slate-300 overflow-hidden bg-white">
                             {(isSales
-                                ? [['supplier', 'By Customer'], ['line', 'Line Detail (SALE Tab)']]
+                                ? [['supplier', 'By Customer'], ['line', 'Tax Invoice Detail']]
                                 : [['supplier', 'By Supplier'], ['invoice', 'Invoice Detail']]
                             ).map(([m, lbl]) => (
                                 <button key={m} onClick={() => setViewMode(m)}
@@ -722,7 +700,7 @@ export default function V201VerifyReportModal({
                     {/* ── Summary cards ── */}
                     <div className="px-3 pt-2 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 flex-shrink-0">
                         <div className={statCard}><div className={statLbl}>{isSales ? 'Customers' : 'Suppliers'}</div><div className={statVal}>{fmtInt(totals.groups)}</div></div>
-                        <div className={statCard}><div className={statLbl}>{isSales ? 'Item Lines' : 'Vouchers'}</div><div className={statVal}>{fmtInt(totals.rows)}</div></div>
+                        <div className={statCard}><div className={statLbl}>{isSales ? 'Tax Invoices' : 'Vouchers'}</div><div className={statVal}>{fmtInt(totals.rows)}</div></div>
                         {isSales ? (
                             <>
                                 <div className={statCard}><div className={statLbl}>Net Value ({currencySymbol || 'AED'})</div><div className={`${statVal} text-sky-800`}>{fmt2(totals.std)}</div></div>
@@ -741,7 +719,7 @@ export default function V201VerifyReportModal({
                                 <div className={statCard}><div className={statLbl}>Theoretical {rateLabel}</div><div className={statVal}>{fmt2(totals.theo)}</div></div>
                                 <div className={`${statCard} ${Math.abs(totals.var) > TOL ? 'border-rose-300 bg-rose-50' : 'border-emerald-300 bg-emerald-50'}`}>
                                     <div className={statLbl}>Variation / Flagged</div>
-                                    <div className={`${statVal} ${Math.abs(totals.var) > TOL ? 'text-rose-700' : 'text-emerald-700'}`}>{fmt2(totals.var)} {totals.flagged > 0 && <span className="text-[9px]">· {totals.flagged} flag</span>}</div>
+                                    <div className={`${statVal} ${Math.abs(totals.var) > TOL ? 'text-rose-700' : 'text-emerald-700'}`}>{fmt2(totals.var)} {totals.flagged > 0 && <span className="text-[9px]">· {totals.flagged} flag</span>}{totals.manual > 0 && <span className="text-[9px] text-amber-700"> · {totals.manual} manual</span>}</div>
                                 </div>
                             </>
                         )}
@@ -772,21 +750,18 @@ export default function V201VerifyReportModal({
                             {loading ? (
                                 <div className="p-14 text-center text-xs font-bold text-slate-400">Loading transaction data…</div>
                             ) : isSales && viewMode === 'line' ? (
-                                /* ════════ SALES — LINE DETAIL (mirrors SALE tab) ════════ */
+                                /* ════════ SALES — TAX INVOICE DETAIL (one row per tax invoice) ════════ */
                                 <>
                                     <div className="overflow-auto max-h-[60vh]">
                                         <table className="w-full border-collapse">
                                             <thead className="sticky top-0 z-10">
                                                 <tr className={accentHead}>
-                                                    <th className={th}>Location</th>
                                                     <th className={th}>Voucher No.</th>
-                                                    <th className={th}>Voucher Ref. No.</th>
-                                                    <th className={th}>Vch Ref. Date</th>
-                                                    <th className={th}>TRN</th>
-                                                    <th className={th}>Item Name</th>
-                                                    <th className={thR}>Quantity</th>
-                                                    <th className={thR}>Rate</th>
-                                                    <th className={thR}>Value</th>
+                                                    <th className={th}>Tax Invoice No.</th>
+                                                    <th className={th}>Voucher Date</th>
+                                                    <th className={th}>Customer Name</th>
+                                                    <th className={th}>Customer TRN</th>
+                                                    <th className={thR}>Net Value</th>
                                                     <th className={thR}>VAT (Actual)</th>
                                                     <th className={thR}>VAT Check {rateLabel}</th>
                                                     <th className={`${thR} !border-r-0`}>Variation</th>
@@ -794,23 +769,17 @@ export default function V201VerifyReportModal({
                                             </thead>
                                             <tbody>
                                                 {visibleRows.length === 0 && (
-                                                    <tr><td colSpan={12}>{empty(build.salesRows.length === 0 ? 'No VAT-bearing sales found in this period for the selected tax.' : 'No rows match your search.')}</td></tr>
+                                                    <tr><td colSpan={9}>{empty(build.salesRows.length === 0 ? 'No VAT-bearing sales found in this period for the selected tax.' : 'No rows match your search.')}</td></tr>
                                                 )}
                                                 {visibleRows.map((r, i) => (
                                                     <tr key={i} className={`hover:bg-sky-50/60 transition-colors ${i % 2 ? 'bg-slate-50/60' : 'bg-white'} ${r.flag ? 'bg-rose-50/80 hover:bg-rose-50' : ''}`}>
-                                                        <td className={`${td} whitespace-nowrap font-bold text-slate-500`}>{r.location || '-'}</td>
-                                                        <td className={`${td} whitespace-nowrap font-black text-slate-800`}>{r.voucherNo}</td>
+                                                        <td className={`${td} whitespace-nowrap font-black text-slate-800`}>{r.voucherNo || '-'}</td>
                                                         <td className={`${td} whitespace-nowrap font-bold text-blue-700`}>{r.invRef || '-'}</td>
                                                         <td className={`${td} whitespace-nowrap text-slate-500 font-bold`}>{fmtDate(r.date)}</td>
+                                                        <td className={td}><div className="font-black text-slate-800">{r.supplier}</div></td>
                                                         <td className={td}>{r.trn
                                                             ? <span className="font-bold text-slate-600">{r.trn}</span>
                                                             : <span className="text-[8px] font-black text-rose-500 bg-rose-50 px-1 py-0.5 rounded">NO TRN</span>}</td>
-                                                        <td className={td}>
-                                                            <div className="font-black text-slate-800">{r.itemName}</div>
-                                                            {r.pieces > 0 && <div className="text-[8.5px] text-slate-400 font-bold">{fmtInt(r.pieces)} Pcs</div>}
-                                                        </td>
-                                                        <td className={`${tdR} font-bold text-slate-700`}>{r.qty ? `${fmt3(r.qty)}${r.unit ? ` ${r.unit}` : ''}` : '-'}</td>
-                                                        <td className={`${tdR} font-bold text-slate-600`}>{r.rate ? fmt3(r.rate) : '-'}</td>
                                                         <td className={`${tdR} font-black text-slate-800`}>{fmt3(r.value || r.stdRated)}</td>
                                                         <td className={`${tdR} font-black text-blue-800`}>{fmt3(r.actualVat)}</td>
                                                         <td className={`${tdR} font-bold text-slate-600`}>{fmt3(r.theoretical)}</td>
@@ -821,7 +790,8 @@ export default function V201VerifyReportModal({
                                             {visibleRows.length > 0 && (
                                                 <tfoot>
                                                     <tr className={accentFoot}>
-                                                        <td className={`${td} font-black !border-0`} colSpan={9}>TOTALS ({visibleRows.length} lines)</td>
+                                                        <td className={`${td} font-black !border-0`} colSpan={5}>TOTALS ({visibleRows.length} tax invoices)</td>
+                                                        <td className={`${tdR} font-black !border-0`}>{fmt3(totals.std)}</td>
                                                         <td className={`${tdR} font-black !border-0`}>{fmt3(totals.actual)}</td>
                                                         <td className={`${tdR} font-black !border-0`}>{fmt3(totals.theo)}</td>
                                                         <td className={`${tdR} font-black !border-0`}>{fmt3(totals.var)}</td>
@@ -874,7 +844,7 @@ export default function V201VerifyReportModal({
                                                     <th className={th}>Customer Name</th>
                                                     <th className={th}>TRN</th>
                                                     <th className={th}>Location</th>
-                                                    <th className={thR}>Lines</th>
+                                                    <th className={thR}>Invoices</th>
                                                     <th className={thR}>Net Value</th>
                                                     <th className={thR}>Output VAT Collected</th>
                                                     <th className={thR}>VAT Check {rateLabel}</th>
@@ -905,7 +875,7 @@ export default function V201VerifyReportModal({
                                             {groupRows.length > 0 && (
                                                 <tfoot>
                                                     <tr className={accentFoot}>
-                                                        <td className={`${td} font-black !border-0`} colSpan={4}>TOTALS ({groupRows.length} customers · {totals.rows} lines)</td>
+                                                        <td className={`${td} font-black !border-0`} colSpan={4}>TOTALS ({groupRows.length} customers · {totals.rows} invoices)</td>
                                                         <td className={`${tdR} font-black !border-0`}>{fmt2(totals.std)}</td>
                                                         <td className={`${tdR} font-black !border-0`}>{fmt2(totals.actual)}</td>
                                                         <td className={`${tdR} font-black !border-0`}>{fmt2(totals.theo)}</td>
@@ -950,10 +920,10 @@ export default function V201VerifyReportModal({
                                                             : <span className="text-[9px] font-black text-rose-500 bg-rose-50 px-1.5 py-0.5 rounded">NO TRN</span>}</td>
                                                         <td className={`${tdR} font-black text-slate-700`}>{g.count}</td>
                                                         <td className={`${tdR} font-bold text-emerald-800`}>{fmt2(g.amountPaid)}</td>
-                                                        <td className={`${tdR} font-bold text-slate-700`}>{fmt2(g.stdRated)}</td>
+                                                        <td className={`${tdR} font-bold text-slate-700`}>{g.unknownBase && !g.theoretical ? '—' : fmt2(g.stdRated)}</td>
                                                         <td className={`${tdR} font-black text-blue-800`}>{fmt2(g.actualVat)}</td>
-                                                        <td className={`${tdR} font-bold text-slate-600`}>{fmt2(g.theoretical)}</td>
-                                                        <td className={tdR}>{fmtFlag(g.variation)}</td>
+                                                        <td className={`${tdR} font-bold text-slate-600`}>{g.unknownBase && !g.theoretical ? '—' : fmt2(g.theoretical)}</td>
+                                                        <td className={tdR}>{g.unknownBase && !g.theoretical ? <span className="text-slate-300 font-bold">—</span> : fmtFlag(g.variation)}</td>
                                                         <td className={td}><StatusBadge r={g} /></td>
                                                     </tr>
                                                 ))}
@@ -1048,9 +1018,9 @@ export default function V201VerifyReportModal({
                                                             <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${r.source === 'INV' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>{r.source}</span>
                                                         </td>
                                                         <td className={`${tdR} font-bold text-emerald-800`}>{fmt2(r.amountPaid)}</td>
-                                                        <td className={`${tdR} font-bold text-slate-700`}>{fmt2(r.stdRated)}</td>
+                                                        <td className={`${tdR} font-bold text-slate-700`}>{fmtOrDash(r.stdRated)}</td>
                                                         <td className={`${tdR} font-black text-blue-800`}>{fmt2(r.actualVat)}</td>
-                                                        <td className={`${tdR} font-bold text-slate-600`}>{fmt2(r.theoretical)}</td>
+                                                        <td className={`${tdR} font-bold text-slate-600`}>{fmtOrDash(r.theoretical)}</td>
                                                         <td className={`${tdR} !border-r-0`}>{fmtFlag(r.variation)}</td>
                                                     </tr>
                                                 ))}
@@ -1120,8 +1090,8 @@ export default function V201VerifyReportModal({
                     <div className={`px-3 py-1.5 ${isSales ? 'bg-sky-950 text-sky-100' : 'bg-emerald-900 text-emerald-100'} text-[8.5px] font-semibold flex items-center gap-2 flex-shrink-0`}>
                         <CheckCircle2 size={11} className="shrink-0" />
                         {isSales
-                            ? <>Theoretical VAT Check = {rateLabel} of each line's Net Value. Output VAT on multi-line invoices is apportioned per line. Variation flagged when |actual − theoretical| &gt; {TOL} {currencySymbol || 'AED'} — mirrors the <b>SALE</b> tab of the VAT workbook.</>
-                            : <><b>Std-Rated Supplies</b> = net line-item material subtotal at the supplier's <b>original rate</b> (capitalized pickup/loading expenses excluded) — the vendor's tax-invoice base. Theoretical VAT = {rateLabel} × that base. Variation flagged when |actual − theoretical| &gt; {TOL} {currencySymbol || 'AED'} · Rows marked <span className="font-black text-amber-300">Manual JV</span> originate from hand-posted journal vouchers — verify against source invoices before finalizing the V201 return.</>}
+                            ? <>Theoretical VAT Check = {rateLabel} of each tax invoice's Net Value (Tax Invoice No · Customer · TRN). Variation flagged when |actual − theoretical| &gt; {TOL} {currencySymbol || 'AED'} — one row per tax invoice, matching the <b>SALE</b> tab columns without item-level detail.</>
+                            : <><b>Std-Rated Supplies</b> = net line-item material subtotal at the supplier's <b>original rate</b> (capitalized pickup/loading expenses excluded) — the vendor's tax-invoice base. Theoretical VAT = {rateLabel} × that base. Variation flagged when |actual − theoretical| &gt; {TOL} {currencySymbol || 'AED'} · Rows marked <span className="font-black text-amber-300">Manual JV</span> originate from hand-posted journal vouchers; when the voucher's taxable base cannot be derived they show <b>—</b> and are excluded from Theoretical/Variation instead of being falsely flagged — verify those against source invoices before finalizing the V201 return.</>}
                     </div>
                 </div>
             </div>
