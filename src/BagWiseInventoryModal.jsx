@@ -6,7 +6,7 @@ import { functions as firebaseFunctions } from './firebase';
 
 import { Modal } from './components/Modal';
 import { Download, ArrowLeft, X, RefreshCw, History, TrendingUp, FileText, Search, Filter, Trash2 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+// Perf: xlsx is imported on demand inside downloadExcel (keeps it out of the boot bundle)
 import { createPortal } from 'react-dom';
 
 const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, products, globalDateCmd, onDateCmdProcessed, onOpenVoucher, units }) => {
@@ -895,7 +895,8 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         }).sort((a, b) => dateSortValue(b.date) - dateSortValue(a.date));
     };
 
-    const downloadExcel = () => {
+    const downloadExcel = async () => {
+        const XLSX = await import('xlsx');
 
         const data = getFilteredBags().map(b => ({
             'Date': b.date,

@@ -10,7 +10,6 @@
  * - Rule 7: Atomic Batch Isolation & Audit Logging + Rollback
  */
 
-import * as XLSX from 'xlsx';
 import { db } from '../firebase.js';
 import { collection, doc, writeBatch, setDoc, getDoc, updateDoc, serverTimestamp, getDocs, query, where, deleteDoc } from 'firebase/firestore';
 
@@ -151,7 +150,8 @@ export function matchMaster(name, masters) {
 /**
  * Parses raw ArrayBuffer of uploaded Excel file into normalized voucher rows
  */
-export function parseExcelFile(arrayBuffer, options = {}) {
+export async function parseExcelFile(arrayBuffer, options = {}) {
+    const XLSX = await import('xlsx'); // Perf: on-demand only — keeps xlsx out of the boot bundle
     const voucherMode = options.voucherMode || 'payment'; // 'payment' | 'receipt'
     const wb = XLSX.read(arrayBuffer, { type: 'array' });
     const sheetName = wb.SheetNames[0];
@@ -611,7 +611,7 @@ export async function parseUniversalFile(file, options = {}) {
     } else {
         // .xlsx, .xls, .csv (SheetJS automatically parses CSV and Excel)
         const buffer = await file.arrayBuffer();
-        parsed = parseExcelFile(buffer, options);
+        parsed = await parseExcelFile(buffer, options);
     }
 
     // Automatically consolidate multi-row vouchers sharing the same voucher number

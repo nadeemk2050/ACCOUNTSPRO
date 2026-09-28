@@ -1,5 +1,15 @@
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+// Perf: jspdf + jspdf-autotable are heavy and only needed when a PDF is actually generated,
+// so they are loaded on demand instead of being part of the app boot bundle.
+let __pdfLibsPromise = null;
+const loadPdfLibs = async () => {
+    if (!__pdfLibsPromise) {
+        __pdfLibsPromise = Promise.all([import('jspdf'), import('jspdf-autotable')]).then(([jspdfMod, autoTableMod]) => ({
+            jsPDF: jspdfMod.jsPDF || jspdfMod.default,
+            autoTable: autoTableMod.default || autoTableMod.autoTable || autoTableMod,
+        }));
+    }
+    return __pdfLibsPromise;
+};
 
 const formatDate = (dateStr) => {
     if (!dateStr || !dateStr.includes('-')) return dateStr || "-";
@@ -123,6 +133,7 @@ const loadImage = (url) => {
 };
 
 export const generateInvoicePDF = async (data, action = 'download', existingDoc = null) => {
+    const { jsPDF, autoTable } = await loadPdfLibs();
     const doc = existingDoc || new jsPDF();
     if (existingDoc) doc.addPage();
     const pageWidth = 210;
@@ -426,6 +437,7 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
 };
 
 export const generatePackingListPDF = async (data, action = 'download', existingDoc = null) => {
+    const { jsPDF, autoTable } = await loadPdfLibs();
     const doc = existingDoc || new jsPDF();
     if (existingDoc) doc.addPage();
     const pageWidth = 210;
@@ -614,6 +626,7 @@ export const generatePackingListPDF = async (data, action = 'download', existing
 };
 
 export const generateBillOfExchangePDF = async (data, action = 'download', existingDoc = null) => {
+    const { jsPDF } = await loadPdfLibs();
     const doc = existingDoc || new jsPDF();
     if (existingDoc) doc.addPage();
     const pageWidth = 210;
@@ -683,6 +696,7 @@ export const generateBillOfExchangePDF = async (data, action = 'download', exist
 };
 
 export const generateBankApplicationPDF = async (data, action = 'download', existingDoc = null) => {
+    const { jsPDF } = await loadPdfLibs();
     const doc = existingDoc || new jsPDF();
     if (existingDoc) doc.addPage();
     const pageWidth = 210;
@@ -1182,6 +1196,7 @@ export const downloadInvoiceExcel = (data) => {
 };
 
 export const generateAccountingVoucherPDF = async (data, action = 'download', existingDoc = null) => {
+    const { jsPDF, autoTable } = await loadPdfLibs();
     const doc = existingDoc || new jsPDF();
     if (existingDoc) doc.addPage();
     const pageWidth = 210;
@@ -1286,6 +1301,7 @@ export const generateAccountingVoucherPDF = async (data, action = 'download', ex
 };
 
 export const generateExportInvoicePDF = async (data, action = 'download', existingDoc = null) => {
+    const { jsPDF, autoTable } = await loadPdfLibs();
     const doc = existingDoc || new jsPDF();
     if (existingDoc) doc.addPage();
     const pageWidth = 210;

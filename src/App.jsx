@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, memo, useCallback, cloneElement } from 'react';
+import React, { useState, useEffect, useMemo, useRef, memo, useCallback, cloneElement, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 // Heavy libs are now dynamically imported
 import {
@@ -101,7 +101,8 @@ import { db, auth, functions, rtdb, cloudRtdb, cloudDb } from './firebase';
 // Real Firebase RTDB functions — imported via @firebase/* to bypass the firebase/database → rxrtdb.js stub alias
 import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
-import ManagementDashboard from './ManagementDashboard';
+// Perf: heavy screens are code-split (lazy) so they are fetched only when first opened.
+const ManagementDashboard = lazy(() => import('./ManagementDashboard'));
 import TaxVoucherViewer from './TaxVoucherViewer';
 import OrderVouchersDashboard from './OrderVouchersDashboard';
 import RegistersDashboard from './RegistersDashboard';
@@ -122,7 +123,7 @@ import {
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
 import { createSheetInDB, updateSheetInDB } from "./sheetService";
 import { generateInvoicePDF, generatePackingListPDF, generateBillOfExchangePDF, generateBankApplicationPDF, generateExportInvoicePDF, downloadInvoiceExcel, generateAccountingVoucherPDF } from "./invoiceGenerator";
-import BagWiseInventoryModal from "./BagWiseInventoryModal.jsx"; // IMPORT
+const BagWiseInventoryModal = lazy(() => import('./BagWiseInventoryModal.jsx')); // Perf: lazy loaded
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
@@ -131,15 +132,18 @@ import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, do
 import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
-import PackagingSmartReportModal from './PackagingSmartReportModal.jsx';
-import ExportVoucherModal from './ExportVoucherModal.jsx';
-import ImportVoucherModal from './ImportVoucherModal.jsx';
-import ImportPaymentExcelModal from './ImportPaymentExcelModal.jsx';
-import ImportReceiptExcelModal from './ImportReceiptExcelModal.jsx';
-import ImportJournalExcelModal from './ImportJournalExcelModal.jsx';
-import V201VerifyReportModal from './V201VerifyReportModal.jsx';
-import V311ReportModal from './V311ReportModal.jsx';
-import BackupHistoryModal, { addBackupHistoryEntry } from './BackupHistoryModal.jsx';
+// Perf: all report / import screens are lazy — they load only when opened.
+const PackagingSmartReportModal = lazy(() => import('./PackagingSmartReportModal.jsx'));
+const ExportVoucherModal = lazy(() => import('./ExportVoucherModal.jsx'));
+const ImportVoucherModal = lazy(() => import('./ImportVoucherModal.jsx'));
+const ImportPaymentExcelModal = lazy(() => import('./ImportPaymentExcelModal.jsx'));
+const ImportReceiptExcelModal = lazy(() => import('./ImportReceiptExcelModal.jsx'));
+const ImportJournalExcelModal = lazy(() => import('./ImportJournalExcelModal.jsx'));
+const V201VerifyReportModal = lazy(() => import('./V201VerifyReportModal.jsx'));
+const V311ReportModal = lazy(() => import('./V311ReportModal.jsx'));
+const BackupHistoryModal = lazy(() => import('./BackupHistoryModal.jsx'));
+// Perf: helper stays callable but pulls its module on demand (fire-and-forget, same as before)
+const addBackupHistoryEntry = (...args) => import('./BackupHistoryModal.jsx').then(m => m.addBackupHistoryEntry(...args)).catch(() => {});
 import EditToolsModal from './EditToolsModal.jsx';
 
 
@@ -11343,8 +11347,10 @@ export default function App() {
                 onTriggerPeriodModal={() => setPeriodModalOpen(true)}
             />
 
+            {getModalState('packaging_smart_report').isOpen && (
+            <Suspense fallback={null}>
             <PackagingSmartReportModal
-                isOpen={activeModal === 'packaging_smart_report'}
+                isOpen={true}
                 onClose={handleCloseModal}
                 user={user}
                 subUser={subUser}
@@ -11353,6 +11359,8 @@ export default function App() {
                 units={units}
                 currencySymbol={currencySymbol}
             />
+            </Suspense>
+            )}
 
             <EditToolsModal
                 isOpen={activeModal === 'edit_tools'}
@@ -12147,6 +12155,7 @@ export default function App() {
             )}
 
             {activeModal === 'management' && (
+                <Suspense fallback={null}>
                 <ManagementDashboard
                     onClose={() => { setActiveModal(null); setModalStack([]); }}
                     confirmPassword={confirmPassword}
@@ -12212,6 +12221,7 @@ export default function App() {
                     taxRates={taxRates}
                     checkDuplicateName={checkAccountNameDuplicate}
                 />
+                </Suspense>
             )}
 
             <ApiKeyModal 
@@ -12231,8 +12241,10 @@ export default function App() {
             )}
 
             {/* Export Voucher Modal */}
+            {getModalState('export_voucher').isOpen && (
+            <Suspense fallback={null}>
             <ExportVoucherModal
-                isOpen={activeModal === 'export_voucher'}
+                isOpen={true}
                 onClose={handleCloseModal}
                 user={user}
                 dataOwnerId={dataOwnerId}
@@ -12241,18 +12253,26 @@ export default function App() {
                 journalVouchers={journalVouchers}
                 stockJournals={stockJournals}
             />
+            </Suspense>
+            )}
 
             {/* Import Voucher Modal */}
+            {getModalState('import_voucher').isOpen && (
+            <Suspense fallback={null}>
             <ImportVoucherModal
-                isOpen={activeModal === 'import_voucher'}
+                isOpen={true}
                 onClose={handleCloseModal}
                 user={user}
                 dataOwnerId={dataOwnerId}
             />
+            </Suspense>
+            )}
 
             {/* Import Payment Voucher From Excel Modal */}
+            {getModalState('import_payment_excel').isOpen && (
+            <Suspense fallback={null}>
             <ImportPaymentExcelModal
-                isOpen={activeModal === 'import_payment_excel'}
+                isOpen={true}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -12267,10 +12287,14 @@ export default function App() {
                 currencySymbol={currencySymbol}
                 showToast={setToast}
             />
+            </Suspense>
+            )}
 
             {/* Import Receipt Voucher From Excel Modal */}
+            {getModalState('import_receipt_excel').isOpen && (
+            <Suspense fallback={null}>
             <ImportReceiptExcelModal
-                isOpen={activeModal === 'import_receipt_excel'}
+                isOpen={true}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -12286,10 +12310,14 @@ export default function App() {
                 currencySymbol={currencySymbol}
                 showToast={setToast}
             />
+            </Suspense>
+            )}
 
             {/* Import Journal Voucher From Excel Modal */}
+            {getModalState('import_journal_excel').isOpen && (
+            <Suspense fallback={null}>
             <ImportJournalExcelModal
-                isOpen={activeModal === 'import_journal_excel'}
+                isOpen={true}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -12307,12 +12335,18 @@ export default function App() {
                 currencySymbol={currencySymbol}
                 showToast={setToast}
             />
+            </Suspense>
+            )}
 
             {/* Backup/Restore History Modal */}
+            {getModalState('backup_log').isOpen && (
+            <Suspense fallback={null}>
             <BackupHistoryModal
-                isOpen={activeModal === 'backup_log'}
+                isOpen={true}
                 onClose={handleCloseModal}
             />
+            </Suspense>
+            )}
 
             <SystemLogModal
                 isOpen={activeModal === 'system_logs'}
@@ -12413,6 +12447,8 @@ export default function App() {
                 products={products}
             />
             {/* NEW BAG WISE INVENTORY */}
+            {getModalState('bag_inventory').isOpen && (
+            <Suspense fallback={null}>
             <BagWiseInventoryModal
                 {...getModalState('bag_inventory')}
                 onClose={handleCloseModal}
@@ -12426,6 +12462,8 @@ export default function App() {
                 onDateCmdProcessed={handleDateCmdProcessed}
                 onOpenVoucher={handleViewTransaction}
             />
+            </Suspense>
+            )}
 
             {/* ✅ RESTORE THIS MISSING LEDGER MODAL */}
             <LedgerModal
@@ -21443,6 +21481,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
     // ✅ REALTIME REPORT GENERATION (Replaces generateReport)
     useEffect(() => {
+        // Perf: never keep the 4 full-collection listeners alive while the ledger is closed
+        if (!isOpen) { clearSubs(); setLoading(false); return; }
+
         if (['party', 'account', 'item', 'expense', 'direct_expense', 'capital', 'asset', 'tax', 'user'].includes(filter.type) && !filter.id) {
             setTransactions([]);
             return;
@@ -22023,7 +22064,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         return () => clearSubs();
 
-    }, [filter, dataOwnerId, user, taxRates]); // Dependencies trigger re-subscription
+    }, [filter, dataOwnerId, user, taxRates, isOpen]); // Dependencies trigger re-subscription
 
     const getFilterOptions = () => {
         switch (filter.type) {
@@ -24319,8 +24360,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         </Modal>
 
         {/* UAE V201 VAT Return Pre-Verification (contextual: individual Tax Ledger view) */}
+        {showV201 && filter.type === 'tax' && (
+        <Suspense fallback={null}>
         <V201VerifyReportModal
-            isOpen={showV201 && filter.type === 'tax'}
+            isOpen={true}
             onClose={() => setShowV201(false)}
             onBack={() => setShowV201(false)}
             onGenerateV311={() => setShowV311(true)}
@@ -24332,10 +24375,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             taxName={filter.type === 'tax' ? (taxRates.find(t => t.id === filter.id)?.name || null) : null}
             currencySymbol={currencySymbol}
         />
+        </Suspense>
+        )}
 
         {/* UAE FTA VAT 311 Common Template legal reports (contextual: individual Tax Ledger view) */}
+        {showV311 && filter.type === 'tax' && (
+        <Suspense fallback={null}>
         <V311ReportModal
-            isOpen={showV311 && filter.type === 'tax'}
+            isOpen={true}
             onClose={() => setShowV311(false)}
             onBack={() => setShowV311(false)}
             user={user}
@@ -24349,6 +24396,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             taxName={filter.type === 'tax' ? (taxRates.find(t => t.id === filter.id)?.name || null) : null}
             currencySymbol={currencySymbol}
         />
+        </Suspense>
+        )}
         </>
     );
 };

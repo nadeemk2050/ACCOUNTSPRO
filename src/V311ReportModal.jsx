@@ -146,6 +146,12 @@ export default function V311ReportModal({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, uid]);
 
+    // Perf: release the loaded datasets as soon as the report closes
+    useEffect(() => {
+        if (isOpen) return;
+        setInvoices([]); setLoading(true);
+    }, [isOpen]);
+
     // ── Taxpayer (this company) ────────────────────────────────────────────
     const taxpayerTrn = String(companyProfile?.trn || '').trim();
     const taxpayerName = String(companyProfile?.name || displayCompanyName || '').trim();
@@ -197,6 +203,9 @@ export default function V311ReportModal({
 
     // ── Aggregation ────────────────────────────────────────────────────────
     const buildRows = useMemo(() => {
+        // Perf: nothing to compute while the report is closed
+        if (!isOpen) return { box1: [], box9: [] };
+
         const invNo = (i, boxNo) => boxNo === '1' ? (i.refNo || i.taxInvNo || '') : (i.taxInvNo || i.refNo || '');
         const inPeriod = (d) => !!d && d >= from && d <= to;
 

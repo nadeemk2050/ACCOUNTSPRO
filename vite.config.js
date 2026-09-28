@@ -97,21 +97,56 @@ export default defineConfig({
       },
       workbox: {
         maximumFileSizeToCacheInBytes: 5000000, // 5MB
-        importScripts: ['sw-sync.js']
+        importScripts: ['sw-sync.js'],
+        // Perf: never pre-cache the heavy on-demand libraries; they are fetched (and then
+        // runtime-cached) only when the user actually imports/exports. Keeps deploy refresh small.
+        globIgnores: [
+          '**/*.map',
+          '**/xlsx-*.js',
+          '**/jspdf-*.js',
+          '**/html2canvas-*.js',
+          '**/jspreadsheet-*.js',
+          '**/canvg-*.js'
+        ],
+        runtimeCaching: [
+          {
+            urlPattern: /\/assets\/(xlsx|jspdf|html2canvas|jspreadsheet|canvg)-[^/]+\.js$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'accpro-lazy-libs',
+              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 }
+            }
+          }
+        ]
       },
       devOptions: {
-        enabled: true
+        // Perf: no service worker during `npm run dev` (slowed HMR and served stale assets)
+        enabled: false
       }
     })
   ],
   build: {
-    sourcemap: true,
+    // Perf: no source maps in the shipped build (index map alone was ~11 MB per deploy)
+    sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom'],
-          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/database', 'firebase/functions'],
-          ui: ['lucide-react']
+        // Perf: stable chunk names for the heavy on-demand libraries so the service worker
+        // can exclude them from the pre-cache manifest (see workbox.globIgnores).
+        manualChunks(id) {
+          // Keep Vite's dynamic-import preload helper in its own tiny chunk.
+          // (If it lands inside a heavy lazy library chunk, the browser preloads that
+          // whole library at boot — e.g. jspdf was being downloaded on startup.)
+          if (id.includes('preload-helper')) return 'runtime';
+          if (!id.includes('node_modules')) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'vendor';
+          if (/[\\/]node_modules[\\/](@firebase|firebase|@grpc|protobufjs)[\\/]/.test(id)) return 'firebase';
+          if (id.includes('lucide-react')) return 'ui';
+          if (/[\\/]node_modules[\\/]xlsx[\\/]/.test(id)) return 'xlsx';
+          if (id.includes('canvg')) return 'canvg';
+          if (id.includes('jspdf')) return 'jspdf';
+          if (id.includes('html2canvas')) return 'html2canvas';
+          if (id.includes('jspreadsheet') || id.includes('jsuites')) return 'jspreadsheet';
+          return undefined;
         }
       }
     },

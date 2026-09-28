@@ -120,6 +120,12 @@ export default function V201VerifyReportModal({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, uid]);
 
+    // Perf: release the loaded datasets as soon as the report closes
+    useEffect(() => {
+        if (isOpen) return;
+        setInvoices([]); setPayments([]); setJournals([]); setLoading(true);
+    }, [isOpen]);
+
     // Master lookups — Map-based for O(1) access (keeps large datasets fast)
     const partyMap = useMemo(() => new Map((parties || []).map(p => [p.id, p])), [parties]);
     const locMap = useMemo(() => new Map((locs || []).map(l => [l.id, l])), [locs]);
@@ -148,6 +154,9 @@ export default function V201VerifyReportModal({
 
     // ── Core aggregation ───────────────────────────────────────────────────
     const build = useMemo(() => {
+        // Perf: nothing to compute while the report is closed
+        if (!isOpen) return { inputRows: [], salesRows: [], outputRows: [], zeroRated: [], zeroRatedSales: [] };
+
         const inputRows = [];
         const salesRows = [];
         const outputRows = [];

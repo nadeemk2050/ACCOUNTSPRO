@@ -7,7 +7,7 @@ import {
     Check, HelpCircle, ChevronRight, Lock, DollarSign, Database,
     ArrowDownLeft
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+// Perf: xlsx is imported on demand inside handleDownloadTemplate
 import {
     parseExcelFile,
     parseUniversalFile,
@@ -405,7 +405,8 @@ export default function ImportReceiptExcelModal({
     };
 
     // --- TEMPLATE DOWNLOAD GENERATOR ---
-    const handleDownloadTemplate = (type = 'standard') => {
+    const handleDownloadTemplate = async (type = 'standard') => {
+        const XLSX = await import('xlsx');
         const wb = XLSX.utils.book_new();
         let ws;
 
