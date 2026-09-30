@@ -15014,7 +15014,8 @@ const InvoiceModal = (props) => {
         selectedHeading: 'TAX INVOICE',
         stampScale: 1.0,
         documentType: 'invoice', // 'invoice', 'packing_list', etc.
-        generateMode: 'single' // 'single' or 'all'
+        generateMode: 'single', // 'single' or 'all'
+        showExpenses: false // Sales: show additional-expenses breakdown in the generated PDF
     });
     // ✅ HBZ Bank Covering Letter Options
     const [hbzOptions, setHbzOptions] = useState({
@@ -17577,6 +17578,17 @@ const InvoiceModal = (props) => {
                                                 ))}
                                             </select>
                                         </div>
+
+                                        {/* ✅ Show Expenses in PDF (customer-facing expense breakdown) */}
+                                        {voucherType === 'sales' && addlExpenses.filter(e => e.expenseId && Number(e.amount) > 0).length > 0 && (
+                                            <div className="flex flex-col gap-1 pt-2 border-t mt-2">
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input type="checkbox" className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500" checked={printOptions.showExpenses} onChange={e => setPrintOptions({ ...printOptions, showExpenses: e.target.checked })} />
+                                                    <span className="text-sm font-bold text-slate-700">Show Expenses in PDF</span>
+                                                </label>
+                                                <p className="text-[10px] text-slate-500 pl-6">Adds an expense breakdown to the PDF for the customer's reference (whether or not they are included in the item rates).</p>
+                                            </div>
+                                        )}
                                     </div>
 
                                     <button
@@ -17593,6 +17605,8 @@ const InvoiceModal = (props) => {
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
                                                 ...totals,
+                                                expensesList: addlExpenses.filter(e => e.expenseId && Number(e.amount) > 0).map(e => ({ name: expenses.find(x => x.id === e.expenseId)?.name || 'Expense', amount: Number(e.amount) })),
+                                                expenseMode: salesExpenseMode,
                                                 seller: {
                                                     name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
@@ -17606,7 +17620,8 @@ const InvoiceModal = (props) => {
                                                     signatureImage: printOptions.attachSignature ? companyImages.find(img => img.id === printOptions.signatureId)?.url : null,
                                                     selectedHeading: printOptions.selectedHeading,
                                                     stampScale: printOptions.stampScale,
-                                                    documentType: printOptions.documentType
+                                                    documentType: printOptions.documentType,
+                                                    showExpenses: printOptions.showExpenses
                                                 },
                                                 hbzOptions // ✅ PASS HBZ OPTIONS
                                             };
@@ -17665,6 +17680,8 @@ const InvoiceModal = (props) => {
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
                                                 ...totals,
+                                                expensesList: addlExpenses.filter(e => e.expenseId && Number(e.amount) > 0).map(e => ({ name: expenses.find(x => x.id === e.expenseId)?.name || 'Expense', amount: Number(e.amount) })),
+                                                expenseMode: salesExpenseMode,
                                                 seller: {
                                                     name: companyProfile?.name || displayCompanyName || '',
                                                     address: companyProfile?.address || '',
@@ -17678,7 +17695,8 @@ const InvoiceModal = (props) => {
                                                     signatureImage: printOptions.attachSignature ? companyImages.find(img => img.id === printOptions.signatureId)?.url : null,
                                                     selectedHeading: printOptions.selectedHeading,
                                                     stampScale: printOptions.stampScale,
-                                                    documentType: printOptions.documentType
+                                                    documentType: printOptions.documentType,
+                                                    showExpenses: printOptions.showExpenses
                                                 },
                                                 hbzOptions // ✅ PASS HBZ OPTIONS
                                             };

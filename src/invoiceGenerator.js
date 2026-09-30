@@ -332,6 +332,42 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
             finalY = 20;
         }
 
+        // --- OPTIONAL: EXPENSE BREAKDOWN (for customer reports, regardless of include/add mode) ---
+        if (printOptions.showExpenses && Array.isArray(data.expensesList) && data.expensesList.length > 0) {
+            const expBreakdownTotal = data.expensesList.reduce((s, exp) => s + Number(exp.amount || 0), 0);
+            const modeNote = data.expenseMode === 'include'
+                ? 'Already included in the item rates above.'
+                : data.expenseMode === 'add'
+                    ? 'Added separately to the invoice total above.'
+                    : 'Shown for reference.';
+
+            autoTable(doc, {
+                startY: finalY + 3,
+                head: [["Expense Breakdown", "Amount (AED)"]],
+                body: [
+                    ...data.expensesList.map(exp => [exp.name, Number(exp.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })]),
+                    ["Total Expenses", expBreakdownTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]
+                ],
+                theme: 'plain',
+                tableWidth: 100,
+                margin: { left: margin },
+                styles: { fontSize: 8, cellPadding: 2, lineColor: 0, lineWidth: 0.1, textColor: 0, font: "helvetica" },
+                headStyles: { fillColor: [245, 235, 215], fontStyle: 'bold', halign: 'left', lineWidth: 0.1, lineColor: 0 },
+                columnStyles: { 0: { cellWidth: 65 }, 1: { cellWidth: 35, halign: 'right' } },
+                didParseCell: (cellData) => { if (cellData.row.index === data.expensesList.length) cellData.cell.styles.fontStyle = 'bold'; }
+            });
+
+            finalY = doc.lastAutoTable.finalY;
+            doc.setFont("helvetica", "italic");
+            doc.setFontSize(6.5);
+            doc.text(`Note: Expenses above are ${modeNote.toLowerCase()}`, margin + 2, finalY + 3);
+            finalY += 6;
+            if (finalY > 230) {
+                doc.addPage();
+                finalY = 20;
+            }
+        }
+
         doc.setFont("helvetica", "bold");
         doc.setFontSize(8);
         const amtY = finalY + 5;
