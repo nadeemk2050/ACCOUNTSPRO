@@ -154,11 +154,11 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         if (printOptions.headerImage) {
             try {
                 const img = await loadImage(printOptions.headerImage);
-                const headerH = 30;
+                const headerH = 22; // Perf/layout: compact logo banner — keeps page 1 budget intact
                 doc.addImage(img, 'JPEG', margin, 5, contentWidth, headerH);
                 // Position title under image
-                titleY = 5 + headerH + 8;
-                startY = titleY + 7;
+                titleY = 5 + headerH + 5;
+                startY = titleY + 4;
             } catch (err) {
                 console.warn("Skipping header image due to load error:", err);
             }
@@ -311,6 +311,15 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         const totalQty = data.items.reduce((s, i) => s + Number(i.quantity || 0), 0);
         const grandTotal = Number(data.grandTotalForeign || 0);
 
+        // Auto-compression: row font/padding scale down in tiers as the line-item count grows,
+        // so the core invoice (items + totals + declaration + signature) always fits on page 1.
+        const itemCount = data.items.length;
+        let rowFontSize, rowPadding;
+        if (itemCount <= 2) { rowFontSize = 9; rowPadding = 3; }
+        else if (itemCount <= 4) { rowFontSize = 8; rowPadding = 2; }
+        else if (itemCount <= 7) { rowFontSize = 7.5; rowPadding = 1.5; }
+        else { rowFontSize = 7; rowPadding = 1; }
+
         autoTable(doc, {
             startY: tableY,
             head: headers,
@@ -318,7 +327,7 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
             theme: 'plain',
             tableWidth: contentWidth,
             margin: { left: margin },
-            styles: { fontSize: 9, cellPadding: 3, lineColor: 0, lineWidth: 0.1, valign: 'middle', textColor: 0, font: "helvetica" },
+            styles: { fontSize: rowFontSize, cellPadding: rowPadding, lineColor: 0, lineWidth: 0.1, valign: 'middle', textColor: 0, font: "helvetica" },
             headStyles: { fillColor: [240, 240, 240], fontStyle: 'bold', halign: 'center', lineWidth: 0.1, lineColor: 0 },
             columnStyles: { 0: { cellWidth: 12, halign: 'center' }, 1: { cellWidth: 80 }, 2: { cellWidth: 25, halign: 'right' }, 3: { cellWidth: 20, halign: 'right' }, 4: { cellWidth: 15, halign: 'center' }, 5: { cellWidth: 38, halign: 'right' } },
             foot: [["", "TOTAL", totalQty.toLocaleString('en-US', { minimumFractionDigits: 2 }), "", "", grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]],
@@ -327,45 +336,12 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         });
 
         let finalY = doc.lastAutoTable.finalY;
-        if (finalY > 230) {
+        // Reserved vertical space below the items table for Amount Chargeable, tax table,
+        // bank details, declaration, signature/stamp box and the footer line.
+        const footerReserve = 85;
+        if (finalY + footerReserve > pageHeight - 10) {
             doc.addPage();
-            finalY = 20;
-        }
-
-        // --- OPTIONAL: EXPENSE BREAKDOWN (for customer reports, regardless of include/add mode) ---
-        if (printOptions.showExpenses && Array.isArray(data.expensesList) && data.expensesList.length > 0) {
-            const expBreakdownTotal = data.expensesList.reduce((s, exp) => s + Number(exp.amount || 0), 0);
-            const modeNote = data.expenseMode === 'include'
-                ? 'Already included in the item rates above.'
-                : data.expenseMode === 'add'
-                    ? 'Added separately to the invoice total above.'
-                    : 'Shown for reference.';
-
-            autoTable(doc, {
-                startY: finalY + 3,
-                head: [["Expense Breakdown", "Amount (AED)"]],
-                body: [
-                    ...data.expensesList.map(exp => [exp.name, Number(exp.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })]),
-                    ["Total Expenses", expBreakdownTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]
-                ],
-                theme: 'plain',
-                tableWidth: 100,
-                margin: { left: margin },
-                styles: { fontSize: 8, cellPadding: 2, lineColor: 0, lineWidth: 0.1, textColor: 0, font: "helvetica" },
-                headStyles: { fillColor: [245, 235, 215], fontStyle: 'bold', halign: 'left', lineWidth: 0.1, lineColor: 0 },
-                columnStyles: { 0: { cellWidth: 65 }, 1: { cellWidth: 35, halign: 'right' } },
-                didParseCell: (cellData) => { if (cellData.row.index === data.expensesList.length) cellData.cell.styles.fontStyle = 'bold'; }
-            });
-
-            finalY = doc.lastAutoTable.finalY;
-            doc.setFont("helvetica", "italic");
-            doc.setFontSize(6.5);
-            doc.text(`Note: Expenses above are ${modeNote.toLowerCase()}`, margin + 2, finalY + 3);
-            finalY += 6;
-            if (finalY > 230) {
-                doc.addPage();
-                finalY = 20;
-            }
+            finalY = 15;
         }
 
         doc.setFont("helvetica", "bold");
@@ -397,7 +373,7 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
             doc.line(taxTableX, taxTableY + 18, pageWidth - margin, taxTableY + 18);
         }
 
-        const declY = Math.max(finalY + 45, 240);
+        const declY = finalY + 40;
         const bank = data.companyBank || data.bankDetails || {};
         if (bank) {
             const bankY = declY - 25;
@@ -458,6 +434,55 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         doc.setFontSize(6);
         doc.setFont("helvetica", "normal");
         doc.text("This is a Computer-Generated Invoice", centerX, pageHeight - 5, { align: 'center' });
+
+        // --- DEDICATED PAGE 2: EXPENSE BREAKDOWN SCHEDULE ---
+        // Core invoice above stays pristine on page 1; expenses (when requested) always get their own page.
+        if (printOptions.showExpenses && Array.isArray(data.expensesList) && data.expensesList.length > 0) {
+            doc.addPage();
+            let ey = 20;
+
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(13);
+            doc.text("EXPENSE BREAKDOWN SCHEDULE", centerX, ey, { align: "center" });
+            ey += 7;
+
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(9);
+            doc.text(`Attached to Invoice No. ${data.invoiceNo || 'DRAFT'} dated ${formatDate(data.date)} — ${data.partyName || 'CASH CUSTOMER'}`, centerX, ey, { align: "center" });
+            ey += 10;
+
+            const expBreakdownTotal = data.expensesList.reduce((s, exp) => s + Number(exp.amount || 0), 0);
+            const modeNote = data.expenseMode === 'include'
+                ? 'Already included in the item rates on the invoice.'
+                : data.expenseMode === 'add'
+                    ? 'Added separately to the invoice total.'
+                    : 'Shown for reference.';
+
+            autoTable(doc, {
+                startY: ey,
+                head: [["Expense Description", "Amount (AED)"]],
+                body: [
+                    ...data.expensesList.map(exp => [exp.name, Number(exp.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })]),
+                    ["Total Expenses", expBreakdownTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]
+                ],
+                theme: 'grid',
+                tableWidth: contentWidth,
+                margin: { left: margin },
+                styles: { fontSize: 9, cellPadding: 3, lineColor: 0, lineWidth: 0.1, textColor: 0, font: "helvetica" },
+                headStyles: { fillColor: [245, 235, 215], fontStyle: 'bold', halign: 'left', lineWidth: 0.1, lineColor: 0 },
+                columnStyles: { 0: { cellWidth: contentWidth - 50 }, 1: { cellWidth: 50, halign: 'right' } },
+                didParseCell: (cellData) => { if (cellData.row.index === data.expensesList.length) { cellData.cell.styles.fontStyle = 'bold'; cellData.cell.styles.fillColor = [250, 248, 240]; } }
+            });
+
+            const expFinalY = doc.lastAutoTable.finalY + 6;
+            doc.setFont("helvetica", "italic");
+            doc.setFontSize(8);
+            doc.text(`Note: Expenses above are ${modeNote.toLowerCase()}`, margin + 2, expFinalY);
+
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(6);
+            doc.text("This is a Computer-Generated Expense Schedule", centerX, pageHeight - 5, { align: 'center' });
+        }
 
         if (action === 'preview') {
             window.open(doc.output('bloburl'), '_blank');

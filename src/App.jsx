@@ -117,7 +117,7 @@ import {
     UploadCloud, DownloadCloud, Maximize, Maximize2, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
     Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
-    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle
+    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle, Calculator
 
 } from 'lucide-react';
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
@@ -15065,6 +15065,9 @@ const InvoiceModal = (props) => {
     // ✅ NEW: Sales Expense Mode Selection
     const [salesExpenseMode, setSalesExpenseMode] = useState(''); // 'include' or 'add'
     const [showExpenseModeModal, setShowExpenseModeModal] = useState(false);
+    // ✅ NEW: Expense-to-Rate Calculator (per-row, 'include' mode only)
+    const [rateCalcRowIndex, setRateCalcRowIndex] = useState(null);
+    const [rateCalcInputs, setRateCalcInputs] = useState({ qty: '', baseRate: '', totalExpenses: '' });
     const [showMoreTools, setShowMoreTools] = useState(false);
     const [autoRounding, setAutoRounding] = useState(false);
     const [showLocPicker, setShowLocPicker] = useState(false);
@@ -16876,7 +16879,27 @@ const InvoiceModal = (props) => {
                                             <td className="p-0.5"><input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-center font-bold text-[11px] placeholder:text-[9px]" placeholder="Qty" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'quantity')} onBlur={() => checkItemStock(index)} /></td>
                                             <td className="p-0.5">
                                                 <div className="flex flex-col gap-0.5">
-                                                    <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[11px] placeholder:text-[9px]" placeholder="Rate" value={item.rate} onChange={e => updateItem(index, 'rate', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'rate')} />
+                                                    <div className="relative">
+                                                        <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[11px] placeholder:text-[9px]" placeholder="Rate" value={item.rate} onChange={e => updateItem(index, 'rate', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'rate')} />
+                                                        {voucherType === 'sales' && salesExpenseMode === 'include' && (
+                                                            <button
+                                                                type="button"
+                                                                tabIndex="-1"
+                                                                onClick={() => {
+                                                                    setRateCalcInputs({
+                                                                        qty: item.quantity || '',
+                                                                        baseRate: item.originalRate || item.rate || '',
+                                                                        totalExpenses: totals.addlExpTotal > 0 ? totals.addlExpTotal : ''
+                                                                    });
+                                                                    setRateCalcRowIndex(index);
+                                                                }}
+                                                                className="absolute -left-1 -top-1 w-4 h-4 flex items-center justify-center bg-indigo-600 text-white rounded-full hover:bg-indigo-700 shadow active:scale-90 transition-all"
+                                                                title="Calculate Expense-Adjusted Rate"
+                                                            >
+                                                                <Calculator size={9} />
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                     {rieDisplay && (
                                                         <>
                                                             <div className="relative group">
@@ -17300,6 +17323,80 @@ const InvoiceModal = (props) => {
                             </div>
                         </div>
                     )
+                }
+                {/* ✅ EXPENSE-TO-RATE CALCULATOR (sales, 'include' mode, per-row) */}
+                {
+                    rateCalcRowIndex !== null && (() => {
+                        const qty = Number(rateCalcInputs.qty) || 0;
+                        const baseRate = Number(rateCalcInputs.baseRate) || 0;
+                        const totalExpenses = Number(rateCalcInputs.totalExpenses) || 0;
+                        const expensePerUnit = qty > 0 ? (totalExpenses / qty) : 0;
+                        const newRate = baseRate + expensePerUnit;
+                        const baseSubtotal = qty * baseRate;
+                        const newAdjustedTotal = baseSubtotal + totalExpenses;
+                        const canInsert = qty > 0 && newRate > 0;
+
+                        return (
+                            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]" onClick={() => setRateCalcRowIndex(null)}>
+                                <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
+                                    <h3 className="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                        <Calculator size={18} className="text-indigo-600" /> Expense-to-Rate Calculator
+                                    </h3>
+                                    <p className="text-xs text-slate-500 mb-4">Distribute additional expenses into this item's rate.</p>
+
+                                    <div className="grid grid-cols-3 gap-2 mb-3">
+                                        <div>
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase">Quantity</label>
+                                            <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[12px] font-bold"
+                                                value={rateCalcInputs.qty}
+                                                onChange={e => setRateCalcInputs({ ...rateCalcInputs, qty: e.target.value })} />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase">Base Rate</label>
+                                            <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[12px] font-bold"
+                                                value={rateCalcInputs.baseRate}
+                                                onChange={e => setRateCalcInputs({ ...rateCalcInputs, baseRate: e.target.value })} />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold text-slate-500 uppercase">Total Expenses</label>
+                                            <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[12px] font-bold"
+                                                value={rateCalcInputs.totalExpenses}
+                                                onChange={e => setRateCalcInputs({ ...rateCalcInputs, totalExpenses: e.target.value })} />
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-slate-50 border rounded-lg p-3 space-y-1.5 text-[11px] font-semibold text-slate-600 mb-4">
+                                        <div className="flex justify-between"><span>Expense Per Unit</span><span className="font-black text-slate-800">{expensePerUnit.toFixed(3)}</span></div>
+                                        <div className="flex justify-between"><span>Base Subtotal (Qty × Base Rate)</span><span className="font-black text-slate-800">{baseSubtotal.toFixed(3)}</span></div>
+                                        <div className="flex justify-between"><span>+ Total Expenses</span><span className="font-black text-slate-800">{totalExpenses.toFixed(3)}</span></div>
+                                        <div className="flex justify-between border-t pt-1.5"><span>New Adjusted Total</span><span className="font-black text-indigo-700">{newAdjustedTotal.toFixed(3)}</span></div>
+                                        <div className="flex justify-between pt-1"><span>Old Rate → New Effective Rate</span><span className="font-black text-emerald-700">{baseRate.toFixed(3)} → {newRate.toFixed(3)}</span></div>
+                                    </div>
+
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setRateCalcRowIndex(null)}
+                                            className="flex-1 px-4 py-2 text-sm text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={!canInsert}
+                                            onClick={() => {
+                                                updateItem(rateCalcRowIndex, 'rate', round3(newRate));
+                                                setRateCalcRowIndex(null);
+                                            }}
+                                            className="flex-1 px-4 py-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-lg transition-colors"
+                                        >
+                                            Insert Calculated Rate
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()
                 }
                 {/* ✅ INVOICE GENERATION OPTIONS MODAL (NEW) - ADDED SCROLLBAR */}
                 {
