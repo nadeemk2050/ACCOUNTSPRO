@@ -5,6 +5,14 @@ import { collection, query, where, getDocs, addDoc, setDoc, doc, writeBatch } fr
 import { UploadCloud, FileText, Loader, CheckCircle, AlertCircle, Search, Upload } from 'lucide-react';
 import { addBackupHistoryEntry } from './BackupHistoryModal';
 
+// Jumbo bags can only exist on these voucher scopes
+const BAGS_SUPPORTED = (type) => !!type && (
+    (type.collection === 'invoices' && ['sales', 'purchase'].includes(type.typeFilter)) ||
+    type.collection === 'stock_journals'
+);
+
+const normalizeBagNo = (v) => String(v || '').replace(/^#/, '').trim().toUpperCase();
+
 const VOUCHER_MAPPING = [
     { label: 'Sales', collection: 'invoices', typeFilter: 'sales' },
     { label: 'Purchases', collection: 'invoices', typeFilter: 'purchase' },
@@ -93,7 +101,10 @@ export default function ImportVoucherModal({ isOpen, onClose, user, dataOwnerId 
             if (!uid) throw new Error('User not identified');
 
             const matchingDocs = getMatchingDocs();
-            if (matchingDocs.length === 0) {
+            const fileBags = Array.isArray(fileData?.data?.jumbo_bags) ? fileData.data.jumbo_bags : [];
+            const bagsSupported = BAGS_SUPPORTED(selectedType);
+
+            if (matchingDocs.length === 0 && !(bagsSupported && fileBags.length > 0)) {
                 setResult({ success: false, message: `No ${selectedType.label} vouchers found in the selected file.` });
                 setImporting(false);
                 return;
@@ -111,15 +122,9 @@ export default function ImportVoucherModal({ isOpen, onClose, user, dataOwnerId 
             // Filter: keep only docs whose refNo is NOT already in Firestore
             const newDocs = matchingDocs.filter(d => !existingRefNos.has(d.refNo));
 
-            if (newDocs.length === 0) {
-                setResult({ success: true, message: `All ${matchingDocs.length} ${selectedType.label} voucher(s) already exist. Nothing to import.` });
-                setImporting(false);
-                return;
-            }
-
             // Add new docs to Firestore with correct userId stamped
             let added = 0;
-            let errors = 0;
+            const newIdByRefNo = new Map();
 
             // Use batches of 500 (Firestore limit)
             const BATCH_SIZE = 500;
@@ -138,6 +143,7 @@ export default function ImportVoucherModal({ isOpen, onClose, user, dataOwnerId 
                         importedAt: new Date().toISOString(),
                         importedFromBackup: true,
                     });
+                    if (rest.refNo) newIdByRefNo.set(String(rest.refNo).trim(), docRef.id);
                 }
 
                 await batch.commit();
@@ -146,14 +152,139 @@ export default function ImportVoucherModal({ isOpen, onClose, user, dataOwnerId 
 
             const skipped = matchingDocs.length - newDocs.length;
 
+            // ── JUMBO BAGS: restore the bag records belonging to these vouchers and re-link them
+            let bagsAdded = 0;
+            let bagsSkipped = 0;
+            if (bagsSupported && fileBags.length > 0) {
+                const relevantRefNos = new Set([
+                    ...newDocs.map(d => String(d.refNo || '').trim()),
+                    ...existingRefNos
+                ].filter(Boolean));
+                const relevantIds = new Set(matchingDocs.map(d => String(d.id || '').trim()).filter(Boolean));
+
+                const relevantBags = fileBags.filter(b => {
+                    // A full bag dump (exported with 'Include ALL bag records') travels whole
+                    if (String(fileData?.meta?.bagsScope || '') === 'all') return true;
+                    const refs = [b.salesRefNo, b.purchaseRefNo, b.stockJournalRefNo, b.voucherRefNo, b.refNo]
+                        .map(v => String(v || '').trim()).filter(Boolean);
+                    if (refs.some(r => relevantRefNos.has(r))) return true;
+                    const ids = [b.salesId, b.purchaseId, b.stockJournalId]
+                        .map(v => String(v || '').trim()).filter(Boolean);
+                    if (ids.some(x => relevantIds.has(x))) return true;
+                    // Unlinked bags travel with the file
+                    return refs.length === 0 && ids.length === 0;
+                });
+
+                if (relevantBags.length > 0) {
+                    // Existing bag numbers for this user (dedupe key: bag no)
+                    const bagSnaps = await Promise.all([
+                        getDocs(query(collection(db, 'jumbo_bags'), where('userId', '==', uid))),
+                        getDocs(query(collection(db, 'jumbo_bags'), where('ownerId', '==', uid)))
+                    ]);
+                    const existingBagNos = new Set();
+                    bagSnaps.forEach(s => s.docs.forEach(d => {
+                        const bn = normalizeBagNo(d.data().bagNo);
+                        if (bn) existingBagNos.add(bn);
+                    }));
+
+                    const bagsToWrite = [];
+                    for (const bag of relevantBags) {
+                        const bn = normalizeBagNo(bag.bagNo);
+                        if (bn && existingBagNos.has(bn)) { bagsSkipped++; continue; }
+                        if (bn) existingBagNos.add(bn);
+                        const { id, ...rest } = bag;
+                        // Re-link to freshly imported voucher ids when the REF NO resolves
+                        const relink = (refField, idField) => {
+                            const ref = String(rest[refField] || rest.voucherRefNo || '').trim();
+                            if (ref && newIdByRefNo.has(ref) && !rest[idField]) rest[idField] = newIdByRefNo.get(ref);
+                        };
+                        relink('salesRefNo', 'salesId');
+                        relink('purchaseRefNo', 'purchaseId');
+                        relink('stockJournalRefNo', 'stockJournalId');
+                        bagsToWrite.push(rest);
+                    }
+
+                    for (let i = 0; i < bagsToWrite.length; i += BATCH_SIZE) {
+                        const batch = writeBatch(db);
+                        const chunk = bagsToWrite.slice(i, i + BATCH_SIZE);
+                        chunk.forEach(rest => {
+                            batch.set(doc(collection(db, 'jumbo_bags')), {
+                                ...rest,
+                                userId: uid,
+                                ownerId: uid,
+                                importedAt: new Date().toISOString(),
+                                importedFromBackup: true,
+                            });
+                        });
+                        await batch.commit();
+                        bagsAdded += chunk.length;
+                    }
+                }
+            }
+
+            // ── REUSABLE JUMBO BAGS REGISTRY: restore refillable bags (dedupe by bag no)
+            const fileReusable = Array.isArray(fileData?.data?.reusable_jumbo_bags) ? fileData.data.reusable_jumbo_bags : [];
+            let reusableAdded = 0;
+            let reusableSkipped = 0;
+            if (bagsSupported && fileReusable.length > 0) {
+                const rSnaps = await Promise.all([
+                    getDocs(query(collection(db, 'reusable_jumbo_bags'), where('userId', '==', uid))),
+                    getDocs(query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', uid)))
+                ]);
+                const existingReusableNos = new Set();
+                rSnaps.forEach(s => s.docs.forEach(d => {
+                    const bn = normalizeBagNo(d.data().bagNo);
+                    if (bn) existingReusableNos.add(bn);
+                }));
+
+                const reusableToWrite = [];
+                for (const rb of fileReusable) {
+                    const bn = normalizeBagNo(rb.bagNo);
+                    if (bn && existingReusableNos.has(bn)) { reusableSkipped++; continue; }
+                    if (bn) existingReusableNos.add(bn);
+                    const { id, ...rest } = rb;
+                    // Re-point the usage history to the freshly imported manufacturing vouchers
+                    if (Array.isArray(rest.usageHistory)) {
+                        rest.usageHistory = rest.usageHistory.map(h => {
+                            const ref = String(h?.manufacturingRefNo || '').trim();
+                            if (ref && newIdByRefNo.has(ref)) return { ...h, stockJournalId: newIdByRefNo.get(ref) };
+                            return h;
+                        });
+                    }
+                    reusableToWrite.push(rest);
+                }
+
+                for (let i = 0; i < reusableToWrite.length; i += BATCH_SIZE) {
+                    const batch = writeBatch(db);
+                    const chunk = reusableToWrite.slice(i, i + BATCH_SIZE);
+                    chunk.forEach(rest => {
+                        batch.set(doc(collection(db, 'reusable_jumbo_bags')), {
+                            ...rest,
+                            userId: uid,
+                            ownerId: uid,
+                            importedAt: new Date().toISOString(),
+                            importedFromBackup: true,
+                        });
+                    });
+                    await batch.commit();
+                    reusableAdded += chunk.length;
+                }
+            }
+
+            if (added === 0 && bagsAdded === 0 && reusableAdded === 0) {
+                setResult({ success: true, message: `All ${matchingDocs.length} ${selectedType.label} voucher(s)${fileBags.length > 0 ? ` and ${fileBags.length} jumbo bag(s)` : ''}${fileReusable.length > 0 ? ` / ${fileReusable.length} reusable bag(s)` : ''} already exist. Nothing to import.` });
+                setImporting(false);
+                return;
+            }
+
             // Log to backup history
             try {
-                addBackupHistoryEntry({ action: 'import_voucher', type: selectedType.label, count: added, collection: selectedType.collection, details: `Imported ${added} new ${selectedType.label} vouchers, skipped ${skipped} duplicates` });
+                addBackupHistoryEntry({ action: 'import_voucher', type: selectedType.label, count: added + bagsAdded + reusableAdded, collection: selectedType.collection, details: `Imported ${added} new ${selectedType.label} vouchers${bagsAdded > 0 ? ` + ${bagsAdded} jumbo bags` : ''}${reusableAdded > 0 ? ` + ${reusableAdded} reusable bags` : ''}, skipped ${skipped} duplicate vouchers${bagsSkipped > 0 ? ` / ${bagsSkipped} duplicate bags` : ''}${reusableSkipped > 0 ? ` / ${reusableSkipped} duplicate reusable` : ''}` });
             } catch {}
 
             setResult({
                 success: true,
-                message: `✅ Imported ${added} new ${selectedType.label} voucher(s). Skipped ${skipped} duplicate(s).`,
+                message: `✅ Imported ${added} new ${selectedType.label} voucher(s)${bagsAdded > 0 ? ` + ${bagsAdded} jumbo bag(s)` : ''}${reusableAdded > 0 ? ` + ${reusableAdded} reusable bag(s)` : ''}. Skipped ${skipped} duplicate voucher(s)${bagsSkipped > 0 ? ` and ${bagsSkipped} duplicate bag(s)` : ''}${reusableSkipped > 0 ? ` and ${reusableSkipped} duplicate reusable bag(s)` : ''}.`,
             });
         } catch (err) {
             console.error('[ImportVoucher] Error:', err);
@@ -167,7 +298,7 @@ export default function ImportVoucherModal({ isOpen, onClose, user, dataOwnerId 
     return (
         <Modal isOpen={isOpen} onClose={handleClose} title="Import / Restore Vouchers" maxWidth="max-w-lg" zIndex={60}>
             <div className="space-y-5 p-2">
-                <p className="text-sm text-gray-500">Upload a JSON backup file and restore vouchers by type. Duplicate refNos will be skipped.</p>
+                <p className="text-sm text-gray-500">Upload a JSON backup file and restore vouchers by type. Duplicate refNos will be skipped. Jumbo bag records (created in production / allotted in purchases / assigned in sales) and the Reusable Jumbo Bags registry contained in the file are restored together with their vouchers.</p>
 
                 {/* File Upload */}
                 <div>

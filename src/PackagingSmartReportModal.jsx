@@ -26,6 +26,7 @@ const PackagingSmartReportModal = ({
 
     // --- Reusable Bags state ---
     const [reusableBags, setReusableBags] = useState([]);
+    const [legacyReusableBags, setLegacyReusableBags] = useState([]); // registry records outside the active owner scope
     const [showMakeReusableModal, setShowMakeReusableModal] = useState(false);
     const [selectedReusableBag, setSelectedReusableBag] = useState(null);
     const [reusableSubTab, setReusableSubTab] = useState('all'); // 'all' | 'deactivated'
@@ -46,6 +47,7 @@ const PackagingSmartReportModal = ({
     const [selectedReadyStockProductId, setSelectedReadyStockProductId] = useState('');
     const [deleteBagPrompt, setDeleteBagPrompt] = useState(null);
     const [deletePassword, setDeletePassword] = useState('');
+    const [bagDeleteTarget, setBagDeleteTarget] = useState('jumbo_bags');
     const [detailModal, setDetailModal] = useState(null); // 'inward' | 'outward' | 'ready' | 'orphan' | null
     const [forceReleaseBagPrompt, setForceReleaseBagPrompt] = useState(null);
     const [forceReleasePassword, setForceReleasePassword] = useState('');
@@ -249,9 +251,10 @@ const PackagingSmartReportModal = ({
     const confirmDeleteOrphanBag = async () => {
         if (deletePassword === "abcd") {
             try {
-                await deleteDoc(doc(db, 'jumbo_bags', deleteBagPrompt.id));
+                await deleteDoc(doc(db, bagDeleteTarget || 'jumbo_bags', deleteBagPrompt.id));
                 setDeleteBagPrompt(null);
                 setDeletePassword('');
+                setBagDeleteTarget('jumbo_bags');
             } catch (err) {
                 console.error("Error deleting orphan bag:", err);
                 alert("âŒ Failed to delete orphan bag. See console for details.");
@@ -265,9 +268,23 @@ const PackagingSmartReportModal = ({
         if (!isOpen || !launchView?.detail) return;
 
         setIsDeepAnalysing(true);
-        setViewingDetail(launchView.detail);
+        if (launchView.detail === 'orphan_bags') {
+            // Land on the reconciliation panel with the orphan / unused records list already open
+            setViewingDetail(null);
+            setDetailModal('orphan');
+        } else {
+            setViewingDetail(launchView.detail);
+        }
         if (launchView.subTab) setReadyStockSubTab(launchView.subTab);
         if (launchView.mode) setViewMode(launchView.mode);
+    }, [isOpen, launchView]);
+
+    // When opened normally (e.g. from the menu, without a drill-down launch view) always land on the
+    // main bag-intelligence dashboard instead of the previously inspected detail screen.
+    React.useEffect(() => {
+        if (!isOpen || launchView?.detail) return;
+        setIsDeepAnalysing(false);
+        setViewingDetail(null);
     }, [isOpen, launchView]);
 
     // Fetch Data
@@ -423,14 +440,28 @@ const PackagingSmartReportModal = ({
         };
     }, [isOpen, targetUid, dateRange, dataOwnerId, user?.uid]);
 
-    // Fetch reusable bags from Firestore
+    // Fetch reusable bags from Firestore (active owner registry + legacy records outside that scope)
     React.useEffect(() => {
         if (!isOpen || !targetUid) return;
-        const q = query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', targetUid));
-        const unsub = onSnapshot(q, (snap) => {
-            setReusableBags(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        const qOwner = query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', targetUid));
+        const qUser = query(collection(db, 'reusable_jumbo_bags'), where('userId', '==', targetUid));
+        let ownerList = [];
+        let userList = [];
+        const publish = () => {
+            const activeMap = new Map(ownerList.map(rb => [rb.id, rb]));
+            setReusableBags([...activeMap.values()]);
+            // Legacy = records this login touches (userId) that are NOT part of the active owner registry
+            setLegacyReusableBags(userList.filter(rb => !activeMap.has(rb.id)));
+        };
+        const unsubOwner = onSnapshot(qOwner, (snap) => {
+            ownerList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            publish();
         }, (err) => console.warn('Reusable bags sync error:', err));
-        return () => unsub();
+        const unsubUser = onSnapshot(qUser, (snap) => {
+            userList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            publish();
+        }, (err) => console.warn('Legacy reusable bags sync error:', err));
+        return () => { unsubOwner(); unsubUser(); };
     }, [isOpen, targetUid]);
     // Dynamic Self-Healing to remove historically orphaned manufacturing fills AND add missing timeline entries
     React.useEffect(() => {
@@ -1241,7 +1272,48 @@ const PackagingSmartReportModal = ({
                                         const manufacturedBags = inwardDashboardBags;
                                         const soldBags = outwardDashboardBags;
                                         const readyBags = readyDashboardBags;
-                                        const orphanBags = bags.filter(b => !b.stockJournalId && !b.purchaseId && !b.salesId && !b.voucherRefNo && !b.stockJournalRefNo && !b.purchaseRefNo && !b.salesRefNo);
+                                        const orphanBags = (() => {
+                                            const liveKeys = new Set();
+                                            [...manufacturedBags, ...readyBags].forEach(b => {
+                                                const no = String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                                                const id = String(b.id || '').trim();
+                                                if (no) liveKeys.add(no);
+                                                if (id) liveKeys.add(id);
+                                            });
+                                            const liveJournalIds = new Set(stockJournals.map(sj => String(sj.id || '').trim()).filter(Boolean));
+                                            const liveJournalRefs = new Set(stockJournals.map(sj => String(sj.refNo || '').trim().toLowerCase()).filter(Boolean));
+                                            const dupCounts = new Map();
+                                            bags.forEach((b, idx) => {
+                                                const key = String(b?.bagNo || '').replace(/^#/, '').trim().toUpperCase() || String(b?.id || `idx-${idx}`);
+                                                dupCounts.set(key, (dupCounts.get(key) || 0) + 1);
+                                            });
+                                            const seen = new Set();
+                                            const list = [];
+                                            bags.forEach((b, idx) => {
+                                                if (!b || typeof b !== 'object') return;
+                                                const status = String(b.status || '').trim().toLowerCase();
+                                                if (b.isDeleted || status === 'deleted' || status === 'bulk_deleted') return;
+                                                if (isBagReusable(b)) return; // reusable containers belong to the registry view
+                                                const no = String(b.bagNo || '').replace(/^#/, '').trim().toUpperCase();
+                                                const id = String(b.id || '').trim();
+                                                const key = no || id || `idx-${idx}`;
+                                                const isDup = (dupCounts.get(key) || 0) > 1 && seen.has(key);
+                                                seen.add(key);
+                                                const inLive = !!((no && liveKeys.has(no)) || (id && liveKeys.has(id)));
+                                                const noLink = !b.stockJournalId && !b.purchaseId && !b.salesId && !b.voucherRefNo && !b.stockJournalRefNo && !b.purchaseRefNo && !b.salesRefNo;
+                                                const sjId = String(b.stockJournalId || b.linkedStockJournalId || b.originId || '').trim();
+                                                const sjRef = String(b.stockJournalRefNo || '').trim().toLowerCase();
+                                                const danglingJournal = !!((sjId && !liveJournalIds.has(sjId) && !liveJournalRefs.has(sjId.toLowerCase())) || (sjRef && !liveJournalRefs.has(sjRef)));
+                                                let reason = '';
+                                                if (isDup) reason = 'Duplicate record (same bag no.)';
+                                                else if (!inLive && noLink) reason = 'No parent voucher link';
+                                                else if (!inLive && danglingJournal) reason = 'Parent manufacturing voucher missing';
+                                                else if (!inLive) reason = 'Unused record (not in live inventory)';
+                                                if (!reason) return;
+                                                list.push({ ...b, orphanReason: reason });
+                                            });
+                                            return list;
+                                        })();
                                         const sumWeight = arr => arr.reduce((s, b) => s + Number(b.qty || 0), 0);
                                         const format = n => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
                                         const dashboardInward = manufacturedBags.length;
@@ -1277,8 +1349,56 @@ const PackagingSmartReportModal = ({
                                                 rows = getRunningBalanceRows([...readyBags].sort((a,b)=>new Date(a.date)-new Date(b.date)), 'ready');
                                                 columns = ['Bag No.', 'Ref No.', 'Date Mfg', 'Qty', 'Running Qty Balance'];
                                             } else if (type === 'orphan') {
-                                                rows = getRunningBalanceRows([...orphanBags].sort((a,b)=>new Date(a.date)-new Date(b.date)), 'orphan');
-                                                columns = ['Bag No.', 'Ref No.', 'Date Mfg', 'Date Sales', 'Qty', 'Running Qty Balance', 'Delete'];
+                                                const orphanRows = [...orphanBags].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+                                                return (
+                                                    <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center p-4">
+                                                        <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-5xl max-h-[85vh] overflow-auto relative">
+                                                            <button className="absolute top-2 right-2 text-slate-400 hover:text-red-500" onClick={() => setDetailModal(null)}><X size={20} /></button>
+                                                            <div className="font-black text-lg mb-1 uppercase tracking-widest">Orphan / Unused Bag Records</div>
+                                                            <div className="text-[11px] text-slate-500 mb-4">Bag records that are <b>not part of the live inventory</b> (IN / OUT / REMAINING). Check the reason, then delete with the admin password if the record is not needed.</div>
+
+                                                            <table className="w-full text-xs border">
+                                                                <thead>
+                                                                    <tr>{['Bag No.', 'Ref No.', 'Date', 'Qty (KG)', 'Reason', 'Delete'].map((c, i) => (<th key={i} className="px-3 py-2 bg-slate-100 border-b font-black uppercase">{c}</th>))}</tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    {orphanRows.map((b, i) => (
+                                                                        <tr key={b.id || i} className="border-b hover:bg-slate-50">
+                                                                            <td className="px-2 py-1 font-bold">{b.bagNo ? `#${String(b.bagNo).replace(/^#/, '')}` : '-'}</td>
+                                                                            <td className="px-2 py-1">{b.voucherRefNo || b.stockJournalRefNo || b.purchaseRefNo || b.salesRefNo || '-'}</td>
+                                                                            <td className="px-2 py-1">{b.date ? normalizeDate(b.date) : '-'}</td>
+                                                                            <td className="px-2 py-1">{format(Number(b.qty || 0))}</td>
+                                                                            <td className="px-2 py-1 text-amber-700 font-bold">{b.orphanReason || '-'}</td>
+                                                                            <td className="px-2 py-1">{b.id ? (<button className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors" onClick={(e) => { e.stopPropagation(); setBagDeleteTarget('jumbo_bags'); handleDeleteOrphanBag(b); }}>Delete</button>) : (<span className="text-slate-400 text-xs">N/A</span>)}</td>
+                                                                        </tr>
+                                                                    ))}
+                                                                    {orphanRows.length === 0 && (<tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">No orphan / unused bag records. ✅</td></tr>)}
+                                                                </tbody>
+                                                            </table>
+
+                                                            <div className="mt-6 font-black text-sm uppercase tracking-widest text-teal-800">Legacy Reusable Registry Records: {legacyReusableBags.length}</div>
+                                                            <div className="text-[11px] text-slate-500 mb-2">Registry entries touched by this login but <b>not part of the active owner registry</b> (legacy / duplicate scope). Delete if not needed.</div>
+                                                            <table className="w-full text-xs border">
+                                                                <thead>
+                                                                    <tr>{['Bag No.', 'Status', 'Start', 'Last', 'Owner', 'Delete'].map((c, i) => (<th key={i} className="px-3 py-2 bg-teal-50 border-b font-black uppercase">{c}</th>))}</tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    {legacyReusableBags.map((rb, i) => (
+                                                                        <tr key={rb.id || i} className="border-b hover:bg-teal-50/40">
+                                                                            <td className="px-2 py-1 font-bold">#{String(rb.bagNo || '').replace(/^#/, '') || '-'}</td>
+                                                                            <td className="px-2 py-1 uppercase">{rb.status || '-'}</td>
+                                                                            <td className="px-2 py-1">{rb.startDate || '-'}</td>
+                                                                            <td className="px-2 py-1">{rb.lastDate || '-'}</td>
+                                                                            <td className="px-2 py-1 text-slate-400">{rb.ownerId ? `${String(rb.ownerId).slice(0, 8)}…` : '-'}{rb.ownerId === targetUid ? ' (this company)' : ''}</td>
+                                                                            <td className="px-2 py-1"><button className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors" onClick={(e) => { e.stopPropagation(); setBagDeleteTarget('reusable_jumbo_bags'); handleDeleteOrphanBag(rb); }}>Delete</button></td>
+                                                                        </tr>
+                                                                    ))}
+                                                                    {legacyReusableBags.length === 0 && (<tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">No legacy reusable registry records.</td></tr>)}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    </div>
+                                                );
                                             }
                                             return (
                                                 <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center">
@@ -1334,8 +1454,9 @@ const PackagingSmartReportModal = ({
                                             </div>
                                             <div className="mt-4 text-[11px] text-orange-700 font-bold flex items-center gap-2 cursor-pointer hover:underline" onClick={()=>openDetail('orphan')}>
                                                 <Recycle size={14} />
-                                                Orphan Bags: {orphanBags.length}
-                                                <span className="text-orange-500 font-normal">(Bags with no parent voucher link)</span>
+                                                Orphan / Unused Bag Records: {orphanBags.length}
+                                                {legacyReusableBags.length > 0 && <span className="text-teal-700">· Legacy Reusable Records: {legacyReusableBags.length}</span>}
+                                                <span className="text-orange-500 font-normal">(no parent link, dangling voucher link, duplicates or unused — click to review &amp; delete)</span>
                                             </div>
                                             {detailModal && renderDetailTable(detailModal)}
                                         </>;

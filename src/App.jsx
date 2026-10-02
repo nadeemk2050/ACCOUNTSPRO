@@ -6662,6 +6662,8 @@ export default function App() {
     const handleCloseModal = () => {
         // Reset activity when closing
         updateMyActivity('Viewing Dashboard');
+        // Jumbo-bag drill-down launch view is single-use (set by Statistics bag rows)
+        if (activeModal === 'packaging_smart_report') setPackagingLaunchView(null);
         if (modalStack.length > 0) {
             // Pop last modal from stack and open it
             const last = modalStack[modalStack.length - 1];
@@ -7781,7 +7783,8 @@ export default function App() {
                 { name: 'vehicles', filterFields: ['userId', 'ownerId'] },
                 { name: 'invoice_settings', filterFields: ['userId', 'ownerId'] },
                 { name: 'company_images', filterFields: ['userId', 'ownerId'] },
-                { name: 'jumbo_bags', filterFields: ['userId', 'ownerId'] },
+                { name: 'jumbo_bags', filterFields: ['userId', 'ownerId'], uids: [...new Set([dataOwnerId, user?.uid].filter(Boolean))] },
+                { name: 'reusable_jumbo_bags', filterFields: ['userId', 'ownerId'], uids: [...new Set([dataOwnerId, user?.uid].filter(Boolean))] },
                 { name: 'invoices', filterFields: ['userId', 'ownerId'] },
                 { name: 'payments', filterFields: ['userId', 'ownerId'] },
                 { name: 'journal_vouchers', filterFields: ['userId', 'ownerId'] },
@@ -7807,12 +7810,13 @@ export default function App() {
             const targetUid = dataOwnerId || user.uid;
             backupData.meta.ownerId = targetUid;
 
-            await Promise.all(collectionConfigs.map(async ({ name, filterFields }) => {
-                const allDocs = await Promise.all(filterFields.map(async (filterField) => {
-                    const q = query(collection(db, name), where(filterField, "==", targetUid));
+            await Promise.all(collectionConfigs.map(async ({ name, filterFields, uids }) => {
+                const candidates = (Array.isArray(uids) && uids.length > 0) ? uids : [targetUid];
+                const allDocs = await Promise.all(candidates.flatMap(candidateUid => filterFields.map(async (filterField) => {
+                    const q = query(collection(db, name), where(filterField, "==", candidateUid));
                     const snap = await getDocs(q);
                     return snap.docs;
-                }));
+                })));
 
                 const merged = new Map();
                 allDocs.flat().forEach((docSnap) => {
@@ -7851,13 +7855,15 @@ export default function App() {
             downloadAnchorNode.remove();
             URL.revokeObjectURL(url);
 
-            // Log to backup history
+            // Log to backup history (with jumbo bag coverage)
+            const bagCount = (backupData.data?.jumbo_bags || []).length;
+            const reusableBagCount = (backupData.data?.reusable_jumbo_bags || []).length;
             try {
                 const totalDocs = Object.values(backupData.data || {}).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
-                addBackupHistoryEntry({ action: 'backup', type: 'Full System Backup', count: totalDocs, details: `Backed up ${Object.keys(backupData.data).length} collections` });
+                addBackupHistoryEntry({ action: 'backup', type: 'Full System Backup', count: totalDocs, details: `Backed up ${Object.keys(backupData.data).length} collections (${bagCount} jumbo bags, ${reusableBagCount} reusable bags — unused/orphan records included; review them in Filled Bags Intelligence)` });
             } catch {}
 
-            setToast({ type: 'success', title: 'Backup Complete', message: 'Data downloaded successfully.' });
+            setToast({ type: 'success', title: 'Backup Complete', message: `Data downloaded successfully — ${bagCount} jumbo bag(s) & ${reusableBagCount} reusable bag(s) included.` });
 
         } catch (e) {
             console.error(e);
@@ -7904,6 +7910,7 @@ export default function App() {
                         invoiceSettings: 'invoice_settings',
                         companyImages: 'company_images',
                         jumboBags: 'jumbo_bags',
+                        reusableJumboBags: 'reusable_jumbo_bags',
                         auditLogs: 'audit_logs',
                         systemLogs: 'system_logs'
                     };
@@ -9475,6 +9482,225 @@ export default function App() {
         taxRates,
         subUsers
     ]);
+
+    // ── JUMBO BAGS STATS (Statistics modal): Jumbo IN (manufacturing/allotted), Jumbo OUT (sales), Remaining
+    const [packagingLaunchView, setPackagingLaunchView] = useState(null);
+    const [bagStatsData, setBagStatsData] = useState(null);
+    const [reusableBagStatsData, setReusableBagStatsData] = useState(null);
+    const [legacyBagStatsData, setLegacyBagStatsData] = useState(null); // reusable registry records outside the active owner scope
+    const [bagStatsVouchers, setBagStatsVouchers] = useState(null); // { journals, salesInvoices } — same sources as Filled Bags Intelligence
+
+    useEffect(() => {
+        if (activeModal !== 'statistics') return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const uids = [...new Set([dataOwnerId, user?.uid].filter(Boolean))];
+                if (uids.length === 0) {
+                    setBagStatsData([]); setReusableBagStatsData([]); setLegacyBagStatsData([]);
+                    setBagStatsVouchers({ journals: [], salesInvoices: [] });
+                    return;
+                }
+                const ownerUid = dataOwnerId || user?.uid;
+                const isLive = (r) => !r?.isDeleted && String(r?.status || '') !== 'deleted' && String(r?.status || '') !== 'bulk_deleted';
+                const byUid = (col, extra = []) => uids.flatMap(uid => ['userId', 'ownerId'].map(field =>
+                    getDocs(query(collection(db, col), where(field, '==', uid), ...extra))
+                ));
+
+                const [snaps, rSnaps, legacySnaps, sjSnaps, invSnaps] = await Promise.all([
+                    Promise.all(byUid('jumbo_bags')),
+                    // Registry scope matches Filled Bags Intelligence (ownerId only)
+                    Promise.all(ownerUid ? [getDocs(query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', ownerUid)))] : []),
+                    // Legacy scope: registry records created under this login but outside the active owner registry
+                    Promise.all(ownerUid ? [getDocs(query(collection(db, 'reusable_jumbo_bags'), where('userId', '==', ownerUid)))] : []),
+                    Promise.all(byUid('stock_journals')),
+                    Promise.all(byUid('invoices', [where('type', '==', 'sales')]))
+                ]);
+
+                const map = new Map();
+                snaps.forEach(s => s.docs.forEach(d => map.set(d.id, { id: d.id, ...d.data() })));
+                const rMap = new Map();
+                rSnaps.forEach(s => s.docs.forEach(d => rMap.set(d.id, { id: d.id, ...d.data() })));
+                const lMap = new Map();
+                legacySnaps.forEach(s => s.docs.forEach(d => { if (!rMap.has(d.id)) lMap.set(d.id, { id: d.id, ...d.data() }); }));
+                const jMap = new Map();
+                sjSnaps.forEach(s => s.docs.forEach(d => { const r = { id: d.id, ...d.data() }; if (isLive(r)) jMap.set(d.id, r); }));
+                const iMap = new Map();
+                invSnaps.forEach(s => s.docs.forEach(d => { const r = { id: d.id, ...d.data() }; if (isLive(r)) iMap.set(d.id, r); }));
+
+                if (!cancelled) {
+                    setBagStatsData([...map.values()]);
+                    setReusableBagStatsData([...rMap.values()]);
+                    setLegacyBagStatsData([...lMap.values()]);
+                    setBagStatsVouchers({ journals: [...jMap.values()], salesInvoices: [...iMap.values()] });
+                }
+            } catch (e) {
+                console.warn('Bag stats fetch failed:', e);
+                if (!cancelled) {
+                    setBagStatsData([]); setReusableBagStatsData([]); setLegacyBagStatsData([]);
+                    setBagStatsVouchers({ journals: [], salesInvoices: [] });
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [activeModal, dataOwnerId, user?.uid]);
+
+    const bagStats = useMemo(() => {
+        // Same rules as "Filled Bags Inventory Intelligence" (PackagingSmartReportModal)
+        const normNo = (v) => String(v || '').replace(/^#/, '').trim().toUpperCase();
+
+        // Reusable registry (ownerId scope) — reusable containers are excluded from sellable stock
+        const registry = Array.isArray(reusableBagStatsData) ? reusableBagStatsData : [];
+        const registryNos = new Set(registry.map(rb => normNo(rb.bagNo)).filter(Boolean));
+        const isReusableBag = (b) => {
+            if (!b || typeof b !== 'object') return false;
+            if (b.isRefill || b.isReusable || b.reusableBagId || b.allowMultiFilling === true) return true;
+            const no = normNo(b.bagNo);
+            return !!no && registryNos.has(no);
+        };
+
+        const allBags = Array.isArray(bagStatsData) ? bagStatsData : [];
+        const activeJournals = filterActiveVouchers(bagStatsVouchers?.journals || []);
+
+        // ── IN: bags allotted/created by live manufacturing (stock) vouchers — linked bags + embedded BOM bags
+        const inwardBags = [];
+        const inwardSeen = new Set();
+        activeJournals.forEach((sj) => {
+            const vchId = String(sj.id || '');
+            const vchRef = String(sj.refNo || '').trim();
+            const vchRefLower = vchRef.toLowerCase();
+
+            const linked = allBags.filter((b) => {
+                const idMatch = ['stockJournalId', 'linkedStockJournalId', 'voucherId', 'purchaseId', 'salesId', 'originId']
+                    .some(f => b[f] && String(b[f]) === vchId);
+                const refMatch = !!vchRefLower && ['stockJournalRefNo', 'voucherRefNo', 'purchaseRefNo', 'salesRefNo', 'refNo']
+                    .some(f => b[f] && String(b[f]).toLowerCase() === vchRefLower);
+                const listMatch =
+                    (Array.isArray(sj.jumboBags) && sj.jumboBags.some(jb => String(jb?.id || jb) === String(b.id))) ||
+                    (Array.isArray(sj.jumbo_bags) && sj.jumbo_bags.some(jb => String(jb?.id || jb) === String(b.id)));
+                return idMatch || refMatch || listMatch;
+            }).map(b => ({ ...b, stockJournalId: b.stockJournalId || vchId, stockJournalRefNo: b.stockJournalRefNo || vchRef }));
+
+            const seenIds = new Set(linked.map(b => String(b.id)));
+            const seenNos = new Set(linked.map(b => normNo(b.bagNo)).filter(Boolean));
+            const combined = [...linked];
+            getEmbeddedBagsFromJournal(sj).forEach((eb, idx) => {
+                const ebId = String(eb.id || `embedded-${vchId}-${idx}`);
+                const ebNo = normNo(eb.bagNo);
+                if (seenIds.has(ebId) || (ebNo && seenNos.has(ebNo))) return;
+                seenIds.add(ebId);
+                if (ebNo) seenNos.add(ebNo);
+                combined.push({ ...eb, id: ebId, date: eb.date || sj.date, stockJournalRefNo: vchRef, stockJournalId: vchId });
+            });
+
+            combined.forEach((b, idx) => {
+                if (isReusableBag(b)) return; // reusable containers are not sellable inventory
+                const key = normNo(b.bagNo) || String(b.id || `${vchId}-${idx}`);
+                if (inwardSeen.has(key)) return;
+                inwardSeen.add(key);
+                inwardBags.push(b);
+            });
+        });
+
+        // ── OUT: bags referenced by LIVE sales vouchers (invoice-driven, never stale status)
+        const soldPool = (bagStatsVouchers?.salesInvoices || [])
+            .filter(inv => !isVoucherDeleted(inv))
+            .filter(inv => String(inv?.type || '').toLowerCase() === 'sales')
+            .flatMap(inv => (Array.isArray(inv?.soldBags) ? inv.soldBags : []).map((bag, idx) => ({
+                ...bag,
+                id: bag?.id || `inv-${inv.id}-sold-${idx}`,
+                salesId: inv.id,
+                salesRefNo: inv.refNo || bag?.salesRefNo || '',
+                soldDate: bag?.soldDate || inv.date,
+                date: bag?.date || bag?.soldDate || inv.date,
+                status: 'sold'
+            })));
+        const soldIds = new Set(soldPool.map(b => String(b.id || '').trim()).filter(Boolean));
+        const soldNos = new Set(soldPool.map(b => normNo(b.bagNo)).filter(Boolean));
+        const isSold = (b) => {
+            const id = String(b?.id || '').trim();
+            const no = normNo(b?.bagNo);
+            return (!!id && soldIds.has(id)) || (!!no && soldNos.has(no));
+        };
+
+        const outwardBags = [];
+        const outwardSeen = new Set();
+        soldPool.forEach((b, idx) => {
+            const d = toDateObject(b.soldDate || b.date);
+            if (!d || isNaN(d.getTime()) || d < statsPeriod.start || d > statsPeriod.end) return;
+            const key = `${normNo(b.salesRefNo || b.voucherRefNo) || 'NA'}|${normNo(b.bagNo) || String(b.id || idx)}`;
+            if (outwardSeen.has(key)) return;
+            outwardSeen.add(key);
+            outwardBags.push(b);
+        });
+
+        // ── REMAINING (ready stock): produced bags not referenced by any live sales voucher
+        const readyBags = inwardBags.filter(b => !isSold(b));
+
+        // ── ORPHAN / UNUSED: bag records that are not part of the live inventory (same rule as Filled Bags Intelligence)
+        const liveKeys = new Set();
+        [...inwardBags, ...readyBags].forEach(b => {
+            const no = normNo(b.bagNo);
+            const id = String(b.id || '').trim();
+            if (no) liveKeys.add(no);
+            if (id) liveKeys.add(id);
+        });
+        const liveJournalIds = new Set(activeJournals.map(sj => String(sj.id || '').trim()).filter(Boolean));
+        const liveJournalRefs = new Set(activeJournals.map(sj => String(sj.refNo || '').trim().toLowerCase()).filter(Boolean));
+        const dupCounts = new Map();
+        allBags.forEach((b, idx) => {
+            const key = normNo(b?.bagNo) || String(b?.id || `idx-${idx}`);
+            dupCounts.set(key, (dupCounts.get(key) || 0) + 1);
+        });
+        const orphanSeen = new Set();
+        const orphanRecords = [];
+        allBags.forEach((b, idx) => {
+            if (!b || typeof b !== 'object') return;
+            const status = String(b.status || '').trim().toLowerCase();
+            if (b.isDeleted || status === 'deleted' || status === 'bulk_deleted') return;
+            if (isReusableBag(b)) return; // reusable containers belong to the registry view
+            const no = normNo(b.bagNo);
+            const id = String(b.id || '').trim();
+            const key = no || id || `idx-${idx}`;
+            const isDup = (dupCounts.get(key) || 0) > 1 && orphanSeen.has(key);
+            orphanSeen.add(key);
+            const inLive = !!((no && liveKeys.has(no)) || (id && liveKeys.has(id)));
+            const noLink = !b.stockJournalId && !b.purchaseId && !b.salesId && !b.voucherRefNo && !b.stockJournalRefNo && !b.purchaseRefNo && !b.salesRefNo;
+            const sjId = String(b.stockJournalId || b.linkedStockJournalId || b.originId || '').trim();
+            const sjRef = String(b.stockJournalRefNo || '').trim().toLowerCase();
+            const dangling = !!((sjId && !liveJournalIds.has(sjId) && !liveJournalRefs.has(sjId.toLowerCase())) || (sjRef && !liveJournalRefs.has(sjRef)));
+            let reason = '';
+            if (isDup) reason = 'Duplicate record (same bag no.)';
+            else if (!inLive && noLink) reason = 'No parent voucher link';
+            else if (!inLive && dangling) reason = 'Parent manufacturing voucher missing';
+            else if (!inLive) reason = 'Unused record (not in live inventory)';
+            if (!reason) return;
+            orphanRecords.push({ ...b, orphanReason: reason });
+        });
+        const legacyReusableRecords = Array.isArray(legacyBagStatsData) ? legacyBagStatsData : [];
+
+        const sumW = (arr) => arr.reduce((s, b) => s + Number(b.qty || 0), 0);
+        const activeReusable = registry.filter(rb => String(rb.status || '').toLowerCase() !== 'closed');
+        const closedReusable = registry.length - activeReusable.length;
+        const reusableWeight = registry.reduce((s, rb) => {
+            const direct = Number(rb.totalWeight || 0);
+            if (direct) return s + direct;
+            const hist = Array.isArray(rb.usageHistory) ? rb.usageHistory : [];
+            return s + hist.reduce((a, h) => a + Number(h?.qty || 0), 0);
+        }, 0);
+
+        return {
+            loading: bagStatsData === null || reusableBagStatsData === null,
+            items: [
+                { label: 'Jumbo Bags In (Mfg / Allotted)', count: inwardBags.length, weight: sumW(inwardBags), view: { detail: 'jumbo_in', subTab: 'in' } },
+                { label: 'Jumbo Bags Out (Sales)', count: outwardBags.length, weight: sumW(outwardBags), view: { detail: 'jumbo_out', subTab: 'out' } },
+                { label: 'Bags Remaining (Ready Stock)', count: readyBags.length, weight: sumW(readyBags), view: { detail: 'ready_stock', subTab: 'remaining' } },
+                { label: 'Reusable Jumbo Bags (Active Registry)', count: activeReusable.length, weight: reusableWeight, note: `${closedReusable} closed · ${registry.length} total`, view: { detail: 'reusable_bags' } },
+                { label: 'Orphan / Unused Bag Records', count: orphanRecords.length, weight: sumW(orphanRecords), note: 'review & delete', view: { detail: 'orphan_bags' } },
+                { label: 'Legacy Reusable Records (other scope)', count: legacyReusableRecords.length, weight: legacyReusableRecords.reduce((s, rb) => s + (Number(rb.totalWeight || 0) || (Array.isArray(rb.usageHistory) ? rb.usageHistory.reduce((a, h) => a + Number(h?.qty || 0), 0) : 0)), 0), note: 'review & delete', view: { detail: 'orphan_bags' } }
+            ]
+        };
+    }, [bagStatsData, reusableBagStatsData, legacyBagStatsData, bagStatsVouchers, statsPeriod]);
 
     const miniTrendSeries = useMemo(() => {
         const safeNum = (n) => Number(n || 0);
@@ -11358,6 +11584,7 @@ export default function App() {
                 products={products}
                 units={units}
                 currencySymbol={currencySymbol}
+                launchView={packagingLaunchView}
             />
             </Suspense>
             )}
@@ -12401,6 +12628,13 @@ export default function App() {
                 statsPeriod={statsPeriod}
                 voucherStats={voucherStats}
                 masterStats={masterStats}
+                bagStats={bagStats}
+                onOpenBags={(view) => {
+                    if (!view) return;
+                    setModalStack(s => [...s, 'statistics']);
+                    setPackagingLaunchView({ detail: view.detail, subTab: view.subTab, mode: 'detail' });
+                    setActiveModal('packaging_smart_report');
+                }}
                 onDrillDown={(source, type) => {
                     setActiveModal(null);
                     setModalStack([]); // Clear stack to avoid confusion when opening a new register
@@ -12699,7 +12933,7 @@ export default function App() {
 
 // --- Sub-Components ---
 
-const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucherStats, masterStats, onDrillDown }) => {
+const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucherStats, masterStats, bagStats, onOpenBags, onDrillDown }) => {
     if (!isOpen) return null;
 
     const handleVoucherClick = (label) => {
@@ -12735,6 +12969,12 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
             'Users': 'manage_users'
         };
         if (typeMap[label]) onDrillDown('master', typeMap[label]);
+    };
+
+    // Jumbo bag rows drill into the Filled Bags Inventory Intelligence screen
+    const handleBagClick = (item) => {
+        if (!item?.view || !onOpenBags) return;
+        onOpenBags(item.view);
     };
 
     return (
@@ -12791,6 +13031,40 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
                             ))}
                         </div>
                     </div>
+                </div>
+
+                {/* JUMBO BAGS (IN / OUT / REMAINING) — clickable drill-down into Bag Intelligence */}
+                <div className="space-y-2">
+                    <div className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                        <span>Jumbo Bags — Production &amp; Despatch</span>
+                        {bagStats?.loading && <span className="text-[10px] text-blue-500 font-bold italic normal-case">Loading bags…</span>}
+                    </div>
+                    <div className="border rounded-lg overflow-hidden bg-white shadow-sm">
+                        {(bagStats?.items || []).map((item) => (
+                            <div
+                                key={item.label}
+                                onClick={() => handleBagClick(item)}
+                                title="Click to view bag details (Jumbo IN / OUT / Remaining)"
+                                className="flex justify-between items-center px-4 py-2.5 text-sm border-b last:border-b-0 cursor-pointer hover:bg-emerald-50 transition-colors group"
+                            >
+                                <span className="text-slate-600 group-hover:text-emerald-700 group-hover:font-bold transition-all flex items-center gap-2">
+                                    <Package size={14} className="text-emerald-600" />
+                                    {item.label}
+                                    {item.note && <span className="text-[9px] text-slate-400 font-bold">({item.note})</span>}
+                                </span>
+                                <span className="flex items-center gap-3">
+                                    <span className="text-[10px] text-slate-400 font-bold">{formatQty(item.weight)} KG</span>
+                                    <span className="font-bold text-slate-900 bg-slate-100 group-hover:bg-emerald-100 px-2 py-0.5 rounded min-w-[30px] text-center">{item.count}</span>
+                                    <ChevronRight size={14} className="text-slate-300 group-hover:text-emerald-600" />
+                                </span>
+                            </div>
+                        ))}
+                        <div className="flex justify-between items-center px-4 py-3 text-sm font-bold bg-slate-50 border-t text-slate-800">
+                            <span>Jumbo Bags Balance (In − Out)</span>
+                            <span className="text-lg">{Math.max(0, (bagStats?.items?.[0]?.count || 0) - (bagStats?.items?.[1]?.count || 0))}</span>
+                        </div>
+                    </div>
+                    <div className="text-xs text-slate-500">Click any row to open Filled Bags Inventory Intelligence (BAGS IN / BAGS OUT / BAGS REMAINING).</div>
                 </div>
             </div>
         </Modal>
