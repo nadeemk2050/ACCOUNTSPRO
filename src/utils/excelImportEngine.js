@@ -936,6 +936,8 @@ export async function createMissingMaster({ name, type = 'party', partyRole = 's
         type === 'capital' ? 'capital_accounts' :
         type === 'asset' ? 'asset_accounts' : 'parties';
 
+    const cleanName = name.trim();
+
     const newDoc = {
         name: cleanName,
         userId: targetUid,
