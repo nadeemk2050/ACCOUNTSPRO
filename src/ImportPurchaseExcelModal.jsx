@@ -4,16 +4,14 @@ import {
     FileText, Sparkles, Download, Clock, CheckCircle2,
     AlertCircle, Layers, ArrowRight, ShieldCheck, AlertTriangle,
     RefreshCw, Filter, Search, Plus, ExternalLink, RotateCcw,
-    Check, HelpCircle, ChevronRight, Lock, DollarSign, Database,
-    ArrowDownLeft
+    Check, HelpCircle, ChevronRight, Lock, DollarSign, Database
 } from 'lucide-react';
 // Perf: xlsx is imported on demand inside handleDownloadTemplate
 import {
-    parseExcelFile,
-    parseUniversalFile,
-    validateImportBatch,
+    parsePurchaseUniversalFile,
+    validatePurchaseBatch,
     createMissingMaster,
-    executeBatchImport,
+    executePurchaseImport,
     rollbackBatchImport,
     getBatchHistory
 } from './utils/excelImportEngine';
@@ -43,7 +41,7 @@ const RowProgress = ({ status }) => {
     );
 };
 
-export default function ImportReceiptExcelModal({
+export default function ImportPurchaseExcelModal({
     isOpen,
     onClose,
     onBack,
@@ -54,8 +52,10 @@ export default function ImportReceiptExcelModal({
     parties = [],
     expenses = [],
     directExpenseAccounts = [],
-    incomeAccounts = [],
-    payments = [],
+    products = [],
+    taxRates = [],
+    locations = [],
+    invoices = [],
     effectiveName = 'Admin',
     currencySymbol = 'AED',
     showToast
@@ -74,6 +74,7 @@ export default function ImportReceiptExcelModal({
     const [isParsing, setIsParsing] = useState(false);
     const [isImporting, setIsImporting] = useState(false);
     const [importProgress, setImportProgress] = useState(0);
+    // Per-voucher progress: { [rowId]: 'pending' | 'processing' | 'imported' | 'error' }
     const [rowStatus, setRowStatus] = useState({});
     // --- RUN CONTROLS (Pause All / Stop All / Cancel All + per-row stop-resume-cancel) ---
     const runCtlRef = useRef({ paused: false, stopped: false, skipped: new Set() });
@@ -100,24 +101,26 @@ export default function ImportReceiptExcelModal({
     const [importResult, setImportResult] = useState(null);
     const [rollbackingId, setRollbackingId] = useState(null);
 
-    // Missing Master Creator Modal State (Default to Customer for Receipts)
+    // Missing Master Creator Modal State
     const [createMasterModal, setCreateMasterModal] = useState({
         isOpen: false,
         rowId: null,
         name: '',
-        type: 'party', // 'party' | 'account' | 'income'
-        partyRole: 'customer',
+        type: 'party', // 'party' | 'product' | 'tax'
+        percent: 0,
+        itemIndex: null,
+        taxIndex: null,
         isSubmitting: false
     });
 
     const fileInputRef = useRef(null);
-    // Import format: 'excel' (.xlsx/.xls/.csv) or 'xml' (Tally Data Interchange)
-    const [importFormat, setImportFormat] = useState('excel');
+    // Import format: 'xml' (Tally Data Interchange — the default here) or 'excel' (.xlsx/.xls/.csv)
+    const [importFormat, setImportFormat] = useState('xml');
 
     // Refresh history on open
     useEffect(() => {
         if (isOpen) {
-            setHistoryList(getBatchHistory().filter(h => h.voucherType === 'in' || h.docLabel === 'Receipt' || !h.voucherType));
+            setHistoryList(getBatchHistory());
         }
     }, [isOpen]);
 
@@ -159,13 +162,12 @@ export default function ImportReceiptExcelModal({
         setImportResult(null);
 
         try {
-            const parsed = await parseUniversalFile(file, { voucherMode: 'receipt' });
+            const parsed = await parsePurchaseUniversalFile(file, {});
             setParsedData(parsed);
 
-            // Wrong voucher type guard (e.g. a Purchase XML opened in the Receipt importer)
+            // Wrong voucher type guard (e.g. a Payment XML opened in the Purchase importer)
             if (parsed.vouchers.length === 0) {
                 const found = (parsed.detectedVoucherTypes || []).join(', ') || 'none';
-                const kind = parsed.expectedVoucherKind || 'receipt';
                 setCleanRows([]);
                 setQuarantinedRows([]);
                 setActiveTab('upload');
@@ -173,22 +175,24 @@ export default function ImportReceiptExcelModal({
                     showToast({
                         type: 'error',
                         title: 'Wrong Voucher Type',
-                        message: `No ${kind} voucher found. Detected: ${found}.`
+                        message: `No purchase voucher found. Detected: ${found}.`
                     });
                 }
-                alert(`No ${kind} vouchers found in this XML file.\n\nVoucher types detected: ${found}\nSkipped: ${parsed.skippedVoucherCount || 0} voucher(s).\n\nPlease export the ${kind} vouchers from Tally and try again.`);
+                alert(`No purchase vouchers found in this file.\n\nVoucher types detected: ${found}\nSkipped: ${parsed.skippedVoucherCount || 0} voucher(s).\n\nPlease export the purchase vouchers from Tally and try again.`);
                 return;
             }
 
-            // Run Validation Middleware (Rules 1-6)
-            const validation = validateImportBatch(parsed.vouchers, {
-                existingVouchers: payments,
+            // Run Purchase Validation Middleware (suppliers, stock items and tax masters)
+            const validation = validatePurchaseBatch(parsed.vouchers, {
+                existingVouchers: (invoices || []).filter(i => i.type === 'purchase'),
                 masters: {
                     accounts,
                     parties,
                     expenses,
                     directExpenseAccounts,
-                    incomeAccounts
+                    products,
+                    taxRates,
+                    defaultLocationId: locations[0]?.id || ''
                 },
                 companyProfile
             });
@@ -203,7 +207,7 @@ export default function ImportReceiptExcelModal({
                     showToast({
                         type: 'warning',
                         title: 'Validation Issues Detected',
-                        message: `${validation.quarantinedRows.length} receipt transactions routed to Solution Centre.`
+                        message: `${validation.quarantinedRows.length} transactions routed to Solution Centre for review.`
                     });
                 }
             } else {
@@ -212,12 +216,12 @@ export default function ImportReceiptExcelModal({
                     showToast({
                         type: 'success',
                         title: 'File Validated Cleanly',
-                        message: `All ${validation.cleanRows.length} receipt vouchers are ready for batch ingestion.`
+                        message: `All ${validation.cleanRows.length} vouchers are ready for batch ingestion.`
                     });
                 }
             }
         } catch (err) {
-            console.error('[ImportReceiptExcel] Parse error:', err);
+            console.error('[ImportExcel] Parse error:', err);
             alert(`Failed to parse file: ${err.message}`);
         } finally {
             setIsParsing(false);
@@ -230,7 +234,7 @@ export default function ImportReceiptExcelModal({
     const handleAutoRenumber = (rowId) => {
         setQuarantinedRows(prev => prev.map(row => {
             if (row.id !== rowId) return row;
-            const newVchNo = `${row.vchNo}-RCP-IMP`;
+            const newVchNo = `${row.vchNo}-IMP`;
             const updatedIssues = row.issues.filter(i => i.rule !== 'RULE_1_DUPLICATE_REF');
             const stillHasIssues = updatedIssues.some(i => i.type === 'CRITICAL');
             return {
@@ -247,18 +251,26 @@ export default function ImportReceiptExcelModal({
     const handleAcceptFuzzy = (rowId, suggestion) => {
         setQuarantinedRows(prev => prev.map(row => {
             if (row.id !== rowId) return row;
-            const updatedSplits = (row.resolvedSplits || []).map(s => ({
-                ...s,
-                targetId: suggestion.id,
-                targetName: suggestion.name,
-                matchedMaster: suggestion
-            }));
+
+            // Purchase rows are resolved on item lines / tax entries rather than payment splits
+            const updatedItems = (row.resolvedItems || row.items || []).map((it, ii) => (
+                suggestion.itemIndex !== undefined && suggestion.itemIndex === ii
+                    ? { ...it, matchedMaster: suggestion.match || suggestion, productId: (suggestion.match || suggestion).id }
+                    : it
+            ));
+            const updatedTax = (row.resolvedTax || []).map((t, ti) => (
+                suggestion.taxIndex !== undefined && suggestion.taxIndex === ti
+                    ? { ...t, taxId: (suggestion.match || suggestion).id, taxName: (suggestion.match || suggestion).name, percent: Number((suggestion.match || suggestion).percentage) || t.percent }
+                    : t
+            ));
+
             const updatedIssues = row.issues.filter(i => i.rule !== 'RULE_5_FUZZY_MATCH');
             const stillHasIssues = updatedIssues.some(i => i.type === 'CRITICAL');
             return {
                 ...row,
-                paidTo: suggestion.name,
-                resolvedSplits: updatedSplits,
+                matchedParty: suggestion.field === 'partyName' ? (suggestion.match || suggestion) : row.matchedParty,
+                resolvedItems: updatedItems,
+                resolvedTax: updatedTax,
                 issues: updatedIssues,
                 status: stillHasIssues ? 'WARNING' : 'VALID',
                 isResolved: !stillHasIssues
@@ -266,21 +278,24 @@ export default function ImportReceiptExcelModal({
         }));
     };
 
-    // Rule 2: Open Create Missing Master Modal (Defaults to Customer)
-    const handleOpenCreateMaster = (row, missingName, missingType = 'party') => {
+    // Rule 2: Open Create Missing Master Modal
+    const handleOpenCreateMaster = (row, missingName, missingType = 'party', field = '', percent = 0) => {
+        const idxMatch = /\[(\d+)\]/.exec(field || '');
         setCreateMasterModal({
             isOpen: true,
             rowId: row.id,
-            name: missingName || row.paidTo || '',
+            name: missingName || row.partyName || '',
             type: missingType,
-            partyRole: 'customer',
+            percent: percent || 0,
+            itemIndex: field && field.startsWith('items') ? Number(idxMatch && idxMatch[1]) : null,
+            taxIndex: field && field.startsWith('tax') ? Number(idxMatch && idxMatch[1]) : null,
             isSubmitting: false
         });
     };
 
-    // Rule 2: Execute Missing Master Creation
+    // Rule 2: Execute Missing Master Creation (supplier / stock item / tax rate)
     const handleConfirmCreateMaster = async () => {
-        const { rowId, name, type, partyRole } = createMasterModal;
+        const { rowId, name, type, percent, itemIndex, taxIndex } = createMasterModal;
         if (!name.trim()) return alert('Name cannot be empty');
 
         setCreateMasterModal(prev => ({ ...prev, isSubmitting: true }));
@@ -288,36 +303,40 @@ export default function ImportReceiptExcelModal({
             const created = await createMissingMaster({
                 name,
                 type,
-                partyRole,
+                percentage: percent,
                 dataOwnerId,
                 user,
                 effectiveName
             });
 
-            // Update master lists locally so subsequent checks recognize it
+            // Update master lists locally so subsequent checks recognise it
             if (type === 'party') parties.push(created);
+            else if (type === 'product') products.push(created);
+            else if (type === 'tax') taxRates.push(created);
             else if (type === 'account') accounts.push(created);
-            else if (type === 'income') incomeAccounts.push(created);
+            else if (type === 'expense') expenses.push(created);
 
             // Update row in quarantined list
             setQuarantinedRows(prev => prev.map(row => {
                 if (row.id !== rowId) return row;
-                const updatedSplits = (row.resolvedSplits || []).map(s => {
-                    if (s.targetName.trim().toLowerCase() === name.trim().toLowerCase() || !s.targetId) {
-                        return {
-                            ...s,
-                            targetId: created.id,
-                            targetName: created.name,
-                            matchedMaster: created,
-                            category: type
-                        };
-                    }
-                    return s;
-                });
 
-                let updatedPaidFrom = row.matchedPaidFrom;
-                if (type === 'account' && row.paidFrom.trim().toLowerCase() === name.trim().toLowerCase()) {
-                    updatedPaidFrom = { match: created, type: 'account', score: 1.0, isExact: true };
+                const updatedItems = (row.resolvedItems || row.items || []).map((it, ii) => (
+                    type === 'product' && (itemIndex === null || itemIndex === ii)
+                        ? { ...it, matchedMaster: created, productId: created.id }
+                        : it
+                ));
+
+                let updatedTax = row.resolvedTax || [];
+                if (type === 'tax') {
+                    if (updatedTax.length > 0) {
+                        updatedTax = updatedTax.map((t, ti) => (
+                            (taxIndex === null || taxIndex === ti)
+                                ? { ...t, taxId: created.id, taxName: created.name, percent: Number(created.percentage) || t.percent || 0 }
+                                : t
+                        ));
+                    } else {
+                        updatedTax = [{ name: created.name, amount: row.taxAmount || 0, percent: Number(created.percentage) || 0, taxId: created.id, taxName: created.name }];
+                    }
                 }
 
                 const updatedIssues = row.issues.filter(i => {
@@ -328,10 +347,15 @@ export default function ImportReceiptExcelModal({
                 });
 
                 const stillHasCritical = updatedIssues.some(i => i.type === 'CRITICAL');
+                const primaryTax = updatedTax[0] || null;
                 return {
                     ...row,
-                    matchedPaidFrom: updatedPaidFrom,
-                    resolvedSplits: updatedSplits,
+                    matchedParty: type === 'party' ? created : row.matchedParty,
+                    resolvedItems: updatedItems,
+                    resolvedTax: updatedTax,
+                    taxId: primaryTax?.taxId || row.taxId || null,
+                    taxName: primaryTax?.taxName || row.taxName || null,
+                    taxPercent: primaryTax ? (Number(primaryTax.percent) || 0) : row.taxPercent,
                     issues: updatedIssues,
                     status: stillHasCritical ? 'WARNING' : 'RESOLVED',
                     isResolved: !stillHasCritical
@@ -341,11 +365,11 @@ export default function ImportReceiptExcelModal({
             if (showToast) {
                 showToast({
                     type: 'success',
-                    title: 'Customer Master Created',
+                    title: 'Master Created',
                     message: `Master "${created.name}" created. Status updated to RESOLVED.`
                 });
             }
-            setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', partyRole: 'customer', isSubmitting: false });
+            setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', percent: 0, itemIndex: null, taxIndex: null, isSubmitting: false });
         } catch (err) {
             console.error('[CreateMaster] Error:', err);
             alert(`Failed to create master: ${err.message}`);
@@ -358,11 +382,7 @@ export default function ImportReceiptExcelModal({
         const row = quarantinedRows.find(r => r.id === rowId);
         if (!row) return;
 
-        let finalRow = { ...row };
-        if (!finalRow.matchedPaidFrom && accounts.length > 0) {
-            const defaultCash = accounts.find(a => /cash/i.test(a.name)) || accounts[0];
-            finalRow.matchedPaidFrom = { match: defaultCash, type: 'account', score: 1.0, isExact: true };
-        }
+        const finalRow = { ...row, locationId: row.locationId || locations[0]?.id || '' };
 
         setQuarantinedRows(prev => prev.filter(r => r.id !== rowId));
         setCleanRows(prev => [...prev, { ...finalRow, status: 'VALID' }]);
@@ -371,7 +391,7 @@ export default function ImportReceiptExcelModal({
             showToast({
                 type: 'success',
                 title: 'Transaction Approved',
-                message: `Receipt voucher "${row.vchNo}" moved to Ready to Import queue.`
+                message: `Purchase voucher "${row.vchNo}" moved to Ready to Import queue.`
             });
         }
     };
@@ -405,36 +425,27 @@ export default function ImportReceiptExcelModal({
         }));
     };
 
-    // --- BATCH IMPORT EXECUTION (RECEIPTS: type: 'in') ---
+    // --- BATCH IMPORT EXECUTION ---
     const handleExecuteImport = async () => {
         if (cleanRows.length === 0) return alert('No valid transactions in the Ready to Import queue.');
 
         setIsImporting(true);
-        setImportProgress(20);
+        setImportProgress(5);
         setRowStatus({});
         runCtlRef.current = { paused: false, stopped: false, skipped: new Set() };
         setRunState('running');
         setCurrentBatchId(null);
 
         try {
-            const totalRows = cleanRows.length;
-            let doneRows = 0;
-            const result = await executeBatchImport(cleanRows, {
+            const result = await executePurchaseImport(cleanRows, {
                 user,
                 dataOwnerId,
                 effectiveName,
                 companyProfile,
                 currencySymbol,
-                voucherType: 'in', // INWARD FLOW (Receipt)
-                docLabel: 'Receipt',
-                chunkSize: 1, // one voucher at a time so every row's progress can be watched
-                onRowStatus: (id, status) => {
-                    setRowStatus(prev => ({ ...prev, [id]: status }));
-                    if (status === 'imported') {
-                        doneRows += 1;
-                        setImportProgress(Math.min(99, Math.round((doneRows / Math.max(1, totalRows)) * 100)));
-                    }
-                },
+                docLabel: importFormat === 'xml' ? 'Tally XML' : 'Excel',
+                chunkSize: 1, // one voucher at a time so progress is visible per row
+                onRowStatus: (id, status) => setRowStatus(prev => ({ ...prev, [id]: status })),
                 control: { isPaused: () => runCtlRef.current.paused, isStopped: () => runCtlRef.current.stopped, isRowSkipped },
                 onBatchStart: (id) => setCurrentBatchId(id)
             });
@@ -442,19 +453,23 @@ export default function ImportReceiptExcelModal({
             setImportProgress(100);
             setImportResult(result);
             setHistoryList(getBatchHistory());
-            // Keep any stopped/skipped vouchers in the queue so the run can be resumed later
-            setCleanRows(prev => prev.filter(r => runCtlRef.current.skipped.has(r.id)));
+            // Keep the rows on screen so every voucher's progress stays visible
+            setRowStatus(prev => {
+                const next = { ...prev };
+                cleanRows.forEach(r => { if (!next[r.id] || next[r.id] === 'processing') next[r.id] = 'imported'; });
+                return next;
+            });
 
             if (showToast) {
                 showToast({
                     type: 'success',
-                    title: 'Batch Receipt Import Completed',
-                    message: `Successfully ingested ${result.totalImported} receipt vouchers. Batch ID: ${result.batchImportId}`
+                    title: 'Batch Import Completed',
+                    message: `Successfully ingested ${result.totalImported} purchase vouchers. Batch ID: ${result.batchImportId}`
                 });
             }
         } catch (err) {
-            console.error('[BatchReceiptImport] Error:', err);
-            alert(`Batch receipt import failed: ${err.message}`);
+            console.error('[BatchImport] Error:', err);
+            alert(`Batch import failed: ${err.message}`);
         } finally {
             setIsImporting(false);
         }
@@ -462,7 +477,7 @@ export default function ImportReceiptExcelModal({
 
     // --- BATCH ROLLBACK HANDLER ---
     const handleRollbackBatch = async (batchId) => {
-        if (!confirm(`Are you sure you want to ROLLBACK Batch ${batchId}?\nThis will permanently delete all imported receipt vouchers and revert account balance changes.`)) {
+        if (!confirm(`Are you sure you want to ROLLBACK Batch ${batchId}?\nThis will permanently delete all imported vouchers and revert account balance changes.`)) {
             return;
         }
 
@@ -478,7 +493,7 @@ export default function ImportReceiptExcelModal({
                 showToast({
                     type: 'success',
                     title: 'Batch Rolled Back',
-                    message: `Rollback complete: ${res.deletedCount} receipt vouchers removed.`
+                    message: `Rollback complete: ${res.deletedCount} vouchers removed.`
                 });
             }
         } catch (err) {
@@ -497,31 +512,28 @@ export default function ImportReceiptExcelModal({
 
         if (type === 'standard') {
             const sampleData = [
-                ['Date', 'Voucher No', 'Received In (Bank/Cash)', 'Received From (Customer)', 'Amount', 'Currency', 'Exchange Rate', 'Narration'],
-                ['2026-04-01', 'RCP-2001', 'Commercial Bank', 'Global Metal Importers LLC', 15000, 'BASE', 1.0, 'Customer payment inv 892'],
-                ['2026-04-02', 'RCP-2002', 'Main Cash', 'Sunrise Trading FZE', 3500, 'BASE', 1.0, 'Cash settlement bill 104'],
-                ['2026-04-03', 'RCP-2003', 'Commercial Bank', 'Direct Scrap Sale Cash', 8200, 'BASE', 1.0, 'Direct yard scrap sales']
+                ['Date', 'Voucher No', 'Supplier', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Tax %', 'Tax Amount', 'Bill No', 'Narration'],
+                ['2026-01-02', 'PUR-1001', 'GHANI BHAI PVC', 'KHALID ALUMINIUM', 650, 'KG', 615, 399750, 0, 0, 'INV-889', 'Aluminium bundle purchase'],
+                ['2026-01-05', 'PUR-1002', 'AL FALAH TRADING', 'PVC SCRAP', 1200, 'KG', 210, 252000, 5, 12600, 'INV-890', 'PVC scrap purchase']
             ];
             ws = XLSX.utils.aoa_to_sheet(sampleData);
         } else {
+            // Tally XML is the recommended route for purchases — this shows the expected columns
             const sampleData = [
-                ['AL SHAMS AL MUSHRIQAH METAL SCRAP TR'],
-                ['SAJJA INDUSTRIAL AREA, SHARJAH'],
-                ['Receipt Register'],
-                ['1-Feb-2026 to 28-Feb-2026'],
-                ['Date', 'Particulars', 'Party', 'Voucher Type', 'Voucher No.', 'Voucher Ref. No.', 'Voucher Ref. Date', 'Narration', 'Quantity', 'Rate', 'Value', 'Gross Total', 'Commercial Bank', 'Main Cash', 'RAK BANK'],
-                ['01-02-2026', 'Global Metal Importers', '', 'Receipt', '2101', '', null, 'Customer advance', null, null, null, 15000, 15000, null, null],
-                ['02-02-2026', 'Sunrise Trading FZE', '', 'Receipt', '2102', '', null, 'Cash collection', null, null, null, 3500, null, 3500, null]
+                ['Purchase Register'],
+                ['1-Jan-2026 to 31-Jan-2026'],
+                ['Date', 'Voucher No.', 'Supplier', 'Item Name', 'Quantity', 'Unit', 'Rate', 'Amount', 'Tax %', 'Narration'],
+                ['02-01-2026', '650 KG @ 615', 'GHANI BHAI PVC', 'KHALID ALUMINIUM', 650, 'KG', 615, 399750, 0, 'Aluminium bundle purchase']
             ];
             ws = XLSX.utils.aoa_to_sheet(sampleData);
         }
 
-        XLSX.utils.book_append_sheet(wb, ws, 'Receipt Template');
-        XLSX.writeFile(wb, `AccPro_Receipt_Template_${type}.xlsx`);
+        XLSX.utils.book_append_sheet(wb, ws, 'Template');
+        XLSX.writeFile(wb, `AccPro_Purchase_Template_${type}.xlsx`);
     };
 
     return (
-        <div className="fixed inset-0 z-[100] bg-gradient-to-br from-[#06181b] via-[#0b2830] to-[#06181b] text-white font-sans flex flex-col animate-in fade-in duration-300">
+        <div className="fixed inset-0 z-[100] bg-gradient-to-br from-[#090d16] via-[#0f172a] to-[#090d16] text-white font-sans flex flex-col animate-in fade-in duration-300">
             {/* TOP HEADER */}
             <div className="h-16 bg-black/40 backdrop-blur-md border-b border-white/10 flex items-center justify-between px-6 shrink-0 shadow-lg">
                 <div className="flex items-center gap-4">
@@ -530,27 +542,27 @@ export default function ImportReceiptExcelModal({
                         className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-all text-xs font-semibold group"
                         title="Back to Management Hub (Esc)"
                     >
-                        <ArrowLeft size={16} className="group-hover:-translate-x-0.5 transition-transform text-teal-400" />
+                        <ArrowLeft size={16} className="group-hover:-translate-x-0.5 transition-transform text-emerald-400" />
                         <span>Back</span>
                     </button>
 
                     <div className="h-6 w-px bg-white/10" />
 
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 shadow-[0_0_20px_rgba(20,184,166,0.15)]">
-                            <ArrowDownLeft size={22} />
+                        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
+                            <FileSpreadsheet size={22} />
                         </div>
                         <div>
                             <div className="flex items-center gap-2">
                                 <h1 className="text-base font-bold text-white tracking-tight leading-tight">
-                                    IMP RECPT VCHR XLSX XML CSV
+                                    IMPORT PURCHASE FROM XML
                                 </h1>
-                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/20">
-                                    Universal Engine
+                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                    Separate Purchase Section
                                 </span>
                             </div>
                             <p className="text-[11px] text-slate-400 font-medium leading-none mt-1">
-                                Bulk Customer Inflows, Auto-Debiting Bank/Cash, Multi-Giver Voucher Consolidation
+                                Automated Validation, Interactive Master Resolution, Item Lines · Quantities · Taxes
                             </p>
                         </div>
                     </div>
@@ -558,7 +570,7 @@ export default function ImportReceiptExcelModal({
 
                 <div className="flex items-center gap-3">
                     {fileName && (
-                        <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-teal-400">
+                        <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-emerald-400">
                             <FileSpreadsheet size={14} />
                             <span>{fileName}</span>
                             <span className="text-slate-500">({fileSize})</span>
@@ -581,12 +593,12 @@ export default function ImportReceiptExcelModal({
                         onClick={() => setActiveTab('upload')}
                         className={`flex items-center gap-2.5 px-4 py-2 rounded-xl text-xs font-bold transition-all border shrink-0 ${
                             activeTab === 'upload'
-                                ? 'bg-white/10 text-white border-teal-500/50 shadow-md ring-1 ring-teal-500/20'
+                                ? 'bg-white/10 text-white border-emerald-500/50 shadow-md ring-1 ring-emerald-500/20'
                                 : 'bg-white/[0.02] text-slate-400 hover:text-slate-200 border-white/5 hover:bg-white/[0.05]'
                         }`}
                     >
-                        <UploadCloud size={16} className={activeTab === 'upload' ? 'text-teal-400' : 'text-slate-400'} />
-                        <span>1. Upload Receipts</span>
+                        <UploadCloud size={16} className={activeTab === 'upload' ? 'text-emerald-400' : 'text-slate-400'} />
+                        <span>1. Upload & Parse</span>
                     </button>
 
                     {/* Tab 2: Solution Centre */}
@@ -612,14 +624,14 @@ export default function ImportReceiptExcelModal({
                         onClick={() => setActiveTab('ready')}
                         className={`flex items-center gap-2.5 px-4 py-2 rounded-xl text-xs font-bold transition-all border shrink-0 relative ${
                             activeTab === 'ready'
-                                ? 'bg-white/10 text-white border-teal-500/50 shadow-md ring-1 ring-teal-500/20'
+                                ? 'bg-white/10 text-white border-emerald-500/50 shadow-md ring-1 ring-emerald-500/20'
                                 : 'bg-white/[0.02] text-slate-400 hover:text-slate-200 border-white/5 hover:bg-white/[0.05]'
                         }`}
                     >
-                        <CheckCircle2 size={16} className={activeTab === 'ready' ? 'text-teal-400' : 'text-slate-400'} />
-                        <span>3. Ready to Ingest</span>
+                        <CheckCircle2 size={16} className={activeTab === 'ready' ? 'text-emerald-400' : 'text-slate-400'} />
+                        <span>3. Ready to Import</span>
                         {cleanRows.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-400 border border-teal-500/30 text-[10px] font-black">
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-black">
                                 {cleanRows.length} Clean
                             </span>
                         )}
@@ -635,7 +647,7 @@ export default function ImportReceiptExcelModal({
                         }`}
                     >
                         <History size={16} className={activeTab === 'history' ? 'text-blue-400' : 'text-slate-400'} />
-                        <span>Receipt History & Rollback</span>
+                        <span>Import History & Rollback</span>
                         {historyList.length > 0 && (
                             <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-[10px] font-mono">
                                 {historyList.length}
@@ -653,7 +665,7 @@ export default function ImportReceiptExcelModal({
                         }`}
                     >
                         <FileText size={16} className={activeTab === 'instructions' ? 'text-purple-400' : 'text-slate-400'} />
-                        <span>Templates & Guide</span>
+                        <span>Instructions & Templates</span>
                     </button>
                 </div>
             </div>
@@ -664,18 +676,18 @@ export default function ImportReceiptExcelModal({
                     TAB 1: UPLOAD & PARSE
                    ======================================================== */}
                 {activeTab === 'upload' && (
-                    <div className="max-w-4xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Hero Card */}
-                        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-teal-950/40 via-slate-900/60 to-teal-950/30 border border-teal-500/20 p-6 shadow-xl">
+                        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/20 p-6 shadow-xl">
                             <div className="space-y-1">
-                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-teal-500/10 border border-teal-500/20 text-teal-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <Sparkles size={12} /> Inward Receipt Vouchers Pipeline (XLSX / XML / CSV)
+                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-wider mb-2">
+                                    <Sparkles size={12} /> Auto-Detection & Real-Time Validation Pipeline
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Upload Receipt Vouchers (Excel, XML, CSV)
+                                    Import Purchase Vouchers from XML
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl">
-                                    Drop your exported spreadsheet from Tally Prime (Receipt Register), Tally XML Data Interchange, or CSV file. Cashier receiving payments from multiple givers under the same voucher is automatically grouped and consolidated into multi-split vouchers!
+                                    Separate module from Payment / Receipt / Journal imports. Choose <span className="text-purple-300 font-semibold">Tally XML</span> for a Purchase export from Tally ERP 9 or Tally Prime, or <span className="text-amber-300 font-semibold">Excel / CSV</span> for a purchase sheet (one row per item line). Item lines, quantities, rates, supplier and tax are read automatically — missing suppliers, stock items and tax masters are routed to the Solution Centre for you to create.
                                 </p>
                             </div>
                         </div>
@@ -685,14 +697,14 @@ export default function ImportReceiptExcelModal({
                             <button
                                 type="button"
                                 onClick={() => { setImportFormat('excel'); if (fileInputRef.current) fileInputRef.current.value = ''; }}
-                                className={`flex items-center gap-3 p-3 rounded-2xl border text-left transition-all ${importFormat === 'excel' ? 'bg-teal-500/15 border-teal-500/50 ring-1 ring-teal-500/30' : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.05]'}`}
+                                className={`flex items-center gap-3 p-3 rounded-2xl border text-left transition-all ${importFormat === 'excel' ? 'bg-emerald-500/15 border-emerald-500/50 ring-1 ring-emerald-500/30' : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.05]'}`}
                             >
-                                <FileSpreadsheet size={20} className={importFormat === 'excel' ? 'text-teal-400' : 'text-slate-400'} />
+                                <FileSpreadsheet size={20} className={importFormat === 'excel' ? 'text-emerald-400' : 'text-slate-400'} />
                                 <div>
-                                    <div className={`text-xs font-black uppercase tracking-wider ${importFormat === 'excel' ? 'text-teal-300' : 'text-slate-300'}`}>Excel / CSV</div>
+                                    <div className={`text-xs font-black uppercase tracking-wider ${importFormat === 'excel' ? 'text-emerald-300' : 'text-slate-300'}`}>Excel / CSV</div>
                                     <div className="text-[10px] text-slate-400">.xlsx · .xls · .csv — register exports</div>
                                 </div>
-                                {importFormat === 'excel' && <span className="ml-auto w-3 h-3 rounded-full bg-teal-400" />}
+                                {importFormat === 'excel' && <span className="ml-auto w-3 h-3 rounded-full bg-emerald-400" />}
                             </button>
                             <button
                                 type="button"
@@ -716,7 +728,7 @@ export default function ImportReceiptExcelModal({
                                 if (e.dataTransfer.files?.[0]) handleFileUpload(e.dataTransfer.files[0]);
                             }}
                             onClick={() => fileInputRef.current?.click()}
-                            className="border-2 border-dashed border-white/10 hover:border-teal-500/50 rounded-3xl p-12 bg-white/[0.02] hover:bg-white/[0.04] flex flex-col items-center justify-center text-center transition-all cursor-pointer group shadow-inner"
+                            className="border-2 border-dashed border-white/10 hover:border-emerald-500/50 rounded-3xl p-12 bg-white/[0.02] hover:bg-white/[0.04] flex flex-col items-center justify-center text-center transition-all cursor-pointer group shadow-inner"
                         >
                             <input
                                 ref={fileInputRef}
@@ -728,29 +740,29 @@ export default function ImportReceiptExcelModal({
                                 }}
                             />
 
-                            <div className="w-20 h-20 rounded-3xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 mb-5 group-hover:scale-110 transition-transform shadow-[0_0_30px_rgba(20,184,166,0.15)]">
-                                {isParsing ? <RefreshCw className="animate-spin" size={36} /> : <ArrowDownLeft size={40} />}
+                            <div className="w-20 h-20 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-5 group-hover:scale-110 transition-transform shadow-[0_0_30px_rgba(16,185,129,0.15)]">
+                                {isParsing ? <RefreshCw className="animate-spin" size={36} /> : <UploadCloud size={40} />}
                             </div>
 
                             <h3 className="text-lg font-bold text-white tracking-tight mb-2">
-                                {isParsing ? 'Parsing Receipts & Running Validation Rules...' : 'Click to Browse or Drag & Drop File'}
+                                {isParsing ? 'Parsing & Running Validation Rules...' : 'Click to Browse or Drag & Drop File'}
                             </h3>
                             <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
-                                Supports <span className="text-teal-400 font-semibold">XLSX</span>, <span className="text-teal-400 font-semibold">XML (Tally Interchange)</span>, and <span className="text-teal-400 font-semibold">CSV</span> files. Automatically groups multiple givers sharing the same Voucher No!
+                                Supports <span className="text-emerald-400 font-semibold">XLSX</span>, <span className="text-emerald-400 font-semibold">XML (Tally Interchange)</span>, and <span className="text-emerald-400 font-semibold">CSV</span> files. Reads item lines, quantities, rates, supplier and taxes.
                             </p>
 
                             <button
                                 type="button"
-                                className={`px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all flex items-center gap-2 ${importFormat === 'xml' ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20' : 'bg-teal-500 hover:bg-teal-400 text-slate-950 shadow-teal-500/20'}`}
+                                className={`px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all flex items-center gap-2 ${importFormat === 'xml' ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'}`}
                             >
                                 {importFormat === 'xml' ? <FileText size={16} /> : <FileSpreadsheet size={16} />}
-                                <span>{importFormat === 'xml' ? 'Select Tally XML File' : 'Select Receipt File (XLSX, CSV)'}</span>
+                                <span>{importFormat === 'xml' ? 'Select Tally XML File' : 'Select Excel / CSV File'}</span>
                             </button>
 
                             <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-wider">
                                 <span className="px-2 py-1 rounded-md bg-slate-800/80 text-slate-300 border border-white/10">{fileName || 'No file selected'}</span>
                                 {parsedData && (
-                                    <span className={`px-2 py-1 rounded-md border ${parsedData.formatType === 'tally_xml' ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-teal-500/15 text-teal-300 border-teal-500/30'}`}>
+                                    <span className={`px-2 py-1 rounded-md border ${parsedData.formatType === 'tally_xml' ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'}`}>
                                         Detected: {parsedData.formatType === 'tally_xml' ? 'Tally XML (Data Interchange)' : 'Excel / CSV'}
                                     </span>
                                 )}
@@ -760,7 +772,7 @@ export default function ImportReceiptExcelModal({
                         {/* Skipped other voucher types notice */}
                         {parsedData && parsedData.skippedVoucherCount > 0 && (
                             <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] font-bold text-amber-200">
-                                Skipped {parsedData.skippedVoucherCount} voucher(s) of other types: {(parsedData.skippedVoucherTypes || []).join(', ')} — this importer only ingests {parsedData.expectedVoucherKind || 'receipt'} vouchers.
+                                Skipped {parsedData.skippedVoucherCount} voucher(s) of other types: {(parsedData.skippedVoucherTypes || []).join(', ')} — this importer only ingests {parsedData.expectedVoucherKind || 'payment'} vouchers.
                             </div>
                         )}
 
@@ -769,17 +781,17 @@ export default function ImportReceiptExcelModal({
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 animate-in fade-in duration-300">
                                 <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between">
                                     <div>
-                                        <div className="text-[10px] uppercase font-bold text-slate-400">Total Receipts Parsed</div>
+                                        <div className="text-[10px] uppercase font-bold text-slate-400">Total Vouchers Parsed</div>
                                         <div className="text-2xl font-black text-white">{parsedData.vouchers.length}</div>
                                     </div>
                                     <Layers className="text-blue-400" size={28} />
                                 </div>
-                                <div className="p-4 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-between">
+                                <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
                                     <div>
-                                        <div className="text-[10px] uppercase font-bold text-teal-400">Ready for Ingestion</div>
-                                        <div className="text-2xl font-black text-teal-400">{cleanRows.length}</div>
+                                        <div className="text-[10px] uppercase font-bold text-emerald-400">Ready for Import</div>
+                                        <div className="text-2xl font-black text-emerald-400">{cleanRows.length}</div>
                                     </div>
-                                    <CheckCircle2 className="text-teal-400" size={28} />
+                                    <CheckCircle2 className="text-emerald-400" size={28} />
                                 </div>
                                 <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
                                     <div>
@@ -794,20 +806,21 @@ export default function ImportReceiptExcelModal({
                 )}
 
                 {/* ========================================================
-                    TAB 2: SOLUTION CENTRE (RECEIPTS)
+                    TAB 2: SOLUTION CENTRE (TRANSACTIONS TO BE SOLVED)
                    ======================================================== */}
                 {activeTab === 'solution_centre' && (
-                    <div className="w-full flex-1 min-h-0 flex flex-col space-y-4 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                        {/* Header Banner */}
                         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-amber-950/40 via-slate-900/60 to-amber-950/30 border border-amber-500/30 shadow-xl">
                             <div>
                                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <AlertTriangle size={12} /> Receipt Discrepancy Quarantine
+                                    <AlertTriangle size={12} /> Discrepancy Quarantine & Master Resolution
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Receipt Solution Centre: {quarantinedRows.length} Items Requiring Attention
+                                    Solution Centre: {quarantinedRows.length} Transactions Requiring Attention
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                    Resolve missing customers, duplicate receipt numbers, or fuzzy matches. Once resolved, the badge turns green and moves to the Ingestion Queue.
+                                    Resolve missing masters, duplicates, fuzzy matches, and currency rates interactively. Once solved, transactions turn green and move to the Ready Queue.
                                 </p>
                             </div>
 
@@ -815,7 +828,7 @@ export default function ImportReceiptExcelModal({
                             <div className="flex items-center gap-1.5 flex-wrap">
                                 {[
                                     { id: 'ALL', label: 'All Issues' },
-                                    { id: 'MISSING_MASTERS', label: 'Missing Customers' },
+                                    { id: 'MISSING_MASTERS', label: 'Missing Masters' },
                                     { id: 'DUPLICATES', label: 'Duplicates' },
                                     { id: 'FUZZY', label: 'Fuzzy Matches' },
                                     { id: 'FX', label: 'FX Rates' },
@@ -839,16 +852,16 @@ export default function ImportReceiptExcelModal({
                         {/* Quarantined Items List */}
                         {filteredQuarantined.length === 0 ? (
                             <div className="p-16 rounded-3xl bg-white/[0.02] border border-white/5 flex flex-col items-center justify-center text-center">
-                                <CheckCircle2 size={48} className="text-teal-400 mb-3" />
-                                <h3 className="text-base font-bold text-white">All Receipt Discrepancies Resolved!</h3>
+                                <CheckCircle2 size={48} className="text-emerald-400 mb-3" />
+                                <h3 className="text-base font-bold text-white">All Discrepancies Resolved!</h3>
                                 <p className="text-xs text-slate-400 max-w-md mt-1 mb-4">
-                                    There are no pending quarantined receipt transactions under this filter.
+                                    There are no pending quarantined transactions under this filter. You can proceed to the Ready to Import queue.
                                 </p>
                                 <button
                                     onClick={() => setActiveTab('ready')}
-                                    className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-bold flex items-center gap-2"
+                                    className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-2"
                                 >
-                                    <span>Proceed to Ready Queue</span>
+                                    <span>Proceed to Ready to Import</span>
                                     <ChevronRight size={16} />
                                 </button>
                             </div>
@@ -861,7 +874,7 @@ export default function ImportReceiptExcelModal({
                                             key={row.id}
                                             className={`rounded-2xl border p-5 transition-all ${
                                                 isResolved
-                                                    ? 'bg-teal-950/20 border-teal-500/40 ring-1 ring-teal-500/20'
+                                                    ? 'bg-emerald-950/20 border-emerald-500/40 ring-1 ring-emerald-500/20'
                                                     : 'bg-white/[0.02] border-white/10 hover:border-white/20'
                                             }`}
                                         >
@@ -869,7 +882,7 @@ export default function ImportReceiptExcelModal({
                                                 <div className="flex items-center gap-3">
                                                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs ${
                                                         isResolved
-                                                            ? 'bg-teal-500/20 text-teal-400 border border-teal-500/30'
+                                                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                                             : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                                                     }`}>
                                                         {isResolved ? <Check size={18} /> : '!'}
@@ -879,25 +892,25 @@ export default function ImportReceiptExcelModal({
                                                             <span className="font-mono text-xs font-black text-white">{row.vchNo}</span>
                                                             <span className="text-[11px] text-slate-400">· Date: <b className="text-slate-200">{row.date || 'Invalid'}</b></span>
                                                             <span className="text-[11px] text-slate-400">· Row: <b className="text-slate-200">#{row.rowNumber}</b></span>
-                                                            {row.isMultiSplit && (
+                                                            {(row.items || row.resolvedItems || []).length > 1 && (
                                                                 <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
-                                                                    Multi-Giver ({row.splits?.length || 2} Parties)
+                                                                    {(row.items || row.resolvedItems || []).length} Item Lines
                                                                 </span>
                                                             )}
                                                         </div>
                                                         <div className="text-sm font-bold text-white mt-0.5">
-                                                            Received From: <span className="text-teal-400">{row.paidTo || 'N/A'}</span>
-                                                            {row.paidFrom && (
-                                                                <span className="text-slate-400 font-normal"> · Into: <b className="text-slate-200">{row.paidFrom}</b></span>
+                                                            Supplier: <span className="text-emerald-400">{row.partyName || row.paidTo || 'N/A'}</span>
+                                                            {(row.items || row.resolvedItems || []).length > 0 && (
+                                                                <span className="text-slate-400 font-normal"> · Items: <b className="text-slate-200">{(row.items || row.resolvedItems || []).length}</b></span>
                                                             )}
                                                         </div>
                                                         {row.isMultiSplit && row.splits && row.splits.length > 1 && (
                                                             <div className="mt-2 p-2 rounded-lg bg-black/30 border border-white/5 space-y-1">
-                                                                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Givers Breakdown:</div>
+                                                                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Receivers Breakdown:</div>
                                                                 {row.splits.map((s, sIdx) => (
                                                                     <div key={sIdx} className="flex items-center justify-between text-xs text-slate-300 font-mono">
                                                                         <span>· {s.targetName}</span>
-                                                                        <span className="font-bold text-teal-400">{currencySymbol} {s.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                                                        <span className="font-bold text-emerald-400">{currencySymbol} {s.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -915,10 +928,11 @@ export default function ImportReceiptExcelModal({
                                                         </div>
                                                     </div>
 
+                                                    {/* Final Action Button when Resolved */}
                                                     {isResolved ? (
                                                         <button
                                                             onClick={() => handleInsertResolvedTransaction(row.id)}
-                                                            className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-teal-500/20 animate-in zoom-in-95"
+                                                            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 animate-in zoom-in-95"
                                                         >
                                                             <CheckCircle2 size={16} />
                                                             <span>Insert Transaction</span>
@@ -952,17 +966,20 @@ export default function ImportReceiptExcelModal({
                                                             <span>{issue.message}</span>
                                                         </div>
 
+                                                        {/* Action Buttons based on Rule */}
                                                         <div className="flex items-center gap-2 shrink-0">
+                                                            {/* Rule 2: Missing Master Creation */}
                                                             {issue.rule === 'RULE_2_MISSING_MASTER' && (
                                                                 <button
-                                                                    onClick={() => handleOpenCreateMaster(row, issue.missingName, issue.missingType)}
+                                                                    onClick={() => handleOpenCreateMaster(row, issue.missingName, issue.missingType, issue.field, issue.missingPercent)}
                                                                     className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
                                                                 >
                                                                     <Plus size={14} />
-                                                                    <span>Create Missing Customer?</span>
+                                                                    <span>Create Missing Master?</span>
                                                                 </button>
                                                             )}
 
+                                                            {/* Rule 5: Fuzzy Suggestion Link */}
                                                             {issue.rule === 'RULE_5_FUZZY_MATCH' && issue.suggestion && (
                                                                 <button
                                                                     onClick={() => handleAcceptFuzzy(row.id, issue.suggestion)}
@@ -973,16 +990,18 @@ export default function ImportReceiptExcelModal({
                                                                 </button>
                                                             )}
 
+                                                            {/* Rule 1: Duplicate Reference Renumber */}
                                                             {issue.rule === 'RULE_1_DUPLICATE_REF' && (
                                                                 <button
                                                                     onClick={() => handleAutoRenumber(row.id)}
                                                                     className="px-3 py-1 rounded-lg bg-purple-500 hover:bg-purple-400 text-white font-bold text-xs flex items-center gap-1.5"
                                                                 >
                                                                     <RotateCcw size={14} />
-                                                                    <span>Auto-Renumber (-RCP-IMP)</span>
+                                                                    <span>Auto-Renumber (-IMP)</span>
                                                                 </button>
                                                             )}
 
+                                                            {/* Rule 3: Missing FX Rate Input */}
                                                             {issue.rule === 'RULE_3_MISSING_FX' && (
                                                                 <div className="flex items-center gap-2">
                                                                     <input
@@ -1010,20 +1029,21 @@ export default function ImportReceiptExcelModal({
                 )}
 
                 {/* ========================================================
-                    TAB 3: READY TO IMPORT (RECEIPTS)
+                    TAB 3: READY TO IMPORT (VERIFIED QUEUE)
                    ======================================================== */}
                 {activeTab === 'ready' && (
-                    <div className="w-full flex-1 min-h-0 flex flex-col space-y-4 animate-in fade-in zoom-in-95 duration-200">
-                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-teal-950/40 via-slate-900/60 to-teal-950/30 border border-teal-500/30 shadow-xl">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                        {/* Header Summary Banner */}
+                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/30 shadow-xl">
                             <div>
-                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-teal-500/10 border border-teal-500/20 text-teal-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <CheckCircle2 size={12} /> Ready for Inward Ledger Update
+                                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-wider mb-2">
+                                    <CheckCircle2 size={12} /> Verified & Audit-Ready Ingestion Queue
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Ready to Ingest: {cleanRows.length} Receipt Vouchers
+                                    Ready to Ingest: {cleanRows.length} Purchase Vouchers
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                    Total Collection: <b className="text-teal-400 font-mono text-sm">{currencySymbol} {cleanRows.reduce((sum, r) => sum + (r.amount || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</b>. Automatically increases cash/bank & reduces customer balances.
+                                    Total Amount: <b className="text-emerald-400 font-mono text-sm">{currencySymbol} {cleanRows.reduce((sum, r) => sum + (r.amount || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</b>. All records meet integrity rules and master links.
                                 </p>
                             </div>
 
@@ -1032,19 +1052,19 @@ export default function ImportReceiptExcelModal({
                                 onClick={handleExecuteImport}
                                 className={`px-6 py-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-xl transition-all ${
                                     cleanRows.length > 0 && !isImporting
-                                        ? 'bg-teal-500 hover:bg-teal-400 text-slate-950 shadow-teal-500/20 hover:scale-105 active:scale-95'
+                                        ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20 hover:scale-105 active:scale-95'
                                         : 'bg-white/10 text-slate-500 border border-white/5 cursor-not-allowed'
                                 }`}
                             >
                                 {isImporting ? (
                                     <>
                                         <RefreshCw className="animate-spin" size={16} />
-                                        <span>Importing Receipts ({importProgress}%)...</span>
+                                        <span>Importing Batch ({importProgress}%)...</span>
                                     </>
                                 ) : (
                                     <>
                                         <Database size={16} />
-                                        <span>Execute Batch Receipt Ingestion ({cleanRows.length} Vouchers)</span>
+                                        <span>Execute Batch Import ({cleanRows.length} Vouchers)</span>
                                     </>
                                 )}
                             </button>
@@ -1090,28 +1110,38 @@ export default function ImportReceiptExcelModal({
                                 <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
                                 <input
                                     type="text"
-                                    placeholder="Search by Voucher No or Customer..."
+                                    placeholder="Search by Voucher No or Party..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="w-full pl-9 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500/50"
+                                    className="w-full pl-9 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
                                 />
                             </div>
                             <div className="text-xs text-slate-400 font-mono">
-                                Showing {cleanRows.length} receipt rows
+                                Showing {cleanRows.length} rows
+                                {Object.values(rowStatus).filter(s => s === 'imported').length > 0 && (
+                                    <span className="ml-3 text-emerald-400 font-bold">
+                                        ✓ {Object.values(rowStatus).filter(s => s === 'imported').length} imported
+                                    </span>
+                                )}
+                                {Object.values(rowStatus).filter(s => s === 'processing').length > 0 && (
+                                    <span className="ml-3 text-amber-300 font-bold animate-pulse">
+                                        ● {Object.values(rowStatus).filter(s => s === 'processing').length} in progress
+                                    </span>
+                                )}
                             </div>
                         </div>
 
                         {/* Verified Data Table */}
-                        <div className="flex-1 min-h-0 flex flex-col bg-white/[0.02] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
-                            <div className="flex-1 min-h-0 overflow-auto">
+                        <div className="bg-white/[0.02] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
+                            <div className="overflow-x-auto max-h-[calc(100vh-320px)]">
                                 <table className="w-full text-left text-xs border-collapse">
                                     <thead className="sticky top-0 bg-slate-900 border-b border-white/10 text-slate-400 z-10">
                                         <tr>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">#</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Date</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Voucher No</th>
-                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Received In (Debit Bank/Cash)</th>
-                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Received From (Credit Customer)</th>
+                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Supplier</th>
+                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Item Lines</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Narration</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px] text-right">Amount ({currencySymbol})</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px] text-center">Import Progress</th>
@@ -1128,7 +1158,7 @@ export default function ImportReceiptExcelModal({
                                                 <tr key={row.id || idx} className="hover:bg-white/[0.03] transition-colors">
                                                     <td className="py-2.5 px-4 text-slate-500 font-mono">{idx + 1}</td>
                                                     <td className="py-2.5 px-4 font-mono text-slate-300">{row.date}</td>
-                                                    <td className="py-2.5 px-4 font-mono font-bold text-teal-400">
+                                                    <td className="py-2.5 px-4 font-mono font-bold text-emerald-400">
                                                         <div className="flex items-center gap-1.5">
                                                             <span>{row.vchNo}</span>
                                                             {row.isMultiSplit && (
@@ -1138,13 +1168,13 @@ export default function ImportReceiptExcelModal({
                                                             )}
                                                         </div>
                                                     </td>
-                                                    <td className="py-2.5 px-4 text-slate-200">{row.paidFrom || 'Main Cash'}</td>
+                                                    <td className="py-2.5 px-4 text-slate-200">{row.partyName || row.matchedParty?.name || row.paidTo || '—'}</td>
                                                     <td className="py-2.5 px-4 font-bold text-white">
                                                         <div className="flex items-center gap-2">
-                                                            <span className="truncate max-w-[200px]">{row.paidTo}</span>
-                                                            {row.isMultiSplit && (
+                                                            <span className="truncate max-w-[200px]">{(row.items || row.resolvedItems || []).length} line(s)</span>
+                                                            {(row.items || row.resolvedItems || []).length > 1 && (
                                                                 <span className="shrink-0 px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
-                                                                    {row.splits?.length || 2} Givers
+                                                                    {(row.items || row.resolvedItems || []).length} Items
                                                                 </span>
                                                             )}
                                                         </div>
@@ -1153,7 +1183,7 @@ export default function ImportReceiptExcelModal({
                                                                 {row.splits.map((s, si) => (
                                                                     <div key={si} className="flex items-center justify-between text-slate-300">
                                                                         <span className="truncate max-w-[150px] text-slate-400">· {s.targetName}</span>
-                                                                        <span className="font-mono font-semibold text-teal-400">{currencySymbol} {s.amount?.toLocaleString()}</span>
+                                                                        <span className="font-mono font-semibold text-emerald-400">{currencySymbol} {s.amount?.toLocaleString()}</span>
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -1186,20 +1216,20 @@ export default function ImportReceiptExcelModal({
                 )}
 
                 {/* ========================================================
-                    TAB 4: IMPORT HISTORY & BATCH ROLLBACK (RECEIPTS)
+                    TAB 4: IMPORT HISTORY & BATCH ROLLBACK (RULE 7)
                    ======================================================== */}
                 {activeTab === 'history' && (
-                    <div className="max-w-5xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         <div className="flex items-center justify-between p-6 rounded-2xl bg-gradient-to-r from-blue-950/40 via-slate-900/60 to-blue-950/30 border border-blue-500/30 shadow-xl">
                             <div>
                                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                    <History size={12} /> Receipt Audit Trail
+                                    <History size={12} /> Audit Trail & Batch Isolation
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Receipt Import History & Rollback Centre
+                                    Batch Import History & Rollback Centre
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                    Inspect past receipt import sessions or rollback an entire batch in 1 click.
+                                    Every import session receives an isolated Batch ID. You can inspect logs or initiate a full atomic rollback anytime.
                                 </p>
                             </div>
                         </div>
@@ -1207,9 +1237,9 @@ export default function ImportReceiptExcelModal({
                         {historyList.length === 0 ? (
                             <div className="p-16 rounded-3xl bg-white/[0.02] border border-white/5 flex flex-col items-center justify-center text-center">
                                 <Clock size={48} className="text-blue-400/40 mb-3" />
-                                <h3 className="text-base font-bold text-white">No Receipt Batch Imports Yet</h3>
+                                <h3 className="text-base font-bold text-white">No Batch Import Sessions Recorded</h3>
                                 <p className="text-xs text-slate-400 max-w-md mt-1">
-                                    Completed receipt imports will be recorded here with complete rollback protection.
+                                    Once an import batch completes, it will appear here with full audit metrics and rollback controls.
                                 </p>
                             </div>
                         ) : (
@@ -1231,7 +1261,7 @@ export default function ImportReceiptExcelModal({
                                                     <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
                                                         isRolledBack
                                                             ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
-                                                            : 'bg-teal-500/20 text-teal-400 border-teal-500/30'
+                                                            : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
                                                     }`}>
                                                         {batch.status}
                                                     </span>
@@ -1245,9 +1275,9 @@ export default function ImportReceiptExcelModal({
                                             <div className="flex items-center gap-6">
                                                 <div className="text-right">
                                                     <div className="text-sm font-bold text-white">
-                                                        {batch.count} Receipts
+                                                        {batch.count} Vouchers
                                                     </div>
-                                                    <div className="text-xs font-mono text-teal-400 font-bold">
+                                                    <div className="text-xs font-mono text-emerald-400 font-bold">
                                                         {currencySymbol} {batch.totalAmount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                                     </div>
                                                 </div>
@@ -1279,31 +1309,33 @@ export default function ImportReceiptExcelModal({
                     TAB 5: INSTRUCTIONS & TEMPLATES
                    ======================================================== */}
                 {activeTab === 'instructions' && (
-                    <div className="max-w-4xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                        {/* Banner */}
                         <div className="p-6 rounded-2xl bg-gradient-to-r from-purple-950/40 via-slate-900/60 to-purple-950/30 border border-purple-500/30 shadow-xl">
                             <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] font-black uppercase tracking-wider mb-2">
-                                <FileText size={12} /> Receipt Specifications
+                                <FileText size={12} /> Standard Specifications
                             </div>
                             <h2 className="text-xl font-bold text-white tracking-tight">
-                                Receipt Excel Format Guidelines & Sample Templates
+                                Excel Format Guidelines & Sample Templates
                             </h2>
                             <p className="text-xs text-slate-400 max-w-xl mt-1">
-                                Download sample templates configured for customer receipts and inward cash/bank settlement.
+                                Download pre-configured Excel templates or review the automated rules enforced by the import engine.
                             </p>
                         </div>
 
+                        {/* Download Buttons Card */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3">
                                 <div className="flex items-center gap-2 font-bold text-white text-sm">
-                                    <FileSpreadsheet className="text-teal-400" size={18} />
-                                    <span>Standard Receipt Template</span>
+                                    <FileSpreadsheet className="text-emerald-400" size={18} />
+                                    <span>Standard AccPro Template</span>
                                 </div>
                                 <p className="text-xs text-slate-400 leading-relaxed">
-                                    Date, Voucher No, Received In (Bank/Cash), Received From (Customer), Amount, and Narration.
+                                    Clean flat format with Date, Voucher No, Paid From, Paid To, Amount, and Narration columns.
                                 </p>
                                 <button
                                     onClick={() => handleDownloadTemplate('standard')}
-                                    className="px-4 py-2 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 text-teal-400 border border-teal-500/30 font-bold text-xs flex items-center gap-2"
+                                    className="px-4 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold text-xs flex items-center gap-2"
                                 >
                                     <Download size={14} />
                                     <span>Download Standard (.xlsx)</span>
@@ -1313,10 +1345,10 @@ export default function ImportReceiptExcelModal({
                             <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3">
                                 <div className="flex items-center gap-2 font-bold text-white text-sm">
                                     <FileSpreadsheet className="text-blue-400" size={18} />
-                                    <span>Tally Prime Receipt Format</span>
+                                    <span>Tally Columnar Template</span>
                                 </div>
                                 <p className="text-xs text-slate-400 leading-relaxed">
-                                    Formatted to match Tally Prime's Receipt Register export with bank and customer columns.
+                                    Replicates Tally Prime's columnar register with Cashier/Contra columns and multi-split expense heads.
                                 </p>
                                 <button
                                     onClick={() => handleDownloadTemplate('tally')}
@@ -1332,23 +1364,23 @@ export default function ImportReceiptExcelModal({
             </div>
 
             {/* ========================================================
-                RULE 2: CREATE MISSING CUSTOMER MODAL
+                RULE 2: CREATE MISSING MASTER DIALOG MODAL
                ======================================================== */}
             {createMasterModal.isOpen && (
                 <div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="bg-[#0b2830] border border-white/20 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+                    <div className="bg-[#0f172a] border border-white/20 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
                         <div className="flex items-center justify-between pb-3 border-b border-white/10">
                             <div className="flex items-center gap-2">
-                                <div className="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-400 flex items-center justify-center font-bold">
+                                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
                                     <Plus size={18} />
                                 </div>
                                 <div>
                                     <h3 className="text-sm font-bold text-white">Create Missing Master Record</h3>
-                                    <p className="text-[10px] text-slate-400">Rule 2: Customer / Income Generation</p>
+                                    <p className="text-[10px] text-slate-400">Rule 2: Interactive Master Generation</p>
                                 </div>
                             </div>
                             <button
-                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', partyRole: 'customer', isSubmitting: false })}
+                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', percent: 0, itemIndex: null, taxIndex: null, isSubmitting: false })}
                                 className="text-slate-400 hover:text-white"
                             >
                                 <X size={18} />
@@ -1357,22 +1389,24 @@ export default function ImportReceiptExcelModal({
 
                         <div className="space-y-4">
                             <div>
-                                <label className="text-xs font-bold text-slate-300 block mb-1">Customer / Entity Name</label>
+                                <label className="text-xs font-bold text-slate-300 block mb-1">Master Entity Name</label>
                                 <input
                                     type="text"
                                     value={createMasterModal.name}
                                     onChange={(e) => setCreateMasterModal(prev => ({ ...prev, name: e.target.value }))}
-                                    className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white text-xs font-bold focus:outline-none focus:border-teal-500"
+                                    className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white text-xs font-bold focus:outline-none focus:border-amber-500"
                                 />
                             </div>
 
                             <div>
                                 <label className="text-xs font-bold text-slate-300 block mb-1">Entity Classification</label>
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                     {[
-                                        { id: 'party', label: 'Customer / Debtor' },
+                                        { id: 'party', label: 'Supplier / Party' },
+                                        { id: 'product', label: 'Item / Stock Item' },
                                         { id: 'account', label: 'Cash / Bank' },
-                                        { id: 'income', label: 'Income Head' }
+                                        { id: 'expense', label: 'Expense Head' },
+                                        { id: 'tax', label: 'GST / VAT Tax' }
                                     ].map(t => (
                                         <button
                                             key={t.id}
@@ -1380,7 +1414,7 @@ export default function ImportReceiptExcelModal({
                                             onClick={() => setCreateMasterModal(prev => ({ ...prev, type: t.id }))}
                                             className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all text-center ${
                                                 createMasterModal.type === t.id
-                                                    ? 'bg-teal-500 text-slate-950 border-teal-500'
+                                                    ? 'bg-amber-500 text-slate-950 border-amber-500'
                                                     : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
                                             }`}
                                         >
@@ -1389,12 +1423,34 @@ export default function ImportReceiptExcelModal({
                                     ))}
                                 </div>
                             </div>
+
+                            {createMasterModal.type === 'product' && (
+                                <p className="text-[10px] text-slate-400 leading-relaxed">
+                                    Creates a stock item master (group “Primary”, zero opening qty/rate). Quantity, rate and HS code can be edited later in Manage Items.
+                                </p>
+                            )}
+
+                            {createMasterModal.type === 'tax' && (
+                                <div>
+                                    <label className="text-xs font-bold text-slate-300 block mb-1">Tax Percentage (%)</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={createMasterModal.percent ?? 0}
+                                        onChange={(e) => setCreateMasterModal(prev => ({ ...prev, percent: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                        className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white text-xs font-bold focus:outline-none focus:border-amber-500"
+                                    />
+                                    <p className="text-[10px] text-slate-400 mt-1">
+                                        Saved to Tax Rates (Manage Tax Rates) and applied to the imported purchase vouchers as tax %.
+                                    </p>
+                                </div>
+                            )}
                         </div>
 
                         <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
                             <button
                                 type="button"
-                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', partyRole: 'customer', isSubmitting: false })}
+                                onClick={() => setCreateMasterModal({ isOpen: false, rowId: null, name: '', type: 'party', percent: 0, itemIndex: null, taxIndex: null, isSubmitting: false })}
                                 className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold"
                             >
                                 Cancel
@@ -1403,7 +1459,7 @@ export default function ImportReceiptExcelModal({
                                 type="button"
                                 disabled={createMasterModal.isSubmitting}
                                 onClick={handleConfirmCreateMaster}
-                                className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-teal-500/20"
+                                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-amber-500/20"
                             >
                                 {createMasterModal.isSubmitting ? (
                                     <RefreshCw className="animate-spin" size={14} />
@@ -1420,8 +1476,8 @@ export default function ImportReceiptExcelModal({
             {/* SUBTLE FOOTER */}
             <div className="h-10 bg-black/40 border-t border-white/5 px-6 flex items-center justify-between text-[10px] text-slate-500 font-medium shrink-0">
                 <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
-                    <span>AccPro Enterprise Ingestion Pipeline · Receipts Engine Active</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span>AccPro Enterprise Ingestion Pipeline · Solution Centre Active</span>
                 </div>
                 <div>Batch Engine v2.7.1</div>
             </div>

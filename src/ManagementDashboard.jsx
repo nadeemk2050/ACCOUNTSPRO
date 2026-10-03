@@ -43,6 +43,7 @@ const ManagementDashboard = ({
     onImportPaymentExcel,
     onImportReceiptExcel,
     onImportJournalExcel,
+    onImportPurchaseExcel,
     onShowBackupLog,
     functions,
     dataOwnerId,
@@ -1913,6 +1914,13 @@ const ManagementDashboard = ({
                                         desc="Universal Import: Excel, XML & CSV with double-entry Dr/Cr balance verification."
                                         onClick={onImportJournalExcel}
                                         color="indigo"
+                                        icon={<FileSpreadsheet />}
+                                    />
+                                    <ActionCard
+                                        title="IMPORT PURCHASE FROM XML"
+                                        desc="Separate section: purchase vouchers from Tally XML (ERP 9 / Prime) or Excel/CSV — item lines, rates, taxes."
+                                        onClick={onImportPurchaseExcel}
+                                        color="amber"
                                         icon={<FileSpreadsheet />}
                                     />
                                     <ActionCard

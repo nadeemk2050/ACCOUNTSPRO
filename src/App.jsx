@@ -139,6 +139,7 @@ const ImportVoucherModal = lazy(() => import('./ImportVoucherModal.jsx'));
 const ImportPaymentExcelModal = lazy(() => import('./ImportPaymentExcelModal.jsx'));
 const ImportReceiptExcelModal = lazy(() => import('./ImportReceiptExcelModal.jsx'));
 const ImportJournalExcelModal = lazy(() => import('./ImportJournalExcelModal.jsx'));
+const ImportPurchaseExcelModal = lazy(() => import('./ImportPurchaseExcelModal.jsx'));
 const V201VerifyReportModal = lazy(() => import('./V201VerifyReportModal.jsx'));
 const V311ReportModal = lazy(() => import('./V311ReportModal.jsx'));
 const BackupHistoryModal = lazy(() => import('./BackupHistoryModal.jsx'));
@@ -12401,6 +12402,7 @@ export default function App() {
                     onImportPaymentExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_payment_excel'); }}
                     onImportReceiptExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_receipt_excel'); }}
                     onImportJournalExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_journal_excel'); }}
+                    onImportPurchaseExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_purchase_excel'); }}
                     onShowBackupLog={() => { setModalStack(s => [...s, 'management']); setActiveModal('backup_log'); }}
                     onChangePassword={handleChangePassword}
                     onManageUsers={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_users'); }}
@@ -12558,6 +12560,32 @@ export default function App() {
                 capitalAccounts={capitalAccounts}
                 assetAccounts={assetAccounts}
                 journalVouchers={journalVouchers}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+            </Suspense>
+            )}
+
+            {/* Import Purchase Voucher From Excel / Tally XML Modal */}
+            {getModalState('import_purchase_excel').isOpen && (
+            <Suspense fallback={null}>
+            <ImportPurchaseExcelModal
+                isOpen={true}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                products={products}
+                taxRates={taxRates}
+                locations={locations}
+                lots={lots}
+                invoices={invoices}
                 effectiveName={effectiveName}
                 currencySymbol={currencySymbol}
                 showToast={setToast}

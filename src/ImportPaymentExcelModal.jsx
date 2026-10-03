@@ -17,6 +17,31 @@ import {
     getBatchHistory
 } from './utils/excelImportEngine';
 
+/** Per-voucher progress pill + bar shown in the Ready to Import table */
+const RowProgress = ({ status }) => {
+    const s = status || 'pending';
+    const cfg = {
+        pending: { label: 'Pending', cls: 'bg-white/5 text-slate-400 border-white/10', bar: 'w-0' },
+        processing: { label: 'In Progress', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30', bar: 'w-1/2 animate-pulse' },
+        imported: { label: 'Imported', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30', bar: 'w-full' },
+        cancelled: { label: 'Stopped', cls: 'bg-rose-500/15 text-rose-300 border-rose-500/30', bar: 'w-full' },
+        error: { label: 'Failed', cls: 'bg-rose-500/15 text-rose-300 border-rose-500/30', bar: 'w-full' }
+    }[s] || { label: 'Pending', cls: 'bg-white/5 text-slate-400 border-white/10', bar: 'w-0' };
+    return (
+        <div className="min-w-[118px]">
+            <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${cfg.cls}`}>
+                {s === 'processing' && <RefreshCw size={10} className="animate-spin" />}
+                {s === 'imported' && <CheckCircle2 size={10} />}
+                {s === 'error' && <AlertCircle size={10} />}
+                {cfg.label}
+            </div>
+            <div className="mt-1 h-1 w-full rounded-full bg-white/10 overflow-hidden">
+                <div className={`h-full rounded-full transition-all duration-300 ${s === 'imported' ? 'bg-emerald-400' : s === 'error' ? 'bg-rose-400' : 'bg-amber-400'} ${cfg.bar}`} />
+            </div>
+        </div>
+    );
+};
+
 export default function ImportPaymentExcelModal({
     isOpen,
     onClose,
@@ -47,6 +72,30 @@ export default function ImportPaymentExcelModal({
     const [isParsing, setIsParsing] = useState(false);
     const [isImporting, setIsImporting] = useState(false);
     const [importProgress, setImportProgress] = useState(0);
+    // Per-voucher progress: { [rowId]: 'pending' | 'processing' | 'imported' | 'error' }
+    const [rowStatus, setRowStatus] = useState({});
+    // --- RUN CONTROLS (Pause All / Stop All / Cancel All + per-row stop-resume-cancel) ---
+    const runCtlRef = useRef({ paused: false, stopped: false, skipped: new Set() });
+    const [runState, setRunState] = useState('idle'); // idle | running | paused | stopped
+    const [cancelPrompt, setCancelPrompt] = useState(false);
+    const [currentBatchId, setCurrentBatchId] = useState(null);
+    const isRowSkipped = (id) => runCtlRef.current.skipped.has(id);
+    const skipRow = (id) => { runCtlRef.current.skipped.add(id); setRowStatus(prev => ({ ...prev, [id]: 'cancelled' })); };
+    const resumeRow = (id) => { runCtlRef.current.skipped.delete(id); setRowStatus(prev => { const n = { ...prev }; delete n[id]; return n; }); };
+    const togglePauseAll = () => { const c = runCtlRef.current; c.paused = !c.paused; setRunState(c.paused ? 'paused' : 'running'); };
+    const stopAll = () => { const c = runCtlRef.current; c.stopped = true; c.paused = false; setRunState('stopped'); };
+    const cancelAllRemaining = () => { stopAll(); setCancelPrompt(false); if (showToast) showToast({ type: 'warning', title: 'Remaining Cancelled', message: 'Stopped the run — already imported vouchers were kept.' }); };
+    const cancelAllAndReverse = async () => {
+        stopAll();
+        setCancelPrompt(false);
+        if (!currentBatchId) return;
+        try {
+            const res = await rollbackBatchImport(currentBatchId, { user, dataOwnerId, effectiveName });
+            setHistoryList(getBatchHistory());
+            setRowStatus({});
+            if (showToast) showToast({ type: 'success', title: 'Batch Reversed', message: `${res.deletedCount} voucher(s) imported in this run were deleted.` });
+        } catch (err) { alert(`Reverse failed: ${err.message}`); }
+    };
     const [importResult, setImportResult] = useState(null);
     const [rollbackingId, setRollbackingId] = useState(null);
 
@@ -357,7 +406,11 @@ export default function ImportPaymentExcelModal({
         if (cleanRows.length === 0) return alert('No valid transactions in the Ready to Import queue.');
 
         setIsImporting(true);
-        setImportProgress(20);
+        setImportProgress(5);
+        setRowStatus({});
+        runCtlRef.current = { paused: false, stopped: false, skipped: new Set() };
+        setRunState('running');
+        setCurrentBatchId(null);
 
         try {
             const result = await executeBatchImport(cleanRows, {
@@ -365,13 +418,22 @@ export default function ImportPaymentExcelModal({
                 dataOwnerId,
                 effectiveName,
                 companyProfile,
-                currencySymbol
+                currencySymbol,
+                chunkSize: 1, // one voucher at a time so progress is visible per row
+                onRowStatus: (id, status) => setRowStatus(prev => ({ ...prev, [id]: status })),
+                control: { isPaused: () => runCtlRef.current.paused, isStopped: () => runCtlRef.current.stopped, isRowSkipped },
+                onBatchStart: (id) => setCurrentBatchId(id)
             });
 
             setImportProgress(100);
             setImportResult(result);
             setHistoryList(getBatchHistory());
-            setCleanRows([]);
+            // Keep the rows on screen so every voucher's progress stays visible
+            setRowStatus(prev => {
+                const next = { ...prev };
+                cleanRows.forEach(r => { if (!next[r.id] || next[r.id] === 'processing') next[r.id] = 'imported'; });
+                return next;
+            });
 
             if (showToast) {
                 showToast({
@@ -593,7 +655,7 @@ export default function ImportPaymentExcelModal({
                     TAB 1: UPLOAD & PARSE
                    ======================================================== */}
                 {activeTab === 'upload' && (
-                    <div className="max-w-4xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Hero Card */}
                         <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/20 p-6 shadow-xl">
                             <div className="space-y-1">
@@ -726,7 +788,7 @@ export default function ImportPaymentExcelModal({
                     TAB 2: SOLUTION CENTRE (TRANSACTIONS TO BE SOLVED)
                    ======================================================== */}
                 {activeTab === 'solution_centre' && (
-                    <div className="max-w-6xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Header Banner */}
                         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-amber-950/40 via-slate-900/60 to-amber-950/30 border border-amber-500/30 shadow-xl">
                             <div>
@@ -949,7 +1011,7 @@ export default function ImportPaymentExcelModal({
                     TAB 3: READY TO IMPORT (VERIFIED QUEUE)
                    ======================================================== */}
                 {activeTab === 'ready' && (
-                    <div className="max-w-6xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Header Summary Banner */}
                         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/30 shadow-xl">
                             <div>
@@ -987,6 +1049,40 @@ export default function ImportPaymentExcelModal({
                             </button>
                         </div>
 
+                        {/* Run controls: Pause All / Stop All / Cancel All */}
+                        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Run controls</span>
+                            <button type="button" onClick={togglePauseAll} disabled={!isImporting} className={`px-3 py-1.5 rounded-xl border text-[10px] font-bold uppercase tracking-wider transition-all ${runState === 'paused' ? 'bg-amber-500 text-slate-950 border-amber-500' : 'bg-white/5 text-amber-300 border-amber-500/30 hover:bg-amber-500/15'} ${!isImporting ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                                {runState === 'paused' ? 'Resume All' : 'Pause All'}
+                            </button>
+                            <button type="button" onClick={stopAll} disabled={!isImporting} className={`px-3 py-1.5 rounded-xl border border-rose-500/30 bg-white/5 text-[10px] font-bold uppercase tracking-wider text-rose-300 hover:bg-rose-500/15 transition-all ${!isImporting ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                                Stop All
+                            </button>
+                            <button type="button" onClick={() => setCancelPrompt(true)} disabled={!isImporting && !currentBatchId} className={`px-3 py-1.5 rounded-xl border border-rose-500/30 bg-white/5 text-[10px] font-bold uppercase tracking-wider text-rose-300 hover:bg-rose-500/15 transition-all ${(!isImporting && !currentBatchId) ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                                Cancel All
+                            </button>
+                            <span className="ml-auto text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                {runState === 'running' && <>● Running one-by-one</>}
+                                {runState === 'paused' && <>⏸ Paused (current voucher will finish)</>}
+                                {runState === 'stopped' && <>⏹ Stopped — remaining vouchers cancelled</>}
+                            </span>
+                        </div>
+
+                        {/* Cancel All: keep what is imported, or reverse this run */}
+                        {cancelPrompt && (
+                            <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-4 space-y-3">
+                                <div className="text-xs font-bold text-rose-200">Cancel the rest of this import run?</div>
+                                <p className="text-[11px] text-slate-300">
+                                    {Object.values(rowStatus).filter(s => s === 'imported').length} voucher(s) were already imported in this run. Keep them, or delete them and start clean?
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                    <button type="button" onClick={cancelAllRemaining} className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 text-xs font-bold">Cancel remaining only (keep imported)</button>
+                                    <button type="button" onClick={cancelAllAndReverse} className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-bold">Cancel + reverse this run (delete imported)</button>
+                                    <button type="button" onClick={() => setCancelPrompt(false)} className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-bold">Keep running</button>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Search & Grid Controls */}
                         <div className="flex items-center justify-between gap-4">
                             <div className="relative max-w-xs w-full">
@@ -1001,12 +1097,22 @@ export default function ImportPaymentExcelModal({
                             </div>
                             <div className="text-xs text-slate-400 font-mono">
                                 Showing {cleanRows.length} rows
+                                {Object.values(rowStatus).filter(s => s === 'imported').length > 0 && (
+                                    <span className="ml-3 text-emerald-400 font-bold">
+                                        ✓ {Object.values(rowStatus).filter(s => s === 'imported').length} imported
+                                    </span>
+                                )}
+                                {Object.values(rowStatus).filter(s => s === 'processing').length > 0 && (
+                                    <span className="ml-3 text-amber-300 font-bold animate-pulse">
+                                        ● {Object.values(rowStatus).filter(s => s === 'processing').length} in progress
+                                    </span>
+                                )}
                             </div>
                         </div>
 
                         {/* Verified Data Table */}
                         <div className="bg-white/[0.02] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
-                            <div className="overflow-x-auto max-h-[50vh]">
+                            <div className="overflow-x-auto max-h-[calc(100vh-320px)]">
                                 <table className="w-full text-left text-xs border-collapse">
                                     <thead className="sticky top-0 bg-slate-900 border-b border-white/10 text-slate-400 z-10">
                                         <tr>
@@ -1017,6 +1123,7 @@ export default function ImportPaymentExcelModal({
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Paid To (Debit)</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Narration</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px] text-right">Amount ({currencySymbol})</th>
+                                            <th className="py-3 px-4 font-bold uppercase text-[10px] text-center">Import Progress</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-white/5 text-slate-300 font-medium">
@@ -1065,6 +1172,19 @@ export default function ImportPaymentExcelModal({
                                                     <td className="py-2.5 px-4 font-mono font-bold text-right text-white">
                                                         {row.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                                     </td>
+                                                    <td className="py-2.5 px-4">
+                                                        <div className="flex items-center gap-2">
+                                                            <RowProgress status={rowStatus[row.id]} />
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => (isRowSkipped(row.id) ? resumeRow(row.id) : skipRow(row.id))}
+                                                                title={isRowSkipped(row.id) ? 'Resume this voucher' : 'Stop / skip this voucher'}
+                                                                className={`px-2 py-1 rounded-lg border text-[10px] font-bold uppercase transition-all ${isRowSkipped(row.id) ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25' : 'bg-white/5 text-slate-300 border-white/10 hover:bg-rose-500/20 hover:text-rose-300'}`}
+                                                            >
+                                                                {isRowSkipped(row.id) ? 'Resume' : 'Stop'}
+                                                            </button>
+                                                        </div>
+                                                    </td>
                                                 </tr>
                                             ))}
                                     </tbody>
@@ -1078,7 +1198,7 @@ export default function ImportPaymentExcelModal({
                     TAB 4: IMPORT HISTORY & BATCH ROLLBACK (RULE 7)
                    ======================================================== */}
                 {activeTab === 'history' && (
-                    <div className="max-w-5xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         <div className="flex items-center justify-between p-6 rounded-2xl bg-gradient-to-r from-blue-950/40 via-slate-900/60 to-blue-950/30 border border-blue-500/30 shadow-xl">
                             <div>
                                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-black uppercase tracking-wider mb-2">
@@ -1168,7 +1288,7 @@ export default function ImportPaymentExcelModal({
                     TAB 5: INSTRUCTIONS & TEMPLATES
                    ======================================================== */}
                 {activeTab === 'instructions' && (
-                    <div className="max-w-4xl mx-auto w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="w-full space-y-6 animate-in fade-in zoom-in-95 duration-200">
                         {/* Banner */}
                         <div className="p-6 rounded-2xl bg-gradient-to-r from-purple-950/40 via-slate-900/60 to-purple-950/30 border border-purple-500/30 shadow-xl">
                             <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] font-black uppercase tracking-wider mb-2">
