@@ -12346,6 +12346,8 @@ export default function App() {
                 parties={parties}
                 expenses={expenses}
                 accounts={accounts}
+                products={products}
+                companyProfile={companyProfile}
                 // 👇 ÛŒÛ دو لائنیں شامل کریں 👇
                 user={user}
                 subUser={subUser}
@@ -16229,6 +16231,7 @@ const InvoiceModal = (props) => {
                     type: voucherType, items: cleanItems, expenses: cleanExpenses,
                     addlExpenses: cleanAddlExpenses, addlExpCreditId: addlExpCreditId || null,
                     addlExpTotal: totals.addlExpTotal,
+                    affectRates: !!affectRates, // persisted so reports know whether expenses sit inside the item rates
                     salesExpenseMode: voucherType === 'sales' ? (salesExpenseMode || null) : null, // Save mode for sales
                     totalAmount: totals.grandTotalBase,
                     foreignTotal: totals.grandTotalForeign,
@@ -32413,11 +32416,13 @@ const ShortcutsHelpModal = ({ isOpen, onClose }) => {
 };
 
 // --- UPDATED LOT PROFITABILITY MODAL (Now includes JVs as Expenses) ---
-const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, lots, initialLotId, parties, expenses, accounts, onViewTransaction, userRole }) => {
+const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, lots, initialLotId, parties, expenses, accounts, onViewTransaction, userRole, products = [], companyProfile = null }) => {
     const [selectedLotId, setSelectedLotId] = useState(initialLotId || '');
     const [reportData, setReportData] = useState(null);
     const [loading, setLoading] = useState(false);
     const [activeFilter, setActiveFilter] = useState('ALL');
+    // Purchase / Sales item-summary view (null = normal transaction list)
+    const [summaryMode, setSummaryMode] = useState(null); // 'purchase' | 'sales'
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 12;
 
@@ -32439,8 +32444,39 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         const targetUid = dataOwnerId || user?.uid;
         try {
             const transactions = [];
+            const purchaseLines = [];   // item lines for the PURCHASE SUMMARY
+            const salesLines = [];      // item lines for the SALES SUMMARY
+            const purchaseExpLines = []; // expenses carried on purchase vouchers of this lot
+            const salesExpLines = [];    // expenses carried on sales vouchers of this lot
             let totalPurchase = 0; let totalExpense = 0; let totalSales = 0;
             let qtyIn = 0; let qtyOut = 0;
+
+            // Turn raw line items into summary lines (quantity / value / rate per item)
+            const pushSummaryLines = (target, lines, meta) => {
+                (lines || []).forEach(l => {
+                    const qty = safeNum(l.quantity);
+                    const value = safeNum(l.total) || safeNum(l.amount) || (qty * safeNum(l.rate));
+                    const rate = safeNum(l.rate) || (qty > 0 ? value / qty : 0);
+                    target.push({
+                        productId: l.productId || '',
+                        name: l.productName || l.name || l.itemName || '',
+                        quantity: qty, value, rate,
+                        refNo: meta.refNo || '', date: meta.date || ''
+                    });
+                });
+            };
+
+            // Turn voucher expenses into summary lines (amount + whether they sit inside the item rates)
+            const pushExpenseLines = (target, exps, meta) => {
+                (exps || []).forEach(e => {
+                    const amt = safeNum(e.amount);
+                    if (!e.expenseId || !amt) return;
+                    target.push({
+                        expenseId: e.expenseId, amount: amt,
+                        refNo: meta.refNo || '', date: meta.date || '', inRates: !!meta.inRates
+                    });
+                });
+            };
 
             // 1. Fetch Invoices (Purchase/Sales)
             const baseConstraints = [where('userId', '==', targetUid)];
@@ -32451,15 +32487,18 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             snapInv.forEach(doc => {
                 const d = doc.data();
                 let matchAmount = 0; let docQty = 0;
+                let lotLines = [];   // item lines belonging to the selected lot
 
                 // Check Main Lot
                 if (d.lotId === selectedLotId) {
                     matchAmount = safeNum(d.totalAmount);
+                    lotLines = d.items || [];
                     if (d.items) docQty = d.items.reduce((s, i) => s + safeNum(i.quantity), 0);
                 } else if (d.items) {
                     // Check Item Lot (Split)
                     const lotItems = d.items.filter(item => item.lotId === selectedLotId);
                     if (lotItems.length > 0) {
+                        lotLines = lotItems;
                         matchAmount = lotItems.reduce((sum, item) => sum + (safeNum(item.total) || (safeNum(item.quantity) * safeNum(item.rate))), 0);
                         docQty = lotItems.reduce((sum, item) => sum + safeNum(item.quantity), 0);
                     }
@@ -32468,6 +32507,17 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 if (matchAmount > 0) {
                     if (d.type === 'purchase') { totalPurchase += matchAmount; qtyIn += docQty; }
                     if (d.type === 'sales') { totalSales += matchAmount; qtyOut += docQty; }
+                    if (d.type === 'purchase') pushSummaryLines(purchaseLines, lotLines, { refNo: d.refNo, date: d.date });
+                    if (d.type === 'sales') pushSummaryLines(salesLines, lotLines, { refNo: d.refNo, date: d.date });
+
+                    // Expenses carried on this voucher:
+                    //  · additional expenses -> inside the item rates for purchase, and for sales only in "include" mode
+                    //  · invoice expenses    -> inside the item rates only when "Affect Rates" was ticked
+                    const expTarget = d.type === 'purchase' ? purchaseExpLines : salesExpLines;
+                    const addlInRates = d.type === 'purchase' ? true : (d.salesExpenseMode === 'include');
+                    const invInRates = d.affectRates === true;
+                    pushExpenseLines(expTarget, d.addlExpenses, { refNo: d.refNo, date: d.date, inRates: addlInRates });
+                    pushExpenseLines(expTarget, d.expenses, { refNo: d.refNo, date: d.date, inRates: invInRates });
                     transactions.push({
                         id: doc.id, date: d.date, type: d.type, refNo: d.refNo || 'INV',
                         crName: d.type === 'purchase' ? (d.partyName || 'Supplier') : 'Sales A/c',
@@ -32550,6 +32600,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     const cost = d.consumed.reduce((s, i) => s + safeNum(i.amount), 0);
                     const q = d.consumed.reduce((s, i) => s + safeNum(i.quantity), 0);
                     totalSales += cost; qtyOut += q;
+                    pushSummaryLines(salesLines, d.consumed, { refNo: d.refNo || 'MFG-OUT', date: d.date });
                     transactions.push({
                         id: doc.id, date: d.date, type: 'sales',
                         refNo: d.refNo || 'MFG-OUT',
@@ -32563,6 +32614,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     const val = d.produced.reduce((s, i) => s + safeNum(i.amount), 0);
                     const q = d.produced.reduce((s, i) => s + safeNum(i.quantity), 0);
                     totalPurchase += val; qtyIn += q;
+                    pushSummaryLines(purchaseLines, d.produced, { refNo: d.refNo || 'MFG-IN', date: d.date });
                     transactions.push({
                         id: doc.id, date: d.date, type: 'purchase',
                         refNo: d.refNo || 'MFG-IN',
@@ -32582,7 +32634,11 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
             setReportData({
                 summary: { totalPurchase, totalExpense, totalSales, cashProfit, realProfit, qtyIn, qtyOut, balanceQty, closingStockValue },
-                details: transactions
+                details: transactions,
+                purchaseLines,
+                salesLines,
+                purchaseExpLines,
+                salesExpLines
             });
 
         } catch (e) { console.error(e); alert("Error: " + e.message); }
@@ -32600,6 +32656,96 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     };
 
     const filteredDetails = getFilteredTransactions();
+
+    // ── PURCHASE / SALES SUMMARY: group the lot's item lines per item ────────
+    // Value + average rate per item, across every purchase/sales voucher (and
+    // manufacturing journals) that belongs to the selected lot.
+    const summaryRows = useMemo(() => {
+        const source = summaryMode === 'sales' ? (reportData?.salesLines || [])
+            : summaryMode === 'purchase' ? (reportData?.purchaseLines || []) : [];
+        const map = new Map();
+        source.forEach(l => {
+            const name = (products.find(p => p.id === l.productId)?.name) || l.name || 'Unknown Item';
+            const key = l.productId || normalizeMasterName(name) || 'unknown';
+            const row = map.get(key) || { key, name, qty: 0, value: 0, vouchers: new Set() };
+            row.qty += safeNum(l.quantity);
+            row.value += safeNum(l.value);
+            if (l.refNo) row.vouchers.add(l.refNo);
+            map.set(key, row);
+        });
+        const rows = [...map.values()]
+            .map(r => ({ ...r, rate: r.qty > 0 ? r.value / r.qty : 0, voucherCount: r.vouchers.size }))
+            .sort((a, b) => b.value - a.value);
+        const totalValue = rows.reduce((s, r) => s + r.value, 0);
+        const totalQty = rows.reduce((s, r) => s + r.qty, 0);
+        return {
+            rows: rows.map(r => ({ ...r, percent: totalValue > 0 ? (r.value / totalValue) * 100 : 0 })),
+            totalValue, totalQty,
+            avgRate: totalQty > 0 ? totalValue / totalQty : 0,
+            lineCount: source.length
+        };
+    }, [summaryMode, reportData, products]);
+
+    // ── EXPENSES OF THE LOT (from its purchase / sales vouchers) ────────────
+    // Split into expenses already absorbed by the item rates and expenses that are
+    // charged on top (the ones that must be shown separately in the summary).
+    const expenseRows = useMemo(() => {
+        const source = summaryMode === 'sales' ? (reportData?.salesExpLines || [])
+            : summaryMode === 'purchase' ? (reportData?.purchaseExpLines || []) : [];
+        const map = new Map();
+        source.forEach(l => {
+            const name = expenses.find(e => e.id === l.expenseId)?.name || 'Unnamed Expense';
+            const key = l.expenseId || normalizeMasterName(name) || 'unknown';
+            const row = map.get(key) || { key, name, inRates: 0, separate: 0, vouchers: new Set() };
+            if (l.inRates) row.inRates += safeNum(l.amount); else row.separate += safeNum(l.amount);
+            if (l.refNo) row.vouchers.add(l.refNo);
+            map.set(key, row);
+        });
+        const rows = [...map.values()]
+            .map(r => ({ ...r, total: r.inRates + r.separate, voucherCount: r.vouchers.size }))
+            .sort((a, b) => b.total - a.total);
+        const inRatesTotal = rows.reduce((s, r) => s + r.inRates, 0);
+        const separateTotal = rows.reduce((s, r) => s + r.separate, 0);
+        return {
+            rows, inRatesTotal, separateTotal,
+            allTotal: inRatesTotal + separateTotal,
+            grandTotal: summaryRows.totalValue + separateTotal
+        };
+    }, [summaryMode, reportData, expenses, summaryRows.totalValue]);
+
+    // ── TRANSACTION WISE BREAKDOWN (per voucher: items value + its expenses) ─
+    const txSummaryRows = useMemo(() => {
+        const items = summaryMode === 'sales' ? (reportData?.salesLines || [])
+            : summaryMode === 'purchase' ? (reportData?.purchaseLines || []) : [];
+        const exps = summaryMode === 'sales' ? (reportData?.salesExpLines || [])
+            : summaryMode === 'purchase' ? (reportData?.purchaseExpLines || []) : [];
+        const map = new Map();
+        const ensure = (refNo, date) => {
+            const key = refNo || '(no ref)';
+            if (!map.has(key)) {
+                const meta = (reportData?.details || []).find(t => t.refNo === refNo && t.type === summaryMode);
+                map.set(key, {
+                    key, refNo: key, date: date || meta?.date || '',
+                    party: summaryMode === 'purchase' ? (meta?.crName || 'Supplier') : (meta?.drName || 'Customer'),
+                    qty: 0, itemsValue: 0, expInRates: 0, expSeparate: 0
+                });
+            }
+            return map.get(key);
+        };
+        items.forEach(l => { const r = ensure(l.refNo, l.date); r.qty += safeNum(l.quantity); r.itemsValue += safeNum(l.value); });
+        exps.forEach(l => {
+            const r = ensure(l.refNo, l.date);
+            if (l.inRates) r.expInRates += safeNum(l.amount); else r.expSeparate += safeNum(l.amount);
+        });
+        const rows = [...map.values()]
+            .map(r => ({ ...r, total: r.itemsValue + r.expSeparate }))
+            .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+        const totalQty = rows.reduce((s, r) => s + r.qty, 0);
+        const totalItems = rows.reduce((s, r) => s + r.itemsValue, 0);
+        const totalSeparate = rows.reduce((s, r) => s + r.expSeparate, 0);
+        const totalInRates = rows.reduce((s, r) => s + r.expInRates, 0);
+        return { rows, totalQty, totalItems, totalSeparate, totalInRates, total: totalItems + totalSeparate };
+    }, [summaryMode, reportData]);
 
     useEffect(() => {
         setCurrentPage(1);
@@ -32667,6 +32813,211 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         }
     };
 
+    // ════════════════════════════════════════════════════════════════
+    //  LOT WISE SUMMARY EXPORTS (item wise + expenses + transaction wise)
+    // ════════════════════════════════════════════════════════════════
+    const summaryFileName = () => {
+        const isPurchase = summaryMode === 'purchase';
+        const lotName = lots.find(l => l.id === selectedLotId)?.name || 'Lot';
+        const safeLot = String(lotName).replace(/[^A-Za-z0-9_-]+/g, '_');
+        return `${isPurchase ? 'Lot_Purchase_Summary' : 'Lot_Sales_Summary'}_${safeLot}`;
+    };
+
+    const downloadSummaryPDF = async () => {
+        if (!reportData || !summaryMode) return;
+        try {
+            const { jsPDF } = await import("jspdf");
+            const { default: autoTable } = await import("jspdf-autotable");
+            const doc = new jsPDF('l', 'mm', 'a4');
+            const pageW = doc.internal.pageSize.getWidth();
+            const pageH = doc.internal.pageSize.getHeight();
+            const isPurchase = summaryMode === 'purchase';
+            const accent = isPurchase ? [217, 119, 6] : [5, 150, 105];
+            const lotName = lots.find(l => l.id === selectedLotId)?.name || 'Lot';
+            const companyName = companyProfile?.name || companyProfile?.companyName || 'Company';
+            const dates = (reportData.details || []).map(t => t.date).filter(Boolean).sort();
+            const period = dates.length ? `${formatDate(dates[0])}  to  ${formatDate(dates[dates.length - 1])}` : '-';
+            const stamp = new Date().toLocaleString();
+
+            // ── HEADER BAND ─────────────────────────────────────
+            doc.setFillColor(26, 43, 83);
+            doc.rect(0, 0, pageW, 24, 'F');
+            doc.setFillColor(accent[0], accent[1], accent[2]);
+            doc.rect(0, 24, pageW, 1.8, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+            doc.text(String(companyName).toUpperCase(), 12, 10);
+            doc.setFontSize(11);
+            doc.text(isPurchase ? 'LOT WISE PURCHASE SUMMARY' : 'LOT WISE SALES SUMMARY', 12, 18.5);
+            doc.setFontSize(10);
+            doc.text(`LOT: ${lotName}`, pageW - 12, 10, { align: 'right' });
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+            doc.text(`Period: ${period}`, pageW - 12, 15.5, { align: 'right' });
+            doc.text(`Generated: ${stamp}`, pageW - 12, 20, { align: 'right' });
+
+            // ── KPI STRIP ──────────────────────────────────────
+            const kpis = [
+                { label: 'ITEMS VALUE', value: formatCurrency(summaryRows.totalValue) },
+                { label: 'EXPENSES (NOT IN RATES)', value: formatCurrency(expenseRows.separateTotal) },
+                { label: isPurchase ? 'TOTAL PURCHASE VALUE' : 'TOTAL SALES VALUE', value: formatCurrency(expenseRows.grandTotal) },
+                { label: 'ITEMS / VOUCHERS', value: `${summaryRows.rows.length} / ${txSummaryRows.rows.length}` }
+            ];
+            const kpiW = (pageW - 24 - 9) / 4;
+            kpis.forEach((k, i) => {
+                const x = 12 + i * (kpiW + 3);
+                doc.setDrawColor(205, 210, 220); doc.setFillColor(i === 2 ? 240 : 248, i === 2 ? 246 : 250, i === 2 ? 252 : 252);
+                doc.roundedRect(x, 30, kpiW, 14, 1.5, 1.5, 'FD');
+                doc.setTextColor(120, 130, 145); doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5);
+                doc.text(k.label, x + 3, 35);
+                doc.setTextColor(i === 2 ? accent[0] : 26, i === 2 ? accent[1] : 43, i === 2 ? accent[2] : 83);
+                doc.setFontSize(11);
+                doc.text(k.value, x + 3, 41.5);
+            });
+
+            let y = 50;
+            const common = {
+                theme: 'grid',
+                styles: { fontSize: 7.5, cellPadding: 1.6, lineColor: [225, 228, 235], lineWidth: 0.1, textColor: [40, 45, 60] },
+                headStyles: { fillColor: [26, 43, 83], textColor: 255, fontStyle: 'bold', fontSize: 7.5, halign: 'center' },
+                footStyles: { fillColor: [240, 244, 250], textColor: [26, 43, 83], fontStyle: 'bold' },
+                alternateRowStyles: { fillColor: [250, 251, 253] },
+                margin: { left: 12, right: 12 }
+            };
+            const sectionTitle = (text) => {
+                doc.setFillColor(accent[0], accent[1], accent[2]);
+                doc.rect(12, y - 4.4, 2.2, 5, 'F');
+                doc.setTextColor(30, 41, 59); doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5);
+                doc.text(text, 16, y);
+                y += 3;
+            };
+            const nf = (v, d = 3) => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: d });
+
+            // ── A. ITEM WISE SUMMARY ─────────────────────────────
+            sectionTitle('A.   ITEM WISE SUMMARY');
+            autoTable(doc, {
+                ...common, startY: y,
+                head: [['#', 'Item', 'Vch(s)', 'Qty', 'Avg Rate', 'Value', '% of Total']],
+                body: summaryRows.rows.map((r, i) => [i + 1, r.name, r.voucherCount, nf(r.qty), formatCurrency(r.rate), formatCurrency(r.value), r.percent.toFixed(2) + '%']),
+                foot: [['', `TOTAL - ${summaryRows.rows.length} item(s)`, '', nf(summaryRows.totalQty), formatCurrency(summaryRows.avgRate), formatCurrency(summaryRows.totalValue), '100.00%']],
+                columnStyles: {
+                    0: { cellWidth: 8, halign: 'center' }, 2: { cellWidth: 16, halign: 'center' },
+                    3: { halign: 'right', cellWidth: 26 }, 4: { halign: 'right', cellWidth: 25 },
+                    5: { halign: 'right', cellWidth: 30 }, 6: { halign: 'right', cellWidth: 22 }
+                },
+                didParseCell: (d) => {
+                    if (d.section === 'body' && d.column.index === 1) d.cell.styles.fontStyle = 'bold';
+                    if (d.section === 'body' && d.column.index === 4) d.cell.styles.textColor = [107, 33, 168];
+                }
+            });
+            y = doc.lastAutoTable.finalY + 9;
+
+            // ── B. EXPENSES OF THIS LOT ──────────────────────────
+            if (expenseRows.rows.length > 0) {
+                sectionTitle('B.   EXPENSES OF THIS LOT (carried on the vouchers)');
+                autoTable(doc, {
+                    ...common, startY: y,
+                    head: [['Expense', 'Vch(s)', 'Included in Rates', 'Not in Rates', 'Total']],
+                    body: expenseRows.rows.map(r => [r.name, r.voucherCount, r.inRates ? formatCurrency(r.inRates) : '-', r.separate ? formatCurrency(r.separate) : '-', formatCurrency(r.total)]),
+                    foot: [['TOTAL EXPENSES', '', formatCurrency(expenseRows.inRatesTotal), formatCurrency(expenseRows.separateTotal), formatCurrency(expenseRows.allTotal)]],
+                    columnStyles: { 1: { halign: 'center', cellWidth: 18 }, 2: { halign: 'right', cellWidth: 40 }, 3: { halign: 'right', cellWidth: 40 }, 4: { halign: 'right', cellWidth: 40 } },
+                    didParseCell: (d) => {
+                        if (d.section === 'body' && d.column.index === 3 && d.cell.raw !== '-') d.cell.styles.textColor = [194, 65, 12];
+                    }
+                });
+                y = doc.lastAutoTable.finalY + 9;
+            }
+
+            // ── C. TRANSACTION WISE DETAIL ───────────────────────
+            sectionTitle('C.   TRANSACTION WISE DETAIL');
+            autoTable(doc, {
+                ...common, startY: y,
+                head: [['Date', 'Ref No', isPurchase ? 'Supplier' : 'Customer', 'Qty', 'Items Value', 'Expenses (not in rates)', 'Expenses (in rates)', 'Total']],
+                body: txSummaryRows.rows.map(r => [formatDate(r.date), r.refNo, r.party, nf(r.qty), formatCurrency(r.itemsValue), r.expSeparate ? formatCurrency(r.expSeparate) : '-', r.expInRates ? formatCurrency(r.expInRates) : '-', formatCurrency(r.total)]),
+                foot: [['', `TOTAL - ${txSummaryRows.rows.length} voucher(s)`, '', nf(txSummaryRows.totalQty), formatCurrency(txSummaryRows.totalItems), formatCurrency(txSummaryRows.totalSeparate), formatCurrency(txSummaryRows.totalInRates), formatCurrency(txSummaryRows.total)]],
+                columnStyles: {
+                    0: { cellWidth: 20 }, 1: { cellWidth: 30 }, 3: { halign: 'right', cellWidth: 22 },
+                    4: { halign: 'right', cellWidth: 26 }, 5: { halign: 'right', cellWidth: 32 },
+                    6: { halign: 'right', cellWidth: 28 }, 7: { halign: 'right', cellWidth: 28 }
+                },
+                didParseCell: (d) => {
+                    if (d.section === 'body' && d.column.index === 7) d.cell.styles.fontStyle = 'bold';
+                }
+            });
+
+            // ── FOOTER ON EVERY PAGE ────────────────────────────
+            const pages = doc.internal.getNumberOfPages();
+            for (let p = 1; p <= pages; p++) {
+                doc.setPage(p);
+                doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(130, 140, 155);
+                doc.text(`${isPurchase ? 'Lot wise Purchase' : 'Lot wise Sales'} Summary  ·  ${lotName}  ·  Items value ${formatCurrency(summaryRows.totalValue)}  ·  Expenses (not in rates) ${formatCurrency(expenseRows.separateTotal)}`, 12, pageH - 6);
+                doc.text(`Page ${p} of ${pages}`, pageW - 12, pageH - 6, { align: 'right' });
+            }
+
+            doc.save(`${summaryFileName()}.pdf`);
+        } catch (e) {
+            console.error('Summary PDF failed', e);
+            alert('Failed to generate the summary PDF.');
+        }
+    };
+
+    const downloadSummaryExcel = async () => {
+        if (!reportData || !summaryMode) return;
+        try {
+            const XLSX = await import("xlsx");
+            const isPurchase = summaryMode === 'purchase';
+            const lotName = lots.find(l => l.id === selectedLotId)?.name || 'Lot';
+            const wb = XLSX.utils.book_new();
+
+            // Sheet 1 — Item wise (+ expense and grand totals)
+            const itemRows = [
+                ...summaryRows.rows.map((r, i) => ({
+                    '#': i + 1, Item: r.name, Vouchers: r.voucherCount, Qty: r.qty,
+                    'Avg Rate': Number(r.rate.toFixed(4)), Value: Number(r.value.toFixed(2)), '% of Total': Number(r.percent.toFixed(2))
+                })),
+                {},
+                { Item: `TOTAL (${summaryRows.rows.length} items)`, Qty: summaryRows.totalQty, 'Avg Rate': Number(summaryRows.avgRate.toFixed(4)), Value: Number(summaryRows.totalValue.toFixed(2)) },
+                { Item: 'Expenses (not in rates)', Value: Number(expenseRows.separateTotal.toFixed(2)) },
+                { Item: isPurchase ? 'TOTAL PURCHASE VALUE' : 'TOTAL SALES VALUE', Value: Number(expenseRows.grandTotal.toFixed(2)) }
+            ];
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(itemRows), 'Item Wise');
+
+            // Sheet 2 — Expenses of the lot
+            if (expenseRows.rows.length > 0) {
+                const expRows = [
+                    ...expenseRows.rows.map(r => ({
+                        Expense: r.name, Vouchers: r.voucherCount,
+                        'Included in Rates': Number(r.inRates.toFixed(2)), 'Not in Rates': Number(r.separate.toFixed(2)),
+                        Total: Number(r.total.toFixed(2))
+                    })),
+                    { Expense: 'TOTAL EXPENSES', 'Included in Rates': Number(expenseRows.inRatesTotal.toFixed(2)), 'Not in Rates': Number(expenseRows.separateTotal.toFixed(2)), Total: Number(expenseRows.allTotal.toFixed(2)) }
+                ];
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(expRows), 'Expenses');
+            }
+
+            // Sheet 3 — Transaction wise
+            const partyCol = isPurchase ? 'Supplier' : 'Customer';
+            const txRows = [
+                ...txSummaryRows.rows.map(r => ({
+                    Date: formatDate(r.date), 'Ref No': r.refNo, [partyCol]: r.party, Qty: r.qty,
+                    'Items Value': Number(r.itemsValue.toFixed(2)), 'Expenses (not in rates)': Number(r.expSeparate.toFixed(2)),
+                    'Expenses (in rates)': Number(r.expInRates.toFixed(2)), Total: Number(r.total.toFixed(2))
+                })),
+                {},
+                {
+                    'Ref No': `TOTAL (${txSummaryRows.rows.length} vouchers)`, Qty: txSummaryRows.totalQty,
+                    'Items Value': Number(txSummaryRows.totalItems.toFixed(2)), 'Expenses (not in rates)': Number(txSummaryRows.totalSeparate.toFixed(2)),
+                    'Expenses (in rates)': Number(txSummaryRows.totalInRates.toFixed(2)), Total: Number(txSummaryRows.total.toFixed(2))
+                }
+            ];
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(txRows), 'Transaction Wise');
+
+            XLSX.writeFile(wb, `${summaryFileName()}.xlsx`);
+        } catch (e) {
+            console.error('Summary Excel failed', e);
+            alert('Failed to generate the summary Excel file.');
+        }
+    };
+
     const getBoxStyle = (filterName, baseColor) => {
         const isActive = activeFilter === filterName;
         return `p-3 rounded-xl border text-center cursor-pointer transition-all duration-200 transform ${isActive ? `ring-2 ring-offset-1 ring-${baseColor}-400 scale-[1.02] shadow-md` : 'hover:shadow-sm opacity-90 hover:opacity-100'}`;
@@ -32688,10 +33039,20 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     </div>
                     {reportData && (
                         <>
-                            <button onClick={downloadPDF} className="bg-red-600 text-white px-3 py-2 rounded font-bold hover:bg-red-700 h-[40px] flex items-center gap-1"><FileText size={16} /> PDF</button>
-                            <button onClick={downloadExcel} className="bg-green-600 text-white px-3 py-2 rounded font-bold hover:bg-green-700 h-[40px] flex items-center gap-1"><FileSpreadsheet size={16} /> Excel</button>
+                            <button onClick={() => (summaryMode ? downloadSummaryPDF() : downloadPDF())} className="bg-red-600 text-white px-3 py-2 rounded font-bold hover:bg-red-700 h-[40px] flex items-center gap-1"><FileText size={16} /> PDF</button>
+                            <button onClick={() => (summaryMode ? downloadSummaryExcel() : downloadExcel())} className="bg-green-600 text-white px-3 py-2 rounded font-bold hover:bg-green-700 h-[40px] flex items-center gap-1"><FileSpreadsheet size={16} /> Excel</button>
                         </>
                     )}
+                    <button
+                        onClick={() => { const next = summaryMode === 'purchase' ? null : 'purchase'; setSummaryMode(next); if (next && !reportData) generateReport(); }}
+                        className={`h-[40px] px-3 rounded font-bold flex items-center gap-1.5 transition-colors ${summaryMode === 'purchase' ? 'bg-amber-700 text-white' : 'bg-amber-500 text-white hover:bg-amber-600'}`}
+                        title="Summarise every purchased item of this lot: quantity, value and average rate"
+                    ><Package size={16} /> Purchase Summary</button>
+                    <button
+                        onClick={() => { const next = summaryMode === 'sales' ? null : 'sales'; setSummaryMode(next); if (next && !reportData) generateReport(); }}
+                        className={`h-[40px] px-3 rounded font-bold flex items-center gap-1.5 transition-colors ${summaryMode === 'sales' ? 'bg-emerald-700 text-white' : 'bg-emerald-500 text-white hover:bg-emerald-600'}`}
+                        title="Summarise every sold item of this lot: quantity, value and average rate"
+                    ><ShoppingBag size={16} /> Sales Summary</button>
                     <button onClick={generateReport} className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 h-[40px]">Show Report</button>
                 </div>
 
@@ -32744,6 +33105,127 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             </div>
                         </div>
 
+                        {/* PURCHASE / SALES ITEM SUMMARY (replaces the transaction list while active) */}
+                        {summaryMode ? (
+                            <div className="flex-1 min-h-0 mx-4 my-4 border rounded-lg overflow-hidden flex flex-col bg-white">
+                                <div className={`shrink-0 px-4 py-2 border-b flex justify-between items-center ${summaryMode === 'purchase' ? 'bg-amber-50' : 'bg-emerald-50'}`}>
+                                    <span className={`text-xs font-bold uppercase ${summaryMode === 'purchase' ? 'text-amber-700' : 'text-emerald-700'}`}>
+                                        {summaryMode === 'purchase' ? 'Purchase Summary' : 'Sales Summary'}
+                                        <span className="text-slate-500"> · Lot: <span className="text-blue-600">{lots.find(l => l.id === selectedLotId)?.name || '-'}</span></span>
+                                        <span className="text-slate-400"> · {summaryRows.rows.length} item(s) from {summaryRows.lineCount} line(s)</span>
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={downloadSummaryPDF} className="px-2 py-1 rounded bg-red-600 text-white text-[10px] font-black uppercase hover:bg-red-700 flex items-center gap-1" title="Download this summary as a detailed PDF (item wise + expenses + transaction wise)"><FileText size={12} /> Download PDF</button>
+                                        <button onClick={downloadSummaryExcel} className="px-2 py-1 rounded bg-green-600 text-white text-[10px] font-black uppercase hover:bg-green-700 flex items-center gap-1" title="Download this summary as Excel (item wise / expenses / transaction wise sheets)"><FileSpreadsheet size={12} /> Excel</button>
+                                        <button onClick={() => setSummaryMode(null)} className="text-xs font-bold text-blue-600 hover:underline uppercase">Back to Transactions</button>
+                                    </div>
+                                </div>
+                                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                                    <table className="w-full text-left text-sm">
+                                        <thead className="bg-slate-100 text-slate-600 uppercase text-xs sticky top-0 z-10">
+                                            <tr>
+                                                <th className="p-3 w-12">#</th>
+                                                <th className="p-3">Item</th>
+                                                <th className="p-3 text-center">Vch(s)</th>
+                                                <th className="p-3 text-right">Qty</th>
+                                                <th className="p-3 text-right">Avg Rate</th>
+                                                <th className="p-3 text-right">Value</th>
+                                                <th className="p-3 text-right w-24">% of Total</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                            {summaryRows.rows.map((r, i) => (
+                                                <tr key={r.key + '-' + i} className="hover:bg-blue-50 transition-colors">
+                                                    <td className="p-3 text-slate-400 font-mono text-xs">{i + 1}</td>
+                                                    <td className="p-3 font-bold text-slate-700">{r.name}</td>
+                                                    <td className="p-3 text-center font-mono text-xs text-slate-500">{r.voucherCount}</td>
+                                                    <td className="p-3 text-right font-mono">{r.qty.toLocaleString('en-US', { maximumFractionDigits: 3 })}</td>
+                                                    <td className="p-3 text-right font-mono font-bold text-purple-800">{formatCurrency(r.rate)}</td>
+                                                    <td className="p-3 text-right font-mono font-bold">{formatCurrency(r.value)}</td>
+                                                    <td className="p-3 text-right font-mono text-xs text-slate-500">{r.percent.toFixed(2)}%</td>
+                                                </tr>
+                                            ))}
+                                            {summaryRows.rows.length === 0 && (
+                                                <tr><td colSpan="7" className="p-6 text-center text-gray-400">No {summaryMode === 'purchase' ? 'purchase' : 'sales'} item lines found for this lot.</td></tr>
+                                            )}
+                                        </tbody>
+                                        {summaryRows.rows.length > 0 && (
+                                            <tfoot className="bg-slate-50 font-black sticky bottom-0 border-t-2 border-slate-300">
+                                                <tr>
+                                                    <td className="p-3"></td>
+                                                    <td className="p-3 uppercase text-xs text-slate-600">Total · {summaryRows.rows.length} item(s)</td>
+                                                    <td className="p-3"></td>
+                                                    <td className="p-3 text-right font-mono">{summaryRows.totalQty.toLocaleString('en-US', { maximumFractionDigits: 3 })}</td>
+                                                    <td className="p-3 text-right font-mono text-purple-800">{formatCurrency(summaryRows.avgRate)}</td>
+                                                    <td className="p-3 text-right font-mono">{formatCurrency(summaryRows.totalValue)}</td>
+                                                    <td className="p-3"></td>
+                                                </tr>
+                                            </tfoot>
+                                        )}
+                                    </table>
+
+                                    {/* EXPENSES OF THIS LOT CARRIED ON THE VOUCHERS */}
+                                    {expenseRows.rows.length > 0 && (
+                                        <div className="border-t-2 border-slate-300 mt-1">
+                                            <div className="px-4 py-2 bg-orange-50 text-[11px] font-black uppercase text-orange-700 flex justify-between items-center">
+                                                <span>Expenses of this lot on {summaryMode === 'purchase' ? 'purchase' : 'sales'} vouchers</span>
+                                                <span className="text-orange-600">Not in rates: {formatCurrency(expenseRows.separateTotal)}</span>
+                                            </div>
+                                            <table className="w-full text-left text-sm">
+                                                <thead className="bg-slate-100 text-slate-600 uppercase text-xs">
+                                                    <tr>
+                                                        <th className="p-3">Expense</th>
+                                                        <th className="p-3 text-center">Vch(s)</th>
+                                                        <th className="p-3 text-right">Included in Rates</th>
+                                                        <th className="p-3 text-right">Not in Rates</th>
+                                                        <th className="p-3 text-right">Total</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100">
+                                                    {expenseRows.rows.map((r, i) => (
+                                                        <tr key={r.key + '-exp-' + i} className="hover:bg-orange-50 transition-colors">
+                                                            <td className="p-3 font-bold text-slate-700">{r.name}</td>
+                                                            <td className="p-3 text-center font-mono text-xs text-slate-500">{r.voucherCount}</td>
+                                                            <td className="p-3 text-right font-mono text-slate-400">{r.inRates ? formatCurrency(r.inRates) : '-'}</td>
+                                                            <td className="p-3 text-right font-mono font-bold text-orange-700">{r.separate ? formatCurrency(r.separate) : '-'}</td>
+                                                            <td className="p-3 text-right font-mono font-bold">{formatCurrency(r.total)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                                <tfoot className="bg-orange-50 font-black border-t">
+                                                    <tr>
+                                                        <td className="p-3 text-xs uppercase text-slate-600">Total Expenses</td>
+                                                        <td className="p-3"></td>
+                                                        <td className="p-3 text-right font-mono text-slate-500">{formatCurrency(expenseRows.inRatesTotal)}</td>
+                                                        <td className="p-3 text-right font-mono text-orange-700">{formatCurrency(expenseRows.separateTotal)}</td>
+                                                        <td className="p-3 text-right font-mono">{formatCurrency(expenseRows.allTotal)}</td>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
+                                            <div className="px-4 py-2 text-[10px] text-slate-500 italic">
+                                                “Not in Rates” are charged on top of the item values (sales vouchers with expenses added, or invoices where expenses were not taken into the rates) — they are added to the item value in the total below. “Included in Rates” expenses are already absorbed in the item rates above, so they are not counted twice.
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                                {/* GRAND TOTAL OF THIS SUMMARY */}
+                                <div className="shrink-0 grid grid-cols-3 border-t-2 border-slate-300 bg-slate-50">
+                                    <div className="p-3 text-center border-r border-slate-200">
+                                        <div className="text-[10px] uppercase text-slate-500">Items Value</div>
+                                        <div className="font-mono font-black">{formatCurrency(summaryRows.totalValue)}</div>
+                                    </div>
+                                    <div className="p-3 text-center border-r border-slate-200">
+                                        <div className="text-[10px] uppercase text-orange-600">Expenses (not in rates)</div>
+                                        <div className="font-mono font-black text-orange-700">{formatCurrency(expenseRows.separateTotal)}</div>
+                                    </div>
+                                    <div className={`p-3 text-center ${summaryMode === 'purchase' ? 'bg-amber-50' : 'bg-emerald-50'}`}>
+                                        <div className="text-[10px] uppercase text-blue-700 font-black">{summaryMode === 'purchase' ? 'Total Purchase Value' : 'Total Sales Value'}</div>
+                                        <div className="font-mono font-black text-blue-800">{formatCurrency(expenseRows.grandTotal)}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                        <>
                         {/* DETAILED TABLE — fills the page, scrolls internally */}
                         <div className="flex-1 min-h-0 mx-4 my-4 border rounded-lg overflow-hidden flex flex-col bg-white">
                             <div className="shrink-0 bg-slate-50 px-4 py-2 border-b flex justify-between items-center">
@@ -32808,6 +33290,8 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     </button>
                                 </div>
                             </div>
+                        </>
+                        )}
 
                     </div>
                 )}
