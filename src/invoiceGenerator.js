@@ -311,6 +311,21 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         const totalQty = data.items.reduce((s, i) => s + Number(i.quantity || 0), 0);
         const grandTotal = Number(data.grandTotalForeign || 0);
 
+        // Sales invoices created with "expenses NOT included in rates" carry the additional expenses
+        // inside the invoice total, so print an explicit line to justify that total (optional).
+        const addlExpenseTotal = Number(data.addlExpTotal || 0) ||
+            (Array.isArray(data.expensesList) ? data.expensesList.reduce((s, e) => s + Number(e.amount || 0), 0) : 0);
+        const expensesAddedToTotal = data.expenseMode === 'add' && addlExpenseTotal > 0;
+        const showExpenseInTotal = data.addExpenseToTotal !== false; // default ON
+        const printedTotal = (expensesAddedToTotal && !showExpenseInTotal)
+            ? Math.round((grandTotal - addlExpenseTotal) * 100) / 100
+            : grandTotal;
+
+        // Extra line under the item rows so the TOTAL (which already contains these expenses) is justified
+        if (expensesAddedToTotal && showExpenseInTotal) {
+            body.push(["", "Add: Expenses (not included in rates)", "", "", "", addlExpenseTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]);
+        }
+
         // Auto-compression: row font/padding scale down in tiers as the line-item count grows,
         // so the core invoice (items + totals + declaration + signature) always fits on page 1.
         const itemCount = data.items.length;
@@ -330,9 +345,14 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
             styles: { fontSize: rowFontSize, cellPadding: rowPadding, lineColor: 0, lineWidth: 0.1, valign: 'middle', textColor: 0, font: "helvetica" },
             headStyles: { fillColor: [240, 240, 240], fontStyle: 'bold', halign: 'center', lineWidth: 0.1, lineColor: 0 },
             columnStyles: { 0: { cellWidth: 12, halign: 'center' }, 1: { cellWidth: 80 }, 2: { cellWidth: 25, halign: 'right' }, 3: { cellWidth: 20, halign: 'right' }, 4: { cellWidth: 15, halign: 'center' }, 5: { cellWidth: 38, halign: 'right' } },
-            foot: [["", "TOTAL", totalQty.toLocaleString('en-US', { minimumFractionDigits: 2 }), "", "", grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]],
+            foot: [["", "TOTAL", totalQty.toLocaleString('en-US', { minimumFractionDigits: 2 }), "", "", printedTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]],
             footStyles: { fontStyle: 'bold', halign: 'right', fillColor: [255, 255, 255], textColor: 0, lineWidth: 0.1, lineColor: 0 },
-            didParseCell: (data) => { if (data.section === 'foot' && data.column.index === 1) data.cell.styles.halign = 'center'; }
+            didParseCell: (data) => {
+                if (data.section === 'foot' && data.column.index === 1) data.cell.styles.halign = 'center';
+                if (data.section === 'body' && String(data.row.raw?.[1] || '').startsWith('Add: Expenses')) {
+                    data.cell.styles.fontStyle = 'bold';
+                }
+            }
         });
 
         let finalY = doc.lastAutoTable.finalY;
@@ -348,7 +368,7 @@ export const generateInvoicePDF = async (data, action = 'download', existingDoc 
         doc.setFontSize(8);
         const amtY = finalY + 5;
         doc.text("Amount Chargeable (inwards)", margin + 2, amtY);
-        doc.text(`${convertNumberToWords(grandTotal)} Only.`, margin + 2, amtY + 5);
+        doc.text(`${convertNumberToWords(printedTotal)} Only.`, margin + 2, amtY + 5);
         doc.text("E.&O.E", pageWidth - margin - 2, amtY, { align: 'right' });
 
         if (data.taxAmount > 0) {

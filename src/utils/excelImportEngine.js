@@ -15,6 +15,10 @@ import { collection, doc, writeBatch, setDoc, getDoc, updateDoc, serverTimestamp
 
 export const BATCH_HISTORY_KEY = 'accpro_excel_batch_history';
 
+// Master-name normalisation: matching ignores CAPITAL/small letters and ALL spaces/punctuation,
+// so "OMAN 001", "oman001" and "oman-001" are treated as the SAME master name.
+export const normalizeMasterName = (name = '') => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
 /**
  * Parses numeric Excel dates (e.g. 46054) or date strings to YYYY-MM-DD
  */
@@ -115,11 +119,13 @@ export function matchMaster(name, masters) {
         { type: 'tax', items: masters.taxRates || [] },
     ];
 
-    // 1. Check exact match
+    // 1. Check exact match (ignoring CAPITAL/small letters and spaces/punctuation,
+    //    so "OMAN 001" and "oman001" resolve to the existing master)
+    const normQuery = normalizeMasterName(query);
     for (const group of masterLists) {
         for (const item of group.items) {
             const itemName = String(item.name || '').trim().toLowerCase();
-            if (itemName === query) {
+            if (itemName === query || (normQuery && normalizeMasterName(itemName) === normQuery)) {
                 return { match: item, type: group.type, score: 1.0, isExact: true };
             }
         }
@@ -1041,6 +1047,15 @@ export async function createMissingMaster({ name, type = 'party', partyRole = 's
         type === 'tax' ? 'tax_rates' : 'parties';
 
     const cleanName = name.trim();
+    const cleanKey = normalizeMasterName(cleanName);
+
+    // DUPLICATE GUARD: never create a master whose name already exists (matching ignores
+    // CAPITAL/small letters and spaces/punctuation) — hand back the existing record instead.
+    try {
+        const existingSnap = await getDocs(query(collection(db, collectionName), where('userId', '==', targetUid)));
+        const dupDoc = existingSnap.docs.find(d => normalizeMasterName(d.data()?.name) === cleanKey);
+        if (dupDoc) return { id: dupDoc.id, ...dupDoc.data(), collectionName, alreadyExisted: true };
+    } catch (e) { /* offline / missing index — fall through and create */ }
 
     const newDoc = {
         name: cleanName,

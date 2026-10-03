@@ -1504,6 +1504,36 @@ const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
     return false;
 };
 
+// ── MASTER NAME DUPLICATE RULES ────────────────────────────────────────────
+// Two masters are the SAME name when they match ignoring CAPITAL/small letters and
+// every space / dash / dot / slash:
+//   "SPVC 491" = "spvc491" = "spvc   491" = "spvc-491"  ->  "spvc491"
+const normalizeMasterName = (name = '') => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Very-close spelling (typo) detection — used only as a WARNING, never a hard block.
+// Same figures, length within 1 and edit distance <= 1 (e.g. "spvc491" vs "spv491").
+const masterKeyDigits = (key) => key.replace(/[^0-9]/g, '').split('').sort().join('');
+const withinEditDistance = (a, b, max) => {
+    if (Math.abs(a.length - b.length) > max) return false;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        const cur = [i];
+        for (let j = 1; j <= b.length; j++) {
+            cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        prev = cur;
+    }
+    return prev[b.length] <= max;
+};
+const isNearMasterName = (nameA, nameB) => {
+    const a = normalizeMasterName(nameA);
+    const b = normalizeMasterName(nameB);
+    if (!a || !b || a === b) return false;
+    if (Math.min(a.length, b.length) < 4) return false;
+    if (masterKeyDigits(a) !== masterKeyDigits(b)) return false;
+    return withinEditDistance(a, b, 1);
+};
+
 // 🔥 CONTAINER DUPLICATE CHECK (Invoices Only)
 const checkDuplicateContainer = async (db, containerNo, userId, excludeId = null) => {
     if (!containerNo || !containerNo.trim()) return false;
@@ -7585,57 +7615,38 @@ export default function App() {
 
     const checkAccountNameDuplicate = (name, excludeId = null) => {
         if (!name || !name.trim()) return null;
-        const cleanName = name.trim().toLowerCase();
+        const key = normalizeMasterName(name);
+        if (!key) return null;
 
-        // 1. Check parties
-        const partyMatch = parties.find(p => p.id !== excludeId && p.name && p.name.trim().toLowerCase() === cleanName);
-        if (partyMatch) {
-            let category = 'Customers/Suppliers';
-            if (partyMatch.type === 'customer') {
-                category = 'customers';
-            } else if (partyMatch.group) {
-                category = partyMatch.group;
+        // Every master where a duplicated name is never allowed. Matching ignores CAPITAL/small
+        // letters and spaces/punctuation, so "SPVC 491", "spvc491" and "spvc   491" collide.
+        const lists = [
+            { items: parties, labelFor: (p) => (p.type === 'customer' ? 'customers' : (p.group || 'Customers/Suppliers')) },
+            { items: accounts, label: 'Cash/Bank' },
+            { items: expenses, labelFor: (e) => e.group || 'Indirect Expenses' },
+            { items: directExpenseAccounts, labelFor: (e) => e.group || 'Direct Expenses' },
+            { items: incomeAccounts, label: 'Indirect Incomes' },
+            { items: capitalAccounts, label: 'Capital Accounts' },
+            { items: assetAccounts, label: 'Asset Accounts' },
+            { items: products, label: 'Items / Stock Items' },
+            { items: lots, label: 'Lot Numbers' }
+        ];
+
+        let nearHit = null;
+        for (const list of lists) {
+            for (const item of (list.items || [])) {
+                if (!item || !item.name) continue;
+                if (excludeId && item.id === excludeId) continue;
+                const itemKey = normalizeMasterName(item.name);
+                if (!itemKey) continue;
+                const category = list.labelFor ? list.labelFor(item) : list.label;
+                if (itemKey === key) return category;                    // same name -> hard block
+                if (!nearHit && isNearMasterName(name, item.name)) {
+                    nearHit = `${category} → "${item.name}"`;             // typo-level -> ask only
+                }
             }
-            return category;
         }
-
-        // 2. Check accounts (Cash/Bank)
-        const accountMatch = accounts.find(a => a.id !== excludeId && a.name && a.name.trim().toLowerCase() === cleanName);
-        if (accountMatch) {
-            return 'Cash/Bank';
-        }
-
-        // 3. Check expenses (Indirect Expenses)
-        const expenseMatch = expenses.find(e => e.id !== excludeId && e.name && e.name.trim().toLowerCase() === cleanName);
-        if (expenseMatch) {
-            return expenseMatch.group || 'Indirect Expenses';
-        }
-
-        // 4. Check directExpenseAccounts (Direct Expenses)
-        const directExpenseMatch = directExpenseAccounts.find(e => e.id !== excludeId && e.name && e.name.trim().toLowerCase() === cleanName);
-        if (directExpenseMatch) {
-            return directExpenseMatch.group || 'Direct Expenses';
-        }
-
-        // 5. Check incomeAccounts (Indirect Incomes)
-        const incomeMatch = incomeAccounts.find(i => i.id !== excludeId && i.name && i.name.trim().toLowerCase() === cleanName);
-        if (incomeMatch) {
-            return 'Indirect Incomes';
-        }
-
-        // 6. Check capitalAccounts (Capital Accounts)
-        const capitalMatch = capitalAccounts.find(c => c.id !== excludeId && c.name && c.name.trim().toLowerCase() === cleanName);
-        if (capitalMatch) {
-            return 'Capital Accounts';
-        }
-
-        // 7. Check assetAccounts (Asset Accounts)
-        const assetMatch = assetAccounts.find(a => a.id !== excludeId && a.name && a.name.trim().toLowerCase() === cleanName);
-        if (assetMatch) {
-            return 'Asset Accounts';
-        }
-
-        return null;
+        return nearHit ? `~${nearHit}` : null;
     };
 
     // --- ADD THIS NEW FUNCTION IN APP.JSX ---
@@ -11043,6 +11054,7 @@ export default function App() {
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
                 onItemClick={(item) => handleStockItemClick(item.id)}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -11175,6 +11187,7 @@ export default function App() {
                 onDelete={(id) => handleDelete("lots", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
+                checkDuplicateName={checkAccountNameDuplicate}
             />
 
             <MasterModal
@@ -14181,10 +14194,17 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
     const handleSubmit = async (e) => {
         e.preventDefault();
 
-        // Check for duplicate account names
-        const accountCollections = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts'];
+        // Check for duplicate master names — matching ignores CAPITAL/small letters and
+        // spaces/punctuation, so "SPVC 491" / "spvc491" / "spvc   491" are the same name.
+        const accountCollections = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots'];
         if (accountCollections.includes(collectionName) && checkDuplicateName) {
-            const duplicateCategory = checkDuplicateName(formData.name, editingId);
+            let duplicateCategory = checkDuplicateName(formData.name, editingId);
+            // "~" prefix = same figures, one-character spelling difference (typo / spacing) -> ask, do not block
+            if (duplicateCategory && String(duplicateCategory).startsWith('~')) {
+                const similar = String(duplicateCategory).slice(1).trim();
+                if (!window.confirm(`A very similar master already exists → ${similar}.\n\n"${formData.name}" looks like the same master (only a typo / spacing difference).\n\nCreate it anyway?`)) return;
+                duplicateCategory = null;
+            }
             if (duplicateCategory) {
                 alert(`âŒ Duplicate Account Name: "${formData.name}" is already used in ${duplicateCategory} category.`);
                 return;
@@ -15317,8 +15337,54 @@ const InvoiceModal = (props) => {
         stampScale: 1.0,
         documentType: 'invoice', // 'invoice', 'packing_list', etc.
         generateMode: 'single', // 'single' or 'all'
-        showExpenses: false // Sales: show additional-expenses breakdown in the generated PDF
+        showExpenses: false, // Sales: show additional-expenses breakdown in the generated PDF
+        addExpenseToTotal: true // Sales 'expenses not included in rates': print the expense total line and include it in the printed total
     });
+
+    // ── LOT QUICK-CREATE (stay inside this voucher) ──────────────────────────
+    // "+ New Lot No." opens the Lots master modal ON TOP of this voucher (modal stack keeps it
+    // open); as soon as the new lot appears in the live `lots` list it is auto-selected here.
+    const pendingLotSelectRef = useRef(false);
+    const prevLotIdsRef = useRef(new Set());
+    const requestNewLot = () => {
+        if (typeof onQuickCreate !== 'function') return;
+        pendingLotSelectRef.current = true;
+        onQuickCreate('lots');
+    };
+    useEffect(() => {
+        const prevIds = prevLotIdsRef.current;
+        const added = lots.filter(l => !prevIds.has(l.id));
+        prevLotIdsRef.current = new Set(lots.map(l => l.id));
+        if (!pendingLotSelectRef.current || added.length === 0) return;
+        const newLot = added[added.length - 1];
+        pendingLotSelectRef.current = false;
+        setFormData(f => ({ ...f, lotId: newLot.id }));
+        setLotId(newLot.id);
+        setEnableLot(false);
+        if (typeof showToast === 'function') showToast({ type: 'success', title: 'Lot Created', message: `"${newLot.name}" created and selected on this voucher.` });
+    }, [lots]);
+
+    // ── DUPLICATE VOUCHER NUMBER RULE ────────────────────────────────────────
+    // A voucher/reference number must be unique across ALL vouchers (invoices, payments,
+    // journal vouchers, stock journals). Live red warning while typing + hard block on save.
+    const [refNoDuplicate, setRefNoDuplicate] = useState(null);
+    useEffect(() => {
+        if (!isOpen) { setRefNoDuplicate(null); return; }
+        const raw = String(formData.refNo || '').trim();
+        if (!raw) { setRefNoDuplicate(null); return; }
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            try {
+                const targetUid = dataOwnerId || user?.uid;
+                if (!targetUid) return;
+                const dup = await checkGlobalDuplicate(db, raw, targetUid, initialData?.id);
+                if (!cancelled) setRefNoDuplicate(dup || null);
+            } catch (e) {
+                if (!cancelled) setRefNoDuplicate(null);
+            }
+        }, 500);
+        return () => { cancelled = true; clearTimeout(timer); };
+    }, [formData.refNo, isOpen, dataOwnerId, user, initialData?.id]);
     // ✅ HBZ Bank Covering Letter Options
     const [hbzOptions, setHbzOptions] = useState({
         releaseAgainstPayment: false,
@@ -15920,9 +15986,12 @@ const InvoiceModal = (props) => {
             grandTotalBase: round3(grandTotalBase), 
             totalQty: round3(totalQty), 
             totalPieces: round3(totalPieces), 
-            addlExpTotal: round3(addlExpTotal) 
+            addlExpTotal: round3(addlExpTotal),
+            // When sales expenses are "not included in rates" they sit inside the total, so the PDF
+            // needs to know whether to print (and include) that expense total line. Default: yes.
+            addExpenseToTotal: printOptions.addExpenseToTotal !== false
         };
-    }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode]);
+    }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal]);
 
     const handleSave = async () => {
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
@@ -16018,6 +16087,7 @@ const InvoiceModal = (props) => {
         const targetUid = dataOwnerId || user.uid;
         const duplicateCol = await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id);
         if (duplicateCol) {
+            setRefNoDuplicate(duplicateCol);
             return alert(`âŒ Duplicate Reference Number! This Ref No exists in another transaction (${duplicateCol}).`);
         }
 
@@ -16484,15 +16554,26 @@ const InvoiceModal = (props) => {
                     {/* C. QUICK PICKERS & TOOLS (HIGH DENSITY) */}
                     <div className="flex-1 flex items-center h-full px-2 gap-1.5 overflow-visible">
                         
-                        {/* REF NO — in top bar */}
-                        <div className="h-7 flex items-center bg-white/10 border border-white/20 rounded-md px-2 shrink-0">
+                        {/* REF NO — in top bar (duplicate voucher numbers are not allowed) */}
+                        <div
+                            className={`h-7 flex items-center rounded-md px-2 shrink-0 border ${refNoDuplicate ? 'bg-red-500/25 border-red-400 ring-1 ring-red-400' : 'bg-white/10 border-white/20'}`}
+                            title={refNoDuplicate ? `Duplicate voucher number! Already used in ${refNoDuplicate}` : 'Voucher / Reference Number'}
+                        >
                             <input
                                 className="text-[9px] font-black text-white bg-transparent outline-none w-24 uppercase placeholder:text-white/30"
                                 value={formData.refNo}
                                 onChange={e => setFormData({ ...formData, refNo: e.target.value })}
                                 placeholder="REF NO"
                             />
+                            {refNoDuplicate && (
+                                <span className="ml-1 text-[8px] font-black text-red-200 uppercase animate-pulse">DUP!</span>
+                            )}
                         </div>
+                        {refNoDuplicate && (
+                            <div className="h-7 flex items-center px-2 rounded-md bg-red-600 text-white text-[8px] font-black uppercase shrink-0 max-w-[220px] truncate" title={`Duplicate voucher number found in ${refNoDuplicate}`}>
+                                Duplicate Voucher No — {refNoDuplicate}
+                            </div>
+                        )}
 
                         {/* TAX INV NO — inside this field as hint */}
                         {['purchase', 'sales'].includes(voucherType) && (
@@ -16527,14 +16608,21 @@ const InvoiceModal = (props) => {
                                 <ChevronDown size={8} className="text-white/60" />
                             </button>
                             {enableLot && (
-                                <div className="absolute top-full left-0 mt-1 w-56 bg-white rounded-xl shadow-2xl border border-slate-200 p-2 z-[4000] animate-in zoom-in-95">
+                                <div className="absolute top-full left-0 mt-1 w-64 bg-white rounded-xl shadow-2xl border border-slate-200 p-2 z-[4000] animate-in zoom-in-95">
                                     <div className="text-[9px] font-black text-slate-400 mb-2 px-2 uppercase tracking-widest border-b pb-1">Select Lot Identifier</div>
                                     <SearchableSelect
                                         options={lots.filter(l => l.status !== 'Closed').map(l => ({ value: l.id, text: l.name }))}
                                         onChange={(val) => { setFormData({ ...formData, lotId: val }); setLotId(val || ''); setEnableLot(false); }}
                                         placeholder="Search Lot..."
                                         className="h-8 text-[10px]"
+                                        onCreateNew={requestNewLot}
                                     />
+                                    <button type="button" onClick={requestNewLot} className="w-full mt-2 py-1.5 text-[9px] font-black text-blue-700 bg-blue-50 border border-dashed border-blue-300 hover:bg-blue-100 rounded">
+                                        + New Lot No. (Ctrl+C)
+                                    </button>
+                                    {lots.filter(l => l.status !== 'Closed').length === 0 && (
+                                        <p className="text-[9px] text-amber-600 px-1 pt-1 leading-tight">No lot numbers yet — click “+ New Lot No.” to create one here without leaving this voucher.</p>
+                                    )}
                                     {formData.lotId && (
                                         <button onClick={() => { setFormData({...formData, lotId: null}); setLotId(''); setEnableLot(false); }} className="w-full mt-2 py-1.5 text-[9px] font-black text-red-500 hover:bg-red-50 rounded">Clear Selection</button>
                                     )}
@@ -16858,7 +16946,7 @@ const InvoiceModal = (props) => {
                                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                                             <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Lot Allocation</label>
                                             <div className="w-full">
-                                                <SearchableSelect options={lots.filter(l => l.status !== 'Closed').map(l => ({ value: l.id, text: l.name }))} value={lotId} onChange={setLotId} placeholder="Select Lot Identifier (Optional)..." />
+                                                <SearchableSelect options={lots.filter(l => l.status !== 'Closed').map(l => ({ value: l.id, text: l.name }))} value={lotId} onChange={setLotId} placeholder="Select Lot Identifier (Optional)..." onCreateNew={requestNewLot} />
                                             </div>
                                         </div>
 
@@ -17441,7 +17529,7 @@ const InvoiceModal = (props) => {
                     {/* Right: balance value only */}
                     <div className="flex items-center shrink-0 border-l-2 border-slate-300 pl-5">
                         <span className="text-[22px] font-black text-[#1a2b53] font-mono leading-none">{format3(totals.grandTotalForeign)}</span>
-                        {formData.currencyId !== 'BASE' && <span className="text-[9px] font-bold text-slate-400 font-mono ml-2">{currencySymbol} {format3(totals.grandTotalBase)}</span>}
+                        {formData.currencyId !== 'BASE' && <span className="text-[11px] font-black text-purple-800 font-mono ml-2" title={`Base currency equivalent (${currencySymbol})`}>{currencySymbol} {format3(totals.grandTotalBase)}</span>}
                     </div>
                     {initialData?.id && (
                         <button type="button" onClick={() => { if (onDeleteTransaction) onDeleteTransaction(initialData.id, voucherType); onClose(); }} className="text-slate-400 hover:text-red-500 p-1 transition-all active:scale-90 shrink-0 ml-2" title="Delete Transaction">
@@ -17889,6 +17977,20 @@ const InvoiceModal = (props) => {
                                                     <span className="text-sm font-bold text-slate-700">Show Expenses in PDF</span>
                                                 </label>
                                                 <p className="text-[10px] text-slate-500 pl-6">Adds an expense breakdown to the PDF for the customer's reference (whether or not they are included in the item rates).</p>
+                                            </div>
+                                        )}
+
+                                        {/* ✅ Expenses added separately: show (and include) the expense total line in the invoice body */}
+                                        {voucherType === 'sales' && salesExpenseMode === 'add' && addlExpenses.filter(e => e.expenseId && Number(e.amount) > 0).length > 0 && (
+                                            <div className="flex flex-col gap-1 pt-2 border-t mt-2">
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input type="checkbox" className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500" checked={printOptions.addExpenseToTotal !== false} onChange={e => setPrintOptions({ ...printOptions, addExpenseToTotal: e.target.checked })} />
+                                                    <span className="text-sm font-bold text-slate-700">Add Expenses total in Invoice value</span>
+                                                </label>
+                                                <p className="text-[10px] text-slate-500 pl-6">
+                                                    ON: the invoice prints an <b>“Add: Expenses (not included in rates)”</b> line above the TOTAL and that total includes the expenses.
+                                                    OFF: the expense line is hidden and the printed total shows the items only.
+                                                </p>
                                             </div>
                                         )}
                                     </div>
