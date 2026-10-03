@@ -30678,25 +30678,28 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
 
     return (
         <>
-            <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="Lot Wise Details" maxWidth="max-w-5xl">
-                <div className="space-y-4">
+            <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="Lot Wise Details" maxWidth="max-w-5xl" defaultMaximized={true} removePadding={true} noContentScroll={true}>
+                <div className="flex-1 min-h-0 flex flex-col bg-slate-50/40">
                     {/* Search Bar */}
-                    <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                        <input
-                            type="text"
-                            placeholder="Search Lot Number..."
-                            className="w-full pl-10 p-3 border rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors outline-none focus:ring-2 focus:ring-blue-100"
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            autoFocus
-                        />
+                    <div className="shrink-0 px-4 py-3 bg-white border-b border-slate-200">
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                            <input
+                                type="text"
+                                placeholder="Search Lot Number..."
+                                className="w-full pl-10 p-3 border rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors outline-none focus:ring-2 focus:ring-blue-100"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
                     </div>
 
-                    {/* Detailed Table */}
-                    <div className="border rounded-xl overflow-hidden shadow-sm">
+                    {/* Detailed Table — fills the page, scrolls internally */}
+                    <div className="flex-1 min-h-0 mx-4 mt-4 border rounded-xl overflow-hidden shadow-sm bg-white flex flex-col">
+                    <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                         <table className="w-full text-sm text-left">
-                            <thead className="bg-slate-100 text-slate-600 font-bold uppercase text-xs">
+                            <thead className="bg-slate-100 text-slate-600 font-bold uppercase text-xs sticky top-0 z-10">
                                 <tr>
                                     <th className="p-3 pl-4">Lot No.</th>
                                     <th className="p-3 text-center bg-blue-50/50 text-blue-700">Qty In</th>
@@ -30772,14 +30775,15 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                             </tbody>
                         </table>
                     </div>
+                    </div>
 
-                    {/* PAGINATION CONTROLS */}
-                    {totalPages > 1 && (
-                        <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl mt-2">
-                            <div className="text-[10px] font-black uppercase text-slate-500">
-                                Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
-                            </div>
-                            <div className="flex gap-1">
+                    {/* PAGINATION CONTROLS — pinned full-page footer */}
+                    <div className="shrink-0 flex items-center justify-between px-4 py-2.5 bg-white border-t border-slate-200">
+                        <div className="text-[10px] font-black uppercase text-slate-500">
+                            Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
+                            <span className="text-slate-400"> · {filteredLots.length} Lot(s)</span>
+                        </div>
+                        <div className="flex gap-1">
                                 <button
                                     onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                                     disabled={currentPage === 1}
@@ -30796,7 +30800,6 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                 </button>
                             </div>
                         </div>
-                    )}
                 </div>
             </Modal>
 
@@ -32542,10 +32545,10 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} title="Lot Profitability Report" maxWidth="max-w-7xl">
-            <div className="space-y-4">
+        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} title="Lot Profitability Report" maxWidth="max-w-7xl" defaultMaximized={true} removePadding={true} noContentScroll={true}>
+            <div className="flex-1 min-h-0 flex flex-col bg-slate-50/40">
 
-                <div className="flex gap-2 items-end no-print">
+                <div className="shrink-0 flex gap-2 items-end no-print px-4 py-3 bg-white border-b border-slate-200">
                     <div className="flex-1">
                         <label className="text-xs font-bold text-gray-500">Select Lot No.</label>
                         <select className="w-full p-2 border rounded font-bold" value={selectedLotId} onChange={e => setSelectedLotId(e.target.value)}>
@@ -32562,11 +32565,11 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                     <button onClick={generateReport} className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 h-[40px]">Show Report</button>
                 </div>
 
-                {loading ? <div className="p-10 text-center"><LoadingSpinner /></div> : reportData && (
-                    <div className="animate-in fade-in space-y-4">
+                {loading ? <div className="flex-1 flex items-center justify-center"><LoadingSpinner /></div> : reportData && (
+                    <div className="animate-in fade-in flex flex-col flex-1 min-h-0">
 
                         {/* 1. STOCK SUMMARY ROW */}
-                        <div className="grid grid-cols-4 gap-3">
+                        <div className="grid grid-cols-4 gap-3 shrink-0 px-4 pt-4">
                             <div onClick={() => setActiveFilter('PURCHASE')} className={`${getBoxStyle('PURCHASE', 'blue')} bg-blue-50 border-blue-100`}>
                                 <div className="text-xs font-bold text-blue-500 uppercase">Qty Purchased</div>
                                 <div className="text-lg font-bold text-blue-800">{reportData.summary.qtyIn}</div>
@@ -32586,7 +32589,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>
 
                         {/* 2. FINANCIAL SUMMARY ROW */}
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 shrink-0 px-4 pt-3">
                             <div onClick={() => setActiveFilter('PURCHASE')} className={`${getBoxStyle('PURCHASE', 'blue')} bg-white border-blue-200`}>
                                 <div className="text-[10px] text-gray-500 uppercase">Purchases</div>
                                 <div className="font-bold">{formatCurrency(reportData.summary.totalPurchase)}</div>
@@ -32611,16 +32614,17 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             </div>
                         </div>
 
-                        {/* DETAILED TABLE */}
-                        <div className="border rounded-lg overflow-hidden">
-                            <div className="bg-slate-50 px-4 py-2 border-b flex justify-between items-center">
+                        {/* DETAILED TABLE — fills the page, scrolls internally */}
+                        <div className="flex-1 min-h-0 mx-4 my-4 border rounded-lg overflow-hidden flex flex-col bg-white">
+                            <div className="shrink-0 bg-slate-50 px-4 py-2 border-b flex justify-between items-center">
                                 <span className="text-xs font-bold uppercase text-slate-500">
                                     Showing: <span className="text-blue-600">{activeFilter === 'ALL' ? 'All Transactions' : activeFilter + ' RECORDS'}</span>
                                 </span>
                                 {activeFilter !== 'ALL' && <button onClick={() => setActiveFilter('ALL')} className="text-xs text-blue-500 hover:underline">Show All</button>}
                             </div>
+                            <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                             <table className="w-full text-left text-sm">
-                                <thead className="bg-slate-100 text-slate-600 uppercase text-xs">
+                                <thead className="bg-slate-100 text-slate-600 uppercase text-xs sticky top-0 z-10">
                                     <tr>
                                         <th className="p-3">Date</th>
                                         <th className="p-3">Ref No.</th>
@@ -32648,14 +32652,15 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     {paginatedDetails.length === 0 && <tr><td colSpan="6" className="p-6 text-center text-gray-400">No records found for this filter.</td></tr>}
                                 </tbody>
                             </table>
+                            </div>
                         </div>
 
-                        {/* PAGINATION CONTROLS */}
-                        {totalPages > 1 && (
-                            <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl mt-2">
-                                <div className="text-[10px] font-black uppercase text-slate-500">
-                                    Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
-                                </div>
+                        {/* PAGINATION CONTROLS — pinned full-page footer */}
+                        <div className="shrink-0 flex items-center justify-between px-4 py-2.5 bg-white border-t border-slate-200">
+                            <div className="text-[10px] font-black uppercase text-slate-500">
+                                Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
+                                <span className="text-slate-400"> · {paginatedDetails.length} of {filteredDetails.length} row(s)</span>
+                            </div>
                                 <div className="flex gap-1">
                                     <button
                                         onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
@@ -32673,7 +32678,6 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                     </button>
                                 </div>
                             </div>
-                        )}
 
                     </div>
                 )}

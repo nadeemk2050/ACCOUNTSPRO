@@ -63,6 +63,8 @@ export default function ImportReceiptExcelModal({
     });
 
     const fileInputRef = useRef(null);
+    // Import format: 'excel' (.xlsx/.xls/.csv) or 'xml' (Tally Data Interchange)
+    const [importFormat, setImportFormat] = useState('excel');
 
     // Refresh history on open
     useEffect(() => {
@@ -111,6 +113,24 @@ export default function ImportReceiptExcelModal({
         try {
             const parsed = await parseUniversalFile(file, { voucherMode: 'receipt' });
             setParsedData(parsed);
+
+            // Wrong voucher type guard (e.g. a Purchase XML opened in the Receipt importer)
+            if (parsed.vouchers.length === 0) {
+                const found = (parsed.detectedVoucherTypes || []).join(', ') || 'none';
+                const kind = parsed.expectedVoucherKind || 'receipt';
+                setCleanRows([]);
+                setQuarantinedRows([]);
+                setActiveTab('upload');
+                if (showToast) {
+                    showToast({
+                        type: 'error',
+                        title: 'Wrong Voucher Type',
+                        message: `No ${kind} voucher found. Detected: ${found}.`
+                    });
+                }
+                alert(`No ${kind} vouchers found in this XML file.\n\nVoucher types detected: ${found}\nSkipped: ${parsed.skippedVoucherCount || 0} voucher(s).\n\nPlease export the ${kind} vouchers from Tally and try again.`);
+                return;
+            }
 
             // Run Validation Middleware (Rules 1-6)
             const validation = validateImportBatch(parsed.vouchers, {
@@ -595,6 +615,34 @@ export default function ImportReceiptExcelModal({
                             </div>
                         </div>
 
+                        {/* Import Format Selector — Excel/CSV or Tally XML */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <button
+                                type="button"
+                                onClick={() => { setImportFormat('excel'); if (fileInputRef.current) fileInputRef.current.value = ''; }}
+                                className={`flex items-center gap-3 p-3 rounded-2xl border text-left transition-all ${importFormat === 'excel' ? 'bg-teal-500/15 border-teal-500/50 ring-1 ring-teal-500/30' : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.05]'}`}
+                            >
+                                <FileSpreadsheet size={20} className={importFormat === 'excel' ? 'text-teal-400' : 'text-slate-400'} />
+                                <div>
+                                    <div className={`text-xs font-black uppercase tracking-wider ${importFormat === 'excel' ? 'text-teal-300' : 'text-slate-300'}`}>Excel / CSV</div>
+                                    <div className="text-[10px] text-slate-400">.xlsx · .xls · .csv — register exports</div>
+                                </div>
+                                {importFormat === 'excel' && <span className="ml-auto w-3 h-3 rounded-full bg-teal-400" />}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setImportFormat('xml'); if (fileInputRef.current) fileInputRef.current.value = ''; }}
+                                className={`flex items-center gap-3 p-3 rounded-2xl border text-left transition-all ${importFormat === 'xml' ? 'bg-purple-500/15 border-purple-500/50 ring-1 ring-purple-500/30' : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.05]'}`}
+                            >
+                                <FileText size={20} className={importFormat === 'xml' ? 'text-purple-300' : 'text-slate-400'} />
+                                <div>
+                                    <div className={`text-xs font-black uppercase tracking-wider ${importFormat === 'xml' ? 'text-purple-300' : 'text-slate-300'}`}>Tally XML</div>
+                                    <div className="text-[10px] text-slate-400">.xml — Tally ERP 9 &amp; Prime Data Interchange</div>
+                                </div>
+                                {importFormat === 'xml' && <span className="ml-auto w-3 h-3 rounded-full bg-purple-300" />}
+                            </button>
+                        </div>
+
                         {/* Drag & Drop Upload Dropzone */}
                         <div
                             onDragOver={(e) => e.preventDefault()}
@@ -608,7 +656,7 @@ export default function ImportReceiptExcelModal({
                             <input
                                 ref={fileInputRef}
                                 type="file"
-                                accept=".xlsx,.xls,.csv,.xml"
+                                accept={importFormat === 'xml' ? '.xml' : '.xlsx,.xls,.csv'}
                                 className="hidden"
                                 onChange={(e) => {
                                     if (e.target.files?.[0]) handleFileUpload(e.target.files[0]);
@@ -628,12 +676,28 @@ export default function ImportReceiptExcelModal({
 
                             <button
                                 type="button"
-                                className="px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-teal-500/20 transition-all flex items-center gap-2"
+                                className={`px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all flex items-center gap-2 ${importFormat === 'xml' ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20' : 'bg-teal-500 hover:bg-teal-400 text-slate-950 shadow-teal-500/20'}`}
                             >
-                                <FileSpreadsheet size={16} />
-                                <span>Select Receipt File (XLSX, XML, CSV)</span>
+                                {importFormat === 'xml' ? <FileText size={16} /> : <FileSpreadsheet size={16} />}
+                                <span>{importFormat === 'xml' ? 'Select Tally XML File' : 'Select Receipt File (XLSX, CSV)'}</span>
                             </button>
+
+                            <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-wider">
+                                <span className="px-2 py-1 rounded-md bg-slate-800/80 text-slate-300 border border-white/10">{fileName || 'No file selected'}</span>
+                                {parsedData && (
+                                    <span className={`px-2 py-1 rounded-md border ${parsedData.formatType === 'tally_xml' ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-teal-500/15 text-teal-300 border-teal-500/30'}`}>
+                                        Detected: {parsedData.formatType === 'tally_xml' ? 'Tally XML (Data Interchange)' : 'Excel / CSV'}
+                                    </span>
+                                )}
+                            </div>
                         </div>
+
+                        {/* Skipped other voucher types notice */}
+                        {parsedData && parsedData.skippedVoucherCount > 0 && (
+                            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] font-bold text-amber-200">
+                                Skipped {parsedData.skippedVoucherCount} voucher(s) of other types: {(parsedData.skippedVoucherTypes || []).join(', ')} — this importer only ingests {parsedData.expectedVoucherKind || 'receipt'} vouchers.
+                            </div>
+                        )}
 
                         {/* Quick Stats Grid If Loaded */}
                         {parsedData && (

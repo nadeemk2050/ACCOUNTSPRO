@@ -482,10 +482,75 @@ export function groupMultiLineVouchers(vouchers, options = {}) {
 /**
  * Parses Tally native XML (Data Interchange)
  */
+/** Tally exports its XML as UTF-16 (usually LE with BOM) — decode by BOM/heuristic instead of assuming UTF-8. */
+async function readXmlFileText(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let encoding = 'utf-8';
+    let offset = 0;
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) { encoding = 'utf-16le'; offset = 2; }
+    else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) { encoding = 'utf-16be'; offset = 2; }
+    else if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) { offset = 3; }
+    else {
+        const n = Math.min(bytes.length, 512);
+        let evenNulls = 0, oddNulls = 0;
+        for (let i = 0; i < n; i++) { if (bytes[i] === 0) { if (i % 2 === 0) evenNulls++; else oddNulls++; } }
+        if (oddNulls > n / 8) encoding = 'utf-16le';
+        else if (evenNulls > n / 8) encoding = 'utf-16be';
+    }
+    return new TextDecoder(encoding, { fatal: false }).decode(bytes.subarray(offset));
+}
+
+/**
+ * Tally writes "&#4;" (and other XML 1.0 illegal control chars) as an empty-field marker and DOMParser
+ * rejects them, so they are stripped before parsing. Multiple concatenated <ENVELOPE> blocks
+ * (Tally appends when exporting twice into one file) are wrapped in a synthetic root.
+ */
+export function sanitizeTallyXml(xmlText) {
+    let out = String(xmlText || '').replace(/^\uFEFF/, '');
+    out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+    out = out.replace(/&#(?:x([0-9a-fA-F]{1,5})|(\d{1,6}));/g, (m, hex, dec) => {
+        const cp = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+        const illegal = cp <= 0x08 || cp === 0x0b || cp === 0x0c || (cp >= 0x0e && cp <= 0x1f) || cp === 0xfffe || cp === 0xffff;
+        return illegal ? '' : m;
+    });
+    const envelopeCount = (out.match(/<ENVELOPE[\s>]/gi) || []).length;
+    if (envelopeCount !== 1) {
+        return '<TALLYBUNDLE>' + out.replace(/<\?xml[^>]*\?>/gi, '') + '</TALLYBUNDLE>';
+    }
+    return out;
+}
+
+/**
+ * Classifies a Tally voucher type name. Real-world names vary (Payment / Bank Payment / B.P.V /
+ * C.P.V / R.C.P ...), so known "other" types are excluded and anything unrecognised is kept.
+ */
+export function classifyVoucherType(name) {
+    const s = String(name || '').trim();
+    if (!s) return 'unknown';
+    if (/stock\s*journal/i.test(s)) return 'stock_journal';
+    if (/\bsales\b/i.test(s)) return 'sales';
+    if (/purchase/i.test(s)) return 'purchase';
+    if (/contra/i.test(s)) return 'contra';
+    if (/credit\s*note/i.test(s)) return 'credit_note';
+    if (/debit\s*note/i.test(s)) return 'debit_note';
+    if (/delivery\s*note|receipt\s*note|material\s*(in|out)/i.test(s)) return 'note';
+    if (/physical\s*stock|manufactur|payroll|attendance|rejection|memorandum/i.test(s)) return 'other_process';
+    if (/journal|reversing/i.test(s)) return 'journal';
+    if (/receipt|r\.?\s*c\.?\s*p\b/i.test(s)) return 'receipt';
+    if (/b\.?\s*p\.?\s*v|bank\s*payment/i.test(s)) return 'payment';
+    if (/c\.?\s*p\.?\s*v|cash\s*payment/i.test(s)) return 'payment';
+    if (/payment|^p\.?\s*v\.?$/i.test(s)) return 'payment';
+    return 'other';
+}
+
+/**
+ * Parses Tally native XML (Data Interchange)
+ */
 export function parseXMLFile(xmlText, options = {}) {
     const voucherMode = options.voucherMode || 'payment';
     const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+    const sanitized = sanitizeTallyXml(xmlText);
+    const xmlDoc = parser.parseFromString(sanitized, 'text/xml');
 
     const parseError = xmlDoc.getElementsByTagName('parsererror');
     if (parseError.length > 0) {
@@ -497,12 +562,32 @@ export function parseXMLFile(xmlText, options = {}) {
         throw new Error('No <VOUCHER> elements found in this XML document.');
     }
 
+    // Voucher-type awareness: a Tally register export contains every voucher type, so keep only the
+    // ones matching the importer in use and report exactly what was detected / skipped.
+    const modeKind = voucherMode === 'receipt' ? 'receipt' : (voucherMode === 'journal' ? 'journal' : 'payment');
+    const typeCounts = {};
+    for (let i = 0; i < voucherNodes.length; i++) {
+        const t = voucherNodes[i].getElementsByTagName('VOUCHERTYPENAME')[0]?.textContent?.trim() ||
+                  voucherNodes[i].getAttribute('VCHTYPE') || '';
+        if (t) typeCounts[t] = (typeCounts[t] || 0) + 1;
+    }
+    const detectedVoucherTypes = Object.keys(typeCounts);
+
     const parsedVouchers = [];
+    const skippedTypes = [];
+    let skippedVoucherCount = 0;
 
     for (let i = 0; i < voucherNodes.length; i++) {
         const vNode = voucherNodes[i];
         const vchType = vNode.getElementsByTagName('VOUCHERTYPENAME')[0]?.textContent?.trim() ||
                         vNode.getAttribute('VCHTYPE') || (voucherMode === 'receipt' ? 'Receipt' : 'Payment');
+
+        const kind = classifyVoucherType(vchType);
+        if (kind !== 'unknown' && kind !== 'other' && kind !== modeKind) {
+            skippedVoucherCount++;
+            if (!skippedTypes.includes(vchType)) skippedTypes.push(vchType);
+            continue;
+        }
 
         const rawDate = vNode.getElementsByTagName('DATE')[0]?.textContent?.trim();
         const parsedDate = parseExcelDate(rawDate);
@@ -521,10 +606,19 @@ export function parseXMLFile(xmlText, options = {}) {
         const drRows = [];
         const crRows = [];
 
+        // Tally ERP 9 and Tally Prime both nest BANKALLOCATIONS.LIST / BILLALLOCATIONS.LIST (which carry
+        // their own <AMOUNT>, <DATE> etc.) inside the ledger entry — so read the DIRECT children first,
+        // otherwise the bank/bill allocation amount would be picked up instead of the ledger amount.
+        const readTag = (node, tag) => {
+            const direct = Array.from(node.children || []).find(c => c.tagName === tag);
+            const el = direct || node.getElementsByTagName(tag)[0];
+            return el ? (el.textContent || '').trim() : '';
+        };
+
         ledgerNodes.forEach(lNode => {
-            const ledgerName = lNode.getElementsByTagName('LEDGERNAME')[0]?.textContent?.trim() || '';
-            const rawAmt = parseFloat(lNode.getElementsByTagName('AMOUNT')[0]?.textContent) || 0;
-            const isDeemedPositive = lNode.getElementsByTagName('ISDEEMEDPOSITIVE')[0]?.textContent?.trim();
+            const ledgerName = readTag(lNode, 'LEDGERNAME');
+            const rawAmt = parseFloat(readTag(lNode, 'AMOUNT')) || 0;
+            const isDeemedPositive = readTag(lNode, 'ISDEEMEDPOSITIVE');
             const absAmt = Math.abs(rawAmt);
 
             if (voucherMode === 'journal') {
@@ -557,9 +651,9 @@ export function parseXMLFile(xmlText, options = {}) {
             paidFrom = crRows.map(r => r.targetName).filter(Boolean).join(', ');
             totalAmount = Math.max(totalDr, totalCr);
         } else if (splits.length === 0 && ledgerNodes.length >= 2) {
-            paidFrom = ledgerNodes[0].getElementsByTagName('LEDGERNAME')[0]?.textContent?.trim() || '';
-            const secondName = ledgerNodes[1].getElementsByTagName('LEDGERNAME')[0]?.textContent?.trim() || '';
-            const secondAmt = Math.abs(parseFloat(ledgerNodes[1].getElementsByTagName('AMOUNT')[0]?.textContent) || 0);
+            paidFrom = readTag(ledgerNodes[0], 'LEDGERNAME');
+            const secondName = readTag(ledgerNodes[1], 'LEDGERNAME');
+            const secondAmt = Math.abs(parseFloat(readTag(ledgerNodes[1], 'AMOUNT')) || 0);
             splits.push({ targetName: secondName, amount: secondAmt, description: narration });
             totalAmount = secondAmt;
         }
@@ -593,7 +687,13 @@ export function parseXMLFile(xmlText, options = {}) {
     return {
         formatType: 'tally_xml',
         headers: ['Date', 'Voucher No', 'Voucher Type', 'Paid From', 'Particulars', 'Amount', 'Narration'],
-        vouchers: parsedVouchers
+        vouchers: parsedVouchers,
+        expectedVoucherKind: modeKind,
+        detectedVoucherTypes,
+        detectedVoucherTypeCounts: typeCounts,
+        skippedVoucherCount,
+        skippedVoucherTypes: skippedTypes,
+        typeMismatch: parsedVouchers.length === 0 && detectedVoucherTypes.length > 0
     };
 }
 
@@ -606,7 +706,7 @@ export async function parseUniversalFile(file, options = {}) {
     let parsed;
 
     if (fileName.endsWith('.xml')) {
-        const text = await file.text();
+        const text = await readXmlFileText(file);
         parsed = parseXMLFile(text, options);
     } else {
         // .xlsx, .xls, .csv (SheetJS automatically parses CSV and Excel)
