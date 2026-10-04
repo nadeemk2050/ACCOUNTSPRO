@@ -197,13 +197,11 @@ export const getDocs = async (q) => {
                     const rxDocs = await db2.offline_records.find({ selector: { collectionName: queryPath } }).exec();
                     if (rxDocs.length > 0) {
                         const rxResults = (rxDocs || []).map(d => d.toJSON()).filter(d => matches(d.id, d.data, q.constraints));
-                        console.log(`[rxfs][sqlite] getDocs ${queryPath} → RxDB fallback (${rxResults.length})`);
                         return buildDocsSnapshot(queryPath, rxResults, q);
                     }
                 }
             }
 
-            console.log(`[rxfs][sqlite] getDocs ${queryPath} → ${results.length}`);
             return buildDocsSnapshot(queryPath, results, q);
         } catch (e) {
             console.warn('[rxfs][sqlite] getDocs fallback to RxDB:', e?.message || e);
@@ -343,7 +341,6 @@ export const onSnapshot = (q, callback) => {
             }
             const rxQuery = db.offline_records.find({ selector: { collectionName: queryPath } });
             subscription = rxQuery.$.subscribe(rxDocs => {
-                console.log(`[onSnapshot] Collection update for ${queryPath}`);
                 const rxArr = rxDocs || [];
                 const mapped = rxArr.map(d => d.toJSON())
                     .filter(d => matches(d.id, d.data, q.constraints));
@@ -591,19 +588,15 @@ export const runTransaction = async (db, callback) => {
     console.warn(`[runTransaction] START`);
     const transaction = {
         get: async (ref) => {
-            console.log(`[Transaction] GET ${ref.path}`);
             return await getDoc(ref);
         },
         set: async (ref, data, opts) => {
-            console.log(`[Transaction] SET ${ref.path}`);
             return await setDoc(ref, data, opts);
         },
         update: async (ref, data) => {
-            console.log(`[Transaction] UPDATE ${ref.path}`);
             return await updateDoc(ref, data);
         },
         delete: async (ref) => {
-            console.log(`[Transaction] DELETE ${ref.path}`);
             return await deleteDoc(ref);
         }
     };
