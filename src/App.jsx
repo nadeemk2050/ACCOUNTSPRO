@@ -15426,6 +15426,9 @@ const InvoiceModal = (props) => {
     const [affectRates, setAffectRates] = useState(false);
     const [editNarration, setEditNarration] = useState(false);
     const [taxPercent, setTaxPercent] = useState('');
+    // Amount-first tax entry: keeps the raw text while the tax-amount field is focused so a
+    // typed amount can back-calculate the percentage (null = show the computed amount).
+    const [taxAmountEdit, setTaxAmountEdit] = useState(null);
 
     // ✅ NEW: Additional Expenses (Capitalized)
     const [addlExpenses, setAddlExpenses] = useState([]);   // [{ expenseId, amount }]
@@ -15661,11 +15664,13 @@ const InvoiceModal = (props) => {
                     setSelectedTaxId(initialData.taxId);
                     setEnableTax(true);
                     setTaxPercent(Number(initialData.taxPercent) || ''); // Load saved percent
+                    setTaxAmountEdit(null);
                 } else {
                     // Prevent stale tax state from previous voucher edits.
                     setEnableTax(false);
                     setSelectedTaxId('');
                     setTaxPercent('');
+                    setTaxAmountEdit(null);
                 }
                 // Restore Payment Terms
                 if (initialData.paymentTerms && initialData.paymentTerms !== initialData.date) {
@@ -15792,7 +15797,7 @@ const InvoiceModal = (props) => {
                 });
                 setItems([{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: '' }]);
                 setInvExpenses([]);
-                setEnableTax(false); setSelectedTaxId(''); setTaxPercent('');
+                setEnableTax(false); setSelectedTaxId(''); setTaxPercent(''); setTaxAmountEdit(null);
                 setEnableLot(false); setLotId('');
                 setAffectRates(false);
                 setPaymentTerms('today'); setPaymentTermsDate('');
@@ -15960,7 +15965,9 @@ const InvoiceModal = (props) => {
         const addlExpTotal = round3(addlExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0));
 
         let taxAmount = 0;
-        if (enableTax && selectedTaxId) {
+        // Tax applies when a tax master is selected OR a percentage/amount was entered — so
+        // typing the tax amount directly (which fills the percentage) still adds the tax.
+        if (enableTax && (selectedTaxId || Number(taxPercent) > 0)) {
             taxAmount = round3((itemsTotal * (Number(taxPercent) || 0)) / 100);
         }
 
@@ -15994,6 +16001,16 @@ const InvoiceModal = (props) => {
             addExpenseToTotal: printOptions.addExpenseToTotal !== false
         };
     }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal]);
+
+    // Tax AMOUNT first: typing the amount computes the percentage back from the item sub-total
+    const applyTaxAmountEdit = (raw) => {
+        setTaxAmountEdit(raw);
+        const base = Number(totals.itemsTotal) || 0;
+        const amt = Number(raw) || 0;
+        if (raw === '' || base <= 0) return;
+        const pct = (amt / base) * 100;
+        setTaxPercent(String(Number(pct.toFixed(4))));
+    };
 
     const handleSave = async () => {
         if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
@@ -17316,6 +17333,7 @@ const InvoiceModal = (props) => {
                                                     const tId = e.target.value;
                                                     setSelectedTaxId(tId);
                                                     const tMaster = taxRates.find(t => t.id === tId);
+                                                    setTaxAmountEdit(null);
                                                     setTaxPercent(tMaster ? (Number(tMaster.percentage || tMaster.rate) || '') : '');
                                                 }}
                                             >
@@ -17337,15 +17355,26 @@ const InvoiceModal = (props) => {
                                                     className="w-full h-[36px] px-2 pr-5 border border-purple-200 rounded-lg text-[11px] text-right font-bold text-purple-700 bg-white outline-none"
                                                     placeholder="%"
                                                     value={taxPercent}
-                                                    onChange={e => setTaxPercent(e.target.value)}
+                                                    onChange={e => { setTaxAmountEdit(null); setTaxPercent(e.target.value); }}
+                                                    title="Type a percentage, or type the tax amount on the right and this is filled in automatically"
                                                 />
                                             </div>
                                         </td>
-                                        {/* Amt col — computed tax amount, 200px, h-36px */}
+                                        {/* Amt col — EDITABLE tax amount: typing here back-calculates the % on the left */}
                                         <td className="p-1">
-                                            <div className="w-[200px] h-[36px] flex items-center justify-end px-3 border border-purple-100 rounded-lg bg-white">
-                                                <span className="text-[12px] font-black text-purple-800 font-mono">{format3(totals.taxAmount)}</span>
-                                                <span className="text-[9px] text-purple-400 ml-1.5">{currentSym}</span>
+                                            <div className="relative w-[200px]">
+                                                <input
+                                                    type="number"
+                                                    step="0.001"
+                                                    className="w-full h-[36px] pl-2 pr-12 border border-purple-300 rounded-lg text-[12px] text-right font-black text-purple-800 font-mono bg-white outline-none focus:ring-2 focus:ring-purple-300"
+                                                    placeholder="Tax amount"
+                                                    title="Type the tax amount — the percentage is calculated automatically"
+                                                    value={taxAmountEdit !== null ? taxAmountEdit : String(round3(totals.taxAmount))}
+                                                    onFocus={() => setTaxAmountEdit(String(round3(totals.taxAmount)))}
+                                                    onChange={e => applyTaxAmountEdit(e.target.value)}
+                                                    onBlur={() => setTaxAmountEdit(null)}
+                                                />
+                                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-purple-400 pointer-events-none">{currentSym}</span>
                                             </div>
                                         </td>
                                         {/* Del col — empty */}
