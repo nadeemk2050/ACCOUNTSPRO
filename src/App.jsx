@@ -172,6 +172,39 @@ const toDateObject = (value) => {
     return null;
 };
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   TEMP DEV-ONLY PERFORMANCE PROBE  (Phase 0) — safe to delete, inert by default
+   • Enable :  window.__PERF_DEBUG = true      (DevTools console, then use the app)
+   • Report :  __PERF_REPORT()                 (table sorted by total time)
+   • Reset  :  __PERF_RESET()
+   • Disable:  window.__PERF_DEBUG = false
+   Nothing is measured and nothing is logged unless window.__PERF_DEBUG is truthy.
+   ══════════════════════════════════════════════════════════════════════════════ */
+const __PERF = (() => {
+    const bucket = Object.create(null);
+    const on = () => typeof window !== 'undefined' && !!window.__PERF_DEBUG;
+    const bump = (key, ms) => {
+        const b = bucket[key] || (bucket[key] = { calls: 0, total: 0, max: 0, last: 0 });
+        b.calls += 1; b.total += ms; b.last = ms; if (ms > b.max) b.max = ms;
+    };
+    if (typeof window !== 'undefined') {
+        window.__PERF_REPORT = () => {
+            const rows = Object.keys(bucket)
+                .map(k => ({ what: k, calls: bucket[k].calls, 'total ms': +bucket[k].total.toFixed(1), 'avg ms': +(bucket[k].total / bucket[k].calls).toFixed(2), 'max ms': +bucket[k].max.toFixed(1) }))
+                .sort((a, b) => b['total ms'] - a['total ms']);
+            console.log('TOTAL measured ms:', rows.reduce((s, r) => s + r['total ms'], 0).toFixed(1));
+            if (console.table) console.table(rows); else console.log(rows);
+            return rows;
+        };
+        window.__PERF_RESET = () => { Object.keys(bucket).forEach(k => delete bucket[k]); return 'perf counters cleared'; };
+    }
+    return {
+        enabled: on,
+        now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+        add: (key, ms) => { if (on()) bump(key, ms); }
+    };
+})();
+
 const format3_global = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 
 const round3 = (val) => {
@@ -636,7 +669,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.7.1 (July 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.7.3 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -691,7 +724,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.1</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.3</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -715,7 +748,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.1</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.3</div>
                 </div>
             </div>
         </Modal>
@@ -1573,11 +1606,20 @@ const SearchableSelect = React.forwardRef(({
     }, [groups, options]);
 
     // 2. Filter Logic
+    // PERF: defer the list filtering so typing in a huge list (parties/products) never blocks the keystroke
+    const deferredSearch = React.useDeferredValue(search);
     const filteredOptions = effectiveOptions.filter(opt => {
-        const matchesSearch = (opt.text || "").toLowerCase().includes(search.toLowerCase());
+        const matchesSearch = (opt.text || "").toLowerCase().includes(deferredSearch.toLowerCase());
         const matchesGroup = activeGroup === 'ALL' || (groups ? opt.group === activeGroup : true);
         return matchesSearch && matchesGroup;
     });
+
+    // PERF: never mount thousands of option rows at once (parties/products lists can be huge).
+    // Render the first 250 matches; typing narrows the list instantly.
+    const MAX_VISIBLE_OPTIONS = 250;
+    const visibleOptions = filteredOptions.length > MAX_VISIBLE_OPTIONS
+        ? filteredOptions.slice(0, MAX_VISIBLE_OPTIONS)
+        : filteredOptions;
 
     const selectedOption = effectiveOptions.find(opt => opt.value === value);
 
@@ -1662,7 +1704,7 @@ const SearchableSelect = React.forwardRef(({
         }
         if (e.key === 'ArrowDown' && isOpen) {
             e.preventDefault();
-            setHighlightedIndex((prev) => Math.min(prev + 1, Math.max(filteredOptions.length - 1, 0)));
+            setHighlightedIndex((prev) => Math.min(prev + 1, Math.max(visibleOptions.length - 1, 0)));
             return;
         }
         if (e.key === 'ArrowUp' && isOpen) {
@@ -1757,8 +1799,8 @@ const SearchableSelect = React.forwardRef(({
                 </div>
 
                 <div className="overflow-y-auto flex-1 p-1">
-                    {filteredOptions.length > 0 ? (
-                        filteredOptions.map((opt, idx) => (
+                    {visibleOptions.length > 0 ? (
+                        visibleOptions.map((opt, idx) => (
                             <div
                                 key={opt.value + idx}
                                 ref={(node) => { optionRefs.current[idx] = node; }}
@@ -5255,7 +5297,10 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.7.1";
+    // TEMP DEV-ONLY PERF PROBE (start of render) — inert unless window.__PERF_DEBUG
+    const __perfRenderStart = __PERF.enabled() ? __PERF.now() : 0;
+
+    const SYSTEM_VERSION = "2.7.3";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -5267,6 +5312,20 @@ export default function App() {
     if (isGuestMode) {
         return <GuestLedgerView />;
     }
+
+    /* TEMP DEV-ONLY PERF PROBE — App render + commit duration (runs after every commit,
+       no-ops when window.__PERF_DEBUG is off). Delete together with __PERF. */
+    useEffect(() => {
+        if (!__perfRenderStart) return;
+        __PERF.add('App render+commit', __PERF.now() - __perfRenderStart);
+    });
+    /* TEMP DEV-ONLY PERF PROBE — one-time hint in the console. */
+    useEffect(() => {
+        if (__PERF.enabled() && !window.__PERF_HINTED) {
+            window.__PERF_HINTED = true;
+            console.info('[PERF] probe active — use __PERF_REPORT() / __PERF_RESET(); window.__PERF_DEBUG = false to stop.');
+        }
+    }, []);
     // -------------------------------------------------------------
 
     const [user, setUser] = useState(null);
@@ -6573,39 +6632,46 @@ export default function App() {
         const rangeObj = (dRange && typeof dRange === 'object') ? dRange : (typeof itemOrId === 'object' ? itemOrId : null);
         const start = rangeObj?.from || rangeObj?.startDate || '';
         const end = rangeObj?.to || rangeObj?.endDate || '';
-        setLedgerInitialState({
-            type: 'item',
-            id: itemId,
-            startDate: start,
-            endDate: end
+        // PERF: paint the click first, then mount the heavy ledger tree as a non-urgent update
+        React.startTransition(() => {
+            setLedgerInitialState({
+                type: 'item',
+                id: itemId,
+                startDate: start,
+                endDate: end
+            });
+            setActiveModal('ledgers');
         });
-        setActiveModal('ledgers');
     };
 
     const handleAccountItemClick = (item) => {
         // ✅ FIX: Preserve modal stack so back button returns to register
         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
         onMenuClick();
-        setLedgerInitialState({
-            type: 'account',
-            id: item.id,
-            startDate: registerDateRange?.from || '',
-            endDate: registerDateRange?.to || ''
+        React.startTransition(() => {
+            setLedgerInitialState({
+                type: 'account',
+                id: item.id,
+                startDate: registerDateRange?.from || '',
+                endDate: registerDateRange?.to || ''
+            });
+            setActiveModal('ledgers');
         });
-        setActiveModal('ledgers');
     };
 
     const handlePartyItemClick = (item) => {
         // ✅ FIX: Preserve modal stack so back button returns to register
         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
         onMenuClick();
-        setLedgerInitialState({
-            type: 'party',
-            id: item.id,
-            startDate: registerDateRange?.from || '',
-            endDate: registerDateRange?.to || ''
+        React.startTransition(() => {
+            setLedgerInitialState({
+                type: 'party',
+                id: item.id,
+                startDate: registerDateRange?.from || '',
+                endDate: registerDateRange?.to || ''
+            });
+            setActiveModal('ledgers');
         });
-        setActiveModal('ledgers');
     };
 
     // Handler for Clicking a Voucher in Ledger (Edit)
@@ -6617,8 +6683,17 @@ export default function App() {
             if (type === 'journal') col = 'journal_vouchers';
             if (type === 'manufacturing' || type === 'stock_journal') col = 'stock_journals';
 
+            // PERF: rows clicked from registers/ledgers are already loaded in memory — use them
+            // directly instead of paying a DB round-trip before the voucher window can open.
+            const inMemoryList = col === 'invoices' ? invoices
+                : col === 'payments' ? payments
+                    : col === 'journal_vouchers' ? journalVouchers
+                        : (stockJournals || []);
+            const cachedDoc = (inMemoryList || []).find(r => String(r.id) === String(docId));
+
             const docRef = doc(db, col, docId);
-            const docSnap = await getDoc(docRef);
+            // NOTE: Firebase's DocumentSnapshot.exists is a METHOD — the shim must expose it the same way.
+            const docSnap = cachedDoc ? { exists: () => true, id: cachedDoc.id, data: () => cachedDoc } : await getDoc(docRef);
 
             if (docSnap.exists()) {
                 const data = { id: docSnap.id, ...docSnap.data() };
@@ -6628,7 +6703,7 @@ export default function App() {
                 // All team members can view/edit as per base permissions.
                 // Ownership check removed to allow full collaboration.
 
-                setEditData(data);
+                React.startTransition(() => setEditData(data));
 
                 const actionMap = {
                     'purchase': 'Editing Purchase Invoice',
@@ -6648,9 +6723,9 @@ export default function App() {
                         setViewTaxVoucher(data);
                         return;
                     }
-                    setActiveModal(data.type === 'purchase' ? 'purchase' : 'sales');
+                    React.startTransition(() => setActiveModal(data.type === 'purchase' ? 'purchase' : 'sales'));
                 }
-                else if (col === 'payments') setActiveModal('payment');
+                else if (col === 'payments') React.startTransition(() => setActiveModal('payment'));
                 else if (col === 'journal_vouchers') {
                     // ✅ CHECK FOR HIDDEN (LINKED) JOURNAL
                     if (data.linkedStockJournalId) {
@@ -6666,9 +6741,9 @@ export default function App() {
                             return handleViewTransaction(snapSj.docs[0].id, 'stock_journal');
                         }
                     }
-                    setActiveModal('journal');
+                    React.startTransition(() => setActiveModal('journal'));
                 }
-                else if (col === 'stock_journals') setActiveModal('stock_journal');
+                else if (col === 'stock_journals') React.startTransition(() => setActiveModal('stock_journal'));
             } else {
                 alert("Document not found!");
             }
@@ -8770,25 +8845,31 @@ export default function App() {
     // --- Helper functions to open modals with history support ---
 
     const openPaymentModal = (presetType) => {
-        // If a modal is already open (like 'ledgers'), push it to the stack so we can go back
-        if (activeModal && activeModal !== 'payment') setModalStack(s => [...s, activeModal]);
-
-        setEditData({ type: presetType });
-        setActiveModal('payment');
+        // PERF: non-urgent update — the click/keypress paints first, the heavy voucher window mounts right after
+        React.startTransition(() => {
+            // If a modal is already open (like 'ledgers'), push it to the stack so we can go back
+            if (activeModal && activeModal !== 'payment') setModalStack(s => [...s, activeModal]);
+            setEditData({ type: presetType });
+            setActiveModal('payment');
+        });
     };
 
     const openInvoiceModal = (invoiceType) => {
-        if (activeModal && activeModal !== invoiceType) setModalStack(s => [...s, activeModal]);
-
-        setEditData(null);
-        setActiveModal(invoiceType);
+        // PERF: non-urgent update so the click paints before the invoice window mounts
+        React.startTransition(() => {
+            if (activeModal && activeModal !== invoiceType) setModalStack(s => [...s, activeModal]);
+            setEditData(null);
+            setActiveModal(invoiceType);
+        });
     };
 
     const openJournalModal = () => {
-        if (activeModal && activeModal !== 'journal') setModalStack(s => [...s, activeModal]);
-
-        setEditData(null);
-        setActiveModal('journal');
+        // PERF: non-urgent update so the click paints before the journal window mounts
+        React.startTransition(() => {
+            if (activeModal && activeModal !== 'journal') setModalStack(s => [...s, activeModal]);
+            setEditData(null);
+            setActiveModal('journal');
+        });
     };
 
     // Keyboard shortcuts listener
@@ -8862,8 +8943,10 @@ export default function App() {
                         e.preventDefault();
                         const today = new Date().toLocaleDateString('en-CA');
                         if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]);
-                        setLedgerInitialState({ type: 'daybook', startDate: today, endDate: today });
-                        setActiveModal('ledgers');
+                        React.startTransition(() => {
+                            setLedgerInitialState({ type: 'daybook', startDate: today, endDate: today });
+                            setActiveModal('ledgers');
+                        });
                         return;
                     }
                     if (k === 'y') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu('Payroll (HRM)'); return; }
@@ -8874,7 +8957,7 @@ export default function App() {
                     // Utility shortcuts (not in main gateway but still useful)
                     if (k === 'n') { e.preventDefault(); setActiveModal('task_board'); }
                     if (k === 'w') { e.preventDefault(); setActiveModal('working_sheet'); }
-                    if (k === 'v') { e.preventDefault(); setLedgerInitialState(null); setActiveModal('ledgers'); }
+                    if (k === 'v') { e.preventDefault(); React.startTransition(() => { setLedgerInitialState(null); setActiveModal('ledgers'); }); }
                     if (k === 'j') { e.preventDefault(); setActiveModal('journal'); }
                     if (k === 'k') { e.preventDefault(); setActiveModal('stock_journal'); }
                     if (k === 'l') { e.preventDefault(); setActiveModal('system_logs'); }
@@ -8912,7 +8995,7 @@ export default function App() {
 
                 // Old Backups for safety if users used them
                 else if (e.key === 'F10') { e.preventDefault(); /* Maybe legacy Sales? */ openInvoiceModal('sales'); } // keeping as backup
-                else if (e.key === 'F3') { e.preventDefault(); if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]); setLedgerInitialState(null); setActiveModal('ledgers'); }
+                else if (e.key === 'F3') { e.preventDefault(); if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]); React.startTransition(() => { setLedgerInitialState(null); setActiveModal('ledgers'); }); }
                 else if (e.key === '?') { e.preventDefault(); setActiveModal('shortcuts'); }
 
             } catch (err) {
@@ -8963,7 +9046,9 @@ export default function App() {
     }, [menuOpen]);
 
     // --- HELPER: CALCULATE REGISTER DATA BY DATE ---
-    const getRegisterData = (type) => {
+    const computeRegisterData = (type) => {
+        // TEMP DEV-ONLY PERF PROBE (Phase 0)
+        const __regT0 = __PERF.enabled() ? __PERF.now() : 0;
         const start = registerDateRange.from;
         const end = registerDateRange.to;
 
@@ -9388,10 +9473,68 @@ export default function App() {
         // Calculate Summary Balance
         const totalBal = list.reduce((s, i) => s + i.rawValue, 0);
         // Note: grandDebit/Credit are not returned here because SimpleListModal recalculates them from the list data.
+        // TEMP DEV-ONLY PERF PROBE (Phase 0) — records per-register-type cost
+        if (__regT0) __PERF.add(`getRegisterData:${type}`, __PERF.now() - __regT0);
         return {
             data: list,
             summary: { balance: totalBal }
         };
+    };
+
+    // ── PERF (Phase 1) ──────────────────────────────────────────────────────
+    // A register's data is computed ONLY while its register window is open (or stacked behind
+    // another open modal), and the result is cached while its inputs are unchanged. The
+    // calculation itself (computeRegisterData above) is byte-for-byte the original code, and for
+    // an OPEN register this returns exactly what computeRegisterData(type) returns.
+    const REGISTER_MODAL_BY_TYPE = {
+        payment: 'payment_register',
+        receipt: 'receipt_register',
+        contra: 'contra_register',
+        manufacturing: 'manufacturing_register',
+        sales: 'sales_register',
+        purchase: 'purchase_register',
+        journal: 'journal_register',
+        debit_note: 'debit_note_register',
+        credit_note: 'credit_note_register',
+        expense: 'expense_register',
+        direct_expense: 'direct_expense_register',
+        income: 'indirect_income_register'
+    };
+    // Same "is it open" rule getModalState uses: currently active OR sitting in the modal stack.
+    const isRegisterOpen = (type) => {
+        const modalName = REGISTER_MODAL_BY_TYPE[type];
+        if (!modalName) return true; // unknown type -> never shortcut, behave exactly as before
+        return activeModal === modalName || modalStack.indexOf(modalName) !== -1;
+    };
+    const registerCacheRef = React.useRef({});
+    const getRegisterData = (type) => {
+        // Closed register: nothing renders it -> skip the entire scan (identical object shape).
+        if (!isRegisterOpen(type)) return { data: [], summary: { balance: 0 } };
+
+        // Cache key: every input the calculation reads (arrays by identity, scalars by value).
+        const deps = [
+            invoices, payments, journalVouchers, stockJournals,
+            parties, accounts, expenses, directExpenseAccounts, incomeAccounts,
+            capitalAccounts, assetAccounts, products,
+            registerDateRange.from, registerDateRange.to, currencySymbol
+        ];
+        const cached = registerCacheRef.current[type];
+        if (cached && cached.deps.length === deps.length && cached.deps.every((d, i) => d === deps[i])) {
+            return cached.result;
+        }
+        const result = computeRegisterData(type);
+        registerCacheRef.current[type] = { deps, result };
+
+        // TEMP DEV-ONLY (Phase 1): prove the new path returns the same data as a fresh computation.
+        if (__PERF.enabled() && typeof window !== 'undefined' && window.__PERF_VERIFY) {
+            try {
+                const freshJson = JSON.stringify(computeRegisterData(type));
+                const usedJson = JSON.stringify(result);
+                if (freshJson !== usedJson) console.error('[PERF-VERIFY] MISMATCH', type);
+                else console.info('[PERF-VERIFY] OK', type);
+            } catch (e) { console.warn('[PERF-VERIFY] compare failed', type, e); }
+        }
+        return result;
     };
 
     // Helper to calculate visibility and Z-Index
@@ -9407,6 +9550,41 @@ export default function App() {
         }
         return { isOpen: false, zIndex: 0 };
     };
+
+    // ── PERF: warm every lazily-loaded chunk during idle ─────────────────────
+    // Code-split modals (Management Hub, packaging, imports, VAT reports…) otherwise
+    // pay network + parse on the FIRST click. Importing them here is a no-op if the
+    // module is already in memory, so the first open becomes instant.
+    const warmedChunksRef = React.useRef(false);
+    useEffect(() => {
+        if (warmedChunksRef.current) return;
+        warmedChunksRef.current = true;
+        const warmLazyChunks = () => {
+            [
+                () => import('./ManagementDashboard'),
+                () => import('./BagWiseInventoryModal.jsx'),
+                () => import('./PackagingSmartReportModal.jsx'),
+                () => import('./ExportVoucherModal.jsx'),
+                () => import('./ImportVoucherModal.jsx'),
+                () => import('./ImportPaymentExcelModal.jsx'),
+                () => import('./ImportReceiptExcelModal.jsx'),
+                () => import('./ImportJournalExcelModal.jsx'),
+                () => import('./ImportPurchaseExcelModal.jsx'),
+                () => import('./V201VerifyReportModal.jsx'),
+                () => import('./V311ReportModal.jsx'),
+                () => import('./BackupHistoryModal.jsx')
+            ].forEach(loader => { try { const p = loader(); if (p && p.catch) p.catch(() => { }); } catch (e) { /* ignore */ } });
+        };
+        const idleId = (typeof window.requestIdleCallback === 'function')
+            ? window.requestIdleCallback(warmLazyChunks, { timeout: 3000 })
+            : window.setTimeout(warmLazyChunks, 2500);
+        return () => {
+            if (typeof window.cancelIdleCallback === 'function' && typeof idleId === 'number') {
+                try { window.cancelIdleCallback(idleId); } catch (e) { /* ignore */ }
+            }
+            if (typeof idleId === 'number' && typeof window.requestIdleCallback !== 'function') clearTimeout(idleId);
+        };
+    }, []);
 
     const statsPeriod = useMemo(() => {
         const today = new Date().toISOString().split('T')[0];
@@ -9912,6 +10090,9 @@ export default function App() {
         let intervalId = null;
 
         const loadDashboardLogCount = async () => {
+            // Perf: this only feeds a dashboard counter — skip while the tab is in the background
+            if (typeof document !== 'undefined' && document.hidden) return;
+
             if (!dataOwnerId) {
                 if (active) setDashboardLogCount(0);
                 return;
@@ -9927,11 +10108,19 @@ export default function App() {
         };
 
         loadDashboardLogCount();
-        intervalId = window.setInterval(loadDashboardLogCount, 3000);
+        // Perf: 3s was far more often than a record-count badge needs (was: 3000)
+        intervalId = window.setInterval(loadDashboardLogCount, 15000);
+
+        // Refresh once when the tab becomes visible again
+        const onVisibilityChange = () => {
+            if (typeof document !== 'undefined' && !document.hidden) loadDashboardLogCount();
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
 
         return () => {
             active = false;
             if (intervalId) window.clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
         };
     }, [dataOwnerId]);
 
@@ -10048,7 +10237,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.1</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.3</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -10269,7 +10458,7 @@ export default function App() {
                 {/* Sidebar Menu */}
                 <aside className={`
           fixed inset-y-0 left-0 z-[1000] w-52 transform transition-transform duration-300 ease-in-out
-          md:relative md:z-auto md:w-64 md:block
+          md:relative md:z-[40] md:w-64 md:block
           ${menuOpen ? 'translate-x-0' : '-translate-x-full md:hidden'}
         `}>
                     {/* Close Button for Mobile */}
@@ -10401,11 +10590,11 @@ export default function App() {
                         {/* FLYOUT SUBMENU PANEL (ATTACHED TO RIGHT) */}
                         {activeSubMenu && (
                             <div className="tally-submenu-panel">
-                                <div className="tally-menu-header flex items-center gap-2">
+                                <div className="tally-menu-header flex items-center gap-2 bg-[#005994]">
                                     <button onClick={() => setActiveSubMenu(null)} className="md:hidden p-1 hover:bg-white/10 rounded">
                                         <ArrowLeft size={16} />
                                     </button>
-                                    <span className="flex-1">{activeSubMenu}</span>
+                                    <span className="flex-1 min-w-0 truncate">{activeSubMenu}</span>
                                     <button onClick={() => setActiveSubMenu(null)} className="hidden md:block p-1 hover:bg-white/10 rounded">
                                         <X size={14} />
                                     </button>
@@ -11145,7 +11334,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'capital_accounts' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); })}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11167,7 +11356,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'asset_accounts' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); })}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11253,7 +11442,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'expenses' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); })}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11287,7 +11476,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'direct_expenses' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); })}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11305,7 +11494,7 @@ export default function App() {
                 onDelete={(id) => handleDelete("income_accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
-                onItemClick={(item) => { setActiveModal(null); setTimeout(() => { setLedgerInitialState({ type: 'income', id: item.id }); setActiveModal('ledgers'); }, 100); }}
+                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'income', id: item.id }); setActiveModal('ledgers'); })}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11880,8 +12069,10 @@ export default function App() {
                 currencySymbol={currencySymbol}
                 onOpenLedger={(type, id) => {
                     setModalStack(s => [...s, 'tax_register']);
-                    setLedgerInitialState({ type, id });
-                    setActiveModal('ledgers');
+                    React.startTransition(() => {
+                        setLedgerInitialState({ type, id });
+                        setActiveModal('ledgers');
+                    });
                 }}
             />
 
@@ -11927,12 +12118,12 @@ export default function App() {
                 dataOwnerId={dataOwnerId}
                 userRole={currentRole}
                 onSelect={(type, id) => {
-                    setActiveModal(null);
-                    // Open Ledger Report
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY in one batched update — no intermediate
+                    // `null` render (which flashed the Gateway page) and no artificial 50ms delay.
+                    React.startTransition(() => {
                         setLedgerInitialState({ type, id });
                         setActiveModal('ledgers');
-                    }, 50);
+                    });
                 }}
             />
 
@@ -12146,8 +12337,8 @@ export default function App() {
                 onAddToFavorites={handleAddToFavorites}
                 modalId="capital_register"
                 onItemClick={(item) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         setLedgerInitialState({
                             type: 'capital',
                             id: item.id,
@@ -12155,7 +12346,7 @@ export default function App() {
                             endDate: registerDateRange?.to || ''
                         });
                         setActiveModal('ledgers');
-                    }, 100);
+                    });
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -12176,8 +12367,8 @@ export default function App() {
                 onAddToFavorites={handleAddToFavorites}
                 modalId="asset_register"
                 onItemClick={(item) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         setLedgerInitialState({
                             type: 'asset',
                             id: item.id,
@@ -12185,7 +12376,7 @@ export default function App() {
                             endDate: registerDateRange?.to || ''
                         });
                         setActiveModal('ledgers');
-                    }, 100);
+                    });
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -12202,8 +12393,8 @@ export default function App() {
                 onAddToFavorites={handleAddToFavorites}
                 modalId="expense_register"
                 onItemClick={(item) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         setLedgerInitialState({
                             type: 'expense',
                             id: item.id,
@@ -12211,7 +12402,7 @@ export default function App() {
                             endDate: registerDateRange?.to || ''
                         });
                         setActiveModal('ledgers');
-                    }, 100);
+                    });
                 }}
                 currencySymbol={currencySymbol}
                 hideF1Detl={true}
@@ -12230,8 +12421,8 @@ export default function App() {
                 onAddToFavorites={handleAddToFavorites}
                 modalId="direct_expense_register"
                 onItemClick={(item) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         setLedgerInitialState({
                             type: 'direct_expense',
                             id: item.id,
@@ -12239,7 +12430,7 @@ export default function App() {
                             endDate: registerDateRange?.to || ''
                         });
                         setActiveModal('ledgers');
-                    }, 100);
+                    });
                 }}
                 currencySymbol={currencySymbol}
                 hideF1Detl={true}
@@ -12258,8 +12449,8 @@ export default function App() {
                 onAddToFavorites={handleAddToFavorites}
                 modalId="indirect_income_register"
                 onItemClick={(item) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         setLedgerInitialState({
                             type: 'income',
                             id: item.id,
@@ -12267,7 +12458,7 @@ export default function App() {
                             endDate: registerDateRange?.to || ''
                         });
                         setActiveModal('ledgers');
-                    }, 100);
+                    });
                 }}
                 currencySymbol={currencySymbol}
                 hideF1Detl={true}
@@ -12638,11 +12829,11 @@ export default function App() {
                 staff={staff}
                 locations={locations}
                 onOpenLedger={(type, id) => {
-                    setActiveModal(null);
-                    setTimeout(() => {
+                    // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         setLedgerInitialState({ type, id });
                         setActiveModal('ledgers');
-                    }, 100);
+                    });
                 }}
             />
 
@@ -12679,9 +12870,9 @@ export default function App() {
                     setActiveModal('packaging_smart_report');
                 }}
                 onDrillDown={(source, type) => {
-                    setActiveModal(null);
                     setModalStack([]); // Clear stack to avoid confusion when opening a new register
-                    setTimeout(() => {
+                    // FIX: run the drill-down immediately (no intermediate gateway render, no 100ms delay)
+                    React.startTransition(() => {
                         if (source === 'voucher') {
                             if (type === 'payment') {
                                 setLedgerInitialState({ type: 'daybook', voucherType: 'out' });
@@ -12707,7 +12898,7 @@ export default function App() {
                                 setActiveModal(type);
                             }
                         }
-                    }, 100);
+                    });
                 }}
             />
 
@@ -12883,7 +13074,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.1</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.3</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -13128,13 +13319,17 @@ const highlightMenuShortcut = (label, sc) => {
     );
 };
 
-const MenuButton = ({ label, shortcut, onClick, className = "" }) => (
-    <button onClick={onClick} data-label={label} className={`tally-item-btn ${className}`}>
+const MenuButton = React.memo(({ label, shortcut, onClick, className = "" }) => (
+    <button
+        onClick={onClick}
+        data-label={label}
+        className={`tally-item-btn ${className}`}
+    >
         <span className="flex-1">{highlightMenuShortcut(label, shortcut)}</span>
     </button>
-);
+));
 
-const MenuDropdown = ({ label, shortcut, activeSubMenu, setActiveSubMenu }) => {
+const MenuDropdown = React.memo(({ label, shortcut, activeSubMenu, setActiveSubMenu }) => {
     const isActive = activeSubMenu === label;
     return (
         <div className="relative">
@@ -13149,11 +13344,11 @@ const MenuDropdown = ({ label, shortcut, activeSubMenu, setActiveSubMenu }) => {
             </button>
         </div>
     );
-};
+});
 
 const DashboardCard = ({ title, value, subValue, icon: Icon, color, onClick }) => (
     <div
-        onClick={onClick}
+        onClick={(e) => React.startTransition(() => onClick && onClick(e))}
         className={`
       bg-white p-3 md:p-6 rounded-xl shadow-sm border border-slate-100 
       flex flex-col items-center justify-center text-center 
@@ -21676,6 +21871,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
     // ✅ CALCULATE OPENING BALANCE for Period Ledgers
     useEffect(() => {
+        // Perf: opening balance is only needed while the ledger is visible
+        // (same guard pattern as the report effect below)
+        if (!isOpen) return;
+
         // Only calculate for specific entity ledgers
         if (!filter.id || !['party', 'account', 'expense', 'direct_expense', 'capital', 'asset', 'item', 'income', 'tax'].includes(filter.type)) {
             setOpeningBalance(0);
@@ -21720,8 +21919,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         const calculateOpening = async () => {
             try {
                 // ✅ entityList and found are already available from outer scope
-                console.log(`📊 Calculating Opening Balance for ${filter.type}:${filter.id}, Master Opening: ${masterOpeningBal}, Qty: ${masterOpeningQty}`);
-
                 let balance = masterOpeningBal;
                 let qtyBal = masterOpeningQty;
 
@@ -21731,7 +21928,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                 // Helper to process documents and calculate balance
                 const processSnap = (docs, docType) => {
-                    let count = 0;
                     docs.forEach(doc => {
                         const d = doc.data();
                         const baseVal = safeNum(d.totalAmount ?? d.grandTotal ?? d.amount ?? 0);
@@ -21895,10 +22091,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         if (amtIn !== 0 || amtOut !== 0 || qIn !== 0 || qOut !== 0) {
                             balance += (amtIn - amtOut);
                             qtyBal += (qIn - qOut);
-                            count++;
                         }
                     });
-                    if (count > 0) console.log(`  ${docType}: ${count} transactions, Running Balance: ${balance}`);
                 };
 
                 // Query all collections for transactions before start date
@@ -21914,7 +22108,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 processSnap(jvSnap.docs, 'jv');
                 processSnap(mfgSnap.docs, 'mfg');
 
-                console.log(`✅ Final Opening Balance: ${balance}, Qty: ${qtyBal}`);
                 setOpeningBalance(balance);
                 setOpeningQty(qtyBal);
                 // Opening rate for selected start date should reflect carried-forward closing
@@ -21931,7 +22124,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
 
         calculateOpening();
-    }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, directExpenseAccounts, capitalAccounts, assetAccounts, products, incomeAccounts, taxRates]);
+    }, [filter.type, filter.id, filter.startDate, dataOwnerId, user, parties, accounts, expenses, directExpenseAccounts, capitalAccounts, assetAccounts, products, incomeAccounts, taxRates, isOpen]);
 
     // ✅ REALTIME REPORT GENERATION (Replaces generateReport)
     useEffect(() => {
@@ -22496,15 +22689,30 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             setLoading(false);
         };
 
+        // Perf: the 4 listeners fire within the same frame when the ledger opens.
+        // Coalesce them into a single rebuild per frame, with a timer fallback
+        // because requestAnimationFrame is paused while the tab is hidden.
+        let recalcRaf = null;
+        let recalcTimer = null;
+        const scheduleRecalculate = () => {
+            if (recalcRaf !== null || recalcTimer !== null) return;
+            recalcRaf = requestAnimationFrame(() => {
+                recalcRaf = null;
+                if (recalcTimer !== null) { clearTimeout(recalcTimer); recalcTimer = null; }
+                recalculate();
+            });
+            recalcTimer = setTimeout(() => {
+                recalcTimer = null;
+                if (recalcRaf !== null) { cancelAnimationFrame(recalcRaf); recalcRaf = null; }
+                recalculate();
+            }, 250);
+        };
+
         // Subscription Helper
         const sub = (col, key) => {
             return onSnapshot(query(collection(db, col), ...baseConstraints), (snap) => {
                 rawDataRef.current[key] = snap.docs;
-                console.log(`[Database Sync] Loaded ${col} collection, size: ${snap.size}`);
-                if (col === 'journal_vouchers') {
-                    console.log("[Database Sync] Journal Vouchers List:", snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                }
-                recalculate();
+                scheduleRecalculate();
             }, (err) => { console.error(err); setLoading(false); });
         };
 
@@ -22516,7 +22724,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         unsubsRef.current.push(sub('journal_vouchers', 'jv'));
         unsubsRef.current.push(sub('stock_journals', 'mfg'));
 
-        return () => clearSubs();
+        return () => {
+            // Drop any pending coalesced rebuild so a stale closure cannot repaint old data
+            if (recalcRaf !== null) { cancelAnimationFrame(recalcRaf); recalcRaf = null; }
+            if (recalcTimer !== null) { clearTimeout(recalcTimer); recalcTimer = null; }
+            clearSubs();
+        };
 
     }, [filter, dataOwnerId, user, taxRates, isOpen]); // Dependencies trigger re-subscription
 
@@ -25953,7 +26166,6 @@ const PaymentModal = (props) => {
             });
 
             all.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-            console.log('[PayAgainst] loaded', invType, 'bills for party', partyId, '→', all.length);
             setPayAgainstPurchases(all);
 
             // Build already-paid map: invoiceId → sum of payments tagged to that bill
@@ -33901,8 +34113,9 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' && filtered.length > 0) {
+            // No onClose() here: onSelect switches activeModal, which closes this modal.
+            // Calling onClose() too would override the ledger open.
             onSelect(filtered[0].type, filtered[0].id);
-            onClose();
         }
     };
 
@@ -33971,7 +34184,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                                 {paginatedItems.map((item, i) => (
                                     <tr
                                         key={item.id}
-                                        onClick={() => { onSelect(item.type === 'report' ? item.reportType : item.type, item.id); onClose(); }}
+                                        onClick={() => { onSelect(item.type === 'report' ? item.reportType : item.type, item.id); }}
                                         className={`cursor-pointer transition-colors group ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'} hover:bg-blue-50`}
                                     >
                                         <td className="p-2 pl-3">

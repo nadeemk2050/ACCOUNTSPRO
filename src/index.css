@@ -148,8 +148,12 @@ textarea {
 }
 
 .tally-menu-header {
-    background: linear-gradient(to bottom, #005ea8 0%, #00457c 100%);
+    /* solid colour first so the header stays fully opaque even if the gradient cannot paint */
+    background-color: #005ea8;
+    background-image: linear-gradient(to bottom, #005ea8 0%, #00457c 100%);
     color: white;
+    position: relative;
+    z-index: 2;
     padding: 6px 12px;
     font-size: 11px;
     font-weight: 800;
@@ -175,7 +179,8 @@ textarea {
     align-items: center;
     gap: 12px;
     cursor: pointer;
-    transition: all 0.1s;
+    /* transition only paint properties — never `all` (avoids layout/style thrash on open) */
+    transition: background-color 0.1s ease, color 0.1s ease;
 }
 
 .tally-item-btn:hover, .tally-item-btn.active {
@@ -195,13 +200,18 @@ textarea {
     left: calc(100% + 10px);
     z-index: 99999;
     width: 320px;
+    /* Fully opaque: solid white, no backdrop blur. The blur forced the browser to
+       re-snapshot + blur the page behind on EVERY frame (the 1-2s open lag) and let
+       background text show through the translucent panel. */
     background-color: #ffffff;
+    background-image: none;
     border: 2px solid #005994;
     border-radius: 8px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.3), 0 0 0 1px rgba(0,0,0,0.05);
-    animation: tallyFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.28), 0 0 0 1px rgba(0,0,0,0.05);
+    /* transform-only entrance: no opacity fade, so the panel is never see-through */
+    animation: tallyPopIn 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+    isolation: isolate;
 }
 
 /* --- MOBILE RESPONSIVE MENU --- */
@@ -215,20 +225,37 @@ textarea {
         height: 100%;
         z-index: 1001;
         transform: none;
-        animation: tallyMobileFadeIn 0.2s ease-out;
+        animation: tallyMobileSlideIn 0.18s ease-out;
         box-shadow: none;
         border: none;
         border-radius: 0;
         overflow-y: auto;
     }
 
-    @keyframes tallyMobileFadeIn {
-        from { opacity: 0; transform: translateX(20px); }
-        to { opacity: 1; transform: translateX(0); }
+    @keyframes tallyMobileSlideIn {
+        from { transform: translateX(20px); }
+        to { transform: translateX(0); }
     }
+}
+
+/* Entrance animation: transform only (never opacity) — an opacity fade made the flyout
+   see-through, and it also re-rasterised the panel on every frame. */
+@keyframes tallyPopIn {
+    from { transform: translateX(-8px) scale(0.985); }
+    to { transform: translateX(0) scale(1); }
 }
 
 @keyframes tallyFadeIn {
     from { opacity: 0; transform: translateX(-15px); }
     to { opacity: 1; transform: translateX(0); }
+}
+
+/* ── PERF: full-screen overlays must never use backdrop-filter ───────────────
+   A viewport-sized blur forces the compositor to snapshot + blur the entire page
+   on every open AND close (and on every repaint while open). That was the main
+   1-2s delay when opening modals, ledgers and the searchable dropdown pickers.
+   Small-area blurs (sticky headers, compact cards) are deliberately untouched. */
+div[class*="backdrop-blur"][class*="fixed"][class*="inset-0"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
 }

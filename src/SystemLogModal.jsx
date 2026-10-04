@@ -50,16 +50,10 @@ const SystemLogModal = ({
     return null;
   }, [selectedLog, allLogs]);
 
-  // Temporary Cleanup for Ghost Invoice
-  useEffect(() => {
-      if (isOpen) {
-          import('firebase/firestore').then(({ doc, deleteDoc }) => {
-              deleteDoc(doc(db, 'invoices', '1a01f4ba-b04e-4fc5-adfb-b4875d699b10')).then(() => {
-                  console.log('Ghost invoice cleaned up.');
-              }).catch(() => {});
-          });
-      }
-  }, [isOpen]);
+  // NOTE: A one-off "ghost invoice" hard-delete used to run here on every open (a
+  // deleteDoc of a hard-coded invoice id). It had already served its purpose, and it was
+  // a data-safety hazard: unconditional, not owner-scoped, and bypassing the audit log.
+  // It has been removed. For intentional cleanup use the "Purge Soft Deleted" action.
 
   // Function to resolve ID to Name
   const resolveEntityName = (id) => {

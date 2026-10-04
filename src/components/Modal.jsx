@@ -89,7 +89,7 @@ export const Modal = ({
 
     return (
         <div
-            className={`fixed inset-0 flex items-center justify-center ${(removePadding || isMaximized) ? 'p-0' : 'p-4'} bg-black/40 backdrop-blur-[2px] overflow-hidden`}
+            className={`fixed inset-0 flex items-center justify-center ${(removePadding || isMaximized) ? 'p-0' : 'p-4'} bg-black/45 overflow-hidden`}
             style={{ zIndex: zIndex }}
             onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         >
