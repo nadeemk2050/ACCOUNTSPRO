@@ -172,39 +172,6 @@ const toDateObject = (value) => {
     return null;
 };
 
-/* ══════════════════════════════════════════════════════════════════════════════
-   TEMP DEV-ONLY PERFORMANCE PROBE  (Phase 0) — safe to delete, inert by default
-   • Enable :  window.__PERF_DEBUG = true      (DevTools console, then use the app)
-   • Report :  __PERF_REPORT()                 (table sorted by total time)
-   • Reset  :  __PERF_RESET()
-   • Disable:  window.__PERF_DEBUG = false
-   Nothing is measured and nothing is logged unless window.__PERF_DEBUG is truthy.
-   ══════════════════════════════════════════════════════════════════════════════ */
-const __PERF = (() => {
-    const bucket = Object.create(null);
-    const on = () => typeof window !== 'undefined' && !!window.__PERF_DEBUG;
-    const bump = (key, ms) => {
-        const b = bucket[key] || (bucket[key] = { calls: 0, total: 0, max: 0, last: 0 });
-        b.calls += 1; b.total += ms; b.last = ms; if (ms > b.max) b.max = ms;
-    };
-    if (typeof window !== 'undefined') {
-        window.__PERF_REPORT = () => {
-            const rows = Object.keys(bucket)
-                .map(k => ({ what: k, calls: bucket[k].calls, 'total ms': +bucket[k].total.toFixed(1), 'avg ms': +(bucket[k].total / bucket[k].calls).toFixed(2), 'max ms': +bucket[k].max.toFixed(1) }))
-                .sort((a, b) => b['total ms'] - a['total ms']);
-            console.log('TOTAL measured ms:', rows.reduce((s, r) => s + r['total ms'], 0).toFixed(1));
-            if (console.table) console.table(rows); else console.log(rows);
-            return rows;
-        };
-        window.__PERF_RESET = () => { Object.keys(bucket).forEach(k => delete bucket[k]); return 'perf counters cleared'; };
-    }
-    return {
-        enabled: on,
-        now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
-        add: (key, ms) => { if (on()) bump(key, ms); }
-    };
-})();
-
 const format3_global = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 
 const round3 = (val) => {
@@ -5297,9 +5264,6 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
 
 export default function App() {
 
-    // TEMP DEV-ONLY PERF PROBE (start of render) — inert unless window.__PERF_DEBUG
-    const __perfRenderStart = __PERF.enabled() ? __PERF.now() : 0;
-
     const SYSTEM_VERSION = "2.7.3";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
@@ -5312,21 +5276,6 @@ export default function App() {
     if (isGuestMode) {
         return <GuestLedgerView />;
     }
-
-    /* TEMP DEV-ONLY PERF PROBE — App render + commit duration (runs after every commit,
-       no-ops when window.__PERF_DEBUG is off). Delete together with __PERF. */
-    useEffect(() => {
-        if (!__perfRenderStart) return;
-        __PERF.add('App render+commit', __PERF.now() - __perfRenderStart);
-    });
-    /* TEMP DEV-ONLY PERF PROBE — one-time hint in the console. */
-    useEffect(() => {
-        if (__PERF.enabled() && !window.__PERF_HINTED) {
-            window.__PERF_HINTED = true;
-            console.info('[PERF] probe active — use __PERF_REPORT() / __PERF_RESET(); window.__PERF_DEBUG = false to stop.');
-        }
-    }, []);
-    // -------------------------------------------------------------
 
     const [user, setUser] = useState(null);
     const accountsRef = useRef([]); // ✅ Added for stale-state-safe calculations
@@ -9047,8 +8996,6 @@ export default function App() {
 
     // --- HELPER: CALCULATE REGISTER DATA BY DATE ---
     const computeRegisterData = (type) => {
-        // TEMP DEV-ONLY PERF PROBE (Phase 0)
-        const __regT0 = __PERF.enabled() ? __PERF.now() : 0;
         const start = registerDateRange.from;
         const end = registerDateRange.to;
 
@@ -9473,8 +9420,6 @@ export default function App() {
         // Calculate Summary Balance
         const totalBal = list.reduce((s, i) => s + i.rawValue, 0);
         // Note: grandDebit/Credit are not returned here because SimpleListModal recalculates them from the list data.
-        // TEMP DEV-ONLY PERF PROBE (Phase 0) — records per-register-type cost
-        if (__regT0) __PERF.add(`getRegisterData:${type}`, __PERF.now() - __regT0);
         return {
             data: list,
             summary: { balance: totalBal }
@@ -9524,16 +9469,6 @@ export default function App() {
         }
         const result = computeRegisterData(type);
         registerCacheRef.current[type] = { deps, result };
-
-        // TEMP DEV-ONLY (Phase 1): prove the new path returns the same data as a fresh computation.
-        if (__PERF.enabled() && typeof window !== 'undefined' && window.__PERF_VERIFY) {
-            try {
-                const freshJson = JSON.stringify(computeRegisterData(type));
-                const usedJson = JSON.stringify(result);
-                if (freshJson !== usedJson) console.error('[PERF-VERIFY] MISMATCH', type);
-                else console.info('[PERF-VERIFY] OK', type);
-            } catch (e) { console.warn('[PERF-VERIFY] compare failed', type, e); }
-        }
         return result;
     };
 
