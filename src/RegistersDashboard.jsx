@@ -1,7 +1,141 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue, memo } from 'react';
 import {
-    X, ArrowRight, ChevronRight, Search
+    X, ArrowRight, Search, Star, LayoutGrid, Rows3,
+    TrendingUp, ShoppingCart, FileText, StickyNote, ArrowUpRight, ArrowDownLeft, ArrowLeftRight, Calculator,
+    BookOpen, Package, Layers, Tag, Boxes, Factory, ReceiptText, Coins, Percent, Users, Wallet, Building2, HandCoins
 } from 'lucide-react';
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MODULE-LEVEL STATIC DATA — built once, never recreated, and the register name
+   is PRE-SPLIT for the red shortcut letter so no string work runs during render.
+   `handler` holds the NAME of a prop; the prop itself is resolved at call time.
+   ══════════════════════════════════════════════════════════════════════════════ */
+const splitLabel = (name, shortcut) => {
+    if (!shortcut) return [name, '', ''];
+    const index = name.toLowerCase().indexOf(shortcut.toLowerCase());
+    if (index === -1) return [name, '', ''];
+    return [name.slice(0, index), name.charAt(index), name.slice(index + 1)];
+};
+
+const makeItem = (id, name, shortcut, handler, group, icon, desc, comingSoon = false) => ({
+    id, name, shortcut, handler, group, icon, desc,
+    parts: splitLabel(name, shortcut),
+    comingSoon
+});
+
+const REGISTER_ITEMS = [
+    makeItem('sales_reg', 'Sales Register', 'S', 'onShowSalesRegister', 'sales', TrendingUp, 'Sales transactions & performance'),
+    makeItem('purchase_reg', 'Purchase Register', 'P', 'onShowPurchaseRegister', 'sales', ShoppingCart, 'Procurement & vendor records'),
+    makeItem('debit_note', 'Debit Notes', 'D', 'onShowDebitNoteRegister', 'sales', FileText, 'Purchase returns & adjustments'),
+    makeItem('credit_note', 'Credit Notes', 'E', 'onShowCreditNoteRegister', 'sales', StickyNote, 'Sales returns & adjustments'),
+    makeItem('bill_wise', 'Bill Wise Details', 'B', null, 'sales', FileText, 'Party-wise outstanding bill tracking', true),
+
+    makeItem('payment_reg', 'Payments Register', 'Y', 'onShowPaymentRegister', 'cash', ArrowUpRight, 'Outward cash & bank flows'),
+    makeItem('receipt_reg', 'Receipts Register', 'R', 'onShowReceiptRegister', 'cash', ArrowDownLeft, 'Inward cash & bank flows'),
+    makeItem('contra_reg', 'Contra Register', 'C', 'onShowContraRegister', 'cash', ArrowLeftRight, 'Inter-account fund transfers'),
+    makeItem('cashier_reg', 'Cashier Register', 'H', 'onShowCashierRegister', 'cash', Calculator, 'Detailed cashier transactions'),
+
+    makeItem('journal_reg', 'Journal Register', 'J', 'onShowJournalRegister', 'adjust', BookOpen, 'Adjustment & non-cash entries'),
+
+    makeItem('stock_inv', 'Stock Inventory', 'K', 'onShowStockInventory', 'stock', Package, 'Current warehouse stock levels'),
+    makeItem('piece_inv', 'Piece Wise Inventory', 'W', 'onShowPieceInventory', 'stock', Layers, 'Unit-by-unit stock breakdown'),
+    makeItem('lot_inv', 'Lot Wise Detail', 'L', 'onShowLotDetail', 'stock', Tag, 'Batch & batch-wise tracking'),
+    makeItem('manuf_reg', 'Manufacturing Register', 'M', 'onShowManufacturingRegister', 'stock', Boxes, 'Production & processing logs'),
+
+    makeItem('direct_expense_reg', 'Direct Expenses Register', 'T', 'onShowDirectExpenseRegister', 'expense', Factory, 'Manufacturing & COGS direct expense ledgers'),
+    makeItem('expense_reg', 'Indirect Expenses Register', 'X', 'onShowExpenseRegister', 'expense', ReceiptText, 'Operating & administrative costs'),
+    makeItem('income_reg', 'Indirect Incomes Register', 'N', 'onShowIncomeRegister', 'expense', Coins, 'Non-operating revenue sources'),
+
+    makeItem('tax_reg', 'Tax Registers', 'G', 'onShowTaxRegister', 'tax', Percent, 'Tax-wise invoice values and running balances'),
+
+    makeItem('customer_reg', 'Customers Register', 'U', 'onShowCustomerRegister', 'other', Users, 'Party-wise ledger summary'),
+    makeItem('capital_reg', 'Capital Register', 'I', 'onShowCapitalRegister', 'other', Wallet, 'Owner & equity investments'),
+    makeItem('asset_reg', 'Assets Register', 'A', 'onShowAssetRegister', 'other', Building2, 'Fixed & current asset records'),
+    makeItem('loans_adv', 'Loans & Advances Tracker', 'V', 'onShowLoansAdvancesRegister', 'other', HandCoins, 'OA · TA · OL · TL — Track outstanding balances & due dates')
+];
+
+const REGISTER_GROUPS = [
+    { key: 'sales', label: 'Sales & Purchases', accent: 'text-emerald-300/70' },
+    { key: 'cash', label: 'Cash & Bank', accent: 'text-sky-300/70' },
+    { key: 'adjust', label: 'Adjustments', accent: 'text-violet-300/70' },
+    { key: 'stock', label: 'Stock & Production', accent: 'text-amber-300/70' },
+    { key: 'expense', label: 'Expenses & Income', accent: 'text-rose-300/70' },
+    { key: 'tax', label: 'Tax & Compliance', accent: 'text-cyan-300/70' },
+    { key: 'other', label: 'Other', accent: 'text-slate-300/70' }
+];
+
+const EMPTY_TAGS = {};
+const EMPTY_ARRAY = [];
+const FAVORITES_KEY = 'registers_dashboard_favorites';
+const RECENT_KEY = 'registers_dashboard_recent';
+const DENSITY_KEY = 'registers_dashboard_density';
+const MAX_RECENT = 5;
+const MAX_FAVORITES = 6;
+const RECENT_LIMIT = 5;
+
+/* localStorage — guarded, non-fatal, called only from lazy initialisers / event handlers */
+const readPrefArray = (key) => {
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return EMPTY_ARRAY;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : EMPTY_ARRAY;
+    } catch { return EMPTY_ARRAY; }
+};
+const writePrefArray = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+};
+const readDensity = () => {
+    try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; }
+};
+const writeDensity = (value) => {
+    try { localStorage.setItem(DENSITY_KEY, value); } catch { /* storage unavailable */ }
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TILE — defined OUTSIDE the dashboard and memoised with primitive props only, so
+   typing in the search box / moving the focus ring never re-renders every tile.
+   ══════════════════════════════════════════════════════════════════════════════ */
+const Tile = memo(function Tile({
+    id, navKey, parts, icon, desc, isPinned, isFocused, tag, compact, comingSoon, onOpen, onTogglePin
+}) {
+    const Icon = icon;
+    return (
+        <button
+            type="button"
+            data-tile-id={navKey}
+            title={desc}
+            onClick={() => onOpen(id)}
+            className={`flex w-full items-center gap-2 rounded-md border text-left transition-colors ${compact ? 'px-2 py-1' : 'px-2.5 py-1.5'} ${comingSoon
+                ? 'cursor-not-allowed border-white/10 bg-white/[0.02] opacity-50'
+                : isFocused
+                    ? 'border-blue-400/70 bg-white/[0.09]'
+                    : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.06]'}`}
+        >
+            <Icon size={compact ? 13 : 15} className="shrink-0 text-slate-400" />
+            <span className={`min-w-0 flex-1 truncate font-bold tracking-tight text-white ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
+                {parts[0]}
+                {parts[1] ? <span className="font-extrabold text-red-500 underline decoration-red-500/40 underline-offset-2">{parts[1]}</span> : null}
+                {parts[2]}
+            </span>
+            {tag ? <span className="shrink-0 text-[7px] font-black uppercase tracking-wider text-amber-300/80">{tag}</span> : null}
+            {comingSoon ? (
+                <span className="shrink-0 text-[7px] font-black uppercase tracking-wider text-yellow-400/80">Soon</span>
+            ) : (
+                <>
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400/60" />
+                    <span
+                        title={isPinned ? 'Unpin' : 'Pin to favorites'}
+                        onClick={(e) => { e.stopPropagation(); onTogglePin(id); }}
+                        className="shrink-0 rounded p-0.5 hover:bg-white/10"
+                    >
+                        <Star size={11} className={isPinned ? 'fill-amber-300 text-amber-300' : 'text-slate-600'} />
+                    </span>
+                </>
+            )}
+        </button>
+    );
+});
 
 const RegistersDashboard = ({
     onClose,
@@ -28,35 +162,29 @@ const RegistersDashboard = ({
     onShowTaxRegister,
     user,
     effectiveName,
-    companyProfile
+    companyProfile,
+    registerTags = EMPTY_TAGS
 }) => {
     const [searchTerm, setSearchTerm] = useState('');
-    const bgGradient = "bg-gradient-to-br from-[#0f172a] via-[#1e293b] to-[#0f172a]";
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [favorites, setFavorites] = useState(() => readPrefArray(FAVORITES_KEY));
+    const [density, setDensity] = useState(readDensity);
+    const [focusKey, setFocusKey] = useState(null);
 
-    const modules = useMemo(() => [
-        { id: 'sales_reg', name: 'Sales Register', shortcut: 'S', action: onShowSalesRegister, v2: true, desc: 'Sales transactions & performance' },
-        { id: 'purchase_reg', name: 'Purchase Register', shortcut: 'P', action: onShowPurchaseRegister, v2: true, desc: 'Procurement & vendor records' },
-        { id: 'payment_reg', name: 'Payments Register', shortcut: 'Y', action: onShowPaymentRegister, v2: true, desc: 'Outward cash & bank flows' },
-        { id: 'receipt_reg', name: 'Receipts Register', shortcut: 'R', action: onShowReceiptRegister, v2: true, desc: 'Inward cash & bank flows' },
-        { id: 'contra_reg', name: 'Contra Register', shortcut: 'C', action: onShowContraRegister, v2: true, desc: 'Inter-account fund transfers' },
-        { id: 'journal_reg', name: 'Journal Register', shortcut: 'J', action: onShowJournalRegister, v2: true, desc: 'Adjustment & non-cash entries' },
-        { id: 'debit_note', name: 'Debit Notes', shortcut: 'D', action: onShowDebitNoteRegister, v2: true, desc: 'Purchase returns & adjustments' },
-        { id: 'credit_note', name: 'Credit Notes', shortcut: 'E', action: onShowCreditNoteRegister, v2: true, desc: 'Sales returns & adjustments' },
-        { id: 'stock_inv', name: 'Stock Inventory', shortcut: 'K', action: onShowStockInventory, v2: true, desc: 'Current warehouse stock levels' },
-        { id: 'piece_inv', name: 'Piece Wise Inventory', shortcut: 'W', action: onShowPieceInventory, v2: true, desc: 'Unit-by-unit stock breakdown' },
-        { id: 'lot_inv', name: 'Lot Wise Detail', shortcut: 'L', action: onShowLotDetail, v2: true, desc: 'Batch & batch-wise tracking' },
-        { id: 'cashier_reg', name: 'Cashier Register', shortcut: 'H', action: onShowCashierRegister, v2: true, desc: 'Detailed cashier transactions' },
-        { id: 'customer_reg', name: 'Customers Register', shortcut: 'U', action: onShowCustomerRegister, v2: true, desc: 'Party-wise ledger summary' },
-        { id: 'capital_reg', name: 'Capital Register', shortcut: 'I', action: onShowCapitalRegister, v2: true, desc: 'Owner & equity investments' },
-        { id: 'asset_reg', name: 'Assets Register', shortcut: 'A', action: onShowAssetRegister, v2: true, desc: 'Fixed & current asset records' },
-        { id: 'direct_expense_reg', name: 'Direct Expenses Register', shortcut: 'T', action: onShowDirectExpenseRegister, v2: true, desc: 'Manufacturing & COGS direct expense ledgers' },
-        { id: 'expense_reg', name: 'Indirect Expenses Register', shortcut: 'X', action: onShowExpenseRegister, v2: true, desc: 'Operating & administrative costs' },
-        { id: 'income_reg', name: 'Indirect Incomes Register', shortcut: 'N', action: onShowIncomeRegister, v2: true, desc: 'Non-operating revenue sources' },
-        { id: 'manuf_reg', name: 'Manufacturing Register', shortcut: 'M', action: onShowManufacturingRegister, v2: true, desc: 'Production & processing logs' },
-        { id: 'loans_adv', name: 'Loans & Advances Tracker', shortcut: 'V', action: onShowLoansAdvancesRegister, v2: true, desc: 'OA · TA · OL · TL — Track outstanding balances & due dates' },
-        { id: 'tax_reg', name: 'Tax Registers', shortcut: 'G', action: onShowTaxRegister, v2: true, desc: 'Tax-wise invoice values and running balances' },
-        { id: 'bill_wise', name: 'Bill Wise Details', shortcut: 'B', action: null, comingSoon: true, desc: 'Party-wise outstanding bill tracking' },
-    ], [
+    /* Editing the box stays instant; the (heavy) filtering is deferred. */
+    const deferredSearch = useDeferredValue(searchTerm);
+
+    /* Recent ids: read once per mount — the dashboard unmounts when a register opens. */
+    const recentIds = useMemo(() => readPrefArray(RECENT_KEY), []);
+
+    const handlers = useMemo(() => ({
+        onShowSalesRegister, onShowPurchaseRegister, onShowPaymentRegister, onShowReceiptRegister,
+        onShowContraRegister, onShowJournalRegister, onShowDebitNoteRegister, onShowCreditNoteRegister,
+        onShowStockInventory, onShowPieceInventory, onShowLotDetail, onShowCashierRegister,
+        onShowCustomerRegister, onShowCapitalRegister, onShowAssetRegister, onShowDirectExpenseRegister,
+        onShowExpenseRegister, onShowIncomeRegister, onShowManufacturingRegister, onShowLoansAdvancesRegister,
+        onShowTaxRegister
+    }), [
         onShowSalesRegister, onShowPurchaseRegister, onShowPaymentRegister, onShowReceiptRegister,
         onShowContraRegister, onShowJournalRegister, onShowDebitNoteRegister, onShowCreditNoteRegister,
         onShowStockInventory, onShowPieceInventory, onShowLotDetail, onShowCashierRegister,
@@ -65,21 +193,188 @@ const RegistersDashboard = ({
         onShowTaxRegister
     ]);
 
+    const itemsById = useMemo(() => {
+        const map = new Map();
+        for (const item of REGISTER_ITEMS) map.set(item.id, item);
+        return map;
+    }, []);
+
+    /* Live filter — one pass over the static table; identical 1-char semantics as before. */
+    const filtered = useMemo(() => {
+        const search = deferredSearch.toLowerCase();
+        if (!search) return REGISTER_ITEMS;
+        if (search.length === 1) return REGISTER_ITEMS.filter(m => m.name.toLowerCase().startsWith(search));
+        return REGISTER_ITEMS.filter(m =>
+            m.name.toLowerCase().includes(search) ||
+            m.desc.toLowerCase().includes(search) ||
+            (m.shortcut || '').toLowerCase() === search
+        );
+    }, [deferredSearch]);
+
+    const favoriteItems = useMemo(() => filtered.filter(m => favorites.includes(m.id)), [filtered, favorites]);
+
+    const groupCards = useMemo(() => {
+        const byGroup = new Map();
+        for (const item of filtered) {
+            const bucket = byGroup.get(item.group);
+            if (bucket) bucket.push(item); else byGroup.set(item.group, [item]);
+        }
+        return REGISTER_GROUPS
+            .map(group => ({ key: group.key, label: group.label, accent: group.accent, items: byGroup.get(group.key) || EMPTY_ARRAY }))
+            .filter(group => group.items.length > 0);
+    }, [filtered]);
+
+    const recentItems = useMemo(() => {
+        const out = [];
+        for (const id of recentIds) {
+            const item = itemsById.get(id);
+            if (item) out.push(item);
+            if (out.length >= RECENT_LIMIT) break;
+        }
+        return out;
+    }, [recentIds, itemsById]);
+
+    const cards = useMemo(() => {
+        const out = [];
+        if (favoriteItems.length > 0) out.push({ key: '__fav', kind: 'fav', label: 'Favorites', accent: 'text-amber-300/70', items: favoriteItems });
+        for (const group of groupCards) out.push({ key: group.key, kind: 'grp', label: group.label, accent: group.accent, items: group.items });
+        return out;
+    }, [favoriteItems, groupCards]);
+
+    /* Ordered nav keys = same order as the DOM. */
+    const navKeys = useMemo(() => {
+        const keys = [];
+        if (favoriteItems.length > 0) for (const item of favoriteItems) keys.push('fav:' + item.id);
+        for (const group of groupCards) for (const item of group.items) keys.push('grp:' + item.id);
+        return keys;
+    }, [favoriteItems, groupCards]);
+
+    /* Latest-value refs — the single key listener never re-subscribes. */
+    const itemsByIdRef = useRef(itemsById);
+    const handlersRef = useRef(handlers);
+    const navKeysRef = useRef(navKeys);
+    const focusKeyRef = useRef(focusKey);
+    const favoritesRef = useRef(favorites);
+    const densityRef = useRef(density);
+    const searchOpenRef = useRef(searchOpen);
+    const onCloseRef = useRef(onClose);
+
+    const handleOpen = useCallback((id) => {
+        const item = itemsByIdRef.current.get(id);
+        if (!item || item.comingSoon) return;
+        /* UI preference only — recorded before the handler, arguments untouched. */
+        try {
+            const prev = readPrefArray(RECENT_KEY);
+            writePrefArray(RECENT_KEY, [id, ...prev.filter(x => x !== id)].slice(0, MAX_RECENT));
+        } catch { /* ignore */ }
+        const run = item.handler ? handlersRef.current[item.handler] : null;
+        if (run) run();
+        else alert("Coming soon or not connected.");
+    }, []);
+
+    const handleTogglePin = useCallback((id) => {
+        const prev = favoritesRef.current;
+        const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id].slice(0, MAX_FAVORITES);
+        favoritesRef.current = next;
+        writePrefArray(FAVORITES_KEY, next);
+        setFavorites(next);
+    }, []);
+
+    const handleToggleDensity = useCallback(() => {
+        const next = densityRef.current === 'compact' ? 'comfortable' : 'compact';
+        densityRef.current = next;
+        writeDensity(next);
+        setDensity(next);
+    }, []);
+
+    const handleSearchChange = useCallback((e) => {
+        setSearchTerm(e.target.value);
+        setFocusKey(null);
+    }, []);
+
+    /* The search bar stays closed — open it on demand, and it always reopens empty. */
+    const handleToggleSearch = useCallback(() => {
+        setSearchOpen(prev => !prev);
+        setSearchTerm('');
+        setFocusKey(null);
+    }, []);
+
+    /* One pass after every render to keep the listener's refs current. */
+    useEffect(() => {
+        itemsByIdRef.current = itemsById;
+        handlersRef.current = handlers;
+        navKeysRef.current = navKeys;
+        focusKeyRef.current = focusKey;
+        favoritesRef.current = favorites;
+        densityRef.current = density;
+        searchOpenRef.current = searchOpen;
+        onCloseRef.current = onClose;
+    });
+
+    /* Autofocus the search box the moment it is revealed. */
+    useEffect(() => {
+        if (!searchOpen) return;
+        const el = document.getElementById('register-search');
+        if (el) el.focus();
+    }, [searchOpen]);
+
+    /* Key listener — added once (empty deps); everything it needs is read from refs. */
     useEffect(() => {
         const handleKeyDown = (e) => {
-            const isInputFocused = document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA';
+            const active = document.activeElement;
+            const isInputFocused = !!active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
 
             if (e.altKey) {
                 const key = e.key.toLowerCase();
-                const module = modules.find(m => m.shortcut && m.shortcut.toLowerCase() === key);
-                if (module && !module.comingSoon && module.action) {
-                    e.preventDefault();
-                    module.action();
+                const item = REGISTER_ITEMS.find(m => m.shortcut && m.shortcut.toLowerCase() === key);
+                if (item && !item.comingSoon) {
+                    const run = item.handler ? handlersRef.current[item.handler] : null;
+                    if (run) { e.preventDefault(); run(); }
                 }
-            } else if (!e.ctrlKey && !e.metaKey && e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
-                if (!isInputFocused) {
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setFocusKey(null);
+                if (searchOpenRef.current) {
+                    setSearchOpen(false);
+                    setSearchTerm('');
+                } else if (onCloseRef.current) {
+                    onCloseRef.current();
+                }
+            } else if (!e.ctrlKey && !e.metaKey && !isInputFocused && e.key === '/') {
+                e.preventDefault();
+                if (!searchOpenRef.current) setSearchOpen(true);
+                const searchInput = document.getElementById('register-search');
+                if (searchInput) searchInput.focus();
+            } else if (!e.ctrlKey && !e.metaKey && !isInputFocused && e.key.indexOf('Arrow') === 0) {
+                const keys = navKeysRef.current;
+                if (keys.length > 0) {
                     e.preventDefault();
-                    setSearchTerm(e.key.toUpperCase());
+                    const step = (e.key === 'ArrowUp' || e.key === 'ArrowLeft') ? -1 : 1;
+                    const at = keys.indexOf(focusKeyRef.current);
+                    let next = at === -1 ? (step > 0 ? 0 : keys.length - 1) : at + step;
+                    if (next < 0) next = keys.length - 1;
+                    if (next >= keys.length) next = 0;
+                    focusKeyRef.current = keys[next];
+                    const node = document.querySelector(`[data-tile-id="${keys[next]}"]`);
+                    if (node && node.scrollIntoView) node.scrollIntoView({ block: 'nearest' });
+                    setFocusKey(keys[next]);
+                }
+            } else if (!e.ctrlKey && !e.metaKey && !isInputFocused && e.key === 'Enter') {
+                const key = focusKeyRef.current;
+                const item = key ? itemsByIdRef.current.get(key.slice(key.indexOf(':') + 1)) : null;
+                if (item) { e.preventDefault(); handleOpen(item.id); }
+            } else if (!e.ctrlKey && !e.metaKey && !isInputFocused && e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
+                e.preventDefault();
+                const letter = e.key.toUpperCase();
+                const shortcutItem = REGISTER_ITEMS.find(m => m.shortcut === letter);
+                if (!searchOpenRef.current && shortcutItem && !shortcutItem.comingSoon && shortcutItem.handler) {
+                    /* Search closed → the underlined shortcut letter opens the register directly. */
+                    handleOpen(shortcutItem.id);
+                } else {
+                    /* Search open (or no register owns that letter) → send it to the search box. */
+                    setSearchTerm(letter);
+                    setFocusKey(null);
+                    if (!searchOpenRef.current) setSearchOpen(true);
                     const searchInput = document.getElementById('register-search');
                     if (searchInput) searchInput.focus();
                 }
@@ -88,150 +383,143 @@ const RegistersDashboard = ({
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [modules]);
+    }, [handleOpen]);
 
-    const renderNameWithShortcut = (name, shortcut) => {
-        if (!shortcut) return name;
-        const index = name.toLowerCase().indexOf(shortcut.toLowerCase());
-        if (index === -1) return name;
-
-        return (
-            <>
-                {name.substring(0, index)}
-                <span className="text-red-700 font-extrabold underline decoration-red-700/50 underline-offset-2">{name.charAt(index)}</span>
-                {name.substring(index + 1)}
-            </>
-        );
-    };
+    const compact = density === 'compact';
 
     return (
-        <div className={`fixed inset-0 z-[100] ${bgGradient} text-white font-sans flex flex-col animate-in fade-in duration-300`}>
+        <div className="fixed inset-0 z-[100] flex flex-col overflow-hidden bg-[#0f172a] font-sans text-white">
             {/* HEADER */}
-            <div className="h-14 bg-black/20 flex items-center justify-between px-6 backdrop-blur-sm border-b border-white/10">
-                <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-3 py-2 rounded-lg transition-colors" onClick={onClose}>
-                    <div className="bg-white/10 p-2 rounded-md">
-                        <ArrowRight className="rotate-180" size={20} />
+            <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/10 bg-[#0b1220] px-3 md:px-4">
+                <div className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/10" onClick={onClose}>
+                    <div className="rounded-md bg-white/10 p-1.5">
+                        <ArrowRight className="rotate-180" size={16} />
                     </div>
-                    <div className="flex flex-col select-none">
-                        <span className="text-xl font-bold tracking-wide">REGISTERS DASHBOARD</span>
-                        <span className="text-[10px] opacity-60 uppercase tracking-widest">Comprehensive Reports View</span>
+                    <div className="flex select-none flex-col leading-tight">
+                        <span className="text-sm font-bold tracking-wide">REGISTERS DASHBOARD</span>
+                        <span className="text-[9px] uppercase tracking-widest opacity-50">Comprehensive Reports View</span>
                     </div>
                 </div>
 
-                <div className="flex items-center gap-4">
-                    <div className="hidden md:flex flex-col text-right">
-                        <span className="text-xs font-bold text-white/80">{effectiveName || user?.email}</span>
-                        <span className="text-[10px] opacity-50">{companyProfile?.name || 'Company Name'}</span>
+                <div className="flex items-center gap-2">
+                    <div className="hidden flex-col text-right leading-tight md:flex">
+                        <span className="text-[11px] font-bold text-white/80">{effectiveName || user?.email}</span>
+                        <span className="text-[9px] opacity-50">{companyProfile?.name || 'Company Name'}</span>
                     </div>
+                    {!searchOpen && (
+                        <span className="hidden text-[9px] font-bold uppercase tracking-widest text-white/25 xl:block">
+                            press a letter to open · / to search
+                        </span>
+                    )}
+                    <button
+                        onClick={handleToggleSearch}
+                        title={searchOpen ? 'Hide search' : 'Search registers ( / )'}
+                        className={`rounded-full p-1.5 transition-colors hover:bg-white/10 hover:text-white ${searchOpen ? 'bg-white/10 text-white' : 'text-white/60'}`}
+                    >
+                        <Search size={16} />
+                    </button>
+                    <button
+                        onClick={handleToggleDensity}
+                        title={compact ? 'Switch to comfortable layout' : 'Switch to compact layout'}
+                        className="rounded-full p-1.5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                    >
+                        {compact ? <LayoutGrid size={16} /> : <Rows3 size={16} />}
+                    </button>
                     <button
                         onClick={onClose}
-                        className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/60 hover:text-white"
+                        className="rounded-full p-1.5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
                     >
-                        <X size={24} />
+                        <X size={20} />
                     </button>
                 </div>
             </div>
 
-            {/* MAIN CONTENT AREA */}
-            <div className="flex-1 overflow-y-auto flex items-center justify-center p-6">
-                <div className="w-full max-w-lg bg-black/40 backdrop-blur-xl border border-white/10 rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] overflow-hidden animate-in zoom-in-95 duration-500">
-                    <div className="px-8 py-6 border-b border-white/5 bg-white/[0.02] flex flex-col gap-4">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <div className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] mb-1">Navigation</div>
-                                <h2 className="text-white font-black text-2xl tracking-tight leading-none">Select a Register</h2>
-                            </div>
+            {/* SEARCH — closed by default, revealed by / or the search button */}
+            {searchOpen && (
+                <div className="flex shrink-0 items-center gap-3 border-b border-white/5 bg-[#0e1626] px-3 py-2 md:px-4">
+                    <div className="relative flex-1">
+                        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                            <Search size={14} className="text-slate-500" />
                         </div>
-
-                        {/* SEARCH FIELD */}
-                        <div className="relative group">
-                            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                                <Search size={16} className="text-slate-500 group-focus-within:text-blue-400 transition-colors" />
-                            </div>
-                            <input 
-                                id="register-search"
-                                type="text"
-                                placeholder="SEARCH FOR A REGISTER (E.G. SALES, TAX, INVENTORY...)"
-                                className="w-full bg-white/[0.05] border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-[10px] font-black text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:bg-white/[0.08] transition-all uppercase tracking-widest"
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                            />
-                        </div>
+                        <input
+                            id="register-search"
+                            type="text"
+                            placeholder="SEARCH FOR A REGISTER (E.G. SALES, TAX, INVENTORY...)"
+                            className="w-full rounded-lg border border-white/10 bg-white/[0.05] py-1.5 pl-9 pr-3 text-[10px] font-bold uppercase tracking-widest text-white placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none"
+                            value={searchTerm}
+                            onChange={handleSearchChange}
+                        />
                     </div>
-
-                    <div className="p-3 space-y-0.5 max-h-[60vh] overflow-y-auto custom-scrollbar">
-                        {modules
-                            .filter(mod => {
-                                const search = searchTerm.toLowerCase();
-                                if (!search) return true;
-                                if (search.length === 1) {
-                                    return mod.name.toLowerCase().startsWith(search);
-                                }
-                                return mod.name.toLowerCase().includes(search) || mod.desc.toLowerCase().includes(search);
-                            })
-                            .map((mod) => (
-                            <button
-                                key={mod.id}
-                                onClick={() => {
-                                    if (mod.comingSoon) return; // do nothing for coming soon
-                                    if (mod.action) mod.action();
-                                    else alert("Coming soon or not connected.");
-                                }}
-                                className={`w-full group relative flex items-center justify-between py-2.5 px-6 rounded-2xl transition-all text-left active:scale-[0.98] outline-none ${mod.comingSoon ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/[0.05]'}`}
-                            >
-                                <div className="flex items-center gap-4">
-                                    <div className="flex flex-col">
-                                        <div className="flex items-center gap-3">
-                                            <div className="text-white font-black text-base tracking-tight uppercase group-hover:text-blue-400 transition-colors">
-                                                {renderNameWithShortcut(mod.name, mod.shortcut)}
-                                            </div>
-                                            {mod.v2 && !mod.comingSoon && (
-                                                <div className="bg-blue-600/20 text-blue-400 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest border border-blue-500/30">V2</div>
-                                            )}
-                                            {mod.comingSoon && (
-                                                <div className="bg-yellow-500/20 text-yellow-400 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest border border-yellow-500/30 animate-pulse">Coming Soon</div>
-                                            )}
-                                        </div>
-                                        <div className="text-slate-400 text-[11px] font-medium opacity-60 mt-0.5">{mod.desc}</div>
-                                    </div>
-                                </div>
-                                
-                                {!mod.comingSoon && (
-                                    <div className="opacity-0 group-hover:opacity-100 transform translate-x-2 group-hover:translate-x-0 transition-all text-blue-400">
-                                        <ChevronRight size={20} strokeWidth={3} />
-                                    </div>
-                                )}
-                            </button>
-                        ))}
-                        {modules.filter(mod => {
-                            const search = searchTerm.toLowerCase();
-                            if (!search) return true;
-                            if (search.length === 1) {
-                                return mod.name.toLowerCase().startsWith(search);
-                            }
-                            return mod.name.toLowerCase().includes(search) || mod.desc.toLowerCase().includes(search);
-                        }).length === 0 && (
-                            <div className="p-12 text-center flex flex-col items-center gap-3 opacity-30">
-                                <Search size={48} className="text-slate-500" />
-                                <div className="text-[10px] font-black uppercase tracking-[0.2em]">No Register Found</div>
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="px-8 py-4 bg-black/20 border-t border-white/5 flex items-center justify-between">
-                        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-                            Audit Ready Reports
-                        </div>
-                        <div className="text-[9px] font-mono bg-white/5 px-2 py-1 rounded text-slate-400">
-                            V2.7.3
-                        </div>
+                    <div className="hidden shrink-0 text-[9px] font-bold uppercase tracking-widest text-slate-500 lg:block">
+                        <span className="text-slate-300">esc</span> to hide · arrows to move · <span className="text-slate-300">↵</span> to open
                     </div>
                 </div>
+            )}
+
+            {/* MAIN — the only scroll container; auto-fit columns use the full width */}
+            <div className="min-h-0 w-full flex-1 overflow-y-auto px-3 py-3 md:px-4">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] content-start gap-2.5">
+                    {cards.map(card => (
+                        <section key={card.key} className="rounded-lg border border-white/10 bg-[#111a2b] p-1.5">
+                            <div className={`px-1 pb-1.5 text-[9px] font-black uppercase tracking-[0.2em] ${card.accent}`}>{card.label}</div>
+                            <div className="flex flex-col gap-1">
+                                {card.items.map(item => {
+                                    const navKey = card.kind + ':' + item.id;
+                                    return (
+                                        <Tile
+                                            key={item.id}
+                                            id={item.id}
+                                            navKey={navKey}
+                                            parts={item.parts}
+                                            icon={item.icon}
+                                            desc={item.desc}
+                                            isPinned={favorites.includes(item.id)}
+                                            isFocused={focusKey === navKey}
+                                            tag={registerTags[item.id]}
+                                            compact={compact}
+                                            comingSoon={item.comingSoon}
+                                            onOpen={handleOpen}
+                                            onTogglePin={handleTogglePin}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    ))}
+
+                    {recentItems.length > 0 && (
+                        <section className="rounded-lg border border-white/10 bg-[#111a2b] p-1.5">
+                            <div className="px-1 pb-1.5 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400/70">Recently opened</div>
+                            <div className="flex flex-col gap-1">
+                                {recentItems.map(item => (
+                                    <button
+                                        key={item.id}
+                                        type="button"
+                                        title={item.desc}
+                                        onClick={() => handleOpen(item.id)}
+                                        className="flex w-full items-center rounded-md border border-white/10 bg-white/[0.02] px-2 py-1 text-left transition-colors hover:border-white/20 hover:bg-white/[0.06]"
+                                    >
+                                        <span className="min-w-0 flex-1 truncate text-[10px] font-bold text-slate-300">{item.name}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </section>
+                    )}
+                </div>
+
+                {filtered.length === 0 && (
+                    <div className="flex flex-col items-center gap-2 py-10 opacity-30">
+                        <Search size={32} className="text-slate-500" />
+                        <div className="text-[10px] font-black uppercase tracking-[0.2em]">No Register Found</div>
+                    </div>
+                )}
             </div>
 
-            {/* INFO FOOTER (Subtle) */}
-            <div className="p-6 opacity-30 text-center">
-                 <p className="text-[10px] uppercase tracking-[0.2em]">Registers provide a chronological view of all transactions.</p>
+            {/* FOOTER — tiny, fixed height, never forces a scrollbar */}
+            <div className="flex h-7 shrink-0 items-center justify-between border-t border-white/5 px-3 text-[9px] uppercase tracking-[0.2em] text-white/25 md:px-4">
+                <span className="shrink-0">Audit Ready Reports</span>
+                <span className="hidden truncate px-3 md:block">Registers provide a chronological view of all transactions.</span>
+                <span className="shrink-0 font-mono">V2.7.3</span>
             </div>
         </div>
     );

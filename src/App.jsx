@@ -6037,7 +6037,6 @@ export default function App() {
         const unsubProducts = onSnapshot(getMasterQuery("products"), (snap) => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (products):", err));
         const unsubParties = onSnapshot(getMasterQuery("parties"), (snap) => {
             const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            console.log("👥 Parties Snapshot:", data.length);
             setParties(data);
         }, (err) => console.error("Snapshot error (parties):", err));
         const unsubLocations = onSnapshot(getMasterQuery("locations"), (snap) => setLocations(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (locations):", err));
@@ -11269,7 +11268,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'capital_accounts' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); })}
+                onItemClick={(item) => { setLedgerInitialState({ type: 'capital', id: item.id }); setActiveModal('ledgers'); }}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11291,7 +11290,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'asset_accounts' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); })}
+                onItemClick={(item) => { setLedgerInitialState({ type: 'asset', id: item.id }); setActiveModal('ledgers'); }}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11377,7 +11376,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'expenses' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); })}
+                onItemClick={(item) => { setLedgerInitialState({ type: 'expense', id: item.id }); setActiveModal('ledgers'); }}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11411,7 +11410,7 @@ export default function App() {
                 autoEditId={masterModalEditRequest?.collectionName === 'direct_expenses' ? masterModalEditRequest.id : null}
                 onAutoEditHandled={clearMasterModalEditRequest}
                 onMoveSuccess={handleMasterMoveSuccess}
-                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); })}
+                onItemClick={(item) => { setLedgerInitialState({ type: 'direct_expense', id: item.id }); setActiveModal('ledgers'); }}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -11429,7 +11428,7 @@ export default function App() {
                 onDelete={(id) => handleDelete("income_accounts", id)}
                 onUpdate={handleMasterUpdate}
                 logAuditActivity={logAuditActivity}
-                onItemClick={(item) => React.startTransition(() => { setLedgerInitialState({ type: 'income', id: item.id }); setActiveModal('ledgers'); })}
+                onItemClick={(item) => { setLedgerInitialState({ type: 'income', id: item.id }); setActiveModal('ledgers'); }}
                 checkDuplicateName={checkAccountNameDuplicate}
             />
 
@@ -12004,10 +12003,8 @@ export default function App() {
                 currencySymbol={currencySymbol}
                 onOpenLedger={(type, id) => {
                     setModalStack(s => [...s, 'tax_register']);
-                    React.startTransition(() => {
-                        setLedgerInitialState({ type, id });
-                        setActiveModal('ledgers');
-                    });
+                    setLedgerInitialState({ type, id });
+                    setActiveModal('ledgers');
                 }}
             />
 
@@ -12055,10 +12052,8 @@ export default function App() {
                 onSelect={(type, id) => {
                     // FIX: open the ledger DIRECTLY in one batched update — no intermediate
                     // `null` render (which flashed the Gateway page) and no artificial 50ms delay.
-                    React.startTransition(() => {
-                        setLedgerInitialState({ type, id });
-                        setActiveModal('ledgers');
-                    });
+                    setLedgerInitialState({ type, id });
+                    setActiveModal('ledgers');
                 }}
             />
 
@@ -12273,15 +12268,13 @@ export default function App() {
                 modalId="capital_register"
                 onItemClick={(item) => {
                     // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
-                    React.startTransition(() => {
-                        setLedgerInitialState({
-                            type: 'capital',
-                            id: item.id,
-                            startDate: registerDateRange?.from || '',
-                            endDate: registerDateRange?.to || ''
-                        });
-                        setActiveModal('ledgers');
+                    setLedgerInitialState({
+                        type: 'capital',
+                        id: item.id,
+                        startDate: registerDateRange?.from || '',
+                        endDate: registerDateRange?.to || ''
                     });
+                    setActiveModal('ledgers');
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -12303,15 +12296,13 @@ export default function App() {
                 modalId="asset_register"
                 onItemClick={(item) => {
                     // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
-                    React.startTransition(() => {
-                        setLedgerInitialState({
-                            type: 'asset',
-                            id: item.id,
-                            startDate: registerDateRange?.from || '',
-                            endDate: registerDateRange?.to || ''
-                        });
-                        setActiveModal('ledgers');
+                    setLedgerInitialState({
+                        type: 'asset',
+                        id: item.id,
+                        startDate: registerDateRange?.from || '',
+                        endDate: registerDateRange?.to || ''
                     });
+                    setActiveModal('ledgers');
                 }}
                 currencySymbol={currencySymbol}
             />
@@ -12329,15 +12320,13 @@ export default function App() {
                 modalId="expense_register"
                 onItemClick={(item) => {
                     // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
-                    React.startTransition(() => {
-                        setLedgerInitialState({
-                            type: 'expense',
-                            id: item.id,
-                            startDate: registerDateRange?.from || '',
-                            endDate: registerDateRange?.to || ''
-                        });
-                        setActiveModal('ledgers');
+                    setLedgerInitialState({
+                        type: 'expense',
+                        id: item.id,
+                        startDate: registerDateRange?.from || '',
+                        endDate: registerDateRange?.to || ''
                     });
+                    setActiveModal('ledgers');
                 }}
                 currencySymbol={currencySymbol}
                 hideF1Detl={true}
@@ -12357,15 +12346,13 @@ export default function App() {
                 modalId="direct_expense_register"
                 onItemClick={(item) => {
                     // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
-                    React.startTransition(() => {
-                        setLedgerInitialState({
-                            type: 'direct_expense',
-                            id: item.id,
-                            startDate: registerDateRange?.from || '',
-                            endDate: registerDateRange?.to || ''
-                        });
-                        setActiveModal('ledgers');
+                    setLedgerInitialState({
+                        type: 'direct_expense',
+                        id: item.id,
+                        startDate: registerDateRange?.from || '',
+                        endDate: registerDateRange?.to || ''
                     });
+                    setActiveModal('ledgers');
                 }}
                 currencySymbol={currencySymbol}
                 hideF1Detl={true}
@@ -12385,15 +12372,13 @@ export default function App() {
                 modalId="indirect_income_register"
                 onItemClick={(item) => {
                     // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
-                    React.startTransition(() => {
-                        setLedgerInitialState({
-                            type: 'income',
-                            id: item.id,
-                            startDate: registerDateRange?.from || '',
-                            endDate: registerDateRange?.to || ''
-                        });
-                        setActiveModal('ledgers');
+                    setLedgerInitialState({
+                        type: 'income',
+                        id: item.id,
+                        startDate: registerDateRange?.from || '',
+                        endDate: registerDateRange?.to || ''
                     });
+                    setActiveModal('ledgers');
                 }}
                 currencySymbol={currencySymbol}
                 hideF1Detl={true}
