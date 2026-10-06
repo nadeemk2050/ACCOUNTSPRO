@@ -14,6 +14,7 @@ export const Modal = ({
     removePadding = false,
     noContentScroll = false,
     hideHeader = false,
+    headerExtra = null,
     headerClassName = "",
     titleClassName = "",
     footer = null,
@@ -120,6 +121,12 @@ export const Modal = ({
                         {centerTitle && (
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                                 <h3 className={`${titleClassName || 'text-xl'} font-bold ${headerClassName ? 'text-white' : 'text-blue-900'} text-3d-elegant`}>{title}</h3>
+                            </div>
+                        )}
+
+                        {headerExtra && (
+                            <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5 no-drag z-10 px-2">
+                                {headerExtra}
                             </div>
                         )}
 

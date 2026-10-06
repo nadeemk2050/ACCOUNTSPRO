@@ -1835,6 +1835,21 @@ const SearchableSelect = React.forwardRef(({
     );
 });
 
+// ─── PURCHASE ADDITIONAL EXPENSES — what the SUPPLIER is actually owed ───────
+//   mode 'supplier' → expenses ARE inside the voucher total → full amount is owed to the supplier
+//   mode 'others'/'' → the voucher total ALREADY excludes them → nothing to subtract
+//   legacy split (addlExpCreditId points elsewhere) → subtract, they are owed to that ledger
+//   vouchers saved before this mode existed keep the historical behaviour
+const purchaseSupplierBase = (d, baseVal, addlExpBase) => {
+    if (!d || (d.type !== 'purchase' && d.type !== 'purchase_apt')) return baseVal;
+    const exp = Number(addlExpBase) || 0;
+    if (exp <= 0) return baseVal;
+    if (d.addlExpMode === null || d.addlExpMode === undefined) return Math.max(0, baseVal - exp);
+    if (d.addlExpMode === 'others' || d.addlExpMode === '') return baseVal;
+    if (d.addlExpCreditId && d.addlExpCreditId !== d.partyId) return Math.max(0, baseVal - exp);
+    return baseVal;
+};
+
 // --- LIVE CURRENCY INPUT COMPONENT ---
 const CurrencyInput = ({ value, onChange, placeholder, className, disabled }) => {
     // Helper to add commas
@@ -6920,7 +6935,7 @@ export default function App() {
 
                 if (d.partyId && partyBalMap[d.partyId] !== undefined) {
                     const supplierBase = (d.type === 'purchase' || d.type === 'purchase_apt')
-                        ? Math.max(0, baseVal - addlExpBase)
+                        ? purchaseSupplierBase(d, baseVal, addlExpBase)
                         : baseVal;
                     const amt = (d.type === 'purchase' || d.type === 'purchase_apt') ? supplierBase : baseVal;
                     if (['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
@@ -15549,6 +15564,13 @@ const InvoiceModal = (props) => {
     const [addlExpenses, setAddlExpenses] = useState([]);   // [{ expenseId, amount }]
     const [addlExpCreditId, setAddlExpCreditId] = useState('');
     const [showAddlExp, setShowAddlExp] = useState(false);
+    // PURCHASE only — how the additional expenses are handled:
+    //   'supplier' = merged into every item rate/value AND payable on this voucher (to this supplier)
+    //   'others'   = merged into every item rate/value, but NOT payable here (others pay it by journal voucher)
+    //   ''         = rates/values untouched; expenses only recorded here for separate processing
+    const [addlExpMode, setAddlExpMode] = useState('supplier');
+    const addlExpToSupplier = addlExpMode === 'supplier';
+    const addlExpInRates = addlExpMode === 'supplier' || addlExpMode === 'others';
 
     // ✅ NEW: Sales Expense Mode Selection
     const [salesExpenseMode, setSalesExpenseMode] = useState(''); // 'include' or 'add'
@@ -15922,11 +15944,14 @@ const InvoiceModal = (props) => {
             setAddlExpenses([]);
             setAddlExpCreditId('');
             setShowAddlExp(false);
+            setAddlExpMode('supplier');
             setSalesExpenseMode('');
             setShowExpenseModeModal(false);
             if (initialData?.addlExpenses) {
                 setAddlExpenses(initialData.addlExpenses);
                 setAddlExpCreditId(initialData.addlExpCreditId || '');
+                // Saved mode; vouchers written before it existed default to 'supplier' (old behaviour)
+                setAddlExpMode(initialData.addlExpMode || (initialData.addlExpToSupplier === false ? '' : 'supplier'));
                 // NOTE: Do NOT auto-open showAddlExp — always start collapsed; user can click Edit Expenses
                 if (initialData.salesExpenseMode) setSalesExpenseMode(initialData.salesExpenseMode);
             }
@@ -16092,8 +16117,9 @@ const InvoiceModal = (props) => {
             // Mode 2: Add expenses to total (don't reduce item rates)
             grandTotalForeign = round3(itemsTotal + taxAmount + addlExpTotal);
         } else if (voucherType === 'purchase') {
-            // Purchase: Add additional expenses to total
-            grandTotalForeign = round3(itemsTotal + (affectRates ? 0 : expTotal) + taxAmount + addlExpTotal);
+            // Purchase: additional expenses sit in THIS voucher only when they are payable to this supplier;
+            // in 'others'/'' modes they are capitalised/recorded but paid outside this voucher.
+            grandTotalForeign = round3(itemsTotal + (affectRates ? 0 : expTotal) + taxAmount + (addlExpToSupplier ? addlExpTotal : 0));
         } else {
             // Mode 1 (include) or default: Don't add to total for sales (will reduce rates instead)
             grandTotalForeign = round3(itemsTotal + (affectRates ? 0 : expTotal) + taxAmount);
@@ -16115,7 +16141,7 @@ const InvoiceModal = (props) => {
             // needs to know whether to print (and include) that expense total line. Default: yes.
             addExpenseToTotal: printOptions.addExpenseToTotal !== false
         };
-    }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal]);
+    }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal, addlExpToSupplier]);
 
     // Tax AMOUNT first: typing the amount computes the percentage back from the item sub-total
     const applyTaxAmountEdit = (raw) => {
@@ -16254,7 +16280,7 @@ const InvoiceModal = (props) => {
         // ✅ Capitalize/Adjust Additional Expenses into Item Cost/Realization
         // For Sales: mode 'include' = reduce rates, mode 'add' = NO CHANGE to rates (only add to total)
         // For Purchase: always increase rates (capitalize expenses)
-        const shouldAdjustRates = voucherType === 'purchase' || (voucherType === 'sales' && salesExpenseMode === 'include');
+        const shouldAdjustRates = voucherType === 'purchase' ? addlExpInRates : (voucherType === 'sales' && salesExpenseMode === 'include');
 
         if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0)) && shouldAdjustRates) {
             finalItems = items.map(i => {
@@ -16364,6 +16390,8 @@ const InvoiceModal = (props) => {
                     addlExpenses: cleanAddlExpenses, addlExpCreditId: addlExpCreditId || null,
                     addlExpTotal: totals.addlExpTotal,
                     affectRates: !!affectRates, // persisted so reports know whether expenses sit inside the item rates
+                    addlExpMode: voucherType === 'purchase' ? (addlExpMode || '') : null, // 'supplier' | 'others' | ''
+                    addlExpToSupplier: voucherType === 'purchase' ? !!addlExpToSupplier : null, // legacy mirror: true only when payable on this voucher
                     salesExpenseMode: voucherType === 'sales' ? (salesExpenseMode || null) : null, // Save mode for sales
                     totalAmount: totals.grandTotalBase,
                     foreignTotal: totals.grandTotalForeign,
@@ -17338,7 +17366,7 @@ const InvoiceModal = (props) => {
                                     // 🧮 Calculate RIE (Rate Inc Exp) & AIE (Amt Inc Exp)
                                     let rieDisplay = null;
                                     let aieDisplay = null;
-                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
+                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && (voucherType !== 'purchase' || addlExpInRates) && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
                                         const iTot = Number(item.total) || 0;
                                         const iQty = Number(item.quantity) || 0;
                                         const ratio = voucherType === 'purchase'
@@ -17547,6 +17575,11 @@ const InvoiceModal = (props) => {
                                     );
                                 })}
                                 <div className="ml-auto flex items-center gap-3">
+                                    {voucherType === 'purchase' && (
+                                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-black uppercase ${addlExpMode === 'supplier' ? 'bg-emerald-100 text-emerald-700' : addlExpMode === 'others' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'}`}>
+                                            {addlExpMode === 'supplier' ? 'Payable to this supplier · merged in rates' : addlExpMode === 'others' ? 'Merged in rates · paid by others' : 'Recorded only · not in rates'}
+                                        </span>
+                                    )}
                                     <span className="text-[11px] font-black text-orange-700 font-mono">{format3(totals.addlExpTotal)} <span className="text-slate-400 text-[9px]">{currentSym}</span></span>
                                 </div>
                             </div>
@@ -17556,7 +17589,11 @@ const InvoiceModal = (props) => {
                                 <div className="flex justify-between items-center pb-1 border-b border-orange-100 mb-1">
                                     <span className="text-[9px] font-black text-orange-800 uppercase">
                                         {voucherType === 'purchase'
-                                            ? 'Additional Expenses (Increases Purchase Cost)'
+                                            ? (addlExpMode === 'supplier'
+                                                ? 'Additional Expenses (Payable to This Supplier — Merged Into Item Rates)'
+                                                : addlExpMode === 'others'
+                                                    ? 'Additional Expenses (Merged Into Item Rates — Paid Outside This Voucher)'
+                                                    : 'Additional Expenses (Not In Rates — Recorded For Separate Processing)')
                                             : salesExpenseMode === 'add'
                                                 ? 'Additional Expenses (Added to Invoice Total)'
                                                 : 'Additional Expenses (Reduces Item Rates)'}
@@ -17566,6 +17603,36 @@ const InvoiceModal = (props) => {
                                         <button type="button" onClick={() => setShowAddlExp(false)} className="text-[9px] text-slate-400 hover:text-slate-600 font-bold px-1">▲ Collapse</button>
                                     </div>
                                 </div>
+
+                                {voucherType === 'purchase' && (
+                                    <div className="flex flex-col gap-1 pb-1">
+                                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={addlExpMode === 'supplier'}
+                                                onChange={e => setAddlExpMode(e.target.checked ? 'supplier' : '')}
+                                                className="w-3 h-3 accent-orange-600"
+                                            />
+                                            <span className="text-[9px] font-black uppercase tracking-wide text-orange-800">Expenses payable to this same supplier?</span>
+                                            <span className="text-[9px] text-orange-500 font-semibold">→ merged into every item rate & value · part of this supplier's invoice</span>
+                                        </label>
+                                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={addlExpMode === 'others'}
+                                                onChange={e => setAddlExpMode(e.target.checked ? 'others' : '')}
+                                                className="w-3 h-3 accent-blue-600"
+                                            />
+                                            <span className="text-[9px] font-black uppercase tracking-wide text-blue-800">Pay expenses to others in journal voucher but effect the rates?</span>
+                                            <span className="text-[9px] text-blue-500 font-semibold">→ merged into every item rate & value, but NOT payable on this voucher (paid elsewhere)</span>
+                                        </label>
+                                        {!addlExpMode && (
+                                            <span className="text-[9px] font-black uppercase tracking-wide text-slate-500">
+                                                Nothing selected → rates & values stay as typed; expenses only recorded here for separate processing
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
 
                                 {/* Expense Rows — compact 23-char width fields */}
                                 {addlExpenses.map((exp, i) => (
@@ -17666,6 +17733,11 @@ const InvoiceModal = (props) => {
                             <span className="w-px h-4 bg-slate-300 shrink-0" />
                             <span className="text-[10px] font-black text-orange-600 uppercase tracking-wide shrink-0">EXP</span>
                             <span className="text-[11px] font-black text-orange-700 font-mono shrink-0">{format3(totals.addlExpTotal)} <span className="text-slate-400">{currentSym}</span></span>
+                            {voucherType === 'purchase' && !addlExpToSupplier && (
+                                <span className="text-[9px] font-black uppercase tracking-wider text-blue-600 shrink-0">
+                                    {addlExpMode === 'others' ? '· in item rates · paid by others, not on this voucher' : '· recorded only, not on this voucher'}
+                                </span>
+                            )}
                         </>)}
                         {totals.taxAmount > 0 && (<>
                             <span className="w-px h-4 bg-slate-300 shrink-0" />
@@ -21861,10 +21933,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         let qIn = 0;
                         let qOut = 0;
 
-                        // If we are looking at main supplier, additional expenses paid by another ledger
-                        // should not remain in supplier purchase amount.
+                        // Additional expenses stay inside the supplier amount unless they were credited to
+                        // another ledger, or the voucher marks them as paid outside / record-only.
                         const supplierBase = (d.type === 'purchase')
-                            ? Math.max(0, baseVal - addlExpBase)
+                            ? purchaseSupplierBase(d, baseVal, addlExpBase)
                             : baseVal;
 
                         if (docType === 'inv') {
@@ -22214,8 +22286,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     const addlExpForeign = d.type === 'purchase' ? safeNum(d.addlExpTotal || 0) : 0;
                     const addlExpBase = addlExpForeign * rate;
                     const hasAddlSplit = d.type === 'purchase' && d.addlExpCreditId && addlExpBase > 0;
-                    const supplierBase = (d.type === 'purchase') ? Math.max(0, baseVal - addlExpBase) : baseVal;
-                    const supplierForeign = (d.type === 'purchase' && isForeign) ? Math.max(0, foreignVal - addlExpForeign) : foreignVal;
+                    const supplierBase = (d.type === 'purchase') ? purchaseSupplierBase(d, baseVal, addlExpBase) : baseVal;
+                    const supplierForeign = (d.type === 'purchase' && isForeign) ? purchaseSupplierBase(d, foreignVal, addlExpForeign) : foreignVal;
                     const addlCreditCategory = hasAddlSplit
                         ? (accounts.find(a => a.id === d.addlExpCreditId) ? 'account'
                             : parties.find(p => p.id === d.addlExpCreditId) ? 'party'
@@ -32587,6 +32659,10 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 12;
 
+    /* The lot the DISPLAYED report belongs to (before the first report, follow the picked lot) */
+    const runningLotId = reportData?.lotId || selectedLotId;
+    const runningLot = lots.find(l => l.id === runningLotId);
+
     const safeNum = (val) => isNaN(Number(val)) ? 0 : Number(val);
     const formatCurrency = (val) => Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const formatDate = (d) => {
@@ -32597,8 +32673,9 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     useEffect(() => { if (isOpen && initialLotId) setSelectedLotId(initialLotId); }, [isOpen, initialLotId]);
 
-    const generateReport = async () => {
-        if (!selectedLotId) return;
+    const generateReport = async (lotIdOverride) => {
+        const lotId = typeof lotIdOverride === 'string' && lotIdOverride ? lotIdOverride : selectedLotId;
+        if (!lotId) return;
         setLoading(true);
         setActiveFilter('ALL');
 
@@ -32651,13 +32728,13 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 let lotLines = [];   // item lines belonging to the selected lot
 
                 // Check Main Lot
-                if (d.lotId === selectedLotId) {
+                if (d.lotId === lotId) {
                     matchAmount = safeNum(d.totalAmount);
                     lotLines = d.items || [];
                     if (d.items) docQty = d.items.reduce((s, i) => s + safeNum(i.quantity), 0);
                 } else if (d.items) {
                     // Check Item Lot (Split)
-                    const lotItems = d.items.filter(item => item.lotId === selectedLotId);
+                    const lotItems = d.items.filter(item => item.lotId === lotId);
                     if (lotItems.length > 0) {
                         lotLines = lotItems;
                         matchAmount = lotItems.reduce((sum, item) => sum + (safeNum(item.total) || (safeNum(item.quantity) * safeNum(item.rate))), 0);
@@ -32698,7 +32775,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const d = doc.data();
 
                 // 🛑 FILTER 1: Must belong to this Lot
-                if (d.lotId !== selectedLotId) return;
+                if (d.lotId !== lotId) return;
 
                 // 🛑 FILTER 2: Strict check for Money OUT. 
                 // If it is 'in' (Receipt), it is INCOME/CASH FLOW, not an expense. SKIP IT.
@@ -32730,7 +32807,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const snapJv = await getDocs(qJv);
             snapJv.forEach(doc => {
                 const d = doc.data();
-                if (d.lotId === selectedLotId) {
+                if (d.lotId === lotId) {
                     const amt = safeNum(d.amount);
                     // Add to Total Expense
                     totalExpense += amt;
@@ -32757,7 +32834,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 const d = doc.data();
 
                 // Consumed (Usage)
-                if (d.consumedLotId === selectedLotId && d.consumed) {
+                if (d.consumedLotId === lotId && d.consumed) {
                     const cost = d.consumed.reduce((s, i) => s + safeNum(i.amount), 0);
                     const q = d.consumed.reduce((s, i) => s + safeNum(i.quantity), 0);
                     totalSales += cost; qtyOut += q;
@@ -32771,7 +32848,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 }
 
                 // Produced (Creation)
-                if (d.producedLotId === selectedLotId && d.produced) {
+                if (d.producedLotId === lotId && d.produced) {
                     const val = d.produced.reduce((s, i) => s + safeNum(i.amount), 0);
                     const q = d.produced.reduce((s, i) => s + safeNum(i.quantity), 0);
                     totalPurchase += val; qtyIn += q;
@@ -32794,6 +32871,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const realProfit = (totalSales + closingStockValue) - (totalPurchase + totalExpense);
 
             setReportData({
+                lotId,
                 summary: { totalPurchase, totalExpense, totalSales, cashProfit, realProfit, qtyIn, qtyOut, balanceQty, closingStockValue },
                 details: transactions,
                 purchaseLines,
@@ -32804,6 +32882,18 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
         } catch (e) { console.error(e); alert("Error: " + e.message); }
         finally { setLoading(false); }
+    };
+
+    /* Picking another lot while a report is on screen must not silently relabel the running report */
+    const handleLotPick = (v) => {
+        const shownLotId = reportData?.lotId;
+        if (reportData && shownLotId && v && v !== shownLotId) {
+            const shownName = lots.find(l => l.id === shownLotId)?.name || 'the current lot';
+            const pickedName = lots.find(l => l.id === v)?.name || 'the selected lot';
+            const ok = window.confirm(`Do you want to change the running details to the new lot?\n\nNow showing: ${shownName}\nSelected: ${pickedName}`);
+            if (ok) { setSelectedLotId(v); generateReport(v); return; }
+        }
+        setSelectedLotId(v);
     };
 
     const getFilteredTransactions = () => {
@@ -32910,7 +33000,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     useEffect(() => {
         setCurrentPage(1);
-    }, [activeFilter, selectedLotId]);
+    }, [activeFilter, selectedLotId, reportData]);
 
     const paginatedDetails = useMemo(() => {
         const start = (currentPage - 1) * itemsPerPage;
@@ -32927,7 +33017,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const { default: autoTable } = await import("jspdf-autotable");
 
             const doc = new jsPDF('l', 'mm', 'a4');
-            const lotName = lots.find(l => l.id === selectedLotId)?.name || "Lot Report";
+            const lotName = runningLot?.name || "Lot Report";
 
             doc.setFontSize(16); doc.text(`Lot Profitability: ${lotName}`, 14, 15);
             doc.setFontSize(10);
@@ -32979,7 +33069,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     // ════════════════════════════════════════════════════════════════
     const summaryFileName = () => {
         const isPurchase = summaryMode === 'purchase';
-        const lotName = lots.find(l => l.id === selectedLotId)?.name || 'Lot';
+        const lotName = runningLot?.name || 'Lot';
         const safeLot = String(lotName).replace(/[^A-Za-z0-9_-]+/g, '_');
         return `${isPurchase ? 'Lot_Purchase_Summary' : 'Lot_Sales_Summary'}_${safeLot}`;
     };
@@ -32994,7 +33084,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const pageH = doc.internal.pageSize.getHeight();
             const isPurchase = summaryMode === 'purchase';
             const accent = isPurchase ? [217, 119, 6] : [5, 150, 105];
-            const lotName = lots.find(l => l.id === selectedLotId)?.name || 'Lot';
+            const lotName = runningLot?.name || 'Lot';
             const companyName = companyProfile?.name || companyProfile?.companyName || 'Company';
             const dates = (reportData.details || []).map(t => t.date).filter(Boolean).sort();
             const period = dates.length ? `${formatDate(dates[0])}  to  ${formatDate(dates[dates.length - 1])}` : '-';
@@ -33126,7 +33216,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         try {
             const XLSX = await import("xlsx");
             const isPurchase = summaryMode === 'purchase';
-            const lotName = lots.find(l => l.id === selectedLotId)?.name || 'Lot';
+            const lotName = runningLot?.name || 'Lot';
             const wb = XLSX.utils.book_new();
 
             // Sheet 1 — Item wise (+ expense and grand totals)
@@ -33187,35 +33277,70 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} zIndex={zIndex} title="Lot Profitability Report" maxWidth="max-w-7xl" defaultMaximized={true} removePadding={true} noContentScroll={true}>
-            <div className="flex-1 min-h-0 flex flex-col bg-slate-50/40">
-
-                <div className="shrink-0 flex gap-2 items-end no-print px-4 py-3 bg-white border-b border-slate-200">
-                    <div className="flex-1">
-                        <label className="text-xs font-bold text-gray-500">Select Lot No.</label>
-                        <select className="w-full p-2 border rounded font-bold" value={selectedLotId} onChange={e => setSelectedLotId(e.target.value)}>
-                            <option value="">-- Select Lot --</option>
-                            {lots.map(l => <option key={l.id} value={l.id}>{l.name} {l.description ? `(${l.description})` : ''}</option>)}
-                        </select>
+        <Modal
+            isOpen={isOpen}
+            onClose={onClose}
+            onBack={onBack}
+            zIndex={zIndex}
+            title="Lot Profitability Report"
+            maxWidth="max-w-7xl"
+            defaultMaximized={true}
+            removePadding={true}
+            noContentScroll={true}
+            headerClassName="h-11 px-3 no-print"
+            titleClassName="text-sm font-black uppercase tracking-wide whitespace-nowrap shrink-0 text-blue-900!"
+            headerExtra={
+                <div className="flex w-full min-w-0 items-center justify-end gap-1.5">
+                    <div className="mr-auto flex min-w-[150px] max-w-[380px] flex-1 items-center gap-1.5">
+                        <span className="hidden shrink-0 text-[10px] font-black uppercase tracking-widest text-slate-400 lg:inline">Lot</span>
+                        <div className="min-w-0 flex-1">
+                            <SearchableSelect
+                                options={lots.map(l => ({ value: l.id, text: l.description ? `${l.name} (${l.description})` : l.name }))}
+                                value={selectedLotId}
+                                onChange={(v) => handleLotPick(v)}
+                                placeholder="Type or select a lot..."
+                                compact
+                                containerClassName="mb-0! w-full"
+                                triggerClassName="py-1 h-8 text-xs font-bold"
+                                textClassName="text-xs"
+                            />
+                        </div>
                     </div>
                     {reportData && (
                         <>
-                            <button onClick={() => (summaryMode ? downloadSummaryPDF() : downloadPDF())} className="bg-red-600 text-white px-3 py-2 rounded font-bold hover:bg-red-700 h-[40px] flex items-center gap-1"><FileText size={16} /> PDF</button>
-                            <button onClick={() => (summaryMode ? downloadSummaryExcel() : downloadExcel())} className="bg-green-600 text-white px-3 py-2 rounded font-bold hover:bg-green-700 h-[40px] flex items-center gap-1"><FileSpreadsheet size={16} /> Excel</button>
+                            <button onClick={() => (summaryMode ? downloadSummaryPDF() : downloadPDF())} className="h-8 shrink-0 px-2.5 rounded text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 flex items-center gap-1"><FileText size={14} /> PDF</button>
+                            <button onClick={() => (summaryMode ? downloadSummaryExcel() : downloadExcel())} className="h-8 shrink-0 px-2.5 rounded text-[11px] font-bold text-white bg-green-600 hover:bg-green-700 flex items-center gap-1"><FileSpreadsheet size={14} /> Excel</button>
                         </>
                     )}
                     <button
                         onClick={() => { const next = summaryMode === 'purchase' ? null : 'purchase'; setSummaryMode(next); if (next && !reportData) generateReport(); }}
-                        className={`h-[40px] px-3 rounded font-bold flex items-center gap-1.5 transition-colors ${summaryMode === 'purchase' ? 'bg-amber-700 text-white' : 'bg-amber-500 text-white hover:bg-amber-600'}`}
+                        className={`h-8 shrink-0 px-2.5 rounded text-[11px] font-bold flex items-center gap-1 transition-colors ${summaryMode === 'purchase' ? 'bg-amber-700 text-white' : 'bg-amber-500 text-white hover:bg-amber-600'}`}
                         title="Summarise every purchased item of this lot: quantity, value and average rate"
-                    ><Package size={16} /> Purchase Summary</button>
+                    ><Package size={14} /> <span className="hidden lg:inline">Purchase Summary</span></button>
                     <button
                         onClick={() => { const next = summaryMode === 'sales' ? null : 'sales'; setSummaryMode(next); if (next && !reportData) generateReport(); }}
-                        className={`h-[40px] px-3 rounded font-bold flex items-center gap-1.5 transition-colors ${summaryMode === 'sales' ? 'bg-emerald-700 text-white' : 'bg-emerald-500 text-white hover:bg-emerald-600'}`}
+                        className={`h-8 shrink-0 px-2.5 rounded text-[11px] font-bold flex items-center gap-1 transition-colors ${summaryMode === 'sales' ? 'bg-emerald-700 text-white' : 'bg-emerald-500 text-white hover:bg-emerald-600'}`}
                         title="Summarise every sold item of this lot: quantity, value and average rate"
-                    ><ShoppingBag size={16} /> Sales Summary</button>
-                    <button onClick={generateReport} className="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 h-[40px]">Show Report</button>
+                    ><ShoppingBag size={14} /> <span className="hidden lg:inline">Sales Summary</span></button>
+                    <button onClick={() => generateReport()} className="h-8 shrink-0 px-4 rounded bg-blue-600 text-[11px] font-bold text-white hover:bg-blue-700">Show Report</button>
                 </div>
+            }
+        >
+            <div className="flex-1 min-h-0 flex flex-col bg-slate-50/40">
+
+                {/* WHICH LOT IS ACTUALLY SHOWING — driven by the report's own lot, not just the picker */}
+                {runningLot && (
+                    <div className="shrink-0 flex items-center gap-2 no-print px-4 py-1.5 bg-white border-b border-slate-200">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Lot</span>
+                        <span className="text-lg font-black leading-tight text-blue-800">{runningLot.name}</span>
+                        {runningLot.description ? <span className="text-xs font-semibold text-slate-400">({runningLot.description})</span> : null}
+                        {reportData && selectedLotId && selectedLotId !== reportData.lotId && (
+                            <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">
+                                {lots.find(l => l.id === selectedLotId)?.name} selected — press Show Report to switch
+                            </span>
+                        )}
+                    </div>
+                )}
 
                 {loading ? <div className="flex-1 flex items-center justify-center"><LoadingSpinner /></div> : reportData && (
                     <div className="animate-in fade-in flex flex-col flex-1 min-h-0">
@@ -33272,7 +33397,7 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                 <div className={`shrink-0 px-4 py-2 border-b flex justify-between items-center ${summaryMode === 'purchase' ? 'bg-amber-50' : 'bg-emerald-50'}`}>
                                     <span className={`text-xs font-bold uppercase ${summaryMode === 'purchase' ? 'text-amber-700' : 'text-emerald-700'}`}>
                                         {summaryMode === 'purchase' ? 'Purchase Summary' : 'Sales Summary'}
-                                        <span className="text-slate-500"> · Lot: <span className="text-blue-600">{lots.find(l => l.id === selectedLotId)?.name || '-'}</span></span>
+                                        <span className="text-slate-500"> · Lot: <span className="text-blue-600">{runningLot?.name || '-'}</span></span>
                                         <span className="text-slate-400"> · {summaryRows.rows.length} item(s) from {summaryRows.lineCount} line(s)</span>
                                     </span>
                                     <div className="flex items-center gap-2">
