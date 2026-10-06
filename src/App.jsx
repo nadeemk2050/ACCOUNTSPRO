@@ -6136,24 +6136,45 @@ export default function App() {
                         });
                     }
 
-                    const addLotStat = (lotId, qty, type) => {
+                    const addLotStat = (lotId, qty, value, type) => {
                         if (!lotId) return;
-                        if (!tempLotStats[lotId]) tempLotStats[lotId] = { in: 0, out: 0 };
+                        if (!tempLotStats[lotId]) tempLotStats[lotId] = { in: 0, out: 0, purchaseValue: 0, salesValue: 0 };
 
-                        if (type === 'purchase') tempLotStats[lotId].in += qty;
-                        if (type === 'sales') tempLotStats[lotId].out += qty;
+                        if (type === 'purchase') {
+                            tempLotStats[lotId].in += qty;
+                            tempLotStats[lotId].purchaseValue += value;
+                        }
+                        if (type === 'sales') {
+                            tempLotStats[lotId].out += qty;
+                            tempLotStats[lotId].salesValue += value;
+                        }
                     };
+
+                    // Expenses that are NOT inside the item rates still belong to the lot's total value:
+                    //   sales 'add' mode  → the expense sits ON TOP of the item values
+                    //   purchase '' mode  → the expense was deliberately not merged into the item rates
+                    const expensesNotInRates = (d.type === 'sales' && d.salesExpenseMode === 'add')
+                        || (d.type === 'purchase' && d.addlExpMode === '');
+                    const addlOnTop = expensesNotInRates ? (Number(d.addlExpTotal) || 0) : 0;
 
                     if (d.lotId) {
                         const totalQty = d.items?.reduce((s, i) => s + (Number(i.quantity) || 0), 0) || 0;
-                        addLotStat(d.lotId, totalQty, d.type);
+                        const totalVal = (d.items?.reduce((s, i) => s + ((Number(i.quantity) || 0) * (Number(i.rate) || 0)), 0) || 0) + addlOnTop;
+                        addLotStat(d.lotId, totalQty, totalVal, d.type);
                     }
                     else if (d.items) {
                         d.items.forEach(item => {
                             if (item.lotId) {
-                                addLotStat(item.lotId, Number(item.quantity) || 0, d.type);
+                                const q = Number(item.quantity) || 0;
+                                addLotStat(item.lotId, q, q * (Number(item.rate) || 0), d.type);
                             }
                         });
+                        // Invoice-level expense that is NOT inside the rates → add it to every lot of this invoice
+                        if (addlOnTop > 0) {
+                            const field = d.type === 'purchase' ? 'purchaseValue' : 'salesValue';
+                            const lotsInInvoice = new Set(d.items.filter(i => i.lotId).map(i => i.lotId));
+                            lotsInInvoice.forEach(lid => { if (tempLotStats[lid]) tempLotStats[lid][field] += addlOnTop; });
+                        }
                     }
                 });
 
@@ -31040,36 +31061,120 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
         setDrillType(type);
     };
 
+    /* Download the FILTERED lot list exactly as shown (search term respected) as a professional PDF */
+    const downloadLotListPDF = async () => {
+        if (filteredLots.length === 0) return;
+        try {
+            const { jsPDF } = await import("jspdf");
+            const { default: autoTable } = await import("jspdf-autotable");
+            const money = (v) => (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const doc = new jsPDF('l', 'mm', 'a4');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(15);
+            doc.text('LOT WISE DETAILS', 14, 15);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(120);
+            doc.text(
+                `Lots: ${filteredLots.length}${searchTerm ? `   ·   filter: "${searchTerm}"` : ''}   ·   Generated: ${new Date().toLocaleString()}`,
+                14, 21
+            );
+            doc.setTextColor(20);
+            autoTable(doc, {
+                startY: 26,
+                head: [['#', 'Lot No.', 'Description', 'Qty In', 'Total Purchases Value', 'Qty Out', 'Total Sales Value', 'Qty Balance', 'Status']],
+                body: filteredLots.map((lot, i) => {
+                    const s = lotStats?.[lot.id] || {};
+                    const qIn = Number(s.in) || 0;
+                    const qOut = Number(s.out) || 0;
+                    return [i + 1, lot.name, lot.description || '', qIn, money(s.purchaseValue), qOut, money(s.salesValue), qIn - qOut, lot.status || 'Open'];
+                }),
+                styles: { fontSize: 8, cellPadding: 1.6, overflow: 'linebreak' },
+                headStyles: { fillColor: [30, 58, 138], textColor: 255, fontStyle: 'bold', fontSize: 8 },
+                alternateRowStyles: { fillColor: [246, 248, 251] },
+                columnStyles: {
+                    0: { cellWidth: 10, halign: 'center' },
+                    1: { fontStyle: 'bold', cellWidth: 34 },
+                    2: { cellWidth: 52 },
+                    3: { halign: 'right', cellWidth: 20 },
+                    4: { halign: 'right', cellWidth: 32 },
+                    5: { halign: 'right', cellWidth: 20 },
+                    6: { halign: 'right', cellWidth: 30 },
+                    7: { halign: 'right', cellWidth: 22 },
+                    8: { halign: 'center', cellWidth: 18 }
+                },
+                didParseCell: (data) => {
+                    if (data.section !== 'body') return;
+                    if (data.column.index === 4) data.cell.styles.textColor = [29, 78, 216];
+                    if (data.column.index === 6) data.cell.styles.textColor = [185, 28, 28];
+                    if (data.column.index === 7) data.cell.styles.textColor = (Number(data.row.raw[7]) || 0) < 0 ? [180, 83, 9] : [100, 116, 139];
+                    if (String(data.row.raw[8]) === 'Closed') data.cell.styles.textColor = [120, 120, 120];
+                }
+            });
+            const tIn = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.in) || 0), 0);
+            const tOut = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.out) || 0), 0);
+            const tPur = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.purchaseValue) || 0), 0);
+            const tSal = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.salesValue) || 0), 0);
+            const y = (doc.lastAutoTable?.finalY || 30) + 8;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9);
+            doc.text(`TOTALS   ·   Qty In: ${tIn}   ·   Purchases: ${money(tPur)}   ·   Qty Out: ${tOut}   ·   Sales: ${money(tSal)}   ·   Balance: ${tIn - tOut}`, 14, y);
+            doc.setFont('helvetica', 'normal');
+            doc.save(`Lot_Wise_Details_${new Date().toISOString().slice(0, 10)}.pdf`);
+        } catch (e) { console.error(e); alert('PDF export failed: ' + e.message); }
+    };
+
     if (!isOpen) return null;
 
     return (
         <>
-            <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title="Lot Wise Details" maxWidth="max-w-5xl" defaultMaximized={true} removePadding={true} noContentScroll={true}>
-                <div className="flex-1 min-h-0 flex flex-col bg-slate-50/40">
-                    {/* Search Bar */}
-                    <div className="shrink-0 px-4 py-3 bg-white border-b border-slate-200">
-                        <div className="relative">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <Modal
+                isOpen={isOpen}
+                onClose={onClose}
+                onBack={onBack}
+                title="Lot Wise Details"
+                maxWidth="max-w-6xl"
+                defaultMaximized={true}
+                removePadding={true}
+                noContentScroll={true}
+                headerClassName="h-11 px-3 no-print"
+                titleClassName="text-sm font-black uppercase tracking-wide text-blue-900!"
+                headerExtra={
+                    <div className="flex w-full min-w-0 items-center justify-end gap-1.5">
+                        <div className="relative mr-auto min-w-[180px] max-w-[420px] flex-1">
+                            <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
                             <input
                                 type="text"
-                                placeholder="Search Lot Number..."
-                                className="w-full pl-10 p-3 border rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors outline-none focus:ring-2 focus:ring-blue-100"
+                                placeholder="Search lot number..."
+                                className="h-8 w-full rounded-md border border-slate-300 bg-white pl-8 pr-2 text-xs font-bold text-slate-700 placeholder:text-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
                                 autoFocus
                             />
                         </div>
+                        <button
+                            onClick={downloadLotListPDF}
+                            disabled={filteredLots.length === 0}
+                            title={`Download PDF of the ${filteredLots.length} lot(s) currently listed`}
+                            className={`h-8 shrink-0 px-2.5 rounded text-[11px] font-bold flex items-center gap-1 transition-colors ${filteredLots.length === 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                        >
+                            <FileText size={14} /> PDF
+                        </button>
                     </div>
-
-                    {/* Detailed Table — fills the page, scrolls internally */}
-                    <div className="flex-1 min-h-0 mx-4 mt-4 border rounded-xl overflow-hidden shadow-sm bg-white flex flex-col">
+                }
+            >
+                <div className="flex-1 min-h-0 flex flex-col bg-slate-50/40">
+                    {/* Detailed Table — fills the remaining full page, scrolls internally */}
+                    <div className="flex-1 min-h-0 mx-3 md:mx-4 my-3 border rounded-xl overflow-hidden shadow-sm bg-white flex flex-col">
                     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                         <table className="w-full text-sm text-left">
                             <thead className="bg-slate-100 text-slate-600 font-bold uppercase text-xs sticky top-0 z-10">
                                 <tr>
                                     <th className="p-3 pl-4">Lot No.</th>
                                     <th className="p-3 text-center bg-blue-50/50 text-blue-700">Qty In</th>
+                                    <th className="p-3 text-right bg-blue-50/40 text-blue-700">Total Purchases Value</th>
                                     <th className="p-3 text-center bg-red-50/50 text-red-700">Qty Out</th>
+                                    <th className="p-3 text-right bg-red-50/40 text-red-700">Total Sales Value</th>
                                     <th className="p-3 text-center bg-yellow-50/50 text-yellow-700">Qty Balance</th>
                                     <th className="p-3 text-center">Status</th>
                                 </tr>
@@ -31105,6 +31210,13 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                                 </button>
                                             </td>
 
+                                            {/* TOTAL PURCHASES VALUE */}
+                                            <td className="p-3 text-right bg-blue-50/10">
+                                                <span className="font-mono font-bold text-blue-700">
+                                                    {(Number(stats.purchaseValue) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                </span>
+                                            </td>
+
                                             {/* CLICKABLE QTY OUT */}
                                             <td className="p-3 text-center bg-red-50/10">
                                                 <button
@@ -31114,6 +31226,13 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                                 >
                                                     {stats.out}
                                                 </button>
+                                            </td>
+
+                                            {/* TOTAL SALES VALUE */}
+                                            <td className="p-3 text-right bg-red-50/10">
+                                                <span className="font-mono font-bold text-red-700">
+                                                    {(Number(stats.salesValue) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                </span>
                                             </td>
 
                                             {/* CLICKABLE BALANCE */}
@@ -31136,7 +31255,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                     );
                                 })}
                                 {paginatedLots.length === 0 && (
-                                    <tr><td colSpan="5" className="p-8 text-center text-gray-400">No lots found</td></tr>
+                                    <tr><td colSpan="7" className="p-8 text-center text-gray-400">No lots found</td></tr>
                                 )}
                             </tbody>
                         </table>
