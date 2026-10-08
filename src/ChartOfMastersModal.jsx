@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react';
+import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight, Pencil, Trash2, Check, ArrowRightLeft, Loader2 } from 'lucide-react';
 import { db } from './firebase';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -23,7 +23,10 @@ const ChartOfMastersModal = ({
     partyGroups = [],
     expenseGroups = [],
     dataOwnerId,
-    user
+    user,
+    onChartUpdate,
+    onChartDelete,
+    onChartMove
 }) => {
     const [activeTab, setActiveTab] = useState('ITEMS');
     const [searchTerm, setSearchTerm] = useState('');
@@ -36,6 +39,192 @@ const ChartOfMastersModal = ({
     useEffect(() => {
         setExpandedGroups(new Set());
     }, [activeTab]);
+
+    // ─── INLINE MASTER EDITOR ────────────────────────────────────────────────
+    // Fast in-table editing. Every write is delegated to App-level handlers so
+    // the logic stays identical to Manage Masters (duplicate guard, stock/balance
+    // delta, group-rename cascade, referential-integrity checks, audit logs).
+    // Each of those handlers asks for the admin password before writing.
+    const [editingRowId, setEditingRowId] = useState(null);
+    const [editForm, setEditForm] = useState({});
+    const [moveType, setMoveType] = useState('');
+    const [savingRow, setSavingRow] = useState(false);
+    const [rowMsg, setRowMsg] = useState(null);
+
+    // Field definitions mirror the Manage Masters forms exactly.
+    const editFields = useMemo(() => ({
+        ITEMS: [
+            { key: 'name', label: 'Item Name', type: 'text', required: true },
+            { key: 'hscode', label: 'HS Code', type: 'text' },
+            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(stockGroups || []).map(g => g.name)] },
+            { key: 'openingStock', label: 'Opening Qty', type: 'number' },
+            { key: 'openingRate', label: 'Opening Rate', type: 'number' },
+            { key: 'openingBalance', label: 'Opening Value', type: 'number' }
+        ],
+        LOTNUMBERS: [
+            { key: 'name', label: 'Lot No / Batch No', type: 'text', required: true },
+            { key: 'description', label: 'Description / Remarks', type: 'text' },
+            { key: 'status', label: 'Status', type: 'select', options: ['Open', 'Closed'] }
+        ],
+        CUSTOMERS: [
+            { key: 'name', label: 'Party Name', type: 'text', required: true },
+            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(partyGroups || []).map(g => g.name)] },
+            { key: 'openingBalance', label: 'Opening Balance', type: 'number' },
+            { key: 'trn', label: 'TRN Number', type: 'text' },
+            { key: 'email', label: 'Email Address', type: 'email' },
+            { key: 'address', label: 'Company Address', type: 'text' },
+            { key: 'mobile', label: 'Mobile', type: 'tel' }
+        ],
+        INDIRECT_EXPENSES: [
+            { key: 'name', label: 'Indirect Expense Name', type: 'text', required: true },
+            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(expenseGroups || []).map(g => g.name)] }
+        ],
+        DIRECT_EXPENSES: [
+            { key: 'name', label: 'Direct Expense Name', type: 'text', required: true },
+            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(expenseGroups || []).map(g => g.name)] }
+        ],
+        INCOME_ACCOUNTS: [
+            { key: 'name', label: 'Income Account Name', type: 'text', required: true }
+        ],
+        CAPITAL_ACCOUNTS: [
+            { key: 'name', label: 'Owner Name', type: 'text', required: true },
+            { key: 'openingBalance', label: 'Opening Balance (Invested)', type: 'number' }
+        ],
+        CASH_BANK: [
+            { key: 'name', label: 'Account Name', type: 'text', required: true },
+            { key: 'openingBalance', label: 'Opening Balance', type: 'number' },
+            { key: 'type', label: 'Account Type', type: 'select', options: ['bank', 'current_asset', 'fixed_asset', 'expense', 'other'] }
+        ],
+        FIXED_ASSETS: [
+            { key: 'name', label: 'Asset Name', type: 'text', required: true },
+            { key: 'openingBalance', label: 'Opening Balance', type: 'number' }
+        ]
+    }), [stockGroups, partyGroups, expenseGroups]);
+
+    // Ledger-type move: same five source types as Manage Masters.
+    const MOVE_SOURCE_TYPE = {
+        CUSTOMERS: 'party',
+        INDIRECT_EXPENSES: 'expense',
+        CASH_BANK: 'account',
+        CAPITAL_ACCOUNTS: 'capital',
+        FIXED_ASSETS: 'asset'
+    };
+    const MOVE_TARGETS = [
+        { value: 'party', label: 'Party' },
+        { value: 'expense', label: 'Expense' },
+        { value: 'account', label: 'Bank / Cash' },
+        { value: 'capital', label: 'Capital Account' },
+        { value: 'asset', label: 'Asset' }
+    ];
+
+    const startRowEdit = (item) => {
+        const next = {};
+        (editFields[activeTab] || []).forEach(field => {
+            const v = item[field.key];
+            next[field.key] = (v === undefined || v === null) ? '' : v;
+        });
+        setEditForm(next);
+        setMoveType('');
+        setRowMsg(null);
+        setEditingRowId(item.id);
+    };
+
+    const cancelRowEdit = () => {
+        setEditingRowId(null);
+        setEditForm({});
+        setMoveType('');
+    };
+
+    // Opening Qty * Rate = Value (same auto-calc as Manage Items)
+    const setEditFieldSmart = (key, value) => {
+        setEditForm(prev => {
+            const next = { ...prev, [key]: value };
+            if (activeTab === 'ITEMS') {
+                const qty = Number(key === 'openingStock' ? value : prev.openingStock) || 0;
+                const rate = Number(key === 'openingRate' ? value : prev.openingRate) || 0;
+                if (key === 'openingStock' || key === 'openingRate') {
+                    if (qty && rate) next.openingBalance = String(Number((qty * rate).toFixed(2)));
+                } else if (key === 'openingBalance') {
+                    const val = Number(value) || 0;
+                    if (qty) next.openingRate = String(Number((val / qty).toFixed(4)));
+                }
+            }
+            return next;
+        });
+    };
+
+    const handleEditorKey = (e, item) => {
+        if (e.key === 'Enter') { e.preventDefault(); saveRow(item); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelRowEdit(); }
+    };
+
+    // Instant metadata refresh for just the touched row - no extra cloud reads.
+    const touchRowMeta = (docId, action, name) => {
+        if (!docId) return;
+        const who = user?.displayName || user?.email || 'Admin';
+        setAuditLogs(prev => {
+            const next = { ...prev };
+            next[docId] = [...(next[docId] || []), { id: `local-${Date.now()}`, userName: who, date: new Date(), action }];
+            return next;
+        });
+        if (name) setRowMsg({ type: 'success', text: `${action} saved: "${name}"` });
+    };
+
+    const saveRow = async (item) => {
+        const fields = editFields[activeTab] || [];
+        const missing = fields.find(f => f.required && !String(editForm[f.key] ?? '').trim());
+        if (missing) { setRowMsg({ type: 'error', text: `${missing.label} is required.` }); return; }
+
+        setSavingRow(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartUpdate?.(currentTab.collectionName, item.id, editForm);
+            if (res?.ok) {
+                touchRowMeta(item.id, 'UPDATED', editForm.name);
+                cancelRowEdit();
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Update failed.' });
+            }
+        } catch (e) {
+            setRowMsg({ type: 'error', text: e.message });
+        } finally {
+            setSavingRow(false);
+        }
+    };
+
+    const removeRow = async (item) => {
+        setSavingRow(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartDelete?.(currentTab.collectionName, item.id, item.name || currentTab.label);
+            if (res?.ok) {
+                if (editingRowId === item.id) cancelRowEdit();
+                setRowMsg({ type: 'success', text: `Deleted: "${item.name}"` });
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Delete was blocked.' });
+            }
+        } finally {
+            setSavingRow(false);
+        }
+    };
+
+    const moveRow = async (item) => {
+        if (!moveType) { setRowMsg({ type: 'error', text: 'Choose a new ledger type first.' }); return; }
+        setSavingRow(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartMove?.(currentTab.collectionName, item.id, editForm, moveType);
+            if (res?.ok) {
+                const label = MOVE_TARGETS.find(t => t.value === res.targetType)?.label || res.targetType;
+                cancelRowEdit();
+                setRowMsg({ type: 'success', text: `Moved "${item.name}" to ${label}. Its transactions were updated.` });
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Move failed.' });
+            }
+        } finally {
+            setSavingRow(false);
+        }
+    };
 
     // Quick Add Modal States
     const [quickAddType, setQuickAddType] = useState(null); // 'group' | 'ledger'
@@ -478,6 +667,11 @@ const ChartOfMastersModal = ({
 
                 {/* Details Table Content */}
                 <div className="flex-1 overflow-y-auto px-6 py-4">
+                    {rowMsg && (
+                        <div className={`mb-3 px-4 py-2 rounded-xl text-xs font-bold border ${rowMsg.type === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                            {rowMsg.text}
+                        </div>
+                    )}
                     {groupNamesList.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-slate-400">
                             <FileText size={48} className="stroke-[1.5] mb-2" />
@@ -492,7 +686,7 @@ const ChartOfMastersModal = ({
                                 className="mt-4 flex items-center gap-1 bg-[#005994] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#004878]"
                             >
                                 <Plus size={14} />
-                                <span>Create First Ledger</span>
+                                <span>Add new ledger</span>
                             </button>
                         </div>
                     ) : (
@@ -511,10 +705,11 @@ const ChartOfMastersModal = ({
                                                             setQuickAddTargetGroup('');
                                                             setQuickAddName('');
                                                         }}
-                                                        className="p-1 hover:bg-slate-200 rounded text-[#005994] transition-colors inline-flex items-center justify-center"
-                                                        title="Add Group"
+                                                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#005994]/10 hover:bg-[#005994]/20 rounded-md text-[#005994] transition-colors"
+                                                        title="Add new group"
                                                     >
-                                                        <Plus size={14} className="stroke-[3]" />
+                                                        <Plus size={13} className="stroke-[3]" />
+                                                        <span className="text-[10px] font-black uppercase tracking-wide whitespace-nowrap">Add new group</span>
                                                     </button>
                                                 )}
                                             </div>
@@ -528,15 +723,17 @@ const ChartOfMastersModal = ({
                                                         setQuickAddTargetGroup(groupNamesList[0] || 'Primary');
                                                         setQuickAddName('');
                                                     }}
-                                                    className="p-1 hover:bg-slate-200 rounded text-[#005994] transition-colors inline-flex items-center justify-center"
-                                                    title="Add Ledger"
+                                                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#005994]/10 hover:bg-[#005994]/20 rounded-md text-[#005994] transition-colors"
+                                                    title="Add new ledger"
                                                 >
-                                                    <Plus size={14} className="stroke-[3]" />
+                                                    <Plus size={13} className="stroke-[3]" />
+                                                    <span className="text-[10px] font-black uppercase tracking-wide whitespace-nowrap">Add new ledger</span>
                                                 </button>
                                             </div>
                                         </th>
                                         <th className="py-3 px-6 font-semibold text-slate-700 text-center w-40">Vouchers Count</th>
                                         <th className="py-3 px-6 font-semibold text-slate-700">Last Modified By & Date</th>
+                                        <th className="py-3 px-4 font-semibold text-slate-700 w-24 text-right">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -562,7 +759,7 @@ const ChartOfMastersModal = ({
                                                         }}
                                                         className="bg-[#005994]/5 border-y border-slate-100 font-bold text-slate-700 cursor-pointer hover:bg-[#005994]/10 transition-colors select-none"
                                                     >
-                                                        <td colSpan={5} className="py-2.5 px-4">
+                                                        <td colSpan={6} className="py-2.5 px-4">
                                                             <div className="flex items-center justify-between">
                                                                 <div className="flex items-center gap-2">
                                                                     {isExpanded ? (
@@ -579,10 +776,11 @@ const ChartOfMastersModal = ({
                                                                             setQuickAddTargetGroup(gName);
                                                                             setQuickAddName('');
                                                                         }}
-                                                                        className="p-0.5 hover:bg-slate-200 rounded text-[#005994] transition-colors inline-flex items-center justify-center"
+                                                                        className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-slate-200 hover:bg-slate-100 rounded-md text-[#005994] transition-colors"
                                                                         title={`Add ledger under ${gName}`}
                                                                     >
-                                                                        <Plus size={13} className="stroke-[3]" />
+                                                                        <Plus size={12} className="stroke-[3]" />
+                                                                        <span className="text-[9px] font-black uppercase tracking-wide whitespace-nowrap">Add ledger</span>
                                                                     </button>
                                                                     <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium ml-2">
                                                                         {items.length} {items.length === 1 ? 'record' : 'records'}
@@ -601,11 +799,24 @@ const ChartOfMastersModal = ({
                                                                 <td className="py-3 px-6 text-slate-400 italic font-medium">Zero Ledgers</td>
                                                                 <td className="py-3 px-6 text-center text-slate-300">-</td>
                                                                 <td className="py-3 px-6 text-slate-300 text-xs">-</td>
+                                                                <td className="py-3 px-4 text-right">
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setQuickAddType('ledger');
+                                                                            setQuickAddTargetGroup(gName);
+                                                                            setQuickAddName('');
+                                                                        }}
+                                                                        className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-[#005994]"
+                                                                        title={`Add ledger under ${gName}`}
+                                                                    >
+                                                                        <Plus size={14} className="stroke-[3]" />
+                                                                    </button>
+                                                                </td>
                                                             </tr>
                                                         ) : (
                                                             items.map((item) => {
                                                                 globalIndex++;
-                                                                return (
+                                                                return [
                                                                     <tr 
                                                                         key={item.id} 
                                                                         className="hover:bg-slate-50/50 transition-colors"
@@ -628,8 +839,120 @@ const ChartOfMastersModal = ({
                                                                                 <span>{item.createdBy}</span>
                                                                             </div>
                                                                         </td>
-                                                                    </tr>
-                                                                );
+                                                                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                                                                            <button
+                                                                                onClick={() => (editingRowId === item.id ? cancelRowEdit() : startRowEdit(item))}
+                                                                                className={`p-1.5 rounded-lg transition-colors ${editingRowId === item.id ? 'bg-amber-200 text-amber-800' : 'bg-slate-100 hover:bg-[#005994]/10 text-[#005994]'}`}
+                                                                                title="Edit this record inline"
+                                                                            >
+                                                                                <Pencil size={14} />
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => removeRow(item)}
+                                                                                disabled={savingRow}
+                                                                                className="ml-1 p-1.5 bg-red-50 hover:bg-red-100 disabled:opacity-50 text-red-500 rounded-lg transition-colors"
+                                                                                title="Delete (admin password required)"
+                                                                            >
+                                                                                <Trash2 size={14} />
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>,
+                                                                    editingRowId === item.id && (
+                                                                        <tr key={`${item.id}-editor`} className="bg-amber-50/60 border-b-2 border-amber-200">
+                                                                            <td colSpan={6} className="p-4">
+                                                                                <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
+                                                                                    <div className="flex items-center justify-between mb-2 gap-2">
+                                                                                        <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
+                                                                                            Editing {currentTab?.label}
+                                                                                        </span>
+                                                                                        <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">Enter = save &middot; Esc = cancel &middot; password required</span>
+                                                                                    </div>
+
+                                                                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                                                                                        {(editFields[activeTab] || []).map(field => (
+                                                                                            <label key={field.key} className="block">
+                                                                                                <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                                                                                                    {field.label}{field.required ? ' *' : ''}
+                                                                                                </span>
+                                                                                                {field.type === 'select' ? (
+                                                                                                    <select
+                                                                                                        value={editForm[field.key] ?? ''}
+                                                                                                        onChange={(e) => setEditFieldSmart(field.key, e.target.value)}
+                                                                                                        onKeyDown={(e) => handleEditorKey(e, item)}
+                                                                                                        className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-medium focus:border-[#005994] outline-none bg-white"
+                                                                                                    >
+                                                                                                        <option value="">Select...</option>
+                                                                                                        {(field.options || []).map(opt => (
+                                                                                                            <option key={opt} value={opt}>{opt}</option>
+                                                                                                        ))}
+                                                                                                    </select>
+                                                                                                ) : (
+                                                                                                    <input
+                                                                                                        type={field.type}
+                                                                                                        value={editForm[field.key] ?? ''}
+                                                                                                        onChange={(e) => setEditFieldSmart(field.key, e.target.value)}
+                                                                                                        onKeyDown={(e) => handleEditorKey(e, item)}
+                                                                                                        className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none"
+                                                                                                    />
+                                                                                                )}
+                                                                                            </label>
+                                                                                        ))}
+                                                                                    </div>
+
+                                                                                    <div className="flex flex-wrap items-center gap-2 mt-3">
+                                                                                        <button
+                                                                                            onClick={() => saveRow(item)}
+                                                                                            disabled={savingRow}
+                                                                                            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                                        >
+                                                                                            {savingRow ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                                                                                            Save
+                                                                                        </button>
+                                                                                        <button
+                                                                                            onClick={cancelRowEdit}
+                                                                                            className="flex items-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                                        >
+                                                                                            <X size={13} />
+                                                                                            Cancel
+                                                                                        </button>
+                                                                                        <button
+                                                                                            onClick={() => removeRow(item)}
+                                                                                            disabled={savingRow}
+                                                                                            className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-600 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                                        >
+                                                                                            <Trash2 size={13} />
+                                                                                            Delete
+                                                                                        </button>
+
+                                                                                        {MOVE_SOURCE_TYPE[activeTab] && (
+                                                                                            <div className="flex items-center gap-1.5 ml-auto bg-orange-50 border border-orange-200 rounded-lg px-2 py-1">
+                                                                                                <ArrowRightLeft size={13} className="text-orange-600" />
+                                                                                                <span className="text-[10px] font-black uppercase text-orange-700">Move to</span>
+                                                                                                <select
+                                                                                                    value={moveType}
+                                                                                                    onChange={(e) => setMoveType(e.target.value)}
+                                                                                                    className="text-xs border border-orange-300 rounded px-1.5 py-1 font-bold text-orange-900 bg-white"
+                                                                                                >
+                                                                                                    <option value="">Select New Type...</option>
+                                                                                                    {MOVE_TARGETS.filter(t => t.value !== MOVE_SOURCE_TYPE[activeTab]).map(t => (
+                                                                                                        <option key={t.value} value={t.value}>{t.label}</option>
+                                                                                                    ))}
+                                                                                                </select>
+                                                                                                <button
+                                                                                                    onClick={() => moveRow(item)}
+                                                                                                    disabled={savingRow}
+                                                                                                    className="bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white px-2.5 py-1 rounded text-xs font-bold"
+                                                                                                >
+                                                                                                    Move
+                                                                                                </button>
+                                                                                            </div>
+                                                                                        )}
+                                                                                    </div>
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    )
+                                                                ];
                                                             })
                                                         )
                                                     )}
@@ -645,8 +968,11 @@ const ChartOfMastersModal = ({
 
                 {/* Footer */}
                 <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                    <div>
-                        Click "+ Add Group" or "+ Add Ledger" next to a group heading to instantly expand your Chart of Masters.
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span><b className="text-[#005994]">Pencil</b> = edit inline (item, group, opening balance, HS code, TRN, email, address, mobile, lot status...)</span>
+                        <span><b className="text-[#005994]">Trash</b> = delete</span>
+                        <span><b className="text-orange-600">Move</b> = change ledger type</span>
+                        <span className="text-amber-700 font-bold">Admin password required for every save</span>
                     </div>
                     <button
                         onClick={onClose}

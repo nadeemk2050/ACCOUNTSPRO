@@ -7846,6 +7846,196 @@ export default function App() {
         }
     };
 
+    // ===========================================================================
+    // CHART OF MASTERS — password-gated master editor
+    // Create / Update / Delete / Move, all gated by the admin password.
+    // Reuses the exact Manage-Masters logic (handleMasterUpdate, handleDelete and
+    // the MasterModal move block) so behaviour can never drift. Manage Masters
+    // itself is left completely untouched.
+    // ===========================================================================
+    const ADMIN_MASTER_PASSWORD = 'abcd';
+
+    const askAdminPassword = async (title) => {
+        const pwd = await confirmPassword(title);
+        if (pwd === null || pwd === undefined) return false;               // user dismissed
+        if (String(pwd).trim().toLowerCase() !== ADMIN_MASTER_PASSWORD) {
+            setToast({ type: 'error', title: 'Wrong Password', message: 'Cancelled - no master record was changed.' });
+            return false;
+        }
+        return true;
+    };
+
+    // Payload rules copied 1:1 from MasterModal.handleSubmit.
+    // currentStock / balance are seeded on CREATE only - on UPDATE handleMasterUpdate
+    // applies the opening-balance/stock DELTA instead, so they must stay absent.
+    const buildMasterPayload = (formData, uid, isCreate) => {
+        const cleanData = { ...formData, userId: uid };
+        if (formData.name) cleanData.name_lowercase = String(formData.name).toLowerCase();
+        ['openingStock', 'openingBalance', 'openingRate'].forEach((k) => {
+            if (formData[k] !== undefined && formData[k] !== '') cleanData[k] = Number(formData[k]);
+            else delete cleanData[k];
+        });
+        if (isCreate) {
+            if (formData.openingStock !== undefined && formData.openingStock !== '') cleanData.currentStock = Number(formData.openingStock);
+            if (formData.openingBalance !== undefined && formData.openingBalance !== '') cleanData.balance = Number(formData.openingBalance);
+        }
+        return cleanData;
+    };
+
+    const MASTER_ACCOUNT_COLLECTIONS = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots'];
+
+    // Returns { blocked } or { blocked: true, cancelled: true } when the operator
+    // declines the "very similar name" confirmation.
+    const guardMasterDuplicate = (collectionName, name, excludeId) => {
+        if (!MASTER_ACCOUNT_COLLECTIONS.includes(collectionName) || !checkAccountNameDuplicate) return { blocked: false };
+        let duplicateCategory = checkAccountNameDuplicate(name, excludeId);
+        if (duplicateCategory && String(duplicateCategory).startsWith('~')) {
+            const similar = String(duplicateCategory).slice(1).trim();
+            if (!window.confirm(`A very similar master already exists -> ${similar}\n\nSave it anyway?`)) return { blocked: true, cancelled: true };
+            duplicateCategory = null;
+        }
+        if (duplicateCategory) {
+            setToast({ type: 'error', title: 'Duplicate Account Name', message: `"${name}" is already used in ${duplicateCategory} category.` });
+            return { blocked: true };
+        }
+        return { blocked: false };
+    };
+
+    const chartMasterUpdate = async (collectionName, id, formData) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+            if (!formData?.name || !String(formData.name).trim()) throw new Error('Name is required.');
+
+            const dup = guardMasterDuplicate(collectionName, formData.name, id);
+            if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
+
+            if (!(await askAdminPassword('Save Master Changes'))) return { ok: false, cancelled: true };
+
+            const cleanData = buildMasterPayload(formData, uid, false);
+            await handleMasterUpdate(collectionName, id, cleanData);
+            return { ok: true, data: cleanData };
+        } catch (e) {
+            setToast({ type: 'error', title: 'Update Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
+    };
+
+    const chartMasterDelete = async (collectionName, id, label) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+            if (!(await askAdminPassword(`Delete ${label || 'Record'}`))) return { ok: false, cancelled: true };
+            await handleDelete(collectionName, id);
+            return { ok: true };
+        } catch (e) {
+            setToast({ type: 'error', title: 'Delete Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
+    };
+
+    // Ledger type move - logic copied 1:1 from MasterModal's move block (parity:
+    // payments incl. splits/contra + journal vouchers; invoices are NOT rewritten).
+    const chartMasterMove = async (collectionName, id, formData, targetType) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+
+            const TYPE_TO_COL = { 'party': 'parties', 'expense': 'expenses', 'account': 'accounts', 'capital': 'capital_accounts', 'asset': 'asset_accounts' };
+            const TYPE_TO_FIELD = { 'party': 'partyId', 'expense': 'expenseId', 'account': 'toAccountId', 'capital': 'capitalId', 'asset': 'assetId' };
+
+            const tgtCol = TYPE_TO_COL[targetType];
+            const tgtField = TYPE_TO_FIELD[targetType];
+
+            let srcType = ''; let srcField = '';
+            if (collectionName === 'parties') { srcType = 'party'; srcField = 'partyId'; }
+            else if (collectionName === 'expenses') { srcType = 'expense'; srcField = 'expenseId'; }
+            else if (collectionName === 'direct_expenses') { srcType = 'direct_expense'; srcField = 'expenseId'; }
+            else if (collectionName === 'accounts') { srcType = 'account'; srcField = 'accountId'; }
+            else if (collectionName === 'capital_accounts') { srcType = 'capital'; srcField = 'capitalId'; }
+            else if (collectionName === 'asset_accounts') { srcType = 'asset'; srcField = 'assetId'; }
+
+            if (!targetType) throw new Error('Select a new type first.');
+            if (targetType === srcType) throw new Error('This record is already that type.');
+            if (!srcType || !srcField || !tgtCol || !tgtField) throw new Error('This ledger type cannot be moved with the current mapping.');
+
+            if (!(await askAdminPassword('DANGER: Move Ledger Type - this will MOVE the record and UPDATE all its transactions'))) {
+                return { ok: false, cancelled: true };
+            }
+
+            const srcRef = doc(db, collectionName, id);
+            const tgtRef = doc(db, tgtCol, id);
+            const snap = await getDoc(srcRef);
+            if (!snap.exists()) throw new Error('Document not found');
+            const srcLabel = collectionName;
+
+            const batch = writeBatch(db);
+            const data = snap.data();
+            const movedData = { ...data, ...formData, userId: uid };
+            if (movedData.name) movedData.name_lowercase = String(movedData.name).toLowerCase();
+            if (targetType === 'account') movedData.type = movedData.type || 'bank';
+
+            batch.set(tgtRef, movedData);
+            batch.delete(srcRef);
+
+            // --- payments (incl. splits / contra) ---
+            const sPay = await getDocs(query(collection(db, 'payments'), where('userId', '==', uid)));
+            sPay.forEach(d => {
+                const p = d.data();
+                const update = {};
+                if (p[srcField] === id) {
+                    update[srcField] = deleteField();
+                    update[tgtField] = id;
+                    if (p.transactionCategory === srcType) update.transactionCategory = targetType;
+                }
+                if (srcType === 'account' && p.toAccountId === id) {
+                    update.toAccountId = deleteField();
+                    update[tgtField] = id;
+                    if (p.transactionCategory === srcType || p.type === 'contra') update.transactionCategory = targetType;
+                }
+                if (p.isMulti && p.splits) {
+                    const newSplits = p.splits.map(s => (s.targetId === id ? { ...s, category: targetType } : s));
+                    if (JSON.stringify(newSplits) !== JSON.stringify(p.splits)) update.splits = newSplits;
+                }
+                if (Object.keys(update).length > 0) batch.update(d.ref, update);
+            });
+
+            // --- journal vouchers ---
+            const sJv = await getDocs(query(collection(db, 'journal_vouchers'), where('userId', '==', uid)));
+            sJv.forEach(d => {
+                const j = d.data();
+                const update = {};
+                if (j.drId === id && j.drType === srcType) update.drType = targetType;
+                if (j.crId === id && j.crType === srcType) update.crType = targetType;
+                if (Object.keys(update).length > 0) batch.update(d.ref, update);
+            });
+
+            await batch.commit();
+
+            const tgtAfter = await getDoc(tgtRef);
+            if (!tgtAfter.exists()) throw new Error('Move failed: target ledger was not created.');
+            const srcAfter = await getDoc(srcRef);
+            if (srcAfter.exists()) throw new Error('Move partially completed: source ledger still exists in the old type.');
+
+            // Log the move (mirrors the UPDATED audit shape)
+            try {
+                await logAuditActivity('MOVED', tgtCol, id, {
+                    ...movedData,
+                    movedFrom: srcLabel,
+                    movedTo: tgtCol,
+                    name: movedData.name
+                });
+            } catch (le) { console.warn('Move log failed', le); }
+
+            setToast({ type: 'success', title: 'Ledger Moved', message: `"${movedData.name || ''}" is now in ${targetType}. Its transactions were updated.` });
+            return { ok: true, targetType, targetCollection: tgtCol };
+        } catch (e) {
+            console.error(e);
+            setToast({ type: 'error', title: 'Move Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
+    };
+
     // --- BACKUP FUNCTION ---
     const handleBackup = async () => {
         setToast({ type: 'loading', title: 'Exporting...', message: 'Preparing data backup...' });
@@ -10519,7 +10709,16 @@ export default function App() {
                             {/* --- FULL TALLY MENU (Enabled for all roles as per user request) --- */}
                             <>
                                 <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
-                                    <MenuDropdown label="Create / Alter Masters" shortcut="M" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
+                                    {/* Create / Alter Masters is retired - every click now lands on Chart of Masters. */}
+                                    <MenuButton
+                                        label="Create / Alter Masters"
+                                        shortcut="M"
+                                        onClick={() => {
+                                            setActiveModal('chart_of_masters');
+                                            onMenuClick();
+                                            setActiveSubMenu(null);
+                                        }}
+                                    />
                                     <MenuButton
                                         label="Chart of Masters"
                                         shortcut="C"
@@ -13026,6 +13225,9 @@ export default function App() {
                     expenseGroups={expenseGroups}
                     dataOwnerId={dataOwnerId || user?.uid}
                     user={user}
+                    onChartUpdate={chartMasterUpdate}
+                    onChartDelete={chartMasterDelete}
+                    onChartMove={chartMasterMove}
                 />
             )}
 
