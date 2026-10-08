@@ -6136,17 +6136,27 @@ export default function App() {
                         });
                     }
 
+                    // A voucher's item values are in ITS OWN currency, so each lot keeps the totals BOTH ways:
+                    //   • in/purchaseValue/salesValue  = company BASE currency (× exchangeRate)
+                    //   • purchaseBy/salesBy maps      = the voucher's own currency, so the list can be read currency-wise
+                    const lotExRate = Number(d.exchangeRate) || 1;
+                    const lotCurKey = d.currencyId || 'BASE';
+
                     const addLotStat = (lotId, qty, value, type) => {
                         if (!lotId) return;
-                        if (!tempLotStats[lotId]) tempLotStats[lotId] = { in: 0, out: 0, purchaseValue: 0, salesValue: 0 };
+                        if (!tempLotStats[lotId]) tempLotStats[lotId] = { in: 0, out: 0, purchaseValue: 0, salesValue: 0, purchaseBy: {}, salesBy: {}, curSymbols: {} };
+                        const st = tempLotStats[lotId];
+                        if (d.currencySymbol) st.curSymbols[lotCurKey] = d.currencySymbol;
 
                         if (type === 'purchase') {
-                            tempLotStats[lotId].in += qty;
-                            tempLotStats[lotId].purchaseValue += value;
+                            st.in += qty;
+                            st.purchaseValue += value * lotExRate;
+                            st.purchaseBy[lotCurKey] = (st.purchaseBy[lotCurKey] || 0) + value;
                         }
                         if (type === 'sales') {
-                            tempLotStats[lotId].out += qty;
-                            tempLotStats[lotId].salesValue += value;
+                            st.out += qty;
+                            st.salesValue += value * lotExRate;
+                            st.salesBy[lotCurKey] = (st.salesBy[lotCurKey] || 0) + value;
                         }
                     };
 
@@ -6172,8 +6182,14 @@ export default function App() {
                         // Invoice-level expense that is NOT inside the rates → add it to every lot of this invoice
                         if (addlOnTop > 0) {
                             const field = d.type === 'purchase' ? 'purchaseValue' : 'salesValue';
+                            const mapField = d.type === 'purchase' ? 'purchaseBy' : 'salesBy';
                             const lotsInInvoice = new Set(d.items.filter(i => i.lotId).map(i => i.lotId));
-                            lotsInInvoice.forEach(lid => { if (tempLotStats[lid]) tempLotStats[lid][field] += addlOnTop; });
+                            lotsInInvoice.forEach(lid => {
+                                const st = tempLotStats[lid];
+                                if (!st) return;
+                                st[field] += addlOnTop * lotExRate;
+                                st[mapField][lotCurKey] = (st[mapField][lotCurKey] || 0) + addlOnTop;
+                            });
                         }
                     }
                 });
@@ -12473,6 +12489,7 @@ export default function App() {
                 onBack={handleModalBack}
                 lots={lots}
                 lotStats={lotStats}
+                baseCurrencySymbol={currencySymbol}
                 onSelectLot={(id) => {
                     setActiveModal(null);
                     setEditData({ preSelectedLotId: id });
@@ -31031,8 +31048,33 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
 // --- UPDATED LOT LIST MODAL (Detailed Table View) ---
 // --- UPDATED LOT LIST MODAL (With Clickable Drill-Down) ---
-const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, user, dataOwnerId, products }) => {
+const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, user, dataOwnerId, products, baseCurrencySymbol = '' }) => {
     const [searchTerm, setSearchTerm] = useState('');
+    // Lot values are kept in the company BASE currency and per voucher currency — let the user switch.
+    const [currencyView, setCurrencyView] = useState('BASE');
+    const currencyKeys = useMemo(() => {
+        const set = new Set();
+        Object.values(lotStats || {}).forEach(st => {
+            Object.keys(st?.purchaseBy || {}).forEach(k => set.add(k));
+            Object.keys(st?.salesBy || {}).forEach(k => set.add(k));
+        });
+        return Array.from(set).filter(k => k && k !== 'BASE').sort();
+    }, [lotStats]);
+    // Symbols come straight from the invoices (each invoice stores its currencySymbol)
+    const curSymbols = useMemo(() => {
+        const out = {};
+        Object.values(lotStats || {}).forEach(st => {
+            Object.entries(st?.curSymbols || {}).forEach(([k, sym]) => { if (!out[k]) out[k] = sym; });
+        });
+        return out;
+    }, [lotStats]);
+    const activeCurrencySymbol = currencyView === 'BASE'
+        ? (baseCurrencySymbol || curSymbols.BASE || '')
+        : (curSymbols[currencyView] || '');
+    const curLabel = activeCurrencySymbol ? ` (${activeCurrencySymbol})` : '';
+    const lotValue = (stats, field, mapField) => currencyView === 'BASE'
+        ? (Number(stats?.[field]) || 0)
+        : (Number(stats?.[mapField]?.[currencyView]) || 0);
 
     // Drill Down State
     const [drillLot, setDrillLot] = useState(null);
@@ -31076,18 +31118,18 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
             doc.setFontSize(9);
             doc.setTextColor(120);
             doc.text(
-                `Lots: ${filteredLots.length}${searchTerm ? `   ·   filter: "${searchTerm}"` : ''}   ·   Generated: ${new Date().toLocaleString()}`,
+                `Lots: ${filteredLots.length}${searchTerm ? `   ·   filter: "${searchTerm}"` : ''}   ·   Values in: ${currencyView === 'BASE' ? 'Base currency' : (activeCurrencySymbol || currencyView)}${curLabel}   ·   Generated: ${new Date().toLocaleString()}`,
                 14, 21
             );
             doc.setTextColor(20);
             autoTable(doc, {
                 startY: 26,
-                head: [['#', 'Lot No.', 'Description', 'Qty In', 'Total Purchases Value', 'Qty Out', 'Total Sales Value', 'Qty Balance', 'Status']],
+                head: [['#', 'Lot No.', 'Description', 'Qty In', `Total Purchases Value${curLabel}`, 'Qty Out', `Total Sales Value${curLabel}`, 'Qty Balance', 'Status']],
                 body: filteredLots.map((lot, i) => {
                     const s = lotStats?.[lot.id] || {};
                     const qIn = Number(s.in) || 0;
                     const qOut = Number(s.out) || 0;
-                    return [i + 1, lot.name, lot.description || '', qIn, money(s.purchaseValue), qOut, money(s.salesValue), qIn - qOut, lot.status || 'Open'];
+                    return [i + 1, lot.name, lot.description || '', qIn, money(lotValue(s, 'purchaseValue', 'purchaseBy')), qOut, money(lotValue(s, 'salesValue', 'salesBy')), qIn - qOut, lot.status || 'Open'];
                 }),
                 styles: { fontSize: 8, cellPadding: 1.6, overflow: 'linebreak' },
                 headStyles: { fillColor: [30, 58, 138], textColor: 255, fontStyle: 'bold', fontSize: 8 },
@@ -31113,8 +31155,8 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
             });
             const tIn = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.in) || 0), 0);
             const tOut = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.out) || 0), 0);
-            const tPur = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.purchaseValue) || 0), 0);
-            const tSal = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.salesValue) || 0), 0);
+            const tPur = filteredLots.reduce((s, l) => s + lotValue(lotStats?.[l.id], 'purchaseValue', 'purchaseBy'), 0);
+            const tSal = filteredLots.reduce((s, l) => s + lotValue(lotStats?.[l.id], 'salesValue', 'salesBy'), 0);
             const y = (doc.lastAutoTable?.finalY || 30) + 8;
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(9);
@@ -31152,6 +31194,21 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                 autoFocus
                             />
                         </div>
+                        {currencyKeys.length > 0 && (
+                            <select
+                                value={currencyView}
+                                onChange={(e) => setCurrencyView(e.target.value)}
+                                title="Show lot values in the company base currency or in one voucher currency"
+                                className="h-8 shrink-0 rounded-md border border-slate-300 bg-white px-1.5 text-[11px] font-bold text-slate-700 outline-none focus:border-blue-500"
+                            >
+                                <option value="BASE">{`Base${baseCurrencySymbol ? ' (' + baseCurrencySymbol + ')' : ''}`}</option>
+                                {currencyKeys.map(k => (
+                                    <option key={k} value={k}>
+                                        {curSymbols[k] || k}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
                         <button
                             onClick={downloadLotListPDF}
                             disabled={filteredLots.length === 0}
@@ -31172,9 +31229,9 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                 <tr>
                                     <th className="p-3 pl-4">Lot No.</th>
                                     <th className="p-3 text-center bg-blue-50/50 text-blue-700">Qty In</th>
-                                    <th className="p-3 text-right bg-blue-50/40 text-blue-700">Total Purchases Value</th>
+                                    <th className="p-3 text-right bg-blue-50/40 text-blue-700">Total Purchases Value{curLabel}</th>
                                     <th className="p-3 text-center bg-red-50/50 text-red-700">Qty Out</th>
-                                    <th className="p-3 text-right bg-red-50/40 text-red-700">Total Sales Value</th>
+                                    <th className="p-3 text-right bg-red-50/40 text-red-700">Total Sales Value{curLabel}</th>
                                     <th className="p-3 text-center bg-yellow-50/50 text-yellow-700">Qty Balance</th>
                                     <th className="p-3 text-center">Status</th>
                                 </tr>
@@ -31213,7 +31270,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                             {/* TOTAL PURCHASES VALUE */}
                                             <td className="p-3 text-right bg-blue-50/10">
                                                 <span className="font-mono font-bold text-blue-700">
-                                                    {(Number(stats.purchaseValue) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                    {lotValue(stats, 'purchaseValue', 'purchaseBy').toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                                 </span>
                                             </td>
 
@@ -31231,7 +31288,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                             {/* TOTAL SALES VALUE */}
                                             <td className="p-3 text-right bg-red-50/10">
                                                 <span className="font-mono font-bold text-red-700">
-                                                    {(Number(stats.salesValue) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                    {lotValue(stats, 'salesValue', 'salesBy').toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                                 </span>
                                             </td>
 
