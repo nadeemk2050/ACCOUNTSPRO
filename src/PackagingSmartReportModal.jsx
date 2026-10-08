@@ -16,13 +16,38 @@ const PackagingSmartReportModal = ({
     user, subUser, dataOwnerId, products, units, launchView
 }) => {
     const [activeTab, setActiveTab] = useState('jumbo_bags');
-    const [isDeepAnalysing, setIsDeepAnalysing] = useState(false);
+    // Opens straight into the Filled Bags Inventory Intelligence dashboard — the old
+    // "Module Under Development" launcher / tabs page is skipped.
+    const [isDeepAnalysing, setIsDeepAnalysing] = useState(true);
     const [viewingDetail, setViewingDetail] = useState(null); // 'jumbo_in', 'jumbo_out', 'manuf_reg', 'ready_stock', 'jumbo_allocated', 'reusable_bags'
     const [dateRange, setDateRange] = useState({ 
         from: '2025-01-01', 
         to: new Date().toISOString().split('T')[0]
     });
     const [showManufSummary, setShowManufSummary] = useState(false);
+
+    // ── DASHBOARD MODULE SHORTCUTS ──────────────────────────────────────────
+    //   I = JBW Inventory (IN)   O = Jumbo Bags Outflow   U = Reusable Jumbo Bags
+    //   R = Ready Stock Balance  P = Production Register
+    React.useEffect(() => {
+        if (!isOpen || !isDeepAnalysing || viewingDetail) return;
+        const actions = {
+            i: () => setViewingDetail('jumbo_in'),
+            o: () => { setReadyStockSubTab('out'); setViewMode('detail'); setViewingDetail('jumbo_out'); },
+            u: () => setViewingDetail('reusable_bags'),
+            r: () => { setReadyStockSubTab('remaining'); setViewMode('summary'); setViewingDetail('ready_stock'); },
+            p: () => setViewingDetail('manuf_reg')
+        };
+        const onKey = (e) => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            const t = document.activeElement;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+            const fn = actions[String(e.key || '').toLowerCase()];
+            if (fn) { e.preventDefault(); fn(); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isOpen, isDeepAnalysing, viewingDetail]);
 
     // --- Reusable Bags state ---
     const [reusableBags, setReusableBags] = useState([]);
@@ -279,11 +304,11 @@ const PackagingSmartReportModal = ({
         if (launchView.mode) setViewMode(launchView.mode);
     }, [isOpen, launchView]);
 
-    // When opened normally (e.g. from the menu, without a drill-down launch view) always land on the
-    // main bag-intelligence dashboard instead of the previously inspected detail screen.
+    // When opened normally (e.g. from the menu, without a drill-down launch view) land straight on the
+    // main bag-intelligence dashboard — the old "Module Under Development" launcher page is skipped.
     React.useEffect(() => {
         if (!isOpen || launchView?.detail) return;
-        setIsDeepAnalysing(false);
+        setIsDeepAnalysing(true);
         setViewingDetail(null);
     }, [isOpen, launchView]);
 
@@ -1185,7 +1210,7 @@ const PackagingSmartReportModal = ({
                     <div className="bg-white px-10 py-3 border-b border-slate-200 flex items-center justify-between">
                         <div className="flex items-center gap-6">
                             <button 
-                                onClick={() => viewingDetail ? setViewingDetail(null) : setIsDeepAnalysing(false)}
+                                onClick={() => viewingDetail ? setViewingDetail(null) : onClose()}
                                 className="w-12 h-12 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center hover:bg-[#1e3264] hover:text-white transition-all active:scale-90"
                             >
                                 <ChevronLeft size={24} />

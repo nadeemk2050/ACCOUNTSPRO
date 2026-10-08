@@ -6144,9 +6144,11 @@ export default function App() {
 
                     const addLotStat = (lotId, qty, value, type) => {
                         if (!lotId) return;
-                        if (!tempLotStats[lotId]) tempLotStats[lotId] = { in: 0, out: 0, purchaseValue: 0, salesValue: 0, purchaseBy: {}, salesBy: {}, curSymbols: {} };
+                        if (!tempLotStats[lotId]) tempLotStats[lotId] = { in: 0, out: 0, purchaseValue: 0, salesValue: 0, purchaseBy: {}, salesBy: {}, curSymbols: {}, events: [] };
                         const st = tempLotStats[lotId];
                         if (d.currencySymbol) st.curSymbols[lotCurKey] = d.currencySymbol;
+                        // One event per voucher → the Lot Wise Details page can re-sum for any date range
+                        if (qty || value) st.events.push({ d: d.date || '', t: type, q: qty, v: value, vb: value * lotExRate, cur: lotCurKey });
 
                         if (type === 'purchase') {
                             st.in += qty;
@@ -6189,6 +6191,7 @@ export default function App() {
                                 if (!st) return;
                                 st[field] += addlOnTop * lotExRate;
                                 st[mapField][lotCurKey] = (st[mapField][lotCurKey] || 0) + addlOnTop;
+                                st.events.push({ d: d.date || '', t: d.type, q: 0, v: addlOnTop, vb: addlOnTop * lotExRate, cur: lotCurKey });
                             });
                         }
                     }
@@ -8997,6 +9000,9 @@ export default function App() {
                 else if (e.key === 'F10') { e.preventDefault(); /* Maybe legacy Sales? */ openInvoiceModal('sales'); } // keeping as backup
                 else if (e.key === 'F3') { e.preventDefault(); if (activeModal && activeModal !== 'ledgers') setModalStack(s => [...s, activeModal]); React.startTransition(() => { setLedgerInitialState(null); setActiveModal('ledgers'); }); }
                 else if (e.key === '?') { e.preventDefault(); setActiveModal('shortcuts'); }
+                // Main-dashboard letter shortcut — K opens the Packaging Smart Report (→ Filled Bags dashboard).
+                // Guarded: only when no modal / submenu / date picker is open and no modifier is held.
+                else if (!activeModal && !activeSubMenu && !dateModalOpen && !periodModalOpen && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setActiveModal('packaging_smart_report'); }
 
             } catch (err) {
                 console.error('Shortcut handler error', err);
@@ -10554,7 +10560,7 @@ export default function App() {
                                     />
                                     <MenuButton
                                         label="Packaging Smart Report"
-                                        shortcut="P"
+                                        shortcut="K"
                                         onClick={() => { setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
                                         className="text-[#005994] font-black"
                                     />
@@ -31076,16 +31082,64 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
         ? (Number(stats?.[field]) || 0)
         : (Number(stats?.[mapField]?.[currencyView]) || 0);
 
+    // ── DATE RANGE (re-sums each lot from its per-voucher events) ──────────
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
+    const rangeActive = !!(dateFrom || dateTo);
+    const rangedStats = useMemo(() => {
+        if (!rangeActive) return null;
+        const from = dateFrom || '0000-01-01';
+        const to = dateTo || '9999-12-31';
+        const out = {};
+        Object.entries(lotStats || {}).forEach(([lotId, st]) => {
+            const acc = { in: 0, out: 0, purchaseValue: 0, salesValue: 0, purchaseBy: {}, salesBy: {} };
+            (st.events || []).forEach(ev => {
+                if (!ev || !ev.d || ev.d < from || ev.d > to) return;
+                if (ev.t === 'purchase') {
+                    acc.in += ev.q;
+                    acc.purchaseValue += ev.vb;
+                    acc.purchaseBy[ev.cur] = (acc.purchaseBy[ev.cur] || 0) + ev.v;
+                } else if (ev.t === 'sales') {
+                    acc.out += ev.q;
+                    acc.salesValue += ev.vb;
+                    acc.salesBy[ev.cur] = (acc.salesBy[ev.cur] || 0) + ev.v;
+                }
+            });
+            out[lotId] = acc;
+        });
+        return out;
+    }, [lotStats, dateFrom, dateTo, rangeActive]);
+
+    const emptyStat = { in: 0, out: 0, purchaseValue: 0, salesValue: 0, purchaseBy: {}, salesBy: {} };
+    const statFor = (lotId) => rangedStats ? (rangedStats[lotId] || emptyStat) : (lotStats?.[lotId] || emptyStat);
+    const hasActivity = (st) => (Number(st.in) || 0) !== 0 || (Number(st.out) || 0) !== 0
+        || lotValue(st, 'purchaseValue', 'purchaseBy') !== 0 || lotValue(st, 'salesValue', 'salesBy') !== 0;
+    const fmtMoney = (v) => (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
     // Drill Down State
     const [drillLot, setDrillLot] = useState(null);
     const [drillType, setDrillType] = useState(''); // 'in', 'out', 'balance'
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 12;
 
-    const filteredLots = (lots || []).filter(l =>
-        l.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (l.description && l.description.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    const filteredLots = (lots || []).filter(l => {
+        const matchesSearch = l.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (l.description && l.description.toLowerCase().includes(searchTerm.toLowerCase()));
+        if (!matchesSearch) return false;
+        // With a date range on, only lots that actually moved inside that period are listed
+        if (rangeActive && !hasActivity(statFor(l.id))) return false;
+        return true;
+    });
+
+    /* Counts & sums of the lots currently listed (search + date range + currency applied) */
+    const listTotals = { in: 0, out: 0, pur: 0, sal: 0 };
+    filteredLots.forEach(l => {
+        const st = statFor(l.id);
+        listTotals.in += Number(st.in) || 0;
+        listTotals.out += Number(st.out) || 0;
+        listTotals.pur += lotValue(st, 'purchaseValue', 'purchaseBy');
+        listTotals.sal += lotValue(st, 'salesValue', 'salesBy');
+    });
 
     useEffect(() => {
         setCurrentPage(1);
@@ -31118,7 +31172,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
             doc.setFontSize(9);
             doc.setTextColor(120);
             doc.text(
-                `Lots: ${filteredLots.length}${searchTerm ? `   ·   filter: "${searchTerm}"` : ''}   ·   Values in: ${currencyView === 'BASE' ? 'Base currency' : (activeCurrencySymbol || currencyView)}${curLabel}   ·   Generated: ${new Date().toLocaleString()}`,
+                `Lots: ${filteredLots.length}${searchTerm ? `   ·   filter: "${searchTerm}"` : ''}${rangeActive ? `   ·   period: ${dateFrom || 'start'} to ${dateTo || 'today'}` : ''}   ·   Values in: ${currencyView === 'BASE' ? 'Base currency' : (activeCurrencySymbol || currencyView)}${curLabel}   ·   Generated: ${new Date().toLocaleString()}`,
                 14, 21
             );
             doc.setTextColor(20);
@@ -31126,7 +31180,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                 startY: 26,
                 head: [['#', 'Lot No.', 'Description', 'Qty In', `Total Purchases Value${curLabel}`, 'Qty Out', `Total Sales Value${curLabel}`, 'Qty Balance', 'Status']],
                 body: filteredLots.map((lot, i) => {
-                    const s = lotStats?.[lot.id] || {};
+                    const s = statFor(lot.id);
                     const qIn = Number(s.in) || 0;
                     const qOut = Number(s.out) || 0;
                     return [i + 1, lot.name, lot.description || '', qIn, money(lotValue(s, 'purchaseValue', 'purchaseBy')), qOut, money(lotValue(s, 'salesValue', 'salesBy')), qIn - qOut, lot.status || 'Open'];
@@ -31153,10 +31207,10 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                     if (String(data.row.raw[8]) === 'Closed') data.cell.styles.textColor = [120, 120, 120];
                 }
             });
-            const tIn = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.in) || 0), 0);
-            const tOut = filteredLots.reduce((s, l) => s + (Number(lotStats?.[l.id]?.out) || 0), 0);
-            const tPur = filteredLots.reduce((s, l) => s + lotValue(lotStats?.[l.id], 'purchaseValue', 'purchaseBy'), 0);
-            const tSal = filteredLots.reduce((s, l) => s + lotValue(lotStats?.[l.id], 'salesValue', 'salesBy'), 0);
+            const tIn = filteredLots.reduce((s, l) => s + (Number(statFor(l.id).in) || 0), 0);
+            const tOut = filteredLots.reduce((s, l) => s + (Number(statFor(l.id).out) || 0), 0);
+            const tPur = filteredLots.reduce((s, l) => s + lotValue(statFor(l.id), 'purchaseValue', 'purchaseBy'), 0);
+            const tSal = filteredLots.reduce((s, l) => s + lotValue(statFor(l.id), 'salesValue', 'salesBy'), 0);
             const y = (doc.lastAutoTable?.finalY || 30) + 8;
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(9);
@@ -31183,7 +31237,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                 titleClassName="text-sm font-black uppercase tracking-wide text-blue-900!"
                 headerExtra={
                     <div className="flex w-full min-w-0 items-center justify-end gap-1.5">
-                        <div className="relative mr-auto min-w-[180px] max-w-[420px] flex-1">
+                        <div className="relative mr-auto min-w-[160px] max-w-[280px] flex-1">
                             <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
                             <input
                                 type="text"
@@ -31193,6 +31247,30 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                                 onChange={(e) => setSearchTerm(e.target.value)}
                                 autoFocus
                             />
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                            <input
+                                type="date"
+                                value={dateFrom}
+                                onChange={(e) => setDateFrom(e.target.value)}
+                                title="From date — filters the lot quantities and values"
+                                className="h-8 rounded-md border border-slate-300 bg-white px-1 text-[11px] font-bold text-slate-700 outline-none focus:border-blue-500"
+                            />
+                            <span className="text-[10px] font-bold uppercase text-slate-400">to</span>
+                            <input
+                                type="date"
+                                value={dateTo}
+                                onChange={(e) => setDateTo(e.target.value)}
+                                title="To date — filters the lot quantities and values"
+                                className="h-8 rounded-md border border-slate-300 bg-white px-1 text-[11px] font-bold text-slate-700 outline-none focus:border-blue-500"
+                            />
+                            {rangeActive && (
+                                <button
+                                    onClick={() => { setDateFrom(''); setDateTo(''); }}
+                                    title="Clear the date range"
+                                    className="h-8 shrink-0 rounded-md border border-slate-300 bg-white px-1.5 text-[11px] font-bold text-slate-500 hover:bg-slate-100"
+                                >✕</button>
+                            )}
                         </div>
                         {currencyKeys.length > 0 && (
                             <select
@@ -31238,7 +31316,7 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {paginatedLots.map(lot => {
-                                    const stats = lotStats?.[lot.id] || { in: 0, out: 0 };
+                                    const stats = statFor(lot.id);
                                     const balance = stats.in - stats.out;
 
                                     return (
@@ -31321,9 +31399,16 @@ const LotListModal = ({ isOpen, onClose, onBack, lots, lotStats, onSelectLot, us
 
                     {/* PAGINATION CONTROLS — pinned full-page footer */}
                     <div className="shrink-0 flex items-center justify-between px-4 py-2.5 bg-white border-t border-slate-200">
-                        <div className="text-[10px] font-black uppercase text-slate-500">
-                            Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
-                            <span className="text-slate-400"> · {filteredLots.length} Lot(s)</span>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-black uppercase text-slate-500">
+                            <span>
+                                Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
+                                <span className="text-slate-400"> · {filteredLots.length} Lot(s){(searchTerm || rangeActive) ? ` of ${(lots || []).length}` : ''}{rangeActive ? ` · ${dateFrom || 'start'} → ${dateTo || 'today'}` : ''}</span>
+                            </span>
+                            <span className="text-slate-400">Σ Qty In <span className="text-blue-700">{listTotals.in.toLocaleString('en-US')}</span></span>
+                            <span className="text-slate-400">Purchases <span className="text-blue-700">{fmtMoney(listTotals.pur)}{curLabel}</span></span>
+                            <span className="text-slate-400">Σ Qty Out <span className="text-red-700">{listTotals.out.toLocaleString('en-US')}</span></span>
+                            <span className="text-slate-400">Sales <span className="text-red-700">{fmtMoney(listTotals.sal)}{curLabel}</span></span>
+                            <span className="text-slate-400">Balance <span className="text-slate-700">{(listTotals.in - listTotals.out).toLocaleString('en-US')}</span></span>
                         </div>
                         <div className="flex gap-1">
                                 <button
