@@ -27,6 +27,7 @@ import { getFunctions, httpsCallable as fHttpsCallable } from "firebase/function
 // --- VIEW ONLY & GUEST MODE BLOCKER ---
 import DateInput from './DateInput';
 import ChartOfMastersModal from './ChartOfMastersModal';
+import QuickMasterModal from './QuickMasterModal';
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -5304,6 +5305,9 @@ export default function App() {
 
     // --- NEW: Password Prompt State ---
     const [passPrompt, setPassPrompt] = useState({ isOpen: false, title: '', resolve: null });
+
+    // --- Lightweight "add new" dialog used by voucher dropdowns ---
+    const [quickMasterTarget, setQuickMasterTarget] = useState(null);
     const [latestRemoteVer, setLatestRemoteVer] = useState(SYSTEM_VERSION);
     const [updateDetails, setUpdateDetails] = useState("");
     const confirmPassword = (title) => {
@@ -7663,15 +7667,21 @@ export default function App() {
     };
 
     // --- ADD THIS NEW HANDLER ---
+    // Lightweight "add new" straight from a voucher dropdown: opens the minimal
+    // create dialog (name + type, with an "Add full details" expansion) instead of
+    // the old full Create / Alter Masters screen. The voucher stays open underneath.
     const handleQuickCreate = (masterModalName) => {
-        // 1. Push current active modal to stack (so it stays open in background)
-        if (activeModal && activeModal !== masterModalName) {
-            setModalStack(prev => [...prev, activeModal]);
-        }
-        // 2. Open the Master Modal (e.g., 'parties', 'items')
-        // Note: We intentionally DO NOT clear editData so the voucher stays intact
-        setActiveModal(masterModalName);
+        const target = masterModalName === 'items' ? 'products' : masterModalName;
+        setQuickMasterTarget(target);
     };
+
+    // Options for the quick-create dialog's "type" field (under-group)
+    const quickMasterGroupOptions = (coll) => (
+        coll === 'parties' ? (partyGroups || []).map(g => g.name)
+            : coll === 'products' ? (stockGroups || []).map(g => g.name)
+                : (coll === 'expenses' || coll === 'direct_expenses') ? (expenseGroups || []).map(g => g.name)
+                    : []
+    );
 
     const handleMasterMoveSuccess = (targetType, recordId) => {
         const targetModal = (
@@ -7899,6 +7909,65 @@ export default function App() {
             return { blocked: true };
         }
         return { blocked: false };
+    };
+
+    // CREATE (ledger / item / lot) — same rules as the old Create / Alter Masters
+    // form (duplicate guard, name_lowercase, numeric coercion, stock/balance seed,
+    // CREATED audit log). Creation is NOT password gated, matching the old screen.
+    const chartMasterCreate = async (collectionName, formData) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+            if (!formData?.name || !String(formData.name).trim()) throw new Error('Name is required.');
+
+            const dup = guardMasterDuplicate(collectionName, formData.name, null);
+            if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
+
+            const cleanData = buildMasterPayload(formData, uid, true);
+            if (collectionName === 'products' && cleanData.currentStock === undefined) cleanData.currentStock = Number(cleanData.openingStock || 0);
+            if ((collectionName === 'parties' || collectionName === 'accounts') && cleanData.balance === undefined) cleanData.balance = Number(cleanData.openingBalance || 0);
+            if (collectionName === 'accounts' && !cleanData.type) cleanData.type = 'bank';
+            if (collectionName === 'lots') {
+                if (!cleanData.status) cleanData.status = 'Open';
+                if (cleanData.description === undefined) cleanData.description = '';
+            }
+
+            const docRef = await addDoc(collection(db, collectionName), cleanData);
+            await logAuditActivity('CREATED', collectionName, docRef.id, cleanData);
+            setToast({ type: 'success', title: 'Record Created', message: `"${cleanData.name}" has been added.` });
+            return { ok: true, id: docRef.id, data: cleanData };
+        } catch (e) {
+            setToast({ type: 'error', title: 'Create Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
+    };
+
+    // CREATE GROUP (stock / party / expense group) — mirrors the old group form,
+    // including the parent + quantity/value accumulation flags.
+    const chartGroupCreate = async (collectionName, formData) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+            if (!collectionName) throw new Error('This list has no groups.');
+            if (!formData?.name || !String(formData.name).trim()) throw new Error('Group name is required.');
+
+            const cleanData = { ...formData, userId: uid };
+            cleanData.name_lowercase = String(formData.name).toLowerCase();
+            if (collectionName === 'stock_groups') {
+                if (!cleanData.parent) cleanData.parent = 'Primary';
+                if (!cleanData.shouldQuantities) cleanData.shouldQuantities = 'Yes';
+            } else if (!cleanData.addValues) {
+                cleanData.addValues = 'No';
+            }
+
+            const docRef = await addDoc(collection(db, collectionName), cleanData);
+            await logAuditActivity('CREATED', collectionName, docRef.id, cleanData);
+            setToast({ type: 'success', title: 'Group Created', message: `Group "${cleanData.name}" has been added.` });
+            return { ok: true, id: docRef.id, data: cleanData };
+        } catch (e) {
+            setToast({ type: 'error', title: 'Create Group Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
     };
 
     const chartMasterUpdate = async (collectionName, id, formData) => {
@@ -10384,6 +10453,14 @@ export default function App() {
                     if (passPrompt.resolve) passPrompt.resolve(null);
                 }}
             />
+            {/* Minimal add-new dialog for voucher dropdowns */}
+            <QuickMasterModal
+                isOpen={!!quickMasterTarget}
+                onClose={() => setQuickMasterTarget(null)}
+                collectionName={quickMasterTarget}
+                groupOptions={quickMasterGroupOptions(quickMasterTarget)}
+                onCreate={chartMasterCreate}
+            />
             {/* Header */}
             <header className="sticky top-0 z-30 px-4 py-2.5 flex justify-between items-center shadow-xl border-b-2 border-[#003a68]" style={{background:'linear-gradient(to bottom, #005ea8 0%, #00457c 100%)'}}>
                 {/* LEFT: Logo & Menu */}
@@ -10709,16 +10786,7 @@ export default function App() {
                             {/* --- FULL TALLY MENU (Enabled for all roles as per user request) --- */}
                             <>
                                 <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
-                                    {/* Create / Alter Masters is retired - every click now lands on Chart of Masters. */}
-                                    <MenuButton
-                                        label="Create / Alter Masters"
-                                        shortcut="M"
-                                        onClick={() => {
-                                            setActiveModal('chart_of_masters');
-                                            onMenuClick();
-                                            setActiveSubMenu(null);
-                                        }}
-                                    />
+                                    <MenuDropdown label="Create / Alter Masters" shortcut="M" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
                                     <MenuButton
                                         label="Chart of Masters"
                                         shortcut="C"
@@ -13225,6 +13293,8 @@ export default function App() {
                     expenseGroups={expenseGroups}
                     dataOwnerId={dataOwnerId || user?.uid}
                     user={user}
+                    onChartCreate={chartMasterCreate}
+                    onChartGroupCreate={chartGroupCreate}
                     onChartUpdate={chartMasterUpdate}
                     onChartDelete={chartMasterDelete}
                     onChartMove={chartMasterMove}
@@ -17898,6 +17968,7 @@ const InvoiceModal = (props) => {
                                                 })()}
                                                 value={exp.expenseId}
                                                 onChange={val => { const n = [...addlExpenses]; n[i].expenseId = val; setAddlExpenses(n); }}
+                                                onCreateNew={() => onQuickCreate('expenses')}
                                             />
                                         </div>
                                         <input
@@ -20961,6 +21032,7 @@ const StockJournalModal = (props) => {
                                         setJournalExpenses(n);
                                     }}
                                     placeholder="Select Main Expense Ledger..."
+                                    onCreateNew={() => onQuickCreate('direct_expenses')}
                                 />
                             </div>
                             <label className="block text-[10px] font-black uppercase text-slate-500 mb-1">Payable To / Credit Ledgers</label>
@@ -21333,6 +21405,7 @@ const StockJournalModal = (props) => {
                                                         options={autoCalcDirectExpenseOptions}
                                                         value={row.expenseId}
                                                         onChange={v => updateAutoCalcListRow('expenses', index, 'expenseId', v)}
+                                                        onCreateNew={() => onQuickCreate('direct_expenses')}
                                                         placeholder={directExpenseAccounts.length > 0 ? 'Select direct expense' : 'No direct expense found'}
                                                         compact={true}
                                                     />

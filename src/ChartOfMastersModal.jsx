@@ -3,6 +3,20 @@ import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, Che
 import { db } from './firebase';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
+// 'Primary' is prepended to every group option list, but a group may itself be
+// named "Primary" - de-duplicate case-insensitively so React keys stay unique.
+const withPrimary = (groups) => {
+    const seen = new Set();
+    const out = [];
+    ['Primary', ...(groups || [])].forEach(v => {
+        const k = String(v ?? '').trim().toLowerCase();
+        if (!k || seen.has(k)) return;
+        seen.add(k);
+        out.push(v);
+    });
+    return out;
+};
+
 const ChartOfMastersModal = ({
     isOpen,
     onClose,
@@ -24,6 +38,8 @@ const ChartOfMastersModal = ({
     expenseGroups = [],
     dataOwnerId,
     user,
+    onChartCreate,
+    onChartGroupCreate,
     onChartUpdate,
     onChartDelete,
     onChartMove
@@ -51,12 +67,20 @@ const ChartOfMastersModal = ({
     const [savingRow, setSavingRow] = useState(false);
     const [rowMsg, setRowMsg] = useState(null);
 
+    // Group row editing (stock / party / expense groups)
+    const [editingGroupName, setEditingGroupName] = useState(null);
+    const [groupEditForm, setGroupEditForm] = useState({});
+
+    // "Add full details" expansion inside the create dialog
+    const [quickAddShowAll, setQuickAddShowAll] = useState(false);
+    const [quickAddForm, setQuickAddForm] = useState({});
+
     // Field definitions mirror the Manage Masters forms exactly.
     const editFields = useMemo(() => ({
         ITEMS: [
             { key: 'name', label: 'Item Name', type: 'text', required: true },
             { key: 'hscode', label: 'HS Code', type: 'text' },
-            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(stockGroups || []).map(g => g.name)] },
+            { key: 'group', label: 'Under Group', type: 'select', options: withPrimary((stockGroups || []).map(g => g.name)) },
             { key: 'openingStock', label: 'Opening Qty', type: 'number' },
             { key: 'openingRate', label: 'Opening Rate', type: 'number' },
             { key: 'openingBalance', label: 'Opening Value', type: 'number' }
@@ -68,7 +92,7 @@ const ChartOfMastersModal = ({
         ],
         CUSTOMERS: [
             { key: 'name', label: 'Party Name', type: 'text', required: true },
-            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(partyGroups || []).map(g => g.name)] },
+            { key: 'group', label: 'Under Group', type: 'select', options: withPrimary((partyGroups || []).map(g => g.name)) },
             { key: 'openingBalance', label: 'Opening Balance', type: 'number' },
             { key: 'trn', label: 'TRN Number', type: 'text' },
             { key: 'email', label: 'Email Address', type: 'email' },
@@ -77,11 +101,11 @@ const ChartOfMastersModal = ({
         ],
         INDIRECT_EXPENSES: [
             { key: 'name', label: 'Indirect Expense Name', type: 'text', required: true },
-            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(expenseGroups || []).map(g => g.name)] }
+            { key: 'group', label: 'Under Group', type: 'select', options: withPrimary((expenseGroups || []).map(g => g.name)) }
         ],
         DIRECT_EXPENSES: [
             { key: 'name', label: 'Direct Expense Name', type: 'text', required: true },
-            { key: 'group', label: 'Under Group', type: 'select', options: ['Primary', ...(expenseGroups || []).map(g => g.name)] }
+            { key: 'group', label: 'Under Group', type: 'select', options: withPrimary((expenseGroups || []).map(g => g.name)) }
         ],
         INCOME_ACCOUNTS: [
             { key: 'name', label: 'Income Account Name', type: 'text', required: true }
@@ -100,6 +124,31 @@ const ChartOfMastersModal = ({
             { key: 'openingBalance', label: 'Opening Balance', type: 'number' }
         ]
     }), [stockGroups, partyGroups, expenseGroups]);
+
+    // Group record fields - mirrors the old Create / Alter Masters group form,
+    // including every quantity/value accumulation flag.
+    const groupEditFields = useMemo(() => ({
+        stock_groups: [
+            { key: 'name', label: 'Group Name', type: 'text', required: true },
+            { key: 'parent', label: 'Parent Group', type: 'select', options: withPrimary((stockGroups || []).map(g => g.name)) },
+            { key: 'shouldQuantities', label: 'Add Quantities?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'shouldValues', label: 'Add Values?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'addInwardQty', label: 'Add Inward Qty to Totals?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'addInwardValue', label: 'Add Inward Value to Totals?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'addOutwardQty', label: 'Add Outward Qty to Totals?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'addOutwardValue', label: 'Add Outward Value to Totals?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'addClosingQty', label: 'Add Closing Qty to Totals?', type: 'select', options: ['Yes', 'No'] },
+            { key: 'addClosingValue', label: 'Add Closing Value to Totals?', type: 'select', options: ['Yes', 'No'] }
+        ],
+        party_groups: [
+            { key: 'name', label: 'Group Name', type: 'text', required: true },
+            { key: 'addValues', label: 'Add Values?', type: 'select', options: ['Yes', 'No'] }
+        ],
+        expense_groups: [
+            { key: 'name', label: 'Group Name', type: 'text', required: true },
+            { key: 'addValues', label: 'Add Values?', type: 'select', options: ['Yes', 'No'] }
+        ]
+    }), [stockGroups]);
 
     // Ledger-type move: same five source types as Manage Masters.
     const MOVE_SOURCE_TYPE = {
@@ -133,6 +182,85 @@ const ChartOfMastersModal = ({
         setEditingRowId(null);
         setEditForm({});
         setMoveType('');
+    };
+
+    // ─── GROUP ROW EDITING ──────────────────────────────────────────────────
+    const groupArrayFor = (collection) => (
+        collection === 'stock_groups' ? (stockGroups || [])
+            : collection === 'party_groups' ? (partyGroups || [])
+                : collection === 'expense_groups' ? (expenseGroups || [])
+                    : []
+    );
+
+    const groupFieldsFor = (collection) => groupEditFields[collection] || [];
+
+    const groupRecordFor = (gName) => {
+        const coll = currentTab?.groupCollection;
+        if (!coll) return null;
+        return groupArrayFor(coll).find(g => (g.name || '') === gName) || null;
+    };
+
+    const startGroupEdit = (gName) => {
+        const rec = groupRecordFor(gName);
+        if (!rec) {
+            setRowMsg({ type: 'error', text: `Group "${gName}" is a built-in bucket and has no record to edit.` });
+            return;
+        }
+        const fields = groupFieldsFor(currentTab.groupCollection);
+        const next = {};
+        fields.forEach(f => { const v = rec[f.key]; next[f.key] = (v === undefined || v === null) ? '' : v; });
+        setGroupEditForm(next);
+        setRowMsg(null);
+        setEditingGroupName(gName);
+        setEditingRowId(null);
+    };
+
+    const cancelGroupEdit = () => {
+        setEditingGroupName(null);
+        setGroupEditForm({});
+    };
+
+    const saveGroup = async (gName) => {
+        const rec = groupRecordFor(gName);
+        const coll = currentTab?.groupCollection;
+        if (!rec || !coll) return;
+        const fields = groupFieldsFor(coll);
+        const missing = fields.find(f => f.required && !String(groupEditForm[f.key] ?? '').trim());
+        if (missing) { setRowMsg({ type: 'error', text: `${missing.label} is required.` }); return; }
+
+        setSavingRow(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartUpdate?.(coll, rec.id, groupEditForm);
+            if (res?.ok) {
+                touchRowMeta(rec.id, 'UPDATED');
+                cancelGroupEdit();
+                setRowMsg({ type: 'success', text: `Group saved: "${groupEditForm.name}". Member records were re-grouped automatically.` });
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Group update failed.' });
+            }
+        } finally {
+            setSavingRow(false);
+        }
+    };
+
+    const removeGroup = async (gName) => {
+        const rec = groupRecordFor(gName);
+        const coll = currentTab?.groupCollection;
+        if (!rec || !coll) return;
+        setSavingRow(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartDelete?.(coll, rec.id, `Group ${rec.name}`);
+            if (res?.ok) {
+                if (editingGroupName === gName) cancelGroupEdit();
+                setRowMsg({ type: 'success', text: `Group deleted: "${rec.name}"` });
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Group delete was blocked.' });
+            }
+        } finally {
+            setSavingRow(false);
+        }
     };
 
     // Opening Qty * Rate = Value (same auto-calc as Manage Items)
@@ -231,6 +359,15 @@ const ChartOfMastersModal = ({
     const [quickAddTargetGroup, setQuickAddTargetGroup] = useState('');
     const [quickAddName, setQuickAddName] = useState('');
     const [savingQuickAdd, setSavingQuickAdd] = useState(false);
+
+    // Clear the create dialog's extra fields whenever it closes
+    // (must sit AFTER the quickAdd state declarations above).
+    useEffect(() => {
+        if (!quickAddType) {
+            setQuickAddShowAll(false);
+            setQuickAddForm({});
+        }
+    }, [quickAddType]);
 
     // Fetch Audit Logs to resolve Creator & Last Modified User info
     const fetchLogs = async () => {
@@ -445,11 +582,11 @@ const ChartOfMastersModal = ({
         // Resolve and pre-populate all base groups to show empty ones
         let baseGroups = [];
         if (activeTab === 'ITEMS') {
-            baseGroups = ['Primary', ...stockGroups.map(g => g.name)];
+            baseGroups = withPrimary(stockGroups.map(g => g.name));
         } else if (activeTab === 'CUSTOMERS') {
-            baseGroups = ['Primary', ...partyGroups.map(g => g.name)];
+            baseGroups = withPrimary(partyGroups.map(g => g.name));
         } else if (activeTab === 'INDIRECT_EXPENSES' || activeTab === 'DIRECT_EXPENSES') {
-            baseGroups = ['Primary', ...expenseGroups.map(g => g.name)];
+            baseGroups = withPrimary(expenseGroups.map(g => g.name));
         } else if (activeTab === 'CASH_BANK') {
             baseGroups = ['Cash/Bank', 'CURRENT_ASSET', 'FIXED_ASSET', 'EXPENSE', 'OTHER'];
         }
@@ -473,6 +610,119 @@ const ChartOfMastersModal = ({
 
         return groups;
     }, [currentTab, searchTerm, activeTab, auditLogs, invoices, payments, journalVouchers, stockJournals, stockGroups, partyGroups, expenseGroups]);
+
+    // Small reusable field grid shared by the create dialog and the row editors.
+    const renderFieldGrid = (fields, values, onChange, cols = 'grid-cols-1 sm:grid-cols-2') => (
+        <div className={`grid ${cols} gap-2`}>
+            {fields.map(field => (
+                <label key={field.key} className="block">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                        {field.label}{field.required ? ' *' : ''}
+                    </span>
+                    {field.type === 'select' ? (
+                        <select
+                            value={values[field.key] ?? ''}
+                            onChange={(e) => onChange(field.key, e.target.value)}
+                            className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-medium focus:border-[#005994] outline-none bg-white"
+                        >
+                            <option value="">Select...</option>
+                            {(field.options || []).map(opt => (
+                                <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                        </select>
+                    ) : (
+                        <input
+                            type={field.type}
+                            value={values[field.key] ?? ''}
+                            onChange={(e) => onChange(field.key, e.target.value)}
+                            className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none"
+                        />
+                    )}
+                </label>
+            ))}
+        </div>
+    );
+
+    // The single "type" control shown in the minimal create dialog:
+    //  • ledger  -> Under Group (or Account Type for cash/bank)
+    //  • group   -> Parent Group (stock groups only)
+    const createTypeField = useMemo(() => {
+        if (quickAddType === 'group') {
+            if (currentTab?.groupCollection === 'stock_groups') {
+                return { key: 'parent', label: 'Parent Group', options: withPrimary((stockGroups || []).map(g => g.name)) };
+            }
+            return null;
+        }
+        if (quickAddType === 'ledger') {
+            if (activeTab === 'CASH_BANK') {
+                return { key: 'type', label: 'Account Type', options: ['bank', 'current_asset', 'fixed_asset', 'expense', 'other'] };
+            }
+            if (currentTab?.groupCollection) {
+                return { key: 'group', label: 'Under Group', options: withPrimary(groupArrayFor(currentTab.groupCollection).map(g => g.name)) };
+            }
+        }
+        return null;
+    }, [quickAddType, activeTab, currentTab, stockGroups]);
+
+    const createDetailFields = useMemo(() => {
+        const base = quickAddType === 'group'
+            ? groupFieldsFor(currentTab?.groupCollection)
+            : (editFields[activeTab] || []);
+        const skip = ['name', createTypeField?.key].filter(Boolean);
+        return base.filter(f => !skip.includes(f.key));
+    }, [quickAddType, activeTab, currentTab, editFields, groupEditFields, createTypeField]);
+
+    const toggleFullDetails = () => {
+        const next = !quickAddShowAll;
+        if (next) {
+            setQuickAddForm(prev => ({
+                ...prev,
+                name: quickAddName,
+                ...(createTypeField ? { [createTypeField.key]: prev[createTypeField.key] ?? quickAddTargetGroup ?? '' } : {})
+            }));
+        }
+        setQuickAddShowAll(next);
+    };
+
+    // Create dialog submit:
+    //  • minimal mode -> the original one-field quick-add path (unchanged behaviour)
+    //  • full details -> App handlers, so the complete Create / Alter Masters rules
+    //    (duplicate guard, payload build, audit log) are applied.
+    const handleCreateSubmit = async (e) => {
+        e.preventDefault();
+        if (!quickAddShowAll) return handleQuickAddSubmit(e);
+
+        const isGroup = quickAddType === 'group';
+        const coll = isGroup ? currentTab?.groupCollection : currentTab?.collectionName;
+        const name = String(quickAddForm.name ?? '').trim();
+        if (!name) { setRowMsg({ type: 'error', text: 'Name is required.' }); return; }
+        if (!coll) { setRowMsg({ type: 'error', text: 'This list cannot take new records.' }); return; }
+
+        const payload = { ...quickAddForm, name };
+        if (isGroup && coll === 'stock_groups' && !payload.shouldQuantities) payload.shouldQuantities = 'Yes';
+        if (isGroup && coll !== 'stock_groups' && !payload.addValues) payload.addValues = 'No';
+        if (!isGroup && currentTab?.groupCollection && !payload.group) payload.group = quickAddTargetGroup || 'Primary';
+
+        setSavingQuickAdd(true);
+        setRowMsg(null);
+        try {
+            const res = isGroup
+                ? await onChartGroupCreate?.(coll, payload)
+                : await onChartCreate?.(coll, payload);
+            if (res?.ok) {
+                setQuickAddType(null);
+                setQuickAddShowAll(false);
+                setQuickAddForm({});
+                setQuickAddName('');
+                fetchLogs();
+                setRowMsg({ type: 'success', text: `Created: "${name}"` });
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Create failed.' });
+            }
+        } finally {
+            setSavingQuickAdd(false);
+        }
+    };
 
     // Handle Quick Adding to Firestore Database
     const handleQuickAddSubmit = async (e) => {
@@ -785,10 +1035,74 @@ const ChartOfMastersModal = ({
                                                                     <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium ml-2">
                                                                         {items.length} {items.length === 1 ? 'record' : 'records'}
                                                                     </span>
+                                                                    {currentTab?.groupCollection && groupRecordFor(gName) && (
+                                                                        <span className="flex items-center gap-1 ml-2">
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); (editingGroupName === gName ? cancelGroupEdit() : startGroupEdit(gName)); }}
+                                                                                className={`p-1 rounded-md transition-colors ${editingGroupName === gName ? 'bg-amber-200 text-amber-800' : 'bg-slate-200 text-[#005994] hover:bg-slate-300'}`}
+                                                                                title={`Edit group "${gName}" (admin password required)`}
+                                                                            >
+                                                                                <Pencil size={12} />
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); removeGroup(gName); }}
+                                                                                disabled={savingRow}
+                                                                                className="p-1 bg-red-50 text-red-500 hover:bg-red-100 disabled:opacity-50 rounded-md transition-colors"
+                                                                                title={`Delete group "${gName}" (admin password required)`}
+                                                                            >
+                                                                                <Trash2 size={12} />
+                                                                            </button>
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         </td>
                                                     </tr>
+                                                    {editingGroupName === gName && (
+                                                        <tr className="bg-amber-50/60 border-b-2 border-amber-200">
+                                                            <td colSpan={6} className="p-4">
+                                                                <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
+                                                                    <div className="flex items-center justify-between mb-2 gap-2">
+                                                                        <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
+                                                                            Editing Group: {gName}
+                                                                        </span>
+                                                                        <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">Renaming re-groups all member records - password required</span>
+                                                                    </div>
+                                                                    {renderFieldGrid(
+                                                                        groupFieldsFor(currentTab?.groupCollection),
+                                                                        groupEditForm,
+                                                                        (k, v) => setGroupEditForm(prev => ({ ...prev, [k]: v })),
+                                                                        'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                                                                    )}
+                                                                    <div className="flex flex-wrap items-center gap-2 mt-3">
+                                                                        <button
+                                                                            onClick={() => saveGroup(gName)}
+                                                                            disabled={savingRow}
+                                                                            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                        >
+                                                                            {savingRow ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                                                                            Save Group
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={cancelGroupEdit}
+                                                                            className="flex items-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                        >
+                                                                            <X size={13} />
+                                                                            Cancel
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => removeGroup(gName)}
+                                                                            disabled={savingRow}
+                                                                            className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-600 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                        >
+                                                                            <Trash2 size={13} />
+                                                                            Delete Group
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    )}
 
                                                     {/* Group items list */}
                                                     {isExpanded && (
@@ -988,8 +1302,8 @@ const ChartOfMastersModal = ({
             {quickAddType && (
                 <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-[2000] flex items-center justify-center p-4">
                     <form 
-                        onSubmit={handleQuickAddSubmit}
-                        className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150"
+                        onSubmit={handleCreateSubmit}
+                        className={`bg-white rounded-2xl w-full ${quickAddShowAll ? 'max-w-2xl' : 'max-w-md'} p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto`}
                     >
                         <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                             <h3 className="font-bold text-[#005994] flex items-center gap-2">
@@ -1006,20 +1320,84 @@ const ChartOfMastersModal = ({
                         </div>
 
                         <div className="space-y-4">
+                            {/* MINIMAL: name only */}
                             <div>
                                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1.5">
-                                    {quickAddType === 'group' ? 'Group Name' : 'Ledger Name'}
+                                    {quickAddType === 'group' ? 'Group Name' : 'Name'}
                                 </label>
                                 <input
                                     type="text"
                                     required
-                                    placeholder={quickAddType === 'group' ? 'Enter group name...' : 'Enter ledger name...'}
-                                    value={quickAddName}
-                                    onChange={(e) => setQuickAddName(e.target.value)}
+                                    placeholder={quickAddType === 'group' ? 'Enter group name...' : 'Enter name...'}
+                                    value={quickAddShowAll ? (quickAddForm.name ?? '') : quickAddName}
+                                    onChange={(e) => {
+                                        const v = e.target.value;
+                                        setQuickAddName(v);
+                                        setQuickAddForm(prev => ({ ...prev, name: v }));
+                                    }}
                                     className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#005994]/20 focus:border-[#005994] transition-all"
                                     autoFocus
                                 />
                             </div>
+
+                            {/* MINIMAL: type only (under group / parent group / account type) */}
+                            {createTypeField && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1.5">
+                                        {createTypeField.label}
+                                    </label>
+                                    <select
+                                        value={quickAddForm[createTypeField.key] ?? quickAddTargetGroup ?? ''}
+                                        onChange={(e) => {
+                                            const v = e.target.value;
+                                            setQuickAddTargetGroup(v);
+                                            setQuickAddForm(prev => ({ ...prev, [createTypeField.key]: v }));
+                                        }}
+                                        className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#005994]/20 focus:border-[#005994] transition-all bg-white"
+                                    >
+                                        <option value="">Select...</option>
+                                        {(createTypeField.options || []).map(opt => (
+                                            <option key={opt} value={opt}>{opt}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+
+                            {/* Expand to the complete Create / Alter Masters field set */}
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={toggleFullDetails}
+                                    className="text-[11px] font-black uppercase tracking-wide text-[#005994] underline decoration-dotted underline-offset-2 hover:text-[#004878]"
+                                >
+                                    {quickAddShowAll ? 'Hide full details' : '+ Add full details'}
+                                </button>
+                                <span className="text-[10px] text-slate-400 font-semibold">
+                                    {quickAddShowAll ? '' : '(you can save with just the name)'}
+                                </span>
+                            </div>
+
+                            {quickAddShowAll && (
+                                <div className="border-t border-slate-100 pt-3 space-y-3">
+                                    {createDetailFields.length > 0 ? renderFieldGrid(
+                                        createDetailFields,
+                                        quickAddForm,
+                                        (k, v) => setQuickAddForm(prev => ({ ...prev, [k]: v }))
+                                    ) : (
+                                        <p className="text-xs text-slate-400 italic">No extra fields for this type.</p>
+                                    )}
+                                    {quickAddType === 'ledger' && (
+                                        <p className="text-[10px] text-slate-400 font-semibold">
+                                            Opening Qty, Rate and Value auto-calculate. "Change Ledger Type (Move)" is available from the row editor after saving.
+                                        </p>
+                                    )}
+                                    {quickAddType === 'group' && currentTab?.groupCollection === 'stock_groups' && (
+                                        <p className="text-[10px] text-slate-400 font-semibold">
+                                            These flags decide which quantities and values are rolled up into this group's totals.
+                                        </p>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         <div className="flex items-center justify-end gap-2.5 mt-6 border-t border-slate-100 pt-4">
