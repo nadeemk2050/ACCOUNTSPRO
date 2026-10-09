@@ -51,6 +51,7 @@ const ManagementDashboard = ({
     onManageUsers,
     onShowStatistics,
     onShowLogs,
+    onOpenLegacyMasters,
     onManageCompany,
     onSelectCompany,
     onManageUnits,
@@ -817,6 +818,13 @@ const ManagementDashboard = ({
                                     onClick={onShowLogs}
                                     color="orange"
                                     icon={<History />}
+                                />
+                                <ActionCard
+                                    title="Create / Alter Masters"
+                                    desc="Open the classic master entry screens (legacy)."
+                                    onClick={onOpenLegacyMasters}
+                                    color="teal"
+                                    icon={<Wrench />}
                                 />
                             </div>
                         </div>

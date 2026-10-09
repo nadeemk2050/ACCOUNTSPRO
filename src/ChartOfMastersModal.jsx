@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight, Pencil, Trash2, Check, ArrowRightLeft, Loader2 } from 'lucide-react';
+import BankDetailsEditor from './BankDetailsEditor';
 import { db } from './firebase';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -36,13 +37,21 @@ const ChartOfMastersModal = ({
     stockGroups = [],
     partyGroups = [],
     expenseGroups = [],
+    locations = [],
+    taxRates = [],
+    staff = [],
+    units = [],
     dataOwnerId,
     user,
     onChartCreate,
     onChartGroupCreate,
     onChartUpdate,
     onChartDelete,
-    onChartMove
+    onChartMove,
+    autoEditCollection,
+    autoEditId,
+    onAutoEditHandled,
+    onAutoEditRequest
 }) => {
     const [activeTab, setActiveTab] = useState('ITEMS');
     const [searchTerm, setSearchTerm] = useState('');
@@ -66,6 +75,11 @@ const ChartOfMastersModal = ({
     const [moveType, setMoveType] = useState('');
     const [savingRow, setSavingRow] = useState(false);
     const [rowMsg, setRowMsg] = useState(null);
+
+    // Type-a-letter jump (scroll + flash the first record matching the search)
+    const listScrollRef = React.useRef(null);
+    const lastJumpTermRef = React.useRef('');
+    const [flashRowId, setFlashRowId] = useState(null);
 
     // Group row editing (stock / party / expense groups)
     const [editingGroupName, setEditingGroupName] = useState(null);
@@ -122,8 +136,29 @@ const ChartOfMastersModal = ({
         FIXED_ASSETS: [
             { key: 'name', label: 'Asset Name', type: 'text', required: true },
             { key: 'openingBalance', label: 'Opening Balance', type: 'number' }
+        ],
+        LOCATIONS: [
+            { key: 'name', label: 'Location Name', type: 'text', required: true }
+        ],
+        TAX_RATES: [
+            { key: 'name', label: 'Tax Name (e.g. VAT 5%)', type: 'text', required: true },
+            { key: 'percentage', label: 'Percentage (%)', type: 'number', required: true }
+        ],
+        STAFF: [
+            { key: 'name', label: 'Name of Staff', type: 'select', required: true, options: (parties || []).map(p => p.name) },
+            { key: 'basicSalary', label: 'Basic Salary', type: 'number', required: true },
+            { key: 'passportNumber', label: 'Passport Number', type: 'text' },
+            { key: 'passportExpiry', label: 'Passport Expiry', type: 'date' },
+            { key: 'idNumber', label: 'ID Number', type: 'text' },
+            { key: 'idExpiry', label: 'ID Expiry', type: 'date' },
+            { key: 'firstJoiningDate', label: 'First Joining Date', type: 'date' }
+        ],
+        UNITS: [
+            { key: 'name', label: 'Unit Name', type: 'text', required: true },
+            { key: 'symbol', label: 'Symbol', type: 'text', required: true },
+            { key: 'precision', label: 'Decimal Precision', type: 'select', options: ['2', '3', '4'] }
         ]
-    }), [stockGroups, partyGroups, expenseGroups]);
+    }), [stockGroups, partyGroups, expenseGroups, parties]);
 
     // Group record fields - mirrors the old Create / Alter Masters group form,
     // including every quantity/value accumulation flag.
@@ -172,6 +207,10 @@ const ChartOfMastersModal = ({
             const v = item[field.key];
             next[field.key] = (v === undefined || v === null) ? '' : v;
         });
+        // Parties carry a multi-bank array (same shape as the old master form)
+        if (activeTab === 'CUSTOMERS') {
+            next.banks = Array.isArray(item.banks) ? item.banks.map(b => ({ ...b })) : [];
+        }
         setEditForm(next);
         setMoveType('');
         setRowMsg(null);
@@ -346,6 +385,8 @@ const ChartOfMastersModal = ({
                 const label = MOVE_TARGETS.find(t => t.value === res.targetType)?.label || res.targetType;
                 cancelRowEdit();
                 setRowMsg({ type: 'success', text: `Moved "${item.name}" to ${label}. Its transactions were updated.` });
+                // Re-open the moved record in its new tab for finalising edits
+                onAutoEditRequest?.(res.targetCollection, item.id);
             } else if (!res?.cancelled) {
                 setRowMsg({ type: 'error', text: res?.error || 'Move failed.' });
             }
@@ -368,6 +409,7 @@ const ChartOfMastersModal = ({
             setQuickAddForm({});
         }
     }, [quickAddType]);
+
 
     // Fetch Audit Logs to resolve Creator & Last Modified User info
     const fetchLogs = async () => {
@@ -417,7 +459,11 @@ const ChartOfMastersModal = ({
         { id: 'INCOME_ACCOUNTS', label: 'Income Accounts', data: incomeAccounts, collectionName: 'income_accounts', hasGroups: false },
         { id: 'CAPITAL_ACCOUNTS', label: 'Capital Accounts', data: capitalAccounts, collectionName: 'capital_accounts', hasGroups: false },
         { id: 'CASH_BANK', label: 'Cash / Bank', data: accounts, collectionName: 'accounts', hasGroups: true }, // Grouped by 'type'
-        { id: 'FIXED_ASSETS', label: 'Fixed Assets', data: assetAccounts, collectionName: 'asset_accounts', hasGroups: false }
+        { id: 'FIXED_ASSETS', label: 'Fixed Assets', data: assetAccounts, collectionName: 'asset_accounts', hasGroups: false },
+        { id: 'LOCATIONS', label: 'Locations', data: locations, collectionName: 'locations', hasGroups: false },
+        { id: 'TAX_RATES', label: 'Tax Rates', data: taxRates, collectionName: 'tax_rates', hasGroups: false },
+        { id: 'STAFF', label: 'Staff', data: staff, collectionName: 'staff', hasGroups: false },
+        { id: 'UNITS', label: 'Units', data: units, collectionName: 'units', hasGroups: false }
     ];
 
     const currentTab = useMemo(() => tabs.find(t => t.id === activeTab), [activeTab]);
@@ -573,7 +619,9 @@ const ChartOfMastersModal = ({
                 ...item,
                 groupName,
                 voucherCount: getVoucherCount(activeTab, item.id),
-                createdBy: meta.lastModified
+                createdBy: meta.lastModified,
+                // Same rule the old Create / Alter Masters list used for its totals
+                amount: Number(item.balance || item.openingBalance || 0)
             };
         });
 
@@ -610,6 +658,17 @@ const ChartOfMastersModal = ({
 
         return groups;
     }, [currentTab, searchTerm, activeTab, auditLogs, invoices, payments, journalVouchers, stockJournals, stockGroups, partyGroups, expenseGroups]);
+
+    // Grand Total over everything currently listed (balance, else opening balance)
+    const grandTotal = useMemo(() => {
+        let sum = 0;
+        Object.keys(groupedMap).forEach(g => {
+            (groupedMap[g] || []).forEach(it => { sum += Number(it.amount || 0); });
+        });
+        return sum;
+    }, [groupedMap]);
+
+    const fmtAmount = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     // Small reusable field grid shared by the create dialog and the row editors.
     const renderFieldGrid = (fields, values, onChange, cols = 'grid-cols-1 sm:grid-cols-2') => (
@@ -822,6 +881,67 @@ const ChartOfMastersModal = ({
         }
     };
 
+    // ── Type-a-letter jump: as soon as the search changes, scroll the first record
+    // whose name starts with it into view and flash it (Tally-style jump).
+    // Placed here (after groupedMap) so nothing is read before initialisation.
+    useEffect(() => {
+        const term = String(searchTerm || '').trim().toLowerCase();
+        if (!isOpen) return;
+        if (!term) { lastJumpTermRef.current = ''; return; }
+        if (lastJumpTermRef.current === term) return;
+        lastJumpTermRef.current = term;
+
+        let first = null;
+        Object.keys(groupedMap).some(g => {
+            const hit = (groupedMap[g] || []).find(it => String(it.name || '').toLowerCase().startsWith(term));
+            if (hit) { first = hit; return true; }
+            return false;
+        });
+        if (!first || !listScrollRef.current) return;
+        const el = listScrollRef.current.querySelector(`[data-row-id="${first.id}"]`);
+        if (!el) return;
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        setFlashRowId(first.id);
+        const t = setTimeout(() => setFlashRowId(null), 1200);
+        return () => clearTimeout(t);
+    }, [searchTerm, groupedMap, isOpen]);
+
+    // ── External "open this record for editing" (e.g. after a ledger Move, or any
+    // screen that wants a specific master opened in Chart of Masters).
+    useEffect(() => {
+        if (!isOpen || !autoEditId || !autoEditCollection) return;
+        const tab = tabs.find(t => t.collectionName === autoEditCollection);
+        if (!tab) { onAutoEditHandled?.(); return; }
+        const record = (tab.data || []).find(r => r.id === autoEditId);
+        if (!record) { onAutoEditHandled?.(); return; }
+
+        if (tab.id !== activeTab) setActiveTab(tab.id);
+
+        const next = {};
+        (editFields[tab.id] || []).forEach(f => {
+            const v = record[f.key];
+            next[f.key] = (v === undefined || v === null) ? '' : v;
+        });
+        if (tab.id === 'CUSTOMERS') {
+            next.banks = Array.isArray(record.banks) ? record.banks.map(b => ({ ...b })) : [];
+        }
+
+        let gName = 'Primary';
+        if (tab.id === 'CASH_BANK') {
+            gName = record.type === 'bank' ? 'Cash/Bank' : record.type ? String(record.type).toUpperCase() : 'Primary';
+        } else if (record.group) {
+            gName = record.group;
+        }
+
+        setExpandedGroups(prev => { const n = new Set(prev); n.add(gName); return n; });
+        setEditForm(next);
+        setMoveType('');
+        setRowMsg(null);
+        setEditingRowId(record.id);
+        setEditingGroupName(null);
+        onAutoEditHandled?.();
+    }, [isOpen, autoEditId, autoEditCollection, activeTab, tabs, editFields, onAutoEditHandled]);
+
     if (!isOpen) return null;
 
     const groupNamesList = Object.keys(groupedMap).sort();
@@ -916,7 +1036,7 @@ const ChartOfMastersModal = ({
                 </div>
 
                 {/* Details Table Content */}
-                <div className="flex-1 overflow-y-auto px-6 py-4">
+                <div className="flex-1 overflow-y-auto px-6 py-4" ref={listScrollRef}>
                     {rowMsg && (
                         <div className={`mb-3 px-4 py-2 rounded-xl text-xs font-bold border ${rowMsg.type === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
                             {rowMsg.text}
@@ -981,6 +1101,7 @@ const ChartOfMastersModal = ({
                                                 </button>
                                             </div>
                                         </th>
+                                        <th className="py-3 px-6 font-semibold text-slate-700 text-right w-36">Balance</th>
                                         <th className="py-3 px-6 font-semibold text-slate-700 text-center w-40">Vouchers Count</th>
                                         <th className="py-3 px-6 font-semibold text-slate-700">Last Modified By & Date</th>
                                         <th className="py-3 px-4 font-semibold text-slate-700 w-24 text-right">Actions</th>
@@ -991,6 +1112,7 @@ const ChartOfMastersModal = ({
                                         let globalIndex = 0;
                                         return groupNamesList.map(gName => {
                                             const items = groupedMap[gName] || [];
+                                            const groupTotal = items.reduce((acc, it) => acc + Number(it.amount || 0), 0);
                                             const isExpanded = isDetailedView || expandedGroups.has(gName);
                                             return (
                                                 <React.Fragment key={gName}>
@@ -1009,7 +1131,7 @@ const ChartOfMastersModal = ({
                                                         }}
                                                         className="bg-[#005994]/5 border-y border-slate-100 font-bold text-slate-700 cursor-pointer hover:bg-[#005994]/10 transition-colors select-none"
                                                     >
-                                                        <td colSpan={6} className="py-2.5 px-4">
+                                                        <td colSpan={7} className="py-2.5 px-4">
                                                             <div className="flex items-center justify-between">
                                                                 <div className="flex items-center gap-2">
                                                                     {isExpanded ? (
@@ -1055,12 +1177,17 @@ const ChartOfMastersModal = ({
                                                                         </span>
                                                                     )}
                                                                 </div>
+                                                                {items.length > 0 && (
+                                                                    <div className="text-[11px] font-mono font-black text-slate-600 whitespace-nowrap pl-3">
+                                                                        Group Total: {fmtAmount(groupTotal)}
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         </td>
                                                     </tr>
                                                     {editingGroupName === gName && (
                                                         <tr className="bg-amber-50/60 border-b-2 border-amber-200">
-                                                            <td colSpan={6} className="p-4">
+                                                            <td colSpan={7} className="p-4">
                                                                 <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
                                                                     <div className="flex items-center justify-between mb-2 gap-2">
                                                                         <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
@@ -1111,6 +1238,7 @@ const ChartOfMastersModal = ({
                                                                 <td className="py-3 px-4 text-slate-300 font-medium">-</td>
                                                                 <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
                                                                 <td className="py-3 px-6 text-slate-400 italic font-medium">Zero Ledgers</td>
+                                                                <td className="py-3 px-6 text-right text-slate-300">-</td>
                                                                 <td className="py-3 px-6 text-center text-slate-300">-</td>
                                                                 <td className="py-3 px-6 text-slate-300 text-xs">-</td>
                                                                 <td className="py-3 px-4 text-right">
@@ -1133,11 +1261,29 @@ const ChartOfMastersModal = ({
                                                                 return [
                                                                     <tr 
                                                                         key={item.id} 
-                                                                        className="hover:bg-slate-50/50 transition-colors"
+                                                                        data-row-id={item.id}
+                                                                        className={`transition-colors ${flashRowId === item.id ? 'bg-amber-100' : 'hover:bg-slate-50/50'}`}
                                                                     >
                                                                         <td className="py-3 px-4 text-slate-400 font-medium">{globalIndex}</td>
                                                                         <td className="py-3 px-6 text-slate-400 text-xs font-semibold uppercase">{gName}</td>
-                                                                        <td className="py-3 px-6 font-semibold text-slate-900">{item.name}</td>
+                                                                        <td className="py-3 px-6 font-semibold text-slate-900">
+                                                                            <div className="flex items-center gap-2 flex-wrap">
+                                                                                <span>{item.name}</span>
+                                                                                {activeTab === 'ITEMS' && item.hscode && (
+                                                                                    <span className="text-[9px] bg-slate-100 border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded font-bold whitespace-nowrap">HS {item.hscode}</span>
+                                                                                )}
+                                                                            </div>
+                                                                            {(Number(item.openingStock || 0) !== 0 || Number(item.openingBalance || 0) !== 0) && (
+                                                                                <div className="text-[9px] text-slate-400 font-medium mt-0.5">
+                                                                                    {Number(item.openingStock || 0) !== 0 && <span>Op Stk: {Number(item.openingStock).toLocaleString(undefined, { maximumFractionDigits: 3 })}</span>}
+                                                                                    {Number(item.openingStock || 0) !== 0 && Number(item.openingBalance || 0) !== 0 && <span className="mx-1">·</span>}
+                                                                                    {Number(item.openingBalance || 0) !== 0 && <span>Op Bal: {fmtAmount(item.openingBalance)}</span>}
+                                                                                </div>
+                                                                            )}
+                                                                        </td>
+                                                                        <td className={`py-3 px-6 text-right font-mono text-xs font-bold ${Number(item.amount || 0) === 0 ? 'text-slate-300' : 'text-slate-700'}`}>
+                                                                            {Number(item.amount || 0) === 0 ? '-' : fmtAmount(item.amount)}
+                                                                        </td>
                                                                         <td className="py-3 px-6 text-center">
                                                                             {item.voucherCount > 0 ? (
                                                                                 <span className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100">
@@ -1173,7 +1319,7 @@ const ChartOfMastersModal = ({
                                                                     </tr>,
                                                                     editingRowId === item.id && (
                                                                         <tr key={`${item.id}-editor`} className="bg-amber-50/60 border-b-2 border-amber-200">
-                                                                            <td colSpan={6} className="p-4">
+                                                                            <td colSpan={7} className="p-4">
                                                                                 <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
                                                                                     <div className="flex items-center justify-between mb-2 gap-2">
                                                                                         <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
@@ -1212,6 +1358,15 @@ const ChartOfMastersModal = ({
                                                                                             </label>
                                                                                         ))}
                                                                                     </div>
+
+                                                                                    {activeTab === 'CUSTOMERS' && (
+                                                                                        <div className="mt-3 border-t border-slate-100 pt-3">
+                                                                                            <BankDetailsEditor
+                                                                                                value={editForm.banks || []}
+                                                                                                onChange={(rows) => setEditForm(prev => ({ ...prev, banks: rows }))}
+                                                                                            />
+                                                                                        </div>
+                                                                                    )}
 
                                                                                     <div className="flex flex-wrap items-center gap-2 mt-3">
                                                                                         <button
@@ -1275,6 +1430,15 @@ const ChartOfMastersModal = ({
                                         });
                                     })()}
                                 </tbody>
+                                {groupNamesList.length > 0 && (
+                                    <tfoot className="bg-slate-800 text-white sticky bottom-0 z-20">
+                                        <tr>
+                                            <td colSpan={3} className="py-3 px-4 font-bold uppercase text-xs">Grand Total</td>
+                                            <td className="py-3 px-6 text-right font-mono font-bold text-xs">{fmtAmount(grandTotal)}</td>
+                                            <td colSpan={3}></td>
+                                        </tr>
+                                    </tfoot>
+                                )}
                             </table>
                         </div>
                     )}
@@ -1385,6 +1549,12 @@ const ChartOfMastersModal = ({
                                         (k, v) => setQuickAddForm(prev => ({ ...prev, [k]: v }))
                                     ) : (
                                         <p className="text-xs text-slate-400 italic">No extra fields for this type.</p>
+                                    )}
+                                    {quickAddType === 'ledger' && currentTab?.collectionName === 'parties' && (
+                                        <BankDetailsEditor
+                                            value={quickAddForm.banks || []}
+                                            onChange={(rows) => setQuickAddForm(prev => ({ ...prev, banks: rows }))}
+                                        />
                                     )}
                                     {quickAddType === 'ledger' && (
                                         <p className="text-[10px] text-slate-400 font-semibold">

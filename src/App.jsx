@@ -5308,6 +5308,11 @@ export default function App() {
 
     // --- Lightweight "add new" dialog used by voucher dropdowns ---
     const [quickMasterTarget, setQuickMasterTarget] = useState(null);
+
+    // --- "Open this master for editing" request for Chart of Masters ---
+    // Any screen can call setChartEditRequest({ collectionName, id }) to make the
+    // Chart open on the right tab with that record already expanded for editing.
+    const [chartEditRequest, setChartEditRequest] = useState(null);
     const [latestRemoteVer, setLatestRemoteVer] = useState(SYSTEM_VERSION);
     const [updateDetails, setUpdateDetails] = useState("");
     const confirmPassword = (title) => {
@@ -7894,6 +7899,24 @@ export default function App() {
 
     const MASTER_ACCOUNT_COLLECTIONS = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots'];
 
+    // Items must carry Opening Qty and Opening Value together (rule copied from the
+    // old Create / Alter Masters form). If a rate is available we can fill the value
+    // from qty x rate instead of blocking the save.
+    const validateOpeningPairing = (collectionName, formData) => {
+        if (collectionName !== 'products') return { ok: true, formData };
+        const next = { ...formData };
+        const qty = Number(next.openingStock) || 0;
+        let val = Number(next.openingBalance) || 0;
+        const rate = Number(next.openingRate) || 0;
+        if (qty && !val && rate) {
+            next.openingBalance = String(Number((qty * rate).toFixed(2)));
+            val = Number(next.openingBalance) || 0;
+        }
+        if (qty && !val) return { ok: false, formData: next, message: 'Please enter the Opening Value for the given Opening Quantity.' };
+        if (val && !qty) return { ok: false, formData: next, message: 'Please enter the Opening Quantity for the given Opening Value.' };
+        return { ok: true, formData: next };
+    };
+
     // Returns { blocked } or { blocked: true, cancelled: true } when the operator
     // declines the "very similar name" confirmation.
     const guardMasterDuplicate = (collectionName, name, excludeId) => {
@@ -7923,7 +7946,13 @@ export default function App() {
             const dup = guardMasterDuplicate(collectionName, formData.name, null);
             if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
 
-            const cleanData = buildMasterPayload(formData, uid, true);
+            const pairing = validateOpeningPairing(collectionName, formData);
+            if (!pairing.ok) {
+                setToast({ type: 'error', title: 'Mandatory', message: pairing.message });
+                return { ok: false, error: pairing.message };
+            }
+
+            const cleanData = buildMasterPayload(pairing.formData, uid, true);
             if (collectionName === 'products' && cleanData.currentStock === undefined) cleanData.currentStock = Number(cleanData.openingStock || 0);
             if ((collectionName === 'parties' || collectionName === 'accounts') && cleanData.balance === undefined) cleanData.balance = Number(cleanData.openingBalance || 0);
             if (collectionName === 'accounts' && !cleanData.type) cleanData.type = 'bank';
@@ -7979,9 +8008,15 @@ export default function App() {
             const dup = guardMasterDuplicate(collectionName, formData.name, id);
             if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
 
+            const pairing = validateOpeningPairing(collectionName, formData);
+            if (!pairing.ok) {
+                setToast({ type: 'error', title: 'Mandatory', message: pairing.message });
+                return { ok: false, error: pairing.message };
+            }
+
             if (!(await askAdminPassword('Save Master Changes'))) return { ok: false, cancelled: true };
 
-            const cleanData = buildMasterPayload(formData, uid, false);
+            const cleanData = buildMasterPayload(pairing.formData, uid, false);
             await handleMasterUpdate(collectionName, id, cleanData);
             return { ok: true, data: cleanData };
         } catch (e) {
@@ -10786,7 +10821,7 @@ export default function App() {
                             {/* --- FULL TALLY MENU (Enabled for all roles as per user request) --- */}
                             <>
                                 <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
-                                    <MenuDropdown label="Create / Alter Masters" shortcut="M" activeSubMenu={activeSubMenu} setActiveSubMenu={setActiveSubMenu} />
+                                    {/* Create / Alter Masters moved to Management Hub -> Data (also on the M key). */}
                                     <MenuButton
                                         label="Chart of Masters"
                                         shortcut="C"
@@ -12860,6 +12895,14 @@ export default function App() {
                     onManageUsers={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_users'); }}
                     onShowStatistics={() => { setModalStack(s => [...s, 'management']); setActiveModal('statistics'); }}
                     onShowLogs={() => { setModalStack(s => [...s, 'management']); setActiveModal('system_logs'); }}
+                onOpenLegacyMasters={() => {
+                    // Legacy Create / Alter Masters screens: close the hub and open the
+                    // gateway flyout directly (the M key does the same).
+                    setActiveModal(null);
+                    setModalStack([]);
+                    setMenuOpen(true);
+                    setActiveSubMenu('Create / Alter Masters');
+                }}
                     onManageCompany={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_company'); }}
                     onSelectCompany={() => { setModalStack(s => [...s, 'management']); setActiveModal('select_company'); }}
                     onManageUnits={() => { setModalStack(s => [...s, 'management']); setActiveModal('unit_manager'); }}
@@ -13298,6 +13341,14 @@ export default function App() {
                     onChartUpdate={chartMasterUpdate}
                     onChartDelete={chartMasterDelete}
                     onChartMove={chartMasterMove}
+                    autoEditCollection={chartEditRequest?.collectionName}
+                    autoEditId={chartEditRequest?.id}
+                    onAutoEditHandled={() => setChartEditRequest(null)}
+                    onAutoEditRequest={(collectionName, id) => setChartEditRequest({ collectionName, id })}
+                    locations={locations}
+                    taxRates={taxRates}
+                    staff={staff}
+                    units={units}
                 />
             )}
 

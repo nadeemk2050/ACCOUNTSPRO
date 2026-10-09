@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Check, Loader2 } from 'lucide-react';
+import BankDetailsEditor from './BankDetailsEditor';
 
 /**
  * QuickMasterModal — lightweight "add new" dialog used by the dropdown lists in
@@ -244,9 +245,12 @@ const QuickMasterModal = ({ isOpen, onClose, collectionName, groupOptions = [], 
                                 <p className="text-xs text-slate-400 italic">No extra fields for this type.</p>
                             )}
                             {collectionName === 'parties' && (
-                                <p className="text-[10px] text-slate-400 font-semibold mt-2">
-                                    Bank details are added later from Create / Alter Masters {"->"} Customers / Parties.
-                                </p>
+                                <div className="mt-3">
+                                    <BankDetailsEditor
+                                        value={form.banks || []}
+                                        onChange={(rows) => setForm(prev => ({ ...prev, banks: rows }))}
+                                    />
+                                </div>
                             )}
                         </div>
                     )}
