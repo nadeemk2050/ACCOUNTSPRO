@@ -28,6 +28,7 @@ import { getFunctions, httpsCallable as fHttpsCallable } from "firebase/function
 import DateInput from './DateInput';
 import ChartOfMastersModal from './ChartOfMastersModal';
 import QuickMasterModal from './QuickMasterModal';
+import { moveRowHighlight, activateHighlightedRow, clearRowHighlight, gatewayNavStep, gatewayActivate, isTypingTarget } from './keyboardNav';
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -9234,7 +9235,15 @@ export default function App() {
                 // --- DASHBOARD SHORTCUTS (Gateway Menu aligned, only when no modal is open) ---
                 if (isDashboardActive) {
                     // Gateway Menu top-level shortcuts
-                    if (k === 'm') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu('Create / Alter Masters'); return; }
+                    // --- Gateway arrow navigation: menu items -> Business Overview -> wrap ---
+            if (!activeModal && !e.ctrlKey && !e.metaKey && !e.altKey && !isTypingTarget(e.target)) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    if (gatewayNavStep(e.key === 'ArrowDown' ? 1 : -1)) { e.preventDefault(); return; }
+                } else if (e.key === 'Enter') {
+                    if (gatewayActivate()) { e.preventDefault(); return; }
+                }
+            }
+            if (k === 'm') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu('Create / Alter Masters'); return; }
                     if (k === 'q') { e.preventDefault(); setMenuOpen(true); setActiveSubMenu('Quick Action Vouchers'); return; }
                     if (k === 'd') {
                         e.preventDefault();
@@ -10987,7 +10996,7 @@ export default function App() {
 
                         {/* THE TALLY LIST STYLE TABLE */}
                         <div className="p-1">
-                            <table className="w-full text-left">
+                            <table className="w-full text-left" data-dash-nav>
                                 <tbody className="space-y-0.5">
 
                                     <tr className="group hover:bg-[#f6fcff] cursor-pointer" onClick={() => setActiveModal('stock_inventory')}>
@@ -34744,10 +34753,20 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
     */
 
     const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && filtered.length > 0) {
-            // No onClose() here: onSelect switches activeModal, which closes this modal.
-            // Calling onClose() too would override the ledger open.
-            onSelect(filtered[0].type, filtered[0].id);
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            moveRowHighlight(e.key === 'ArrowDown' ? 1 : -1);
+            return;
+        }
+        if (e.key === 'Escape') { clearRowHighlight(); return; }
+        if (e.key === 'Enter') {
+            // Open the arrow-selected row; fall back to the top result
+            if (activateHighlightedRow()) return;
+            if (filtered.length > 0) {
+                // No onClose() here: onSelect switches activeModal, which closes this modal.
+                // Calling onClose() too would override the ledger open.
+                onSelect(filtered[0].type, filtered[0].id);
+            }
         }
     };
 
@@ -34816,6 +34835,7 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
                                 {paginatedItems.map((item, i) => (
                                     <tr
                                         key={item.id}
+                                        data-kb-row
                                         onClick={() => { onSelect(item.type === 'report' ? item.reportType : item.type, item.id); }}
                                         className={`cursor-pointer transition-colors group ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'} hover:bg-blue-50`}
                                     >
@@ -35381,8 +35401,16 @@ function GlobalItemSearchModal({ isOpen, onClose, zIndex, products = [], stockGr
                             onChange={(e) => setSearchTerm(e.target.value)}
 
                             onKeyDown={(e) => {
-                                if (e.key === 'Enter' && filtered.length > 0) {
-                                    onSelect(filtered[0].id);
+                                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                    moveRowHighlight(e.key === 'ArrowDown' ? 1 : -1);
+                                    return;
+                                }
+                                if (e.key === 'Enter') {
+                                    if (activateHighlightedRow()) return;
+                                    if (filtered.length > 0) {
+                                        onSelect(filtered[0].id);
+                                    }
                                 }
                             }}
                         />
@@ -35423,6 +35451,7 @@ function GlobalItemSearchModal({ isOpen, onClose, zIndex, products = [], stockGr
                                     return (
                                         <tr
                                             key={item.id}
+                                            data-kb-row
                                             onClick={() => onSelect(item.id)}
                                             className={`cursor-pointer transition-colors group border-l-4 border-transparent hover:border-blue-500 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50`}
                                         >
