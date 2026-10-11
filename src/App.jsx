@@ -6985,6 +6985,7 @@ export default function App() {
             // 1. Invoices — Finance
             invDocs.forEach(doc => {
                 const d = doc.data();
+                if (isVoucherDeleted(d)) return;
                 if (!d.date || d.date > targetDate) return;
 
                 // --- Finance Logic ---
@@ -7009,6 +7010,7 @@ export default function App() {
             // 2. Payments
             payDocs.forEach(doc => {
                 const v = doc.data();
+                if (isVoucherDeleted(v)) return;
                 if (!v.date || v.date > targetDate) return;
                 const rate = Number(v.exchangeRate || 1);
                 const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
@@ -7019,22 +7021,42 @@ export default function App() {
                 }
 
                 const applyTarget = (tid, tcat, tval) => {
-                    if (tcat === 'account' && accBalMap[tid] !== undefined) {
-                        if (v.type === 'in') accBalMap[tid] -= tval;
-                        else accBalMap[tid] += tval;
-                    } else if (tcat === 'party' && partyBalMap[tid] !== undefined) {
+                    if (!tid) return;
+                    if ((tcat === 'party' || partyBalMap[tid] !== undefined) && partyBalMap[tid] !== undefined) {
                         if (v.type === 'in') partyBalMap[tid] -= tval;
                         else partyBalMap[tid] += tval;
+                    } else if ((tcat === 'account' || accBalMap[tid] !== undefined) && accBalMap[tid] !== undefined) {
+                        if (v.type === 'in') accBalMap[tid] -= tval;
+                        else accBalMap[tid] += tval;
                     }
                 };
 
-                if (v.isMulti && v.splits) {
-                    v.splits.forEach(s => applyTarget(s.targetId, s.category, Number(s.amount || 0) * rate));
+                if (v.isMulti && Array.isArray(v.splits)) {
+                    v.splits.forEach(s => {
+                        const sId = s.targetId || s.partyId || s.accountId;
+                        const sCat = s.category || (partyBalMap[sId] !== undefined ? 'party' : (accBalMap[sId] !== undefined ? 'account' : null));
+                        applyTarget(sId, sCat, Number(s.amount || 0) * rate);
+                    });
                 } else {
                     let cat = v.transactionCategory;
                     let tid = null;
                     if (cat === 'party') tid = v.partyId;
+                    else if (cat === 'expense') tid = v.expenseId;
                     else if (cat === 'account' || v.type === 'contra') { cat = 'account'; tid = v.toAccountId; }
+                    else if (cat === 'capital') tid = v.capitalId;
+                    else if (cat === 'asset') tid = v.assetId;
+                    else if (cat === 'income') tid = v.incomeId;
+
+                    // Fallback category detection for payments without transactionCategory field
+                    if (!cat) {
+                        if (v.partyId) { cat = 'party'; tid = v.partyId; }
+                        else if (v.expenseId) { cat = 'expense'; tid = v.expenseId; }
+                        else if (v.toAccountId) { cat = 'account'; tid = v.toAccountId; }
+                        else if (v.capitalId) { cat = 'capital'; tid = v.capitalId; }
+                        else if (v.assetId) { cat = 'asset'; tid = v.assetId; }
+                        else if (v.incomeId) { cat = 'income'; tid = v.incomeId; }
+                    }
+
                     if (tid) applyTarget(tid, cat, amtBase);
                 }
             });
@@ -7042,26 +7064,29 @@ export default function App() {
             // 3. Journals
             jvDocs.forEach(doc => {
                 const v = doc.data();
+                if (isVoucherDeleted(v)) return;
                 if (!v.date || v.date > targetDate) return;
                 const amt = Number(v.amount || 0);
-                if (v.isMulti && v.rows) {
+                if (v.isMulti && Array.isArray(v.rows)) {
                     v.rows.forEach(r => {
-                        if (r.category === 'account' && accBalMap[r.id] !== undefined) {
-                            if (r.type === 'dr') accBalMap[r.id] += Number(r.amount || 0);
-                            else accBalMap[r.id] -= Number(r.amount || 0);
-                        } else if (r.category === 'party' && partyBalMap[r.id] !== undefined) {
-                            if (r.type === 'dr') partyBalMap[r.id] += Number(r.amount || 0);
-                            else partyBalMap[r.id] -= Number(r.amount || 0);
+                        const rId = r.id;
+                        const rAmt = Number(r.amount || 0);
+                        if ((r.category === 'party' || partyBalMap[rId] !== undefined) && partyBalMap[rId] !== undefined) {
+                            if (r.type === 'dr') partyBalMap[rId] += rAmt;
+                            else partyBalMap[rId] -= rAmt;
+                        } else if ((r.category === 'account' || accBalMap[rId] !== undefined) && accBalMap[rId] !== undefined) {
+                            if (r.type === 'dr') accBalMap[rId] += rAmt;
+                            else accBalMap[rId] -= rAmt;
                         }
                     });
                 } else {
                     if (v.drId) {
-                        if (v.drType === 'account' && accBalMap[v.drId] !== undefined) accBalMap[v.drId] += amt;
-                        else if (v.drType === 'party' && partyBalMap[v.drId] !== undefined) partyBalMap[v.drId] += amt;
+                        if ((v.drType === 'party' || partyBalMap[v.drId] !== undefined) && partyBalMap[v.drId] !== undefined) partyBalMap[v.drId] += amt;
+                        else if ((v.drType === 'account' || accBalMap[v.drId] !== undefined) && accBalMap[v.drId] !== undefined) accBalMap[v.drId] += amt;
                     }
                     if (v.crId) {
-                        if (v.crType === 'account' && accBalMap[v.crId] !== undefined) accBalMap[v.crId] -= amt;
-                        else if (v.crType === 'party' && partyBalMap[v.crId] !== undefined) partyBalMap[v.crId] -= amt;
+                        if ((v.crType === 'party' || partyBalMap[v.crId] !== undefined) && partyBalMap[v.crId] !== undefined) partyBalMap[v.crId] -= amt;
+                        else if ((v.crType === 'account' || accBalMap[v.crId] !== undefined) && accBalMap[v.crId] !== undefined) accBalMap[v.crId] -= amt;
                     }
                 }
             });
@@ -12127,9 +12152,10 @@ export default function App() {
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 title="Cash/Bank Balances Total"
-                showDateFilter={false}
+                showDateFilter={true}
                 ledgerSource={{ type: 'account', entities: accounts }}
-                dateRange={{ to: dashboardDate }}
+                dateRange={{ from: dashboardDate, to: dashboardDate }}
+                onDateChange={({ to }) => setDashboardDate(to)}
                 user={user}
                 subUser={subUser}
                 effectiveName={effectiveName}
@@ -12144,9 +12170,10 @@ export default function App() {
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 title="Receivables Breakdown"
-                showDateFilter={false}
+                showDateFilter={true}
                 ledgerSource={{ type: 'party', entities: parties }}
-                dateRange={{ to: dashboardDate }}
+                dateRange={{ from: dashboardDate, to: dashboardDate }}
+                onDateChange={({ to }) => setDashboardDate(to)}
                 defaultFilter="positive"
                 user={user}
                 subUser={subUser}
@@ -12163,9 +12190,10 @@ export default function App() {
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 title="Payables Breakdown"
-                showDateFilter={false}
+                showDateFilter={true}
                 ledgerSource={{ type: 'party', entities: parties }}
-                dateRange={{ to: dashboardDate }}
+                dateRange={{ from: dashboardDate, to: dashboardDate }}
+                onDateChange={({ to }) => setDashboardDate(to)}
                 defaultFilter="negative"
                 user={user}
                 subUser={subUser}
@@ -29793,6 +29821,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 // --- UPDATED SIMPLE LIST MODAL (Compact & Clean Summary) ---
 const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, summary, dateRange, onDateChange, showDateFilter = true, currencySymbol, registerType = 'default', ledgerSource, user, dataOwnerId, defaultFilter = 'all', invoices, parties, products, onAddToFavorites, modalId, hideF1Detl = false, hideDateTabs = false }) => {
     const [filter, setFilter] = useState(defaultFilter);
+    const [showZero, setShowZero] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [asyncData, setAsyncData] = useState(null);
     const [detailView, setDetailView] = useState(false);
@@ -29902,6 +29931,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     useEffect(() => {
         if (isOpen) {
             setFilter(defaultFilter);
+            setShowZero(false);
             setSearchTerm('');
             // Set defaults based on type
             const isRegister = ['payment', 'receipt', 'contra', 'manufacturing'].includes(registerType);
@@ -30005,19 +30035,19 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                 // --- Invoices ---
                 invS.forEach(doc => {
                     const d = doc.data();
+                    if (isVoucherDeleted(d)) return;
                     const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
                     const rate = Number(d.exchangeRate || 1);
                     const addlExpBase = Number(d.addlExpTotal || 0) * rate;
 
-                    // If we are looking at the Main Supplier, subtract the addl expense portion
-                    const supplierBase = (d.type === 'purchase')
-                        ? Math.max(0, baseVal - addlExpBase)
+                    const supplierBase = (d.type === 'purchase' || d.type === 'purchase_apt')
+                        ? purchaseSupplierBase(d, baseVal, addlExpBase)
                         : baseVal;
 
                     if (d.partyId && balMap[d.partyId] !== undefined) {
-                        const amt = (d.type === 'purchase') ? supplierBase : baseVal;
-                        if (d.type === 'sales' || d.type === 'debit_note' || d.type === 'purchase_return') balMap[d.partyId] += amt;
-                        else if (d.type === 'purchase' || d.type === 'credit_note' || d.type === 'sales_return') balMap[d.partyId] -= amt;
+                        const amt = (d.type === 'purchase' || d.type === 'purchase_apt') ? supplierBase : baseVal;
+                        if (['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type)) balMap[d.partyId] += amt;
+                        else if (['purchase', 'purchase_apt', 'credit_note', 'sales_return'].includes(d.type)) balMap[d.partyId] -= amt;
                     }
                     // ✅ Credit the account that paid the expenses
                     if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && balMap[d.addlExpCreditId] !== undefined) {
@@ -30039,6 +30069,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                 // --- Payments ---
                 payS.forEach(doc => {
                     const v = doc.data();
+                    if (isVoucherDeleted(v)) return;
                     const rate = Number(v.exchangeRate || 1);
                     const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
 
@@ -30083,6 +30114,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                 // --- Journal Vouchers ---
                 jvS.forEach(doc => {
                     const v = doc.data();
+                    if (isVoucherDeleted(v)) return;
                     const amt = Number(v.amount || 0);
                     if (v.isMulti && v.rows) {
                         v.rows.forEach(r => {
@@ -30205,8 +30237,8 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             if (filter === 'all') matchesType = true;
             if (filter === 'consumed') matchesType = item.type === 'consumed';
             if (filter === 'produced') matchesType = item.type === 'produced';
-            if (filter === 'positive') matchesType = val > 0;
-            if (filter === 'negative') matchesType = val < 0;
+            if (filter === 'positive') matchesType = showZero ? val >= 0 : val > 0;
+            if (filter === 'negative') matchesType = showZero ? val <= 0 : val < 0;
 
             const searchLower = searchTerm.toLowerCase();
             // Check Label (Name/Item)
@@ -30702,24 +30734,28 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
             {/* DATE / PERIOD FILTER */}
             {showDateFilter && !hideDateTabs && dateRange && onDateChange && (
-                <div className="relative z-[120] pointer-events-auto shrink-0 hidden sm:flex items-center gap-2">
+                <div className="relative z-[120] pointer-events-auto shrink-0 flex items-center gap-2">
                     <button
                         ref={dateMenuBtnRef}
                         onClick={(e) => { e.stopPropagation(); setShowDateMenu(!showDateMenu); }}
                         className={`px-3 py-1 lg:py-1.5 rounded-md text-[10px] lg:text-[11px] font-black border transition-all flex items-center gap-2 ${showDateMenu ? 'bg-indigo-600 text-white border-indigo-700 shadow-md' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
-                        title="Open date options"
+                        title="Open date options (F2)"
                     >
                         <span className="text-slate-400 hidden lg:inline">F2:</span>
-                        <span className="tracking-tight uppercase">{dateRange.from === dateRange.to ? formatDate(dateRange.from) : `${formatDate(dateRange.from)} - ${formatDate(dateRange.to)}`}</span>
+                        <span className="tracking-tight uppercase">
+                            {ledgerSource ? `AS OF: ${formatDate(dateRange.to)}` : (dateRange.from === dateRange.to ? formatDate(dateRange.from) : `${formatDate(dateRange.from)} - ${formatDate(dateRange.to)}`)}
+                        </span>
                         <ChevronDown size={12} className={showDateMenu ? 'rotate-180' : ''} />
                     </button>
-                    <button
-                        onClick={(e) => { e.stopPropagation(); openPeriodPicker(); }}
-                        className="px-3 py-1 lg:py-1.5 rounded-md text-[10px] lg:text-[11px] font-black border bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 transition-all"
-                        title="Change period (Alt+F2)"
-                    >
-                        Alt+F2: Period
-                    </button>
+                    {!ledgerSource && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); openPeriodPicker(); }}
+                            className="px-3 py-1 lg:py-1.5 rounded-md text-[10px] lg:text-[11px] font-black border bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 transition-all"
+                            title="Change period (Alt+F2)"
+                        >
+                            Alt+F2: Period
+                        </button>
+                    )}
                     {showDateMenu && (
                         createPortal(
                             <div
@@ -30848,6 +30884,15 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
                 <div className="h-4 w-px bg-slate-200 mx-1 hidden lg:block"></div>
 
+                {ledgerSource && (
+                    <button
+                        onClick={() => setShowZero(prev => !prev)}
+                        className={`flex items-center gap-1.5 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border transition-all ${showZero ? 'bg-indigo-600 text-white border-indigo-700 shadow-md' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
+                        title="Show zero balanced accounts in list"
+                    >
+                        <span>{showZero ? '✓ ZERO INCLUDED' : '+ SHOW ZERO'}</span>
+                    </button>
+                )}
                 <button
                     onClick={downloadExcel}
                     className="flex items-center gap-2 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-all"
