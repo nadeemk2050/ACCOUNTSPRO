@@ -30,7 +30,7 @@ import ChartOfMastersModal from './ChartOfMastersModal';
 import QuickMasterModal from './QuickMasterModal';
 import { moveRowHighlight, activateHighlightedRow, clearRowHighlight, gatewayNavStep, gatewayActivate, isTypingTarget } from './keyboardNav';
 import StockValuationBadge from './StockValuationBadge';
-import { computeStockClosing, getStoredValuation, setStoredValuation } from './stockValuation';
+import { computeStockClosing, getStoredValuation, setStoredValuation, STOCK_MOVEMENT_TYPES } from './stockValuation';
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -6941,6 +6941,19 @@ export default function App() {
 
         let invDocs = null, payDocs = null, jvDocs = null, mfgDocs = null;
 
+        // Stock-movement sources. These are mapped ONCE per snapshot: copying every
+        // invoice inside the recalculation itself was a real cost on large books.
+        let invStock = [], mfgStock = [];
+        const mapStockVouchers = (docs, types) => {
+            const out = [];
+            docs.forEach(d => {
+                const v = d.data();
+                if (!v || (types && !types.includes(v.type))) return;
+                out.push({ id: d.id, ...v });
+            });
+            return filterActiveVouchers(out);
+        };
+
         // ✅ Renamed from 'recalc' to 'calculateFinanceSummary' and using REFS for fresh state
         const calculateFinanceSummary = async () => {
             if (!invDocs || !payDocs || !jvDocs || !mfgDocs) return;
@@ -7064,30 +7077,6 @@ export default function App() {
                 return res;
             };
 
-            // 4. Stock closing position — computed with the SAME engine the Stock
-            //    Summary report uses, so the overview line always matches the
-            //    report for this date. (Previously invoice lines were applied to
-            //    itemMap directly AND again through `movements`, so every purchase
-            //    and sale was counted twice -> the overview showed ~2x the real qty.)
-            const computeStockTotals = () => {
-                const rows = computeStockClosing({
-                    products: currentProducts,
-                    invoices: filterActiveVouchers(invDocs.map(d => ({ id: d.id, ...d.data() }))),
-                    stockJournals: filterActiveVouchers(mfgDocs.map(d => ({ id: d.id, ...d.data() }))),
-                    asOfDate: targetDate,
-                    valuation: stockValuationRef.current || 'fifo'
-                });
-                let tQty = 0, tVal = 0;
-                rows.forEach(r => {
-                    const eff = getEffectiveGroupSettings(r.group);
-                    if (eff.closingQty) tQty += r.closingQty;
-                    if (eff.closingVal) tVal += r.closingVal;
-                });
-                setStockSummaryGrandTotal({ qty: tQty, val: tVal });
-            };
-            stockRecomputeRef.current = computeStockTotals;
-            computeStockTotals();
-
             const totalCash = Object.values(accBalMap).reduce((sum, b) => sum + b, 0);
             let recTotal = 0, payTotal = 0;
             Object.values(partyBalMap).forEach(b => {
@@ -7097,14 +7086,69 @@ export default function App() {
             setCashSummaryGrandTotal(totalCash);
             setReceivablesGrandTotal(recTotal);
             setPayablesGrandTotal(payTotal);
+
+            // 4. Stock closing position — computed with the SAME engine the Stock
+            //    Summary report uses, so the overview line always matches the report
+            //    for this date. (Previously invoice lines were applied to itemMap
+            //    directly AND again through `movements`, so every purchase and sale
+            //    was counted twice -> the overview showed ~2x the real quantity.)
+            //
+            // ⚠️ DELIBERATELY ISOLATED from the cash/receivables/payables updates
+            //    above. This block used to run BEFORE them, so any failure in here
+            //    aborted the whole calculation and left all three showing 0.
+            const computeStockTotals = () => {
+                try {
+                    const rows = computeStockClosing({
+                        products: currentProducts,
+                        invoices: invStock,
+                        stockJournals: mfgStock,
+                        asOfDate: targetDate,
+                        valuation: stockValuationRef.current || 'fifo'
+                    });
+                    let tQty = 0, tVal = 0;
+                    rows.forEach(r => {
+                        const eff = getEffectiveGroupSettings(r.group);
+                        if (eff.closingQty) tQty += r.closingQty;
+                        if (eff.closingVal) tVal += r.closingVal;
+                    });
+                    setStockSummaryGrandTotal({ qty: tQty, val: tVal });
+                } catch (err) {
+                    console.error('Dashboard stock summary failed:', err);
+                }
+            };
+            stockRecomputeRef.current = computeStockTotals;
+            computeStockTotals();
         };
 
-        const unsubInv = onSnapshot(qInv, snap => { invDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin inv:', err));
-        const unsubPay = onSnapshot(qPay, snap => { payDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin pay:', err));
-        const unsubJv  = onSnapshot(qJv,  snap => { jvDocs  = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin jv:', err));
-        const unsubMfg = onSnapshot(qMfg, snap => { mfgDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin mfg:', err));
+        const unsubs = {};
+        let retryTimer = null;
+        let disposed = false;
 
-        return () => { unsubInv(); unsubPay(); unsubJv(); unsubMfg(); };
+        // A dropped stream used to leave the dashboard frozen on zeroes until a
+        // full page reload (the error handlers only logged). Re-establish it.
+        const subscribe = (key, q, onSnap, label) => {
+            unsubs[key] = onSnapshot(q, onSnap, err => {
+                console.error(`Dashboard fin ${label}:`, err);
+                if (disposed) return;
+                if (retryTimer) clearTimeout(retryTimer);
+                retryTimer = setTimeout(() => {
+                    if (disposed) return;
+                    try { unsubs[key] && unsubs[key](); } catch (e) { /* already closed */ }
+                    subscribe(key, q, onSnap, label);
+                }, 5000);
+            });
+        };
+
+        subscribe('inv', qInv, snap => { invDocs = snap.docs; invStock = mapStockVouchers(snap.docs, STOCK_MOVEMENT_TYPES); calculateFinanceSummary(); }, 'inv');
+        subscribe('pay', qPay, snap => { payDocs = snap.docs; calculateFinanceSummary(); }, 'pay');
+        subscribe('jv',  qJv,  snap => { jvDocs  = snap.docs; calculateFinanceSummary(); }, 'jv');
+        subscribe('mfg', qMfg, snap => { mfgDocs = snap.docs; mfgStock = mapStockVouchers(snap.docs, null); calculateFinanceSummary(); }, 'mfg');
+
+        return () => {
+            disposed = true;
+            if (retryTimer) clearTimeout(retryTimer);
+            Object.values(unsubs).forEach(u => { try { u(); } catch (e) { /* noop */ } });
+        };
     }, [dashboardDate, user, dataOwnerId, accounts, parties, products]);
 
 

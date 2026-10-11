@@ -54,6 +54,16 @@ export const setStoredValuation = (method) => {
     } catch { /* private mode / quota — the in-memory value still applies */ }
 };
 
+// Voucher types that can move stock, split by direction exactly as the report does.
+const INWARD_TYPES = ['purchase', 'sales_return', 'credit_note'];
+const OUTWARD_TYPES = ['sales', 'purchase_return', 'debit_note'];
+
+/**
+ * Union of the two lists above. Exported so a caller can cheaply pre-filter a
+ * snapshot before copying documents (the dashboard does exactly that).
+ */
+export const STOCK_MOVEMENT_TYPES = [...INWARD_TYPES, ...OUTWARD_TYPES];
+
 const getFifoValue = (layers) => layers.reduce((s, l) => s + (Number(l.qty || 0) * Number(l.rate || 0)), 0);
 
 // Mirrors the report's getRate() exactly.
@@ -110,8 +120,8 @@ export const computeStockClosing = ({
     invoices.forEach(d => {
         if (locationId && d.locationId !== locationId) return;
 
-        const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
-        const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
+        const isInward = INWARD_TYPES.includes(d.type);
+        const isOutward = OUTWARD_TYPES.includes(d.type);
         if (!isInward && !isOutward) return;
 
         (d.items || []).forEach(item => {
