@@ -5968,8 +5968,12 @@ export default function App() {
                             
                             // ✅ Fix: If they don't have the claim but do have the field in Firestore, set it here
                             if (d.ownerId) {
-                                console.log("ðŸ” Found ownerId in user document:", d.ownerId);
-                                setDataOwnerId(d.ownerId);
+                                console.log("[AUTH] Found ownerId in user document:", d.ownerId);
+                                if (!activeCompanyId) {
+                                    setDataOwnerId(d.ownerId);
+                                } else {
+                                    console.log("[AUTH] 🔒 Preserving activeCompanyId (" + activeCompanyId + ") as dataOwnerId instead of overwriting with userDoc ownerId (" + d.ownerId + ")");
+                                }
                             }
 
                             const assignedRole = (d.role === 'developer' || isDevEmail) ? 'developer' : (d.role || (token.claims.ownerId ? 'employee' : 'owner'));
@@ -6009,6 +6013,7 @@ export default function App() {
         if (!dataOwnerId || (!user && !window.isGuestMode)) return;
         const uid = dataOwnerId; // The Company Owner's ID
         const currentUserId = user.uid; // The Logged-in User's ID
+        console.log("📡 [DATA-SYNC] Subscribing with dataOwnerId:", uid, "activeCompanyId:", activeCompanyId);
 
 
         const fetchCompanyProfile = async () => {
@@ -6070,7 +6075,10 @@ export default function App() {
         const unsubExpenses = onSnapshot(getMasterQuery("expenses"), (snap) => setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (expenses):", err));
         const unsubDirectExpenses = onSnapshot(getMasterQuery("direct_expenses"), (snap) => setDirectExpenseAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (direct_expenses):", err));
         const unsubIncome = onSnapshot(getMasterQuery("income_accounts"), (snap) => setIncomeAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (income_accounts):", err));
-        const unsubAccounts = onSnapshot(getMasterQuery("accounts"), (snap) => setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (accounts):", err));
+        const unsubAccounts = onSnapshot(getMasterQuery("accounts"), (snap) => {
+            console.log(`📊 [DATA-SYNC] Loaded ${snap.docs.length} accounts for uid ${uid}`);
+            setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        }, (err) => console.error("Snapshot error (accounts):", err));
         const unsubCapital = onSnapshot(getMasterQuery("capital_accounts"), (snap) => setCapitalAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (capital_accounts):", err));
         const unsubAssets = onSnapshot(getMasterQuery("asset_accounts"), (snap) => setAssetAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (asset_accounts):", err));
         const unsubTaxes = onSnapshot(getMasterQuery("tax_rates"), (snap) => setTaxRates(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Snapshot error (tax_rates):", err));
@@ -6956,11 +6964,15 @@ export default function App() {
 
         // ✅ Renamed from 'recalc' to 'calculateFinanceSummary' and using REFS for fresh state
         const calculateFinanceSummary = async () => {
-            if (!invDocs || !payDocs || !jvDocs || !mfgDocs) return;
+            if (!invDocs || !payDocs || !jvDocs || !mfgDocs) {
+                console.log("⏳ [DASHBOARD] Waiting for docs:", { invDocs: !!invDocs, payDocs: !!payDocs, jvDocs: !!jvDocs, mfgDocs: !!mfgDocs });
+                return;
+            }
 
             const currentAccounts = accountsRef.current;
             const currentParties = partiesRef.current;
             const currentProducts = productsRef.current || products;
+            console.log(`🧮 [DASHBOARD] calculateFinanceSummary running for ${targetUid}. Accounts: ${currentAccounts.length}, Parties: ${currentParties.length}, Products: ${currentProducts.length}`);
 
             const accBalMap = {};
             currentAccounts.forEach(a => { accBalMap[a.id] = Number(a.openingBalance || 0); });
@@ -7083,6 +7095,7 @@ export default function App() {
                 if (b > 0) recTotal += b;
                 else if (b < 0) payTotal += Math.abs(b);
             });
+            console.log("💰 [DASHBOARD] Calculated totals:", { totalCash, recTotal, payTotal });
             setCashSummaryGrandTotal(totalCash);
             setReceivablesGrandTotal(recTotal);
             setPayablesGrandTotal(payTotal);
