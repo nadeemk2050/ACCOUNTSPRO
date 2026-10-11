@@ -29,6 +29,8 @@ import DateInput from './DateInput';
 import ChartOfMastersModal from './ChartOfMastersModal';
 import QuickMasterModal from './QuickMasterModal';
 import { moveRowHighlight, activateHighlightedRow, clearRowHighlight, gatewayNavStep, gatewayActivate, isTypingTarget } from './keyboardNav';
+import StockValuationBadge from './StockValuationBadge';
+import { computeStockClosing, getStoredValuation, setStoredValuation } from './stockValuation';
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -6909,6 +6911,19 @@ export default function App() {
     // that reports use, ensuring admin and team-user always see consistent true balances.
     const [stockSummaryGrandTotal, setStockSummaryGrandTotal] = useState({ qty: 0, val: 0 });
 
+    // ✅ Valuation method used by the dashboard stock line. Shared with the Stock
+    // Summary report (localStorage-backed) so both always show the same method.
+    const [stockValuation, setStockValuation] = useState(getStoredValuation);
+    const stockValuationRef = useRef(stockValuation);
+    // Filled in by the finance effect below so a valuation change can recompute the
+    // stock totals WITHOUT re-subscribing the Firestore listeners (no extra reads).
+    const stockRecomputeRef = useRef(null);
+    useEffect(() => {
+        stockValuationRef.current = stockValuation;
+        setStoredValuation(stockValuation);
+        if (stockRecomputeRef.current) stockRecomputeRef.current();
+    }, [stockValuation]);
+
     // ✅ NEW: HISTORICAL CASH, RECEIVABLES, PAYABLES SUMMARY (Calculated for Dashboard Date)
     const [cashSummaryGrandTotal, setCashSummaryGrandTotal] = useState(0);
     const [receivablesGrandTotal, setReceivablesGrandTotal] = useState(0);
@@ -6940,39 +6955,12 @@ export default function App() {
             const partyBalMap = {};
             currentParties.forEach(p => { partyBalMap[p.id] = Number(p.openingBalance || 0); });
 
-            // Stock Summary Reset
-            const itemMap = {};
-            currentProducts.forEach(p => {
-                itemMap[p.id] = {
-                    qty: Number(p.openingStock || 0),
-                    val: Number(p.openingBalance || 0)
-                };
-            });
-            const movements = [];
+            // Stock is computed further below by the shared valuation engine.
 
-            // 1. Invoices — Stock & Finance
+            // 1. Invoices — Finance
             invDocs.forEach(doc => {
                 const d = doc.data();
                 if (!d.date || d.date > targetDate) return;
-
-                // --- Stock Processing from Invoice Items ---
-                if (d.items && Array.isArray(d.items)) {
-                    d.items.forEach(i => {
-                        const pid = i.productId;
-                        if (!pid || !itemMap[pid]) return;
-                        const qty = Number(i.quantity || i.qty || 0);
-                        const rate = Number(i.rate || 0);
-                        if (d.type === 'purchase' || d.type === 'purchase_apt') {
-                            itemMap[pid].qty += qty;
-                            itemMap[pid].val += qty * rate;
-                        } else if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt') {
-                            let wac = 0;
-                            if (itemMap[pid].qty > 0) wac = itemMap[pid].val / itemMap[pid].qty;
-                            itemMap[pid].qty -= qty;
-                            itemMap[pid].val -= qty * wac;
-                        }
-                    });
-                }
 
                 // --- Finance Logic ---
                 const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
@@ -6990,18 +6978,6 @@ export default function App() {
                     const amt = (d.type === 'purchase' || d.type === 'purchase_apt') ? supplierBase : baseVal;
                     if (['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type)) partyBalMap[d.partyId] += amt;
                     else if (['purchase', 'purchase_apt', 'credit_note', 'sales_return'].includes(d.type)) partyBalMap[d.partyId] -= amt;
-                }
-
-                // --- Stock Logic ---
-                const isInward  = ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(d.type);
-                const isOutward = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(d.type);
-                if (isInward || isOutward) {
-                    (d.items || []).forEach(it => {
-                        const qty  = Number(it.quantity || 0);
-                        const rateItem = Number(it.rate || 0);
-                        if (!it.productId || qty <= 0) return;
-                        movements.push({ date: d.date, productId: it.productId, qty, rate: rateItem, type: isInward ? 'in' : 'out' });
-                    });
                 }
             });
 
@@ -7065,36 +7041,6 @@ export default function App() {
                 }
             });
 
-            // 4. Stock Journals (for Stock Summary calculation)
-            mfgDocs.forEach(doc => {
-                const sj = doc.data();
-                if (!sj.date || sj.date > targetDate) return;
-                (sj.produced || []).forEach(it => {
-                    if (!it.productId || Number(it.quantity || 0) <= 0) return;
-                    movements.push({ date: sj.date, productId: it.productId, qty: Number(it.quantity), rate: Number(it.rate || 0), type: 'in' });
-                });
-                (sj.consumed || []).forEach(it => {
-                    if (!it.productId || Number(it.quantity || 0) <= 0) return;
-                    movements.push({ date: sj.date, productId: it.productId, qty: Number(it.quantity), rate: 0, type: 'out' });
-                });
-            });
-
-            // Process Stock Movements
-            movements.sort((a, b) => a.date.localeCompare(b.date));
-            movements.forEach(({ productId, qty, rate, type }) => {
-                const row = itemMap[productId];
-                if (!row) return; // Ignore if product doesn't exist
-                if (type === 'in') {
-                    row.qty += qty;
-                    row.val += qty * rate;
-                } else {
-                    let wac = 0;
-                    if (row.qty > 0) wac = row.val / row.qty;
-                    row.qty -= qty;
-                    row.val -= qty * wac;
-                }
-            });
-
             const effMap = {};
             const getEffectiveGroupSettings = (name, visited = new Set()) => {
                 if (effMap[name]) return effMap[name];
@@ -7118,14 +7064,29 @@ export default function App() {
                 return res;
             };
 
-            let totalQty = 0, totalVal = 0;
-            currentProducts.forEach(p => {
-                const row = itemMap[p.id];
-                if (!row) return;
-                const eff = getEffectiveGroupSettings(p.group || 'Primary');
-                if (eff.closingQty) totalQty += row.qty;
-                if (eff.closingVal) totalVal += row.val;
-            });
+            // 4. Stock closing position — computed with the SAME engine the Stock
+            //    Summary report uses, so the overview line always matches the
+            //    report for this date. (Previously invoice lines were applied to
+            //    itemMap directly AND again through `movements`, so every purchase
+            //    and sale was counted twice -> the overview showed ~2x the real qty.)
+            const computeStockTotals = () => {
+                const rows = computeStockClosing({
+                    products: currentProducts,
+                    invoices: filterActiveVouchers(invDocs.map(d => ({ id: d.id, ...d.data() }))),
+                    stockJournals: filterActiveVouchers(mfgDocs.map(d => ({ id: d.id, ...d.data() }))),
+                    asOfDate: targetDate,
+                    valuation: stockValuationRef.current || 'fifo'
+                });
+                let tQty = 0, tVal = 0;
+                rows.forEach(r => {
+                    const eff = getEffectiveGroupSettings(r.group);
+                    if (eff.closingQty) tQty += r.closingQty;
+                    if (eff.closingVal) tVal += r.closingVal;
+                });
+                setStockSummaryGrandTotal({ qty: tQty, val: tVal });
+            };
+            stockRecomputeRef.current = computeStockTotals;
+            computeStockTotals();
 
             const totalCash = Object.values(accBalMap).reduce((sum, b) => sum + b, 0);
             let recTotal = 0, payTotal = 0;
@@ -7136,7 +7097,6 @@ export default function App() {
             setCashSummaryGrandTotal(totalCash);
             setReceivablesGrandTotal(recTotal);
             setPayablesGrandTotal(payTotal);
-            setStockSummaryGrandTotal({ qty: totalQty, val: totalVal });
         };
 
         const unsubInv = onSnapshot(qInv, snap => { invDocs = snap.docs; calculateFinanceSummary(); }, err => console.error('Dashboard fin inv:', err));
@@ -11004,6 +10964,7 @@ export default function App() {
                                             <div className="flex flex-col">
                                                 <span className="text-xs font-bold text-[#2b2b2b] uppercase group-hover:text-[#005994]">
                                                     {highlightMenuShortcut("Stock Summary Grand Total", "S")}
+                                                    <StockValuationBadge value={stockValuation} onChange={setStockValuation} />
                                                 </span>
                                             </div>
                                         </td>
@@ -28358,8 +28319,8 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         }
     }, [globalDateCmd, isOpen]);
 
-    // ✅ NEW: Valuation Method State
-    const [valuationMethod, setValuationMethod] = useState('fifo'); // 'fifo' | 'last_purchase' | 'last_sold'
+    // ✅ NEW: Valuation Method State (defaults to the shared method used by the dashboard)
+    const [valuationMethod, setValuationMethod] = useState(getStoredValuation); // 'fifo' | 'last_purchase' | 'last_sold'
 
     // ✅ HELPER: Auto-Shrink Text for Tally Look
     const getTallyShrinkStyle = (text, isGroup = false) => {
@@ -29479,7 +29440,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 <select
                                     className="bg-transparent text-xs font-bold text-slate-700 outline-none"
                                     value={valuationMethod}
-                                    onChange={(e) => setValuationMethod(e.target.value)}
+                                    onChange={(e) => { setValuationMethod(e.target.value); setStoredValuation(e.target.value); }}
                                 >
                                     {!showGrossProfit && <option value="fifo">FIFO</option>}
                                     <option value="last_purchase">Last Purchase/Prod Rate</option>
