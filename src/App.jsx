@@ -5281,6 +5281,80 @@ const CompanyLoginOverlay = ({ companyId, companyName, onLogin, onBack, adminEma
     );
 };
 
+/* ── Reusable company logo badge ────────────────────────────────────────────
+   Defined OUTSIDE App and memoised. Pure presentation: no effects, no data
+   access, no app state. Reads the per-company localStorage cache only when the
+   company changes (useMemo), so it never re-reads on re-render. Keep this
+   component identical in both ACCPRO apps. */
+const COMPANY_LOGO_CACHE_PREFIX = 'company_logo_';
+
+const readCompanyLogoCache = (companyId) => {
+    if (!companyId) return '';
+    try { return localStorage.getItem(COMPANY_LOGO_CACHE_PREFIX + companyId) || ''; } catch { return ''; }
+};
+
+const companyInitials = (name) => {
+    const clean = String(name || '').trim();
+    if (!clean) return '';
+    const parts = clean.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
+    return clean.slice(0, 2).toUpperCase();
+};
+
+const CompanyLogoBadge = memo(function CompanyLogoBadge({ logoUrl, name, companyId, size = 28, onClick }) {
+    // Remember WHICH src failed instead of a boolean, so switching company
+    // automatically retries with the new image (no reset effect needed).
+    const [failedSrc, setFailedSrc] = useState('');
+
+    // Offline cache read: recomputed only when the company id changes.
+    const cachedLogo = useMemo(() => readCompanyLogoCache(companyId), [companyId]);
+
+    const src = (typeof logoUrl === 'string' && logoUrl) ? logoUrl : cachedLogo;
+    const initials = companyInitials(name);
+    const showImage = !!src && failedSrc !== src;
+
+    if (!showImage && !initials) return null;
+
+    const body = showImage ? (
+        <img
+            src={src}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            width={size}
+            height={size}
+            onError={() => setFailedSrc(src)}
+            className="shrink-0 rounded-full object-cover border border-white/30 bg-white"
+            style={{ width: size, height: size }}
+        />
+    ) : (
+        <span
+            aria-hidden="true"
+            className="shrink-0 flex items-center justify-center rounded-full font-black text-white uppercase"
+            style={{ width: size, height: size, backgroundColor: '#1e3264', fontSize: Math.max(9, Math.round(size * 0.42)) }}
+        >
+            {initials}
+        </span>
+    );
+
+    return (
+        <span className="relative inline-flex items-center shrink-0 group">
+            {typeof onClick === 'function' ? (
+                <button type="button" onClick={onClick} title={name} className="shrink-0 rounded-full leading-none">
+                    {body}
+                </button>
+            ) : (
+                <span title={name} className="shrink-0 inline-flex">{body}</span>
+            )}
+            {name && (
+                <span className="pointer-events-none absolute right-0 top-full mt-1 z-[9999] hidden group-hover:block whitespace-nowrap rounded bg-[#1e3264] px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-white shadow-lg">
+                    {name}
+                </span>
+            )}
+        </span>
+    );
+});
+
 export default function App() {
 
     const SYSTEM_VERSION = "2.7.3";
@@ -24717,9 +24791,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                     <div className="flex items-center gap-2 shrink-0">
                         {displayCompanyName && (
-                            <span className="text-[8px] font-black text-[#1e3264] opacity-80 uppercase tracking-wider select-none pr-1">
-                                {displayCompanyName}
-                            </span>
+                            <CompanyLogoBadge
+                                logoUrl={companyProfile?.logoDataUrl}
+                                name={displayCompanyName}
+                                companyId={dataOwnerId}
+                                size={24}
+                            />
                         )}
                     </div>
                 </div>
@@ -24999,14 +25076,26 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     ) : isSalesPurchaseRegister ? (
                                         <>
                                             <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
-                                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={6 + (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0) - ['check','date','ref','cust','part','bags'].filter(c => hiddenCols.has(c)).length}>TOP TOTALS:</th>
+                                                {/* Spans ONLY the columns BEFORE bags (check, date, ref, Tax Inv No.,
+                                                    cust, part) so each total sits under its own column. Never emits colSpan=0. */}
+                                                {(() => {
+                                                    const topTotalSpan =
+                                                        (hiddenCols.has('check') ? 0 : 1) +
+                                                        (hiddenCols.has('date') ? 0 : 1) +
+                                                        (hiddenCols.has('ref') ? 0 : 1) +
+                                                        (['purchase', 'sales', 'party', 'tax'].includes(filter.type) ? 1 : 0) +
+                                                        (hiddenCols.has('cust') ? 0 : 1) +
+                                                        (hiddenCols.has('part') ? 0 : 1);
+                                                    return topTotalSpan > 0
+                                                        ? <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={topTotalSpan}>TOP TOTALS:</th>
+                                                        : null;
+                                                })()}
                                                 {!hiddenCols.has('bags') && <th className="p-1.5 border-r border-slate-300 text-center font-black text-orange-600">{summary.totalBags || 0}</th>}
-                                                {!hiddenCols.has('qty') && <th className="p-1.5 border-r border-slate-300 text-right font-black">RECS: {summary.count || 0}</th>}
-                                                {!hiddenCols.has('rate') && <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3((summary.totalQtyIn || 0) + (summary.totalQtyOut || 0))}</th>}
-                                                {!hiddenCols.has('amount') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-500">-</th>}
-                                                {!hiddenCols.has('due_date') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">—</th>}
-                                                {!hiddenCols.has('payment') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">—</th>}
-                                                <th className="p-1.5 text-right font-black text-green-700">{formatCurrency((summary.debit || 0) + (summary.credit || 0))}</th>
+                                                {!hiddenCols.has('qty') && <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3((summary.totalQtyIn || 0) + (summary.totalQtyOut || 0))}</th>}
+                                                {!hiddenCols.has('rate') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400" />}
+                                                {!hiddenCols.has('amount') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{formatCurrency((summary.debit || 0) + (summary.credit || 0))}</th>}
+                                                {!hiddenCols.has('due_date') && <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400" />}
+                                                {!hiddenCols.has('payment') && <th className="p-1.5 text-right font-black text-slate-400" />}
                                             </tr>
                                             <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
                                                 {!hiddenCols.has('check') && <th className="p-1.5 border-r border-slate-300 text-left w-6"><input type="checkbox" onChange={() => toggleSelectAll(processedData)} checked={processedData.length > 0 && selectedIds.size === processedData.length} /></th>}
