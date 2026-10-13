@@ -5355,6 +5355,83 @@ const CompanyLogoBadge = memo(function CompanyLogoBadge({ logoUrl, name, company
     );
 });
 
+/* ── SUMMARIZE table (customer/supplier-wise and item-wise) ────────────────
+   Defined OUTSIDE LedgerModal and memoised. Pure presentation — it receives
+   rows/totals that are already computed and renders them with the register's
+   own look. Keep this component identical in both ACCPRO apps. */
+const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title, subtitle, partyLabel = 'CUSTOMER', footnote, onBack, onRowClick }) {
+    const fmtQty = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+    const fmtVal = (n) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+    const t = totals || { vch: 0, qty: 0, val: 0, rate: 0 };
+
+    return (
+        <div className="flex flex-col h-full min-h-0">
+            <div className="bg-[#dceaff] text-[#1e3264] px-3 py-1 flex items-center justify-between border-b border-blue-400 shrink-0">
+                <div className="flex flex-col leading-tight">
+                    <span className="text-[10px] font-black uppercase tracking-widest">{title}</span>
+                    <span className="text-[8px] font-bold opacity-70 uppercase">{subtitle}</span>
+                </div>
+                <button onClick={onBack} className="px-2 py-1 rounded-[2px] border border-blue-300 bg-white text-[9.5px] font-black text-[#2b5797] hover:bg-blue-50 shrink-0" title="Back to register (ESC)">
+                    BACK TO REGISTER
+                </button>
+            </div>
+
+            {(!rows || rows.length === 0) ? (
+                <div className="flex-1 flex items-center justify-center text-slate-500 text-[11px] font-black uppercase tracking-widest">
+                    No data for this period
+                </div>
+            ) : (
+                <div className="flex-1 min-h-0 overflow-auto">
+                    <table className="w-full border-collapse font-sans text-[11px] md:text-[12px]">
+                        <thead className="sticky top-0 z-10">
+                            <tr className="bg-[#e9f1fc] text-[#1e3264] border-y border-slate-300">
+                                <th className="p-1.5 border-r border-slate-300 text-right font-black" colSpan={2}>TOP TOTALS:</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right font-black text-orange-600">{t.vch}</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right font-black">{fmtQty(t.qty)}</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right font-black text-slate-400">—</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right font-black text-green-700">{fmtVal(t.val)}</th>
+                                <th className="p-1.5 text-right font-black text-slate-400">{t.qty > 0 ? '100.00%' : '—'}</th>
+                            </tr>
+                            <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
+                                <th className="p-1.5 border-r border-slate-300 text-right w-10 font-black">#</th>
+                                <th className="p-1.5 border-r border-slate-300 text-left font-black">{partyLabel}</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right w-24 font-black">VOUCHERS</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right w-28 font-black">TOTAL QTY</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right w-24 font-black">AVG RATE</th>
+                                <th className="p-1.5 border-r border-slate-300 text-right w-32 font-black">VALUE</th>
+                                <th className="p-1.5 text-right w-20 font-black">% QTY</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows.map((r, i) => (
+                                <tr
+                                    key={r.key || i}
+                                    onClick={onRowClick ? () => onRowClick(r) : undefined}
+                                    className={`border-b border-slate-100 hover:bg-[#f6fcff] ${onRowClick ? 'cursor-pointer' : ''}`}
+                                >
+                                    <td className="p-1 pr-1.5 text-right text-slate-400 font-bold">{i + 1}</td>
+                                    <td className="p-1 px-1.5 text-left font-bold text-[#1e3264]">{r.name}</td>
+                                    <td className="p-1 px-1.5 text-right font-black text-orange-600">{r.vch}</td>
+                                    <td className="p-1 px-1.5 text-right font-black">{fmtQty(r.qty)}</td>
+                                    <td className="p-1 px-1.5 text-right font-bold text-slate-600">{fmtQty(r.rate)}</td>
+                                    <td className="p-1 px-1.5 text-right font-black text-green-700">{fmtVal(r.val)}</td>
+                                    <td className="p-1 px-1.5 text-right font-bold text-slate-500">{r.pct > 0 ? `${r.pct.toFixed(2)}%` : '—'}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {truncated && (
+                        <div className="p-2 text-[9.5px] font-bold text-orange-600 uppercase">Showing top 1000 by quantity.</div>
+                    )}
+                    {footnote && (
+                        <div className="p-2 text-[9px] font-bold text-slate-500">{footnote}</div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+});
+
 export default function App() {
 
     const SYSTEM_VERSION = "2.7.3";
@@ -22061,6 +22138,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [showRegisterPicker, setShowRegisterPicker] = useState(false);
     const [summaryMode, setSummaryMode] = useState('detailed'); // 'detailed', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'
     const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
+
+    // SUMMARIZE view ('' | 'party' | 'item'). Deliberately SEPARATE from summaryMode:
+    // summaryMode drives the breakup headers/rows and MUST stay 'detailed' while a
+    // summary is shown, otherwise the breakup branch would replace the rows it reads.
+    const [summarizeBy, setSummarizeBy] = useState('');
+    const [showSummarizeOptions, setShowSummarizeOptions] = useState(false);
     const [hiddenStack, setHiddenStack] = useState([]); // Stack of arrays of IDs
     const hiddenSet = useMemo(() => new Set(hiddenStack.flat()), [hiddenStack]);
     const [hiddenCols, setHiddenCols] = useState(new Set());
@@ -22295,6 +22378,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             setVoucherTypeFilter(initialState?.voucherType || 'ALL');
             setShowRegisterPicker(false);
             if (initialState?.openGraphView) { setShowGraphView(true); } else { setShowGraphView(false); }
+            setSummarizeBy('');
 
             // ✅ Auto-hide tools if we have a direct report request (Daybook or Specific ID)
             if (initialState && (initialState.id || initialState.type === 'daybook')) {
@@ -22310,6 +22394,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             setOpeningQty(0);
             setOpeningRate(0);
             setShowRegisterPicker(false);
+            setSummarizeBy('');
         }
     }, [isOpen, initialState]);
 
@@ -22747,6 +22832,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     drName, crName, vchType: typeLabel,
                     particulars: `${drName || '-'}${crName && crName !== '-' ? ` / ${crName}` : ''}`,
                     customerName: d.partyName || findName(d.partyId) || '-',
+                    partyId: d.partyId || '',
                     subItems: (d.items || []).map(i => ({
                         productId: i.productId,
                         quantity: Number(i.quantity || i.qty || 0),
@@ -23691,6 +23777,92 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
     }, [transactions, searchTerm, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode]);
 
+    // ── SUMMARIZE (customer/supplier-wise and item-wise) ─────────────────────
+    // Costs NOTHING until the user opens a summary: returns null immediately.
+    // Source = the register's own processed list minus the opening/summary rows,
+    // so the period, currency (DHS), ALL TYPES filter and search all apply.
+    // NOTE: `isSalesPurchaseRegister` is declared AFTER this component's early
+    // return, so the equivalent check is inlined here (avoids a TDZ crash).
+    const summarizeData = useMemo(() => {
+        if (!isOpen || !summarizeBy || !['sales', 'purchase'].includes(filter.type)) return null;
+
+        const src = (detailedRows || []).filter(t => !t.isOpening && !t.isSummary);
+        const map = new Map();
+        // Inlined instead of calling getProductName(): keeps the memo's deps to
+        // stable values only, so it does not recompute on every render.
+        const nameOfItem = (id) => products.find(p => p.id === id)?.name || id || '(Unknown item)';
+
+        if (summarizeBy === 'party') {
+            for (const r of src) {
+                const key = r.partyId || String(r.customerName || '').trim().toLowerCase() || '(blank)';
+                const qty = Math.abs(safeNum(r.qtyIn) + safeNum(r.qtyOut));
+                const val = safeNum(r.displayIn) + safeNum(r.displayOut);
+                let g = map.get(key);
+                if (!g) { g = { key, name: r.customerName || '(Blank)', vch: 0, qty: 0, val: 0 }; map.set(key, g); }
+                g.vch += 1; g.qty += qty; g.val += val;
+            }
+        } else {
+            for (const r of src) {
+                const items = Array.isArray(r.subItems) ? r.subItems : [];
+                const val = safeNum(r.displayIn) + safeNum(r.displayOut);
+
+                if (items.length === 0) {
+                    // Keep the grand total reconciling with the register.
+                    let g = map.get('__none__');
+                    if (!g) { g = { key: '__none__', name: '(No items)', vch: 0, qty: 0, val: 0 }; map.set('__none__', g); }
+                    g.vch += 1; g.val += val;
+                    continue;
+                }
+
+                // Allocate the voucher's register value across its items by qty*rate
+                // (falling back to qty). The LAST item takes the remainder so the
+                // allocated shares sum EXACTLY to the voucher value — that is what
+                // keeps the item-wise grand total identical to the register.
+                let wSum = 0;
+                const ws = items.map(it => {
+                    const q = Math.abs(safeNum(it.quantity));
+                    const rt = safeNum(it.rate);
+                    const w = (q * rt) || q;
+                    wSum += w;
+                    return { it, q, w };
+                });
+
+                let allocated = 0;
+                ws.forEach((e, idx) => {
+                    const share = idx === ws.length - 1
+                        ? (val - allocated)
+                        : (wSum > 0 ? val * (e.w / wSum) : val / ws.length);
+                    allocated += share;
+
+                    const key = e.it.productId || '__unknown__';
+                    let g = map.get(key);
+                    if (!g) { g = { key, name: nameOfItem(e.it.productId), vch: 0, qty: 0, val: 0 }; map.set(key, g); }
+                    g.vch += 1; g.qty += e.q; g.val += share;
+                });
+            }
+        }
+
+        const out = [...map.values()];
+        let gQty = 0, gVal = 0, gVch = 0;
+        out.forEach(g => { g.rate = g.qty > 0 ? (g.val / g.qty) : 0; gQty += g.qty; gVal += g.val; gVch += g.vch; });
+        out.forEach(g => { g.pct = gQty > 0 ? (g.qty / gQty) * 100 : 0; });
+        out.sort((a, b) => (b.qty - a.qty) || (b.val - a.val) || String(a.name).localeCompare(String(b.name)));
+
+        const capped = out.slice(0, 1000);
+        return {
+            rows: capped,
+            truncated: out.length > capped.length,
+            totals: { vch: gVch, qty: gQty, val: gVal, rate: gQty > 0 ? (gVal / gQty) : 0 }
+        };
+    }, [isOpen, summarizeBy, detailedRows, filter.type, products]);
+
+    // Stable identity so the memoised summary table can actually skip re-renders.
+    const handleSummaryRowClick = useCallback((r) => {
+        setSearchTerm(String(r?.name || ''));
+        setSummarizeBy('');
+        setCurrentPage(1);
+    }, []);
+
     // Keyboard Shortcuts
     useEffect(() => {
         const handleKeyDown = (e) => {
@@ -24539,6 +24711,14 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 }
             }
 
+            // ESC: a SUMMARIZE view returns to the register first, then the next ESC closes
+            if (e.key === 'Escape' && summarizeBy) {
+                e.preventDefault();
+                e.stopPropagation();
+                setSummarizeBy('');
+                return;
+            }
+
             // ESC: if drilled into a breakup period, go back to breakup view instead of closing
             if (e.key === 'Escape' && savedBreakupState) {
                 e.preventDefault();
@@ -24548,7 +24728,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         };
         window.addEventListener('keydown', handleKeys);
         return () => window.removeEventListener('keydown', handleKeys);
-    }, [isOpen, moveDateRange, savedBreakupState, totalPages]);
+    }, [isOpen, moveDateRange, savedBreakupState, totalPages, summarizeBy]);
 
     if (!isOpen) return null;
     const isSalesPurchaseRegister = ['sales', 'purchase'].includes(filter.type);
@@ -24692,6 +24872,55 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
  
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
  
+                        {/* --- SUMMARIZE (customer/supplier-wise or item-wise) --- */}
+                        {isSalesPurchaseRegister && (
+                            <div className="relative shrink-0">
+                                <button
+                                    onClick={() => setShowSummarizeOptions(!showSummarizeOptions)}
+                                    className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black flex items-center gap-1 ${summarizeBy ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
+                                    title="Summarize by customer / supplier / item"
+                                >
+                                    <LayoutGrid size={11} strokeWidth={3} />
+                                    {summarizeBy === 'party'
+                                        ? (filter.type === 'purchase' ? 'SUPPLIER WISE' : 'CUSTOMER WISE')
+                                        : summarizeBy === 'item' ? 'ITEM WISE' : 'SUMMARIZE'}
+                                    <ChevronDown size={10} />
+                                </button>
+                                {showSummarizeOptions && (
+                                    <div className="fixed inset-0 z-[130] bg-black/25 flex items-center justify-center p-3" onClick={() => setShowSummarizeOptions(false)}>
+                                        <div className="w-full max-w-[320px] bg-white border-2 border-[#2b5797] shadow-2xl rounded-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                                            <div className="px-3 py-2 bg-[#eef5ff] border-b border-blue-200 text-[9px] font-black uppercase tracking-widest text-[#2b5797]">
+                                                Summarize Report
+                                            </div>
+                                            <div className="p-1.5 max-h-[70vh] overflow-y-auto">
+                                                {[
+                                                    { id: 'party', label: filter.type === 'purchase' ? 'Supplier-wise Summary' : 'Customer-wise Summary', hint: 'Grouped by name' },
+                                                    { id: 'item', label: 'Item-wise Summary', hint: 'Grouped by product' }
+                                                ].map(opt => (
+                                                    <button
+                                                        key={opt.id}
+                                                        onClick={() => { setSummarizeBy(opt.id); setShowSummarizeOptions(false); }}
+                                                        className={`grid grid-cols-1 gap-0.5 w-full text-left px-3 py-2 mb-1 text-[10.5px] font-black transition-colors rounded-[2px] border ${summarizeBy === opt.id ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-100 hover:bg-blue-50 text-[#1e3264]'}`}
+                                                    >
+                                                        <span className="uppercase tracking-wide">{opt.label}</span>
+                                                        <span className={`text-[9px] font-bold ${summarizeBy === opt.id ? 'text-blue-100' : 'text-slate-500'}`}>{opt.hint}</span>
+                                                    </button>
+                                                ))}
+                                                {summarizeBy && (
+                                                    <button
+                                                        onClick={() => { setSummarizeBy(''); setShowSummarizeOptions(false); }}
+                                                        className="w-full text-left px-3 py-2 text-[10.5px] font-black rounded-[2px] border bg-white border-blue-100 hover:bg-blue-50 text-[#1e3264] uppercase tracking-wide"
+                                                    >
+                                                        Back to Register
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                         {/* --- DATE NAVIGATOR (NOW IN SCROLL BAR) --- */}
                         <div className="flex items-center gap-1 shrink-0 group">
                             <button
@@ -24732,8 +24961,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 {showGraphView ? 'TABLE VIEW' : 'GRAPH VIEW'}
                             </button>
                         )}
-                        <button onClick={downloadExcel} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors shrink-0">XLS</button>
-                        <button onClick={downloadPDF} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors shrink-0">PDF</button>
+                        <button onClick={downloadExcel} disabled={!!summarizeBy} title={summarizeBy ? 'Switch back to the register to export' : 'Export to Excel'} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-green-700 hover:bg-green-50 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">XLS</button>
+                        <button onClick={downloadPDF} disabled={!!summarizeBy} title={summarizeBy ? 'Switch back to the register to export' : 'Export to PDF'} className="px-2 py-1 bg-white border border-blue-300 rounded-[2px] text-[9.5px] font-black text-red-700 hover:bg-red-50 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">PDF</button>
 
                         {filter.type === 'tax' && (
                             <button
@@ -25025,6 +25254,20 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         </div>
                                     )}
                                 </div>
+                            ) : summarizeBy ? (
+                                <SummaryTable
+                                    rows={summarizeData?.rows || []}
+                                    totals={summarizeData?.totals}
+                                    truncated={!!summarizeData?.truncated}
+                                    title={summarizeBy === 'party'
+                                        ? `${filter.type === 'purchase' ? 'SUPPLIER-WISE' : 'CUSTOMER-WISE'} SUMMARY - ${filter.type === 'purchase' ? 'PURCHASE' : 'SALES'}`
+                                        : `ITEM-WISE SUMMARY - ${filter.type === 'purchase' ? 'PURCHASE' : 'SALES'}`}
+                                    subtitle={getReportDuration()}
+                                    partyLabel={summarizeBy === 'party' ? (filter.type === 'purchase' ? 'SUPPLIER' : 'CUSTOMER') : 'ITEM'}
+                                    footnote={summarizeBy === 'item' ? "Item values are allocated from each voucher's register value so totals match the register." : ''}
+                                    onBack={() => setSummarizeBy('')}
+                                    onRowClick={summarizeBy === 'party' ? handleSummaryRowClick : null}
+                                />
                             ) : (
                             <table className="w-full border-collapse font-sans text-[11px] md:text-[12px]">
                                 <thead className="sticky top-0 z-10">
@@ -25406,7 +25649,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         </div>
 
                         {/* Pagination Area */}
-                        {totalPages > 1 && (
+                        {!summarizeBy && totalPages > 1 && (
                             <div className="bg-[#f0f5fc] border-t border-slate-300 p-1 px-4 flex justify-between items-center z-20">
                                 <button title="Previous Page (Alt+←)" disabled={currentPage === 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="px-3 py-1 bg-white border border-blue-200 rounded-sm text-[10px] font-black hover:bg-blue-50 disabled:opacity-30">Previous</button>
                                 <span className="text-[10px] font-black uppercase tracking-tighter text-blue-900 opacity-60">Page {currentPage} of {totalPages}</span>
