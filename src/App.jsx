@@ -29729,25 +29729,59 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             zIndex={zIndex}
             title={`${currentGroupFilter || "Stock Summary"} [${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}]`}
             centerTitle={true}
-            maxWidth="max-w-[98vw]"
             defaultMaximized={true}
             noContentScroll={true}
+            removePadding={true}
+            hideHeader={true}
             headerClassName="!h-[22px] !p-0 px-2 flex items-center"
             titleClassName="!text-[13px] !leading-none"
         >
-            <div className="space-y-0 h-[88vh] flex flex-col bg-[#fcf6ea]"> {/* ✅ Tally Tan Background */}
+            {/* Tally Tan Background. h-full (not 88vh) so the report fills the screen
+                with no band under the GRAND TOTAL. Escape closes the report's own
+                popups first: this React-level handler runs before Modal's window
+                listener, and stopPropagation keeps the report open. */}
+            <div
+                className="space-y-0 h-full min-h-0 flex flex-col bg-[#fcf6ea]"
+                onKeyDown={(e) => {
+                    if (e.key !== 'Escape') return;
+                    if (showSearch) { e.preventDefault(); e.stopPropagation(); setShowSearch(false); return; }
+                    if (showDateMenu) { e.preventDefault(); e.stopPropagation(); setShowDateMenu(false); return; }
+                    if (showDate) { e.preventDefault(); e.stopPropagation(); setShowDate(false); return; }
+                }}
+            >
 
-                {/* 1. TOOLBAR */}
-                <div className="bg-white border-b shadow-sm p-1 flex items-center justify-between gap-1 shrink-0 relative z-[200]">
+                {/* 1. TOOLBAR — the only bar now: old header strip merged in.
+                    overflow-x-auto + hide-scrollbar = slides left/right when the
+                    controls do not fit, instead of wrapping to a second row. */}
+                <div className="bg-white border-b shadow-sm p-1 flex items-center gap-1 shrink-0 relative z-[200] overflow-x-auto hide-scrollbar">
+
+                    {/* Back / Close / Title (merged from the removed header strip) */}
+                    <div className="flex items-center gap-1 shrink-0">
+                        {onBack && (
+                            <button onClick={onBack} className="p-1.5 rounded hover:bg-slate-200 text-slate-600" title="Back (Alt+Left)">
+                                <ArrowLeft size={16} />
+                            </button>
+                        )}
+                        <button onClick={onClose} className="p-1.5 rounded hover:bg-red-100 text-slate-500 hover:text-red-600" title="Close (Esc)">
+                            <X size={16} />
+                        </button>
+                        <span
+                            className="hidden sm:inline-block text-[10px] font-black uppercase tracking-wide text-slate-500 max-w-[200px] truncate align-middle"
+                            title={`${currentGroupFilter || 'Stock Summary'} [${dateRange.from === dateRange.to ? dateRange.from : `${dateRange.from} to ${dateRange.to}`}]`}
+                        >
+                            {currentGroupFilter || 'Stock Summary'}
+                        </span>
+                        <span className="w-px h-5 bg-slate-200 mx-1 shrink-0"></span>
+                    </div>
 
                     {showSearch ? (
-                        <div className="flex-1 flex items-center gap-1 animate-in fade-in slide-in-from-left-5">
+                        <div className="flex-1 flex items-center gap-1 min-w-[240px] animate-in fade-in slide-in-from-left-5">
                             <input type="text" placeholder="Search item..." className="w-full p-1.5 border rounded text-sm bg-gray-50 outline-none" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} autoFocus />
                             <button onClick={() => { setShowSearch(false); setSearchTerm(''); }} className="p-1 text-slate-400"><X size={18} /></button>
                         </div>
                     ) : (
-                        <div className="flex flex-wrap gap-2 md:gap-4 items-center">
-                            <button onClick={() => setShowSearch(true)} className="p-2 text-slate-600 hover:bg-slate-100 rounded-full"><Search size={20} /></button>
+                        <div className="flex flex-nowrap gap-1 md:gap-2 items-center shrink-0">
+                            <button onClick={() => setShowSearch(true)} className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-full"><Search size={18} /></button>
                             {hiddenCols.size > 0 && (
                                 <button onClick={restoreColumns} className="p-1 px-3 bg-blue-50 hover:bg-blue-600 hover:text-white rounded-sm text-blue-600 transition-all font-black flex items-center gap-1 border border-blue-200" title="Restore Columns">
                                     <Plus size={15} /> <span className="text-[10px] hidden sm:inline uppercase font-black">Restore Columns</span>
@@ -29912,24 +29946,29 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 title={showGrossProfit ? "Hide Gross Profit (Return to Closing Balances)" : "Show Gross Profit (Opens All Together View)"}
                             >
                                 <TrendingUp size={14} className={showGrossProfit ? "text-emerald-200" : "text-emerald-600"} />
-                                <span>{showGrossProfit ? "HIDE GROSS PROFIT" : "SHOW GROSS PROFIT"}</span>
+                                <span>GROSS PROFIT</span>
                             </button>
                         </div>
                     )}
 
                     {/* ✅ ZOOM CONTROLS (New) */}
-                    <div className="hidden md:flex items-center bg-slate-100 rounded-full px-2 py-1 gap-1 border border-slate-200">
+                    <div className="hidden md:flex items-center bg-slate-100 rounded-full px-2 py-1 gap-1 border border-slate-200 shrink-0 ml-auto">
                         <button onClick={() => setZoomScale(Math.max(0.6, zoomScale - 0.2))} className="p-1 hover:bg-white rounded-full transition-colors"><ZoomOut size={16} className="text-slate-600" /></button>
                         <span className="text-[10px] font-black text-slate-500 w-8 text-center">{Math.round(zoomScale * 100)}%</span>
                         <button onClick={() => setZoomScale(Math.min(2.5, zoomScale + 0.2))} className="p-1 hover:bg-white rounded-full transition-colors"><ZoomIn size={16} className="text-slate-600" /></button>
                     </div>
 
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
                         <button onClick={handleDownloadPDF} className="p-2 text-red-600 hover:bg-red-50 rounded-full" title="Export PDF"><FileText size={20} /></button>
                         <button onClick={handleDownloadExcel} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-full" title="Export Excel (XLSX)"><FileSpreadsheet size={20} /></button>
-                        <button onClick={generateReport} className="bg-blue-600 text-white p-2 rounded-full shadow hover:bg-blue-700 active:scale-95 transition-transform">
-                            {loading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Search size={18} />}
-                        </button>
+                        {/* The report already regenerates on open and on any change of
+                            valuation / period / location / products / stock groups, so the
+                            old manual refresh button is gone — only the busy indicator remains. */}
+                        {loading && (
+                            <span className="p-2 text-blue-600" title="Recalculating..." aria-label="Recalculating">
+                                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                            </span>
+                        )}
                     </div>
                 </div>
 
@@ -29950,7 +29989,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                             transform: `scale(${zoomScale})`,
                             transformOrigin: 'top left',
                         }}
-                        className="h-full flex flex-col p-1 sm:p-4"
+                        className="h-full flex flex-col p-0"
                     >
                         {/* 📊 Unified Table View (Both Desktop & Mobile) */}
                         <div className="flex-1" style={{ fontSize: `${fontSize}px` }}>
