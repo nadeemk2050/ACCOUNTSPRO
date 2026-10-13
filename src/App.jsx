@@ -5355,6 +5355,393 @@ const CompanyLogoBadge = memo(function CompanyLogoBadge({ logoUrl, name, company
     );
 });
 
+/* ── POWER SEARCH engine (Day Book / Sales / Purchase registers) ───────────
+   Everything here is module-level and pure so nothing is re-created per render.
+   `sxBuild` runs inside LedgerModal's buildRow, and ONLY when powerSearchOn —
+   every other ledger type keeps its original searchStr behaviour untouched. */
+const POWER_SEARCH_TYPES = ['daybook', 'sales', 'purchase'];
+
+const SX_ALL_GROUPS = ['ref', 'date', 'party', 'narr', 'item', 'amt', 'qtyTxt', 'rateTxt', 'lot', 'cont', 'seal', 'veh', 'vessel', 'port', 'transport', 'terms', 'bag', 'user'];
+
+// chip scope -> groups (Stage 2 uses these; un-prefixed tokens obey the chip)
+const SX_SCOPE_GROUPS = {
+    narr: ['narr'],
+    item: ['item', 'qtyTxt', 'rateTxt'],
+    party: ['party'],
+    ref: ['ref', 'date'],
+    ship: ['lot', 'cont', 'seal', 'veh', 'vessel', 'port', 'transport', 'terms', 'bag'],
+    amt: ['amt', 'qtyTxt', 'rateTxt']
+};
+
+const SX_PREFIX_MAP = {
+    ref: 'ref', vch: 'ref', type: 'ref',
+    date: 'date',
+    party: 'party', cust: 'party', customer: 'party', supplier: 'party',
+    narr: 'narr', nar: 'narr', narration: 'narr', remark: 'narr',
+    item: 'item', items: 'item',
+    qty: 'qty', rate: 'rate', amt: 'amt', amount: 'amt', value: 'amt',
+    lot: 'lot',
+    cont: 'cont', container: 'cont',
+    seal: 'seal', veh: 'veh', vehicle: 'veh',
+    port: 'port', dest: 'port', destination: 'port',
+    vessel: 'vessel', bag: 'bag', bags: 'bag', user: 'user'
+};
+
+const SX_NUMERIC_GROUP = { qty: true, rate: true, amt: true };
+
+const sxClean = (v) => {
+    if (v === null || v === undefined) return '';
+    const t = typeof v === 'string' ? v : String(v);
+    if (t === 'undefined' || t === 'null' || t === '[object Object]') return '';
+    return t.trim().toLowerCase();
+};
+
+const sxJoin = (a, b, c, d, e) => {
+    const out = [];
+    const push = (v) => {
+        if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) push(v[i]); return; }
+        const s = sxClean(v);
+        if (s) out.push(s);
+    };
+    push(a); push(b); push(c); push(d); push(e);
+    return out.join(' ');
+};
+
+const sxPlainNum = (n) => {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return '';
+    return String(x);
+};
+
+// cheap thousands separators (avoids toLocaleString on every value)
+const sxAddCommas = (s) => {
+    if (!s) return '';
+    const neg = s.charAt(0) === '-';
+    const body = neg ? s.slice(1) : s;
+    const dot = body.indexOf('.');
+    const ip = dot === -1 ? body : body.slice(0, dot);
+    const fp = dot === -1 ? '' : body.slice(dot);
+    return (neg ? '-' : '') + ip.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + fp;
+};
+
+const sxNumForms = (n) => {
+    const p = sxPlainNum(n);
+    if (!p) return '';
+    const c = sxAddCommas(p);
+    return c && c !== p ? p + ' ' + c : p;
+};
+
+// Build the per-voucher index. Short lowercase group strings + numeric arrays.
+const sxBuild = ({ d, drName, crName, typeLabel, productNamesStr, detailedItems, findName, userName, nameOf }) => {
+    const items = Array.isArray(d.items) ? d.items : [];
+    const splits = Array.isArray(d.splits) ? d.splits : (Array.isArray(d.rows) ? d.rows : []);
+    const expenses = Array.isArray(d.expenses) ? d.expenses : [];
+    const bagList = [].concat(Array.isArray(d.jumboBags) ? d.jumboBags : [], Array.isArray(d.soldBags) ? d.soldBags : []);
+    const contList = Array.isArray(d.containers) ? d.containers : [];
+
+    const nQty = [], nRate = [], nAmt = [];
+    for (let i = 0; i < items.length; i++) {
+        const it = items[i] || {};
+        const q = Number(it.quantity || it.qty || 0);
+        const rt = Number(it.rate || 0);
+        if (Number.isFinite(q) && q) nQty.push(q);
+        if (Number.isFinite(rt) && rt) nRate.push(rt);
+        if (Number.isFinite(q) && Number.isFinite(rt) && q * rt) nAmt.push(q * rt);
+    }
+    [d.totalAmount, d.amount, d.grandTotal, d.taxableValue].forEach(v => {
+        const n = Number(v);
+        if (Number.isFinite(n) && n) nAmt.push(n);
+    });
+    const taxN = Number(d.taxAmount || 0);
+    if (Number.isFinite(taxN) && taxN) nAmt.push(taxN);
+    for (let i = 0; i < expenses.length; i++) {
+        const n = Number((expenses[i] || {}).amount);
+        if (Number.isFinite(n) && n) nAmt.push(n);
+    }
+
+    const qtyTxt = nQty.map(sxNumForms).join(' ');
+    const rateTxt = nRate.map(sxNumForms).join(' ');
+    const amtTxt = nAmt.map(sxNumForms).join(' ');
+
+    const dateForms = [];
+    const dv = d.date ? String(d.date) : '';
+    if (dv) {
+        dateForms.push(dv);
+        const p = dv.split('-');
+        if (p.length === 3) dateForms.push(`${p[2]}/${p[1]}/${p[0]}`, `${p[2]}-${p[1]}-${p[0]}`);
+    }
+
+    const splitNames = [];
+    const splitNarr = [];
+    for (let i = 0; i < splits.length; i++) {
+        const s = splits[i] || {};
+        splitNames.push(findName(s.targetId || s.id || s.partyId || s.accountId || s.expenseId || s.assetId || s.capitalId || s.incomeId));
+        splitNarr.push(s.narration || s.description || '');
+    }
+    const expenseNames = expenses.map(e => findName((e || {}).expenseId));
+
+    const itemNames = items.map(it => nameOf((it || {}).productId));
+    const itemDescs = items.map(it => (it || {}).description || (it || {}).itemDescription || '');
+    const itemUnits = items.map(it => (it || {}).unit || (it || {}).uom || '');
+    const itemWeights = items.map(it => (it || {}).weight || '');
+    const itemPcs = items.map(it => (it || {}).pcs || '');
+    const itemLots = items.map(it => (it || {}).lotId || '');
+
+    const bagNos = bagList.map(b => (b && typeof b === 'object') ? (b.bagNo || b.bagNumber || b.number || b.no || '') : b);
+    const contNos = contList.map(c => (c && typeof c === 'object') ? (c.containerNo || c.number || c.no || c.name || '') : c);
+
+    const remark = (detailedItems || []).filter(x => x.label === 'Remark/Cause').map(x => x.value);
+
+    return {
+        ref: sxJoin(d.refNo, d.taxInvNo, d.otherRef, typeLabel),
+        date: sxJoin(dateForms),
+        party: sxJoin(drName, crName, d.partyName, splitNames, expenseNames, d.taxName),
+        narr: sxJoin(d.narration, d.description, d.overrideItemDescription, splitNarr, remark),
+        item: sxJoin(itemNames, itemDescs, itemUnits, itemWeights, itemPcs, productNamesStr),
+        amt: amtTxt,
+        qtyTxt,
+        rateTxt,
+        lot: sxJoin(d.lotId, itemLots),
+        cont: sxJoin(d.containerNo, contNos),
+        seal: sxJoin(d.sealNo),
+        veh: sxJoin(d.vehicleNo),
+        vessel: sxJoin(d.vesselName),
+        port: sxJoin(d.portOfLoading, d.portOfDischarge, d.finalDestination, d.countryOfOrigin),
+        transport: sxJoin(d.modeOfTransport, d.packingType),
+        terms: sxJoin(d.paymentTerms),
+        bag: sxJoin(bagNos, d.bagCount),
+        user: sxJoin(userName, d.currencyId),
+        nums: { qty: nQty, rate: nRate, amt: nAmt }
+    };
+};
+
+// Parse the query once per term change. Returns null when there is nothing to do.
+const sxParseNumeric = (val) => {
+    const v = String(val).replace(/,/g, '').trim();
+    let m = /^(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)$/.exec(v);
+    if (m) {
+        const a = Number(m[1]), b = Number(m[2]);
+        if (Number.isFinite(a) && Number.isFinite(b)) return { op: 'range', a: a, b: b };
+        return null;
+    }
+    m = /^(>=|<=|>|<|=)?(-?\d+(?:\.\d+)?)$/.exec(v);
+    if (m) {
+        const n = Number(m[2]);
+        if (!Number.isFinite(n)) return null;
+        const s = m[1] || '=';
+        return { op: s === '=' ? 'eq' : s === '>' ? 'gt' : s === '>=' ? 'gte' : s === '<' ? 'lt' : 'lte', a: n };
+    }
+    return null;
+};
+
+const sxParseQuery = (raw) => {
+    const q = String(raw || '').trim();
+    if (!q) return null;
+    const tokens = [];
+    const re = /"([^"]*)"|(\S+)/g;
+    let m;
+    while (tokens.length < 8 && (m = re.exec(q)) !== null) {
+        if (m[1] !== undefined) {
+            const s = sxClean(m[1]);
+            if (s) tokens.push({ kind: 'sub', text: s });
+            continue;
+        }
+        let t = m[2];
+        let exact = false;
+        if (t.length > 1 && t.charAt(0) === '=') { exact = true; t = t.slice(1); }
+        const ci = t.indexOf(':');
+        if (ci > 0) {
+            const group = SX_PREFIX_MAP[t.slice(0, ci).toLowerCase()];
+            const val = t.slice(ci + 1);
+            if (group && val) {
+                if (SX_NUMERIC_GROUP[group]) {
+                    const cmp = sxParseNumeric(val);
+                    if (cmp) { tokens.push({ kind: 'num', group: group, op: cmp.op, a: cmp.a, b: cmp.b }); continue; }
+                } else {
+                    tokens.push({ kind: 'sub', text: sxClean(val), group: group });
+                    continue;
+                }
+            }
+        }
+        const plain = sxClean(t);
+        if (plain) tokens.push({ kind: exact ? 'word' : 'sub', text: plain });
+    }
+    return tokens.length ? tokens : null;
+};
+
+const sxNumHit = (nums, group, tok) => {
+    const arr = (nums && Array.isArray(nums[group])) ? nums[group] : null;
+    if (!arr || !arr.length) return false;
+    for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (tok.op === 'eq') { if (Math.abs(v - tok.a) <= 0.0005) return true; }
+        else if (tok.op === 'gt') { if (v > tok.a) return true; }
+        else if (tok.op === 'gte') { if (v >= tok.a) return true; }
+        else if (tok.op === 'lt') { if (v < tok.a) return true; }
+        else if (tok.op === 'lte') { if (v <= tok.a) return true; }
+        else if (tok.op === 'range') { if (v >= tok.a && v <= tok.b) return true; }
+    }
+    return false;
+};
+
+const sxTextHit = (sx, groups, text) => {
+    for (let i = 0; i < groups.length; i++) {
+        const s = sx[groups[i]];
+        if (typeof s === 'string' && s && s.indexOf(text) !== -1) return true;
+    }
+    return false;
+};
+
+const sxWordHit = (sx, groups, text) => {
+    const needle = ' ' + text + ' ';
+    for (let i = 0; i < groups.length; i++) {
+        const s = sx[groups[i]];
+        if (typeof s === 'string' && s && (' ' + s + ' ').indexOf(needle) !== -1) return true;
+    }
+    return false;
+};
+
+const sxIsNumericText = (t) => /^[\d.,]+$/.test(t);
+
+// A voucher matches only when EVERY token matches (AND). Early-exits on the first miss.
+const rowMatchesPower = (row, parsed, scope) => {
+    if (!parsed || !parsed.length) return true;
+    const sx = row && row.sx;
+    if (!sx) return false; // caller falls back to searchStr
+    const groups = (scope && scope !== 'all' && SX_SCOPE_GROUPS[scope]) ? SX_SCOPE_GROUPS[scope] : SX_ALL_GROUPS;
+
+    for (let i = 0; i < parsed.length; i++) {
+        const tok = parsed[i];
+        let ok = false;
+        if (tok.kind === 'num') {
+            ok = sxNumHit(sx.nums, tok.group, tok);
+        } else if (tok.kind === 'word') {
+            if (sxIsNumericText(tok.text)) {
+                const n = Number(tok.text.replace(/,/g, ''));
+                ok = Number.isFinite(n) && (sxNumHit(sx.nums, 'qty', { op: 'eq', a: n })
+                    || sxNumHit(sx.nums, 'rate', { op: 'eq', a: n })
+                    || sxNumHit(sx.nums, 'amt', { op: 'eq', a: n }));
+                if (!ok) ok = sxWordHit(sx, groups, tok.text);
+            } else {
+                ok = sxWordHit(sx, groups, tok.text);
+            }
+        } else if (tok.group) {
+            const g = sx[tok.group];
+            ok = typeof g === 'string' && !!g && g.indexOf(tok.text) !== -1;
+        } else {
+            ok = sxTextHit(sx, groups, tok.text);
+        }
+        if (!ok) return false;
+    }
+    return true;
+};
+
+/* ── POWER SEARCH — STAGE 2 (chips / hint / highlighting / matched-in) ─────
+   Also pure + module-level, so nothing here is re-created per render. */
+const SX_SCOPE_CHIPS = [
+    { id: 'all', label: 'All' },
+    { id: 'narr', label: 'Narration' },
+    { id: 'item', label: 'Items' },
+    { id: 'party', label: 'Party' },
+    { id: 'ref', label: 'Ref' },
+    { id: 'ship', label: 'Shipment' },
+    { id: 'amt', label: 'Amount' }
+];
+
+const SX_HINT = 'ref:  date:  party:  narr:  item:  qty:  rate:  amt:  lot:  cont:  seal:  veh:  vessel:  port:  user:   |   qty:6000   rate:>1.25   amt:1000..5000   =exact   "two words"   —   every word must match (AND)';
+
+const SX_FIELD_LABEL = {
+    ref: 'Ref', date: 'Date', party: 'Party', narr: 'Narration', item: 'Item',
+    amt: 'Amount', qty: 'Qty', qtyTxt: 'Qty', rate: 'Rate', rateTxt: 'Rate',
+    lot: 'Lot', cont: 'Container', seal: 'Seal', veh: 'Vehicle', vessel: 'Vessel',
+    port: 'Port', transport: 'Transport', terms: 'Terms', bag: 'Bag', user: 'User'
+};
+
+// Which single field did this one token hit? (used for the "matched in" badge)
+const sxTokenField = (sx, tok, groups) => {
+    if (tok.kind === 'num') return SX_FIELD_LABEL[tok.group] || 'Amount';
+    if (tok.kind === 'word') {
+        if (sxIsNumericText(tok.text)) {
+            const n = Number(tok.text.replace(/,/g, ''));
+            if (Number.isFinite(n)) {
+                if (sxNumHit(sx.nums, 'qty', { op: 'eq', a: n })) return 'Qty';
+                if (sxNumHit(sx.nums, 'rate', { op: 'eq', a: n })) return 'Rate';
+                if (sxNumHit(sx.nums, 'amt', { op: 'eq', a: n })) return 'Amount';
+            }
+        }
+    }
+    if (tok.kind !== 'word' && tok.group) {
+        const g = sx[tok.group];
+        return (typeof g === 'string' && g && g.indexOf(tok.text) !== -1) ? (SX_FIELD_LABEL[tok.group] || 'Text') : '';
+    }
+    const needle = tok.kind === 'word' ? (' ' + tok.text + ' ') : null;
+    for (let i = 0; i < groups.length; i++) {
+        const s = sx[groups[i]];
+        if (typeof s !== 'string' || !s) continue;
+        const hit = needle ? ((' ' + s + ' ').indexOf(needle) !== -1) : (s.indexOf(tok.text) !== -1);
+        if (hit) return SX_FIELD_LABEL[groups[i]] || 'Text';
+    }
+    return '';
+};
+
+// Up to 3 field labels for the badge. Null when idle — costs nothing.
+const sxMatchFields = (row, parsed, scope) => {
+    if (!parsed || !parsed.length) return null;
+    const sx = row && row.sx;
+    if (!sx) return null;
+    const groups = (scope && scope !== 'all' && SX_SCOPE_GROUPS[scope]) ? SX_SCOPE_GROUPS[scope] : SX_ALL_GROUPS;
+    const out = [];
+    for (let i = 0; i < parsed.length && out.length < 3; i++) {
+        const label = sxTokenField(sx, parsed[i], groups);
+        if (label && out.indexOf(label) === -1) out.push(label);
+    }
+    return out.length ? out : null;
+};
+
+// The plain text tokens the highlighter needs. Numbers are skipped (matching
+// them already happens arithmetically; painting them would be noise).
+const sxHighlightTerms = (parsed) => {
+    if (!parsed || !parsed.length) return null;
+    const out = [];
+    for (let i = 0; i < parsed.length; i++) {
+        const t = parsed[i];
+        if (t.kind !== 'num' && t.text && t.text.length >= 2 && !sxIsNumericText(t.text) && out.indexOf(t.text) === -1) out.push(t.text);
+    }
+    return out.length ? out : null;
+};
+
+// Wraps every case-insensitive hit in <mark>. Returns the RAW STRING while idle,
+// so the untouched cost of a normal render is exactly the same as before.
+const HighlightText = React.memo(({ text, terms }) => {
+    const s = (text === null || text === undefined) ? '' : String(text);
+    if (!s || !terms || !terms.length) return s;
+    const low = s.toLowerCase();
+    const hits = [];
+    for (let i = 0; i < terms.length; i++) {
+        const term = terms[i];
+        let from = 0;
+        while (hits.length < 60) {
+            const at = low.indexOf(term, from);
+            if (at === -1) break;
+            hits.push([at, at + term.length]);
+            from = at + term.length;
+        }
+    }
+    if (!hits.length) return s;
+    hits.sort((a, b) => (a[0] - b[0]) || (b[1] - a[1]));
+    const parts = [];
+    let cursor = 0;
+    for (let i = 0; i < hits.length; i++) {
+        const a = hits[i][0], b = hits[i][1];
+        if (a < cursor) continue;
+        if (a > cursor) parts.push(s.slice(cursor, a));
+        parts.push(<mark key={i} className="bg-yellow-200 text-inherit rounded-[2px] px-0">{s.slice(a, b)}</mark>);
+        cursor = b;
+    }
+    if (cursor < s.length) parts.push(s.slice(cursor));
+    return parts;
+});
+
 /* ── SUMMARIZE table (customer/supplier-wise and item-wise) ────────────────
    Defined OUTSIDE LedgerModal and memoised. Pure presentation — it receives
    rows/totals that are already computed and renders them with the register's
@@ -22110,6 +22497,21 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [transactions, setTransactions] = useState([]);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+
+    // ── POWER SEARCH (Day Book / Sales / Purchase registers only) ─────────────
+    // The index (`row.sx`) is only built when powerSearchOn, so every other
+    // ledger type keeps the old searchStr behaviour AND zero extra cost.
+    const powerSearchOn = POWER_SEARCH_TYPES.includes(filter.type);
+    const [searchScope, setSearchScope] = useState('all');
+    // Deferred so typing stays instant; the input keeps the live text.
+    const deferredSearchTerm = React.useDeferredValue(searchTerm);
+    const powerSearch = useMemo(
+        () => (powerSearchOn ? sxParseQuery(deferredSearchTerm) : null),
+        [powerSearchOn, deferredSearchTerm]
+    );
+    // Stage 2: plain text tokens for the highlighter (null while idle).
+    const sxTerms = useMemo(() => (powerSearch ? sxHighlightTerms(powerSearch) : null), [powerSearch]);
+
     const [expandDetails, setExpandDetails] = useState(false);
     const [sortOrder, setSortOrder] = useState('date_desc');
     const [currentPage, setCurrentPage] = useState(1);
@@ -22851,6 +23253,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     paymentTerms: d.paymentTerms || null,
                     invoiceTotal: safeNum(d.totalAmount || d.amount || 0),
                     searchStr: `${d.refNo} ${d.taxInvNo || ''} ${drName} ${crName} ${extra.amtIn} ${extra.amtOut} ${d.description || ''} ${d.narration || ''} ${findUserName(d.createdBy)} ${productNamesStr}`.toLowerCase(),
+                    // 🔎 POWER SEARCH index — built ONLY for Day Book / Sales / Purchase.
+                    sx: powerSearchOn
+                        ? sxBuild({ d, drName, crName, typeLabel, productNamesStr, detailedItems, findName, userName: findUserName(d.createdBy), nameOf: getProductName })
+                        : undefined,
                     expenseJournalId: d.expenseJournalId || null,
                     linkedStockJournalId: d.linkedStockJournalId || null,
                 };
@@ -23421,9 +23827,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     };
 
     // Data Processing & Display Logic
-    const { processedData, totalPages, summary, fullList, detailedRows, displayCurrency } = useMemo(() => {
+    const { processedData, totalPages, summary, fullList, detailedRows, displayCurrency, scopeTotal } = useMemo(() => {
         let filtered = transactions.filter(t => {
-            const matchesSearch = !searchTerm || t.searchStr.includes(searchTerm.toLowerCase());
+            const matchesSearch = !deferredSearchTerm
+                ? true
+                : (powerSearchOn && powerSearch && t.sx
+                    ? rowMatchesPower(t, powerSearch, searchScope)
+                    : t.searchStr.includes(deferredSearchTerm.toLowerCase()));
             let matchesView = true;
             if (viewFilter === 'dr') matchesView = (t.amountIn > 0);
             if (viewFilter === 'cr') matchesView = (t.amountOut > 0);
@@ -23769,13 +24179,27 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         return {
             processedData: displayList.slice(start, start + itemsPerPage),
+            scopeTotal: filtered.length,
             totalPages: total,
             summary: sum,
             fullList: displayList,
             detailedRows: detailedList,
             displayCurrency: sym
         };
-    }, [transactions, searchTerm, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode]);
+    }, [transactions, deferredSearchTerm, powerSearch, searchScope, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode]);
+
+    // ── STAGE 2: "matched in" badges — ONE pass over the VISIBLE page only ────
+    // Returns null while idle, so an ordinary render does zero extra work.
+    const powerBadges = useMemo(() => {
+        if (!powerSearch || !powerSearchOn) return null;
+        const map = new Map();
+        for (let i = 0; i < processedData.length; i++) {
+            const row = processedData[i];
+            const f = sxMatchFields(row, powerSearch, searchScope);
+            if (f) map.set(row.id, f);
+        }
+        return map.size ? map : null;
+    }, [processedData, powerSearch, searchScope, powerSearchOn]);
 
     // ── SUMMARIZE (customer/supplier-wise and item-wise) ─────────────────────
     // Costs NOTHING until the user opens a summary: returns null immediately.
@@ -25032,7 +25456,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
                 {/* --- SEARCH BAR --- */}
                 {showSearch && (
-                    <div className="bg-blue-50 border-b border-blue-200 p-2 px-4 flex items-center gap-3 animate-in slide-in-from-top-2 duration-200">
+                    <div className="bg-blue-50 border-b border-blue-200 p-2 px-4 flex flex-col gap-1.5 animate-in slide-in-from-top-2 duration-200">
+                        <div className="flex items-center gap-3">
                         <div className="relative flex-1">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400" size={16} />
                             <input 
@@ -25045,16 +25470,32 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             />
                             {searchTerm && (
                                 <button 
-                                    onClick={() => { setSearchTerm(""); setCurrentPage(1); }}
+                                    onClick={() => { setSearchTerm(""); setCurrentPage(1); setSearchScope('all'); }}
                                     className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-blue-100 rounded-full text-blue-400 transition-colors"
                                 >
                                     <X size={14} />
                                 </button>
                             )}
                         </div>
-                        <div className="text-[10px] font-black text-blue-500 uppercase tracking-widest hidden md:block">
-                            Esc to Close
+                        {searchTerm && (
+                            <div className="text-[10px] font-black text-blue-600 uppercase tracking-wide whitespace-nowrap hidden sm:block">
+                                {summary.count || 0} of {scopeTotal || 0} vouchers
+                            </div>
+                        )}
                         </div>
+                        {powerSearchOn && (
+                            <div className="flex items-center gap-1.5 flex-wrap" title={SX_HINT}>
+                                <span className="text-[9px] font-black uppercase text-blue-500 shrink-0">Search in:</span>
+                                {SX_SCOPE_CHIPS.map((c) => (
+                                    <button
+                                        key={c.id}
+                                        onClick={() => { setSearchScope(c.id); setCurrentPage(1); }}
+                                        className={`px-2 py-[1px] rounded-full border text-[9.5px] font-black uppercase tracking-tight transition-colors ${searchScope === c.id ? 'bg-[#1e3264] text-white border-[#1e3264] shadow-sm' : 'bg-white text-[#2b5797] border-blue-300 hover:bg-blue-100'}`}
+                                    >{c.label}</button>
+                                ))}
+                                <span className="text-[9px] text-blue-400 font-bold ml-auto hidden xl:block truncate">{SX_HINT}</span>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -25424,6 +25865,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         </tr>
                                     ) : (
                                         processedData.map((row, idx) => {
+                                            const rowBadges = powerBadges ? powerBadges.get(row.id) : null;
                                             if (isBreakupMode && row.isSummary) {
                                                 // ── SIMPLIFIED BREAKUP ROW ──
                                                 if (isSalesPurchaseRegister) {
@@ -25536,15 +25978,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {!hiddenCols.has('date') && <td className={`p-1.5 border-r border-slate-100 font-bold ${row.isSummary ? 'text-indigo-700 text-[10px] whitespace-nowrap' : 'text-slate-500'}`}>{row.isSummary ? (row.particulars || row.drName || '') : row.isOpening ? '' : formatDate(row.date)}</td>}
                                                 {isSalesPurchaseRegister ? (
                                                     <>
-                                                        {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70">{row.ref}</td>}
+                                                        {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70"><HighlightText text={row.ref} terms={sxTerms} /></td>}
                                                         {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
-                                                            <td className="p-1.5 border-r border-slate-100 text-slate-600 font-medium">{row.taxInvNo || '-'}</td>
+                                                            <td className="p-1.5 border-r border-slate-100 text-slate-600 font-medium"><HighlightText text={row.taxInvNo || '-'} terms={sxTerms} /></td>
                                                         )}
-                                                        {!hiddenCols.has('cust') && <td className="p-1.5 border-r border-slate-100 font-bold text-slate-800">{row.isSummary ? (row.crName || '') : (row.customerName || '-')}</td>}
+                                                        {!hiddenCols.has('cust') && <td className="p-1.5 border-r border-slate-100 font-bold text-slate-800"><HighlightText text={row.isSummary ? (row.crName || '') : (row.customerName || '-')} terms={sxTerms} /></td>}
                                                         {!hiddenCols.has('part') && (
                                                             <td className="p-1.5 border-r border-slate-100 relative">
                                                                 <div className="flex flex-col">
-                                                                    <span className="font-black text-slate-900">{row.narration || '-'}</span>
+                                                                    <span className="font-black text-slate-900"><HighlightText text={row.narration || '-'} terms={sxTerms} /></span>
+                                                                    {rowBadges && <span className="flex flex-wrap gap-1 mt-0.5">{rowBadges.map((f) => <span key={f} className="px-1 rounded-[2px] bg-blue-100 text-[#2b5797] border border-blue-200 text-[8px] font-black uppercase tracking-tight">{f}</span>)}</span>}
                                                                     {expandDetails && row.details && (
                                                                         <div className="mt-1 pl-4 border-l border-blue-200 text-[10px] text-slate-500 animate-in slide-in-from-left-2">
                                                                             {row.details.filter(d => d.label !== 'Remark/Cause').map((d, i) => (
@@ -25555,7 +25998,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                             ))}
                                                                         </div>
                                                                     )}
-                                                                    {row.narration && !expandDetails && <span className="text-[10px] text-slate-400 overflow-hidden line-clamp-1 italic">{row.narration}</span>}
+                                                                    {row.narration && !expandDetails && <span className="text-[10px] text-slate-400 overflow-hidden line-clamp-1 italic"><HighlightText text={row.narration} terms={sxTerms} /></span>}
                                                                 </div>
                                                             </td>
                                                         )}
@@ -25603,7 +26046,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                         {!hiddenCols.has('part') && (
                                                             <td className="p-1.5 border-r border-slate-100 relative">
                                                                 <div className="flex flex-col">
-                                                                    <span className="font-black text-slate-900">{row.isSummary ? (row.crName || '') : row.particulars}</span>
+                                                                    <span className="font-black text-slate-900"><HighlightText text={row.isSummary ? (row.crName || '') : row.particulars} terms={sxTerms} /></span>
+                                                                    {rowBadges && <span className="flex flex-wrap gap-1 mt-0.5">{rowBadges.map((f) => <span key={f} className="px-1 rounded-[2px] bg-blue-100 text-[#2b5797] border border-blue-200 text-[8px] font-black uppercase tracking-tight">{f}</span>)}</span>}
                                                                     {expandDetails && row.details && (
                                                                         <div className="mt-1 pl-4 border-l border-blue-200 text-[10px] text-slate-500 animate-in slide-in-from-left-2">
                                                                             {row.details.map((d, i) => (
@@ -25614,11 +26058,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                             ))}
                                                                         </div>
                                                                     )}
-                                                                    {row.narration && !expandDetails && <span className="text-[10px] text-slate-400 overflow-hidden line-clamp-1 italic">{row.narration}</span>}
+                                                                    {row.narration && !expandDetails && <span className="text-[10px] text-slate-400 overflow-hidden line-clamp-1 italic"><HighlightText text={row.narration} terms={sxTerms} /></span>}
                                                                 </div>
                                                             </td>
                                                         )}
-                                                        {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70">{row.ref}</td>}
+                                                        {!hiddenCols.has('ref') && <td className="p-1.5 border-r border-slate-100 font-bold text-blue-600/70"><HighlightText text={row.ref} terms={sxTerms} /></td>}
                                                         {['purchase', 'sales', 'party', 'tax'].includes(filter.type) && (
                                                             <td className="p-1.5 border-r border-slate-100 text-slate-600 font-medium">{row.taxInvNo || '-'}</td>
                                                         )}
