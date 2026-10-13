@@ -42,6 +42,7 @@ export const Modal = ({
                 onClose();
             }
             if (isOpen && (e.altKey && e.key === 'ArrowLeft')) {
+                if (e.defaultPrevented) return; // already handled (e.g. report pagination)
                 e.stopPropagation();
                 if (onBack) onBack();
             }

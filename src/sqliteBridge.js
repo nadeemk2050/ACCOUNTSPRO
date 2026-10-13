@@ -64,7 +64,19 @@ export const sqlite = {
 
     // Meta
     getMeta: (key) => invoke('accpro-sql:getMeta', key).then(unwrap),
-    setMeta: (key, value) => invoke('accpro-sql:setMeta', key, value).then(unwrap)
+    setMeta: (key, value) => invoke('accpro-sql:setMeta', key, value).then(unwrap),
+
+    // Alt+Arrow page navigation forwarded from the Electron main process
+    // (main blocks the browser's back/forward so the report pagination wins)
+    onPageNav: (cb) => {
+        if (!ipc) return () => {};
+        const listener = (_e, payload) => { try { cb && cb(payload); } catch (err) { console.error('page-nav handler error', err); } };
+        ipc.on('accpro:page-nav', listener);
+        return () => ipc.removeListener('accpro:page-nav', listener);
+    }
 };
+
+// Expose on window so renderer components can subscribe (Electron only; inert in browser)
+try { if (typeof window !== 'undefined') window.sqlite = sqlite; } catch (e) { /* ignore */ }
 
 export default sqlite;

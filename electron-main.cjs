@@ -73,6 +73,14 @@ function createWindow() {
             console.log(prefix, msg);
         } catch (e) { /* ignore */ }
     });
+
+    // ⛔ Block Alt+ArrowLeft/Right (browser back/forward) and forward as page-nav for report pagination
+    win.webContents.on('before-input-event', (event, input) => {
+        if (input.type === 'keyDown' && input.alt && (input.key === 'ArrowLeft' || input.key === 'ArrowRight')) {
+            event.preventDefault();
+            win.webContents.send('accpro:page-nav', { dir: input.key === 'ArrowLeft' ? -1 : 1 });
+        }
+    });
 }
 
 // 📂 IPC HANDLERS

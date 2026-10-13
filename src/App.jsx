@@ -244,6 +244,146 @@ const isVoucherDeleted = (voucher) => {
 };
 const filterActiveVouchers = (rows = []) => rows.filter((row) => !isVoucherDeleted(row));
 
+// Lists that get the Day-Book style FULL-BLEED shell: frameless table, flush to
+// the top bar, no left/right inset, filling the whole page height.
+const FULL_BLEED_REPORT_TITLES = [
+    'Payables Breakdown',
+    'Receivables Breakdown',
+    'Cash/Bank Balances Total',
+    'Customers Register',
+    'Cash/Bank Register',
+    'Indirect Expenses Register',
+    'Direct Expenses Register'
+];
+
+/* ── SHARED LEDGER BALANCE ENGINE (accounts + parties, as of a date) ───────
+   THE single implementation behind the Cash/Bank Balances, Receivables and
+   Payables breakdown reports. Those used to run a second, hand-written copy of
+   the dashboard's maths and silently drifted from it: a leg whose `category`
+   was missing or stale, or a LEGACY split that stored `partyId`/`accountId`
+   instead of `targetId`, was applied by the dashboard and DROPPED by the report.
+   The resolution below is byte-for-byte the dashboard's own rules, so the
+   totals shown inside a report always equal the one shown on the overview.
+   Pure — takes already-loaded docs (Firestore snapshot OR plain objects). */
+const computeLedgerBalances = ({ invDocs = [], payDocs = [], jvDocs = [], accounts = [], parties = [], asOfDate = '' } = {}) => {
+    const accBal = {};
+    const partyBal = {};
+    accounts.forEach(a => { accBal[a.id] = Number(a.openingBalance || 0); });
+    parties.forEach(p => { partyBal[p.id] = Number(p.openingBalance || 0); });
+
+    const hasAcc = (id) => id !== undefined && id !== null && id !== '' && accBal[id] !== undefined;
+    const hasParty = (id) => id !== undefined && id !== null && id !== '' && partyBal[id] !== undefined;
+
+    // The stored category wins WHEN that master really holds the id; otherwise the
+    // id is resolved against the masters (party first) — identical to the original
+    // dashboard rule, including `'party'` falling through to the account map and
+    // vice-versa. Never returns without applying when the id is known at all.
+    const apply = (tid, tcat, delta) => {
+        if (tid === undefined || tid === null || tid === '') return;
+        if (tcat === 'party') {
+            if (hasParty(tid)) partyBal[tid] += delta;
+            else if (hasAcc(tid)) accBal[tid] += delta;
+            return;
+        }
+        if (tcat === 'account') {
+            if (hasAcc(tid)) accBal[tid] += delta;
+            else if (hasParty(tid)) partyBal[tid] += delta;
+            return;
+        }
+        if (hasParty(tid)) partyBal[tid] += delta;
+        else if (hasAcc(tid)) accBal[tid] += delta;
+    };
+
+    const raw = (doc) => (doc && typeof doc.data === 'function') ? doc.data() : doc;
+    // One cut-off rule for every source: no date ⇒ never counted; later than the
+    // as-of date ⇒ not counted. (The old report relied on a Firestore where-clause
+    // only, which still let an EMPTY date string through.)
+    const inRange = (d) => !!d && !!d.date && (!asOfDate || d.date <= asOfDate);
+
+    // 1. Invoices — party accrual + whoever paid the purchase additional expenses
+    invDocs.forEach(doc => {
+        const d = raw(doc);
+        if (!d || isVoucherDeleted(d) || !inRange(d)) return;
+        const baseVal = Number(d.grandTotal || d.totalAmount || d.amount || 0);
+        const rate = Number(d.exchangeRate || 1);
+        const addlExpBase = Number(d.addlExpTotal || 0) * rate;
+
+        if (d.type === 'purchase' && d.addlExpCreditId && d.addlExpCreditId !== d.partyId && hasAcc(d.addlExpCreditId)) {
+            accBal[d.addlExpCreditId] -= addlExpBase;
+        }
+        if (d.partyId && hasParty(d.partyId)) {
+            const supplierBase = (d.type === 'purchase' || d.type === 'purchase_apt')
+                ? purchaseSupplierBase(d, baseVal, addlExpBase)
+                : baseVal;
+            const amt = (d.type === 'purchase' || d.type === 'purchase_apt') ? supplierBase : baseVal;
+            if (['sales', 'sales_reg_apt', 'sales_unreg_apt', 'debit_note', 'purchase_return'].includes(d.type)) partyBal[d.partyId] += amt;
+            else if (['purchase', 'purchase_apt', 'credit_note', 'sales_return'].includes(d.type)) partyBal[d.partyId] -= amt;
+        }
+    });
+
+    // 2. Payments — our own account leg + the counterparty leg (every split)
+    payDocs.forEach(doc => {
+        const v = raw(doc);
+        if (!v || isVoucherDeleted(v) || !inRange(v)) return;
+        const rate = Number(v.exchangeRate || 1);
+        const amtBase = Number(v.baseAmount || v.totalAmount || v.amount || 0);
+
+        if (v.accountId && hasAcc(v.accountId)) {
+            if (v.type === 'in') accBal[v.accountId] += amtBase;
+            else accBal[v.accountId] -= amtBase;
+        }
+
+        const leg = (tid, tval) => apply(tid, undefined, (v.type === 'in') ? -tval : tval);
+
+        if (v.isMulti && Array.isArray(v.splits)) {
+            v.splits.forEach(s => {
+                if (!s) return;
+                // `targetId || partyId || accountId` — legacy splits only stored the latter.
+                leg(s.targetId || s.partyId || s.accountId, Number(s.amount || 0) * rate);
+            });
+        } else {
+            let cat = v.transactionCategory;
+            let tid = null;
+            if (cat === 'party') tid = v.partyId;
+            else if (cat === 'expense') tid = v.expenseId;
+            else if (cat === 'account' || v.type === 'contra') { cat = 'account'; tid = v.toAccountId; }
+            else if (cat === 'capital') tid = v.capitalId;
+            else if (cat === 'asset') tid = v.assetId;
+            else if (cat === 'income') tid = v.incomeId;
+
+            // Fallback category detection for newer payments without transactionCategory
+            if (!cat) {
+                if (v.partyId) { cat = 'party'; tid = v.partyId; }
+                else if (v.expenseId) { cat = 'expense'; tid = v.expenseId; }
+                else if (v.toAccountId) { cat = 'account'; tid = v.toAccountId; }
+                else if (v.capitalId) { cat = 'capital'; tid = v.capitalId; }
+                else if (v.assetId) { cat = 'asset'; tid = v.assetId; }
+                else if (v.incomeId) { cat = 'income'; tid = v.incomeId; }
+            }
+            // `cat` only ever decides a fallback; the ID decides which map is touched.
+            if (tid) apply(tid, cat, (v.type === 'in') ? -amtBase : amtBase);
+        }
+    });
+
+    // 3. Journal vouchers — DR increases, CR decreases
+    jvDocs.forEach(doc => {
+        const v = raw(doc);
+        if (!v || isVoucherDeleted(v) || !inRange(v)) return;
+        const amt = Number(v.amount || 0);
+        if (v.isMulti && Array.isArray(v.rows)) {
+            v.rows.forEach(r => {
+                if (!r) return;
+                apply(r.id, r.category, (r.type === 'dr' ? 1 : -1) * Number(r.amount || 0));
+            });
+        } else {
+            if (v.drId) apply(v.drId, v.drType, amt);
+            if (v.crId) apply(v.crId, v.crType, -amt);
+        }
+    });
+
+    return { accBal, partyBal };
+};
+
 const getEmbeddedBagsFromJournal = (journal) => {
     if (!journal) return [];
     return [
@@ -7537,6 +7677,10 @@ export default function App() {
             currentParties.forEach(p => { partyBalMap[p.id] = Number(p.openingBalance || 0); });
 
             // Stock is computed further below by the shared valuation engine.
+            // ⚠️ This finance maths is mirrored 1:1 by computeLedgerBalances(),
+            //    which powers the Cash/Bank Balances, Receivables and Payables
+            //    breakdown reports. CHANGE ONE → CHANGE THE OTHER. Equality is
+            //    proven mechanically by scratch/ledger-balance-test.mjs.
 
             // 1. Invoices — Finance
             invDocs.forEach(doc => {
@@ -25168,9 +25312,22 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 restoreBreakupView();
             }
         };
-        window.addEventListener('keydown', handleKeys);
-        return () => window.removeEventListener('keydown', handleKeys);
+        window.addEventListener('keydown', handleKeys, true);
+        return () => window.removeEventListener('keydown', handleKeys, true);
     }, [isOpen, moveDateRange, savedBreakupState, totalPages, summarizeBy]);
+
+    // Electron: main blocks browser back/forward and forwards Alt+Arrow as page-nav
+    useEffect(() => {
+        let off = null;
+        const onPageNav = (payload) => {
+            if (!payload || !payload.dir) return;
+            setCurrentPage(p => Math.max(1, Math.min(totalPages, p + payload.dir)));
+        };
+        try {
+            if (window.sqlite && typeof window.sqlite.onPageNav === 'function') off = window.sqlite.onPageNav(onPageNav);
+        } catch (err) { /* ignore */ }
+        return () => { if (typeof off === 'function') off(); };
+    }, [totalPages]);
 
     if (!isOpen) return null;
     const isSalesPurchaseRegister = ['sales', 'purchase'].includes(filter.type);
@@ -25368,7 +25525,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             <button
                                 onClick={() => moveDateRange(-1)}
                                 className="p-1.5 bg-white border border-blue-300 rounded-l-[2px] text-[#2b5797] hover:bg-blue-50 transition-colors"
-                                title="Previous Period"
+                                title="Previous Period (Alt+B)"
                             >
                                 <ChevronLeft size={11} fill="currentColor" />
                             </button>
@@ -25387,7 +25544,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             <button
                                 onClick={() => moveDateRange(1)}
                                 className="p-1.5 bg-white rounded-r-[2px] text-[#2b5797] hover:bg-blue-50 transition-colors border-y border-r border-blue-300"
-                                title="Next Period"
+                                title="Next Period (Alt+N)"
                             >
                                 <ChevronRight size={11} fill="currentColor" />
                             </button>
@@ -25534,7 +25691,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         {/* --- SUMMARY STRIP REMOVED (Moved to Header) --- */}
 
                         {/* TABLE AREA */}
-                        <div ref={tableContainerRef} className="flex-1 overflow-auto p-1 md:p-3 relative bg-white">
+                        <div ref={tableContainerRef} className="flex-1 overflow-auto p-0 relative bg-white">
                             {showGraphView && supportsGraphView ? (
                                 <div className="h-full rounded-lg border border-blue-200 bg-[#f7fbff] p-3 flex flex-col gap-3">
                                     <div className="flex flex-wrap items-center gap-2">
@@ -30865,6 +31022,38 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
                 // 3. Process Transactions (Logic from recalculate.js)
 
+                // ── Cash/Bank · Receivables · Payables ──────────────────────────
+                // These three reports read the SAME engine the Business Overview
+                // dashboard is built from, so the totals shown inside them always
+                // equal the one shown on the overview. (They used to be a second,
+                // hand-written copy of this maths and drifted apart — e.g. a legacy
+                // split storing `partyId` instead of `targetId` was dropped here.)
+                if (ledgerType === 'account' || ledgerType === 'party') {
+                    const { accBal, partyBal } = computeLedgerBalances({
+                        invDocs: invS.docs,
+                        payDocs: payS.docs,
+                        jvDocs: jvS.docs,
+                        accounts: ledgerType === 'account' ? entities : [],
+                        parties: ledgerType === 'party' ? entities : [],
+                        asOfDate: upToDate
+                    });
+                    const srcMap = ledgerType === 'account' ? accBal : partyBal;
+                    const sharedRows = entities.map(ent => {
+                        const bal = srcMap[ent.id] || 0;
+                        return {
+                            id: ent.id,
+                            label: ent.name,
+                            group: ent.group,
+                            rawValue: bal,
+                            value: `${currencySymbol || ''} ${formatCurrencyLocal(bal)}`,
+                            debit: bal > 0 ? bal : 0,
+                            credit: bal < 0 ? Math.abs(bal) : 0
+                        };
+                    });
+                    if (active) setAsyncData(sharedRows);
+                    return;
+                }
+
                 // --- Invoices ---
                 invS.forEach(doc => {
                     const d = doc.data();
@@ -31193,11 +31382,40 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
     useEffect(() => { setFocusedRowIdx(-1); }, [currentPage, searchTerm, filter, summaryMode]);
 
+    // Alt+B / Alt+N: shift the register date range back/forward by its own span
+    const shiftDateRangeBySpan = (direction) => {
+        if (!onDateChange || !dateRange) return;
+        const parse = (s) => { if (!s) return null; const d = new Date(s + 'T12:00:00'); return isNaN(d) ? null : d; };
+        const today = new Date();
+        const toIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const d1 = parse(dateRange.from) || parse(toIso(today));
+        const d2 = parse(dateRange.to) || parse(toIso(today));
+        if (!d1 || !d2) return;
+        const spanDays = Math.max(1, Math.round((d2 - d1) / 86400000) + 1);
+        const shift = direction * spanDays;
+        const shifted1 = new Date(d1); shifted1.setDate(shifted1.getDate() + shift);
+        const shifted2 = new Date(d2); shifted2.setDate(shifted2.getDate() + shift);
+        onDateChange({ from: dateRange.from ? toIso(shifted1) : '', to: dateRange.to ? toIso(shifted2) : '' });
+    };
+
     useEffect(() => {
         if (!isOpen) { setFocusedRowIdx(-1); return; }
         const handler = (e) => {
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
-            if (e.key === 'ArrowDown') {
+            if (e.altKey && (e.key.toLowerCase() === 'b' || e.key.toLowerCase() === 'n')) {
+                e.preventDefault();
+                shiftDateRangeBySpan(e.key.toLowerCase() === 'b' ? -1 : 1);
+            } else if (e.altKey && e.key === 'ArrowLeft') {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                setCurrentPage(prev => Math.max(prev - 1, 1));
+                setFocusedRowIdx(0);
+            } else if (e.altKey && e.key === 'ArrowRight') {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                setCurrentPage(prev => Math.min(prev + 1, totalPages));
+                setFocusedRowIdx(0);
+            } else if (e.key === 'ArrowDown') {
                 e.preventDefault();
                 setFocusedRowIdx(prev => Math.min(prev + 1, navigableRows.length - 1));
             } else if (e.key === 'ArrowUp') {
@@ -31225,9 +31443,23 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                 setFocusedRowIdx(0);
             }
         };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, focusedRowIdx, navigableRows, expandedGroups, onItemClick, totalPages, toggleGroup]);
+        window.addEventListener('keydown', handler, true);
+        return () => window.removeEventListener('keydown', handler, true);
+    }, [isOpen, focusedRowIdx, navigableRows, expandedGroups, onItemClick, totalPages, toggleGroup, dateRange, onDateChange]);
+
+    // Electron: main forwards Alt+Arrow as page-nav (browser back blocked there)
+    useEffect(() => {
+        let off = null;
+        const onPageNav = (payload) => {
+            if (!payload || !payload.dir) return;
+            setCurrentPage(p => Math.max(1, Math.min(totalPages, p + payload.dir)));
+            setFocusedRowIdx(0);
+        };
+        try {
+            if (window.sqlite && typeof window.sqlite.onPageNav === 'function') off = window.sqlite.onPageNav(onPageNav);
+        } catch (err) { /* ignore */ }
+        return () => { if (typeof off === 'function') off(); };
+    }, [totalPages]);
 
     useEffect(() => {
         if (focusedRowRef.current) focusedRowRef.current.scrollIntoView({ block: 'nearest' });
@@ -31250,7 +31482,10 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         totalQty: filteredData.reduce((sum, item) => sum + (item.qty || 0), 0),
         totalBags: filteredData.reduce((sum, item) => sum + (Number(item.bagCount) || 0), 0)
     };
-    const shouldStretchListToBottom = title === 'Payables Breakdown' || title === 'Receivables Breakdown' || registerType === 'manufacturing';
+    // Day-Book style FULL-BLEED layout — these lists render frameless, touch the
+    // top bar and fill the whole page (no left/right inset). See FULL_BLEED_REPORT_TITLES.
+    const isFullBleedReport = FULL_BLEED_REPORT_TITLES.includes(title);
+    const shouldStretchListToBottom = isFullBleedReport || registerType === 'manufacturing';
 
     const downloadExcel = async () => {
         try {
@@ -31572,7 +31807,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         ref={dateMenuBtnRef}
                         onClick={(e) => { e.stopPropagation(); setShowDateMenu(!showDateMenu); }}
                         className={`px-3 py-1 lg:py-1.5 rounded-md text-[10px] lg:text-[11px] font-black border transition-all flex items-center gap-2 ${showDateMenu ? 'bg-indigo-600 text-white border-indigo-700 shadow-md' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
-                        title="Open date options (F2)"
+                        title="Open date options (Alt+B / Alt+N to move period)"
                     >
                         <span className="text-slate-400 hidden lg:inline">F2:</span>
                         <span className="tracking-tight uppercase">
@@ -31774,8 +32009,8 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
     );
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={HeaderTitle} maxWidth={registerType === 'manufacturing' ? "max-w-6xl" : "max-w-4xl"} defaultMaximized={true}>
-            <div className={`flex min-h-0 flex-col ${shouldStretchListToBottom ? 'h-[85vh] lg:h-[88vh]' : ''}`}>
+        <Modal isOpen={isOpen} onClose={onClose} onBack={onBack} title={HeaderTitle} maxWidth={registerType === 'manufacturing' ? "max-w-6xl" : "max-w-4xl"} defaultMaximized={true} removePadding={isFullBleedReport} noContentScroll={isFullBleedReport}>
+            <div className={`flex min-h-0 flex-col ${isFullBleedReport ? 'h-full' : (shouldStretchListToBottom ? 'h-[85vh] lg:h-[88vh]' : '')}`}>
 
             {/* --- SUMMARY STRIP REMOVED - MOVED TO HEADER --- */}
 
@@ -31837,7 +32072,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             )}
 
             {/* --- THEMED TABLE HEADER --- */}
-            <div className={`border border-slate-200 rounded-xl overflow-y-auto shadow-inner bg-white ${shouldStretchListToBottom ? 'flex-1 min-h-0 mb-0 h-full' : 'max-h-[65vh] mb-2'}`}>
+            <div className={`${isFullBleedReport ? '' : 'border border-slate-200 rounded-xl shadow-inner'} overflow-y-auto bg-white ${shouldStretchListToBottom ? 'flex-1 min-h-0 mb-0 h-full' : 'max-h-[65vh] mb-2'}`}>
                 <table className="w-full text-left text-sm border-collapse">
                     <thead className="bg-[#1e293b] text-white font-bold uppercase text-[10px] sticky top-0 z-20 shadow-md">
                         {registerType === 'manufacturing' ? (
@@ -32201,6 +32436,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         <button
                             onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                             disabled={currentPage === 1}
+                            title="Previous Page (Alt+←)"
                             className={`relative inline-flex items-center px-4 py-2 text-sm font-medium rounded-md ${currentPage === 1 ? 'text-gray-300' : 'text-gray-700 hover:bg-gray-50 border border-gray-300'}`}
                         >
                             Previous
@@ -32208,6 +32444,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         <button
                             onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
                             disabled={currentPage === totalPages}
+                            title="Next Page (Alt+→)"
                             className={`relative ml-3 inline-flex items-center px-4 py-2 text-sm font-medium rounded-md ${currentPage === totalPages ? 'text-gray-300' : 'text-gray-700 hover:bg-gray-50 border border-gray-300'}`}
                         >
                             Next
@@ -32224,6 +32461,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                 <button
                                     onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                                     disabled={currentPage === 1}
+                                    title="Previous Page (Alt+←)"
                                     className={`relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium ${currentPage === 1 ? 'text-gray-200' : 'text-gray-500 hover:bg-gray-50'}`}
                                 >
                                     <span className="sr-only">Previous</span>
@@ -32250,6 +32488,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                 <button
                                     onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
                                     disabled={currentPage === totalPages}
+                                    title="Next Page (Alt+→)"
                                     className={`relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium ${currentPage === totalPages ? 'text-gray-200' : 'text-gray-500 hover:bg-gray-50'}`}
                                 >
                                     <span className="sr-only">Next</span>
