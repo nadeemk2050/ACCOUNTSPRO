@@ -5355,13 +5355,13 @@ const CompanyLogoBadge = memo(function CompanyLogoBadge({ logoUrl, name, company
     );
 });
 
-/* ── POWER SEARCH engine (Day Book / Sales / Purchase registers) ───────────
+/* ── POWER SEARCH engine (Day Book / Sales / Purchase / Item Ledger) ───────
    Everything here is module-level and pure so nothing is re-created per render.
    `sxBuild` runs inside LedgerModal's buildRow, and ONLY when powerSearchOn —
    every other ledger type keeps its original searchStr behaviour untouched. */
-const POWER_SEARCH_TYPES = ['daybook', 'sales', 'purchase'];
+const POWER_SEARCH_TYPES = ['daybook', 'sales', 'purchase', 'item'];
 
-const SX_ALL_GROUPS = ['ref', 'date', 'party', 'narr', 'item', 'amt', 'qtyTxt', 'rateTxt', 'lot', 'cont', 'seal', 'veh', 'vessel', 'port', 'transport', 'terms', 'bag', 'user'];
+const SX_ALL_GROUPS = ['ref', 'date', 'party', 'narr', 'item', 'amt', 'qtyTxt', 'rateTxt', 'lot', 'cont', 'seal', 'veh', 'vessel', 'port', 'transport', 'terms', 'bag', 'user', 'det'];
 
 // chip scope -> groups (Stage 2 uses these; un-prefixed tokens obey the chip)
 const SX_SCOPE_GROUPS = {
@@ -5370,7 +5370,9 @@ const SX_SCOPE_GROUPS = {
     party: ['party'],
     ref: ['ref', 'date'],
     ship: ['lot', 'cont', 'seal', 'veh', 'vessel', 'port', 'transport', 'terms', 'bag'],
-    amt: ['amt', 'qtyTxt', 'rateTxt']
+    amt: ['amt', 'qtyTxt', 'rateTxt'],
+    qty: ['qtyTxt'],
+    rate: ['rateTxt']
 };
 
 const SX_PREFIX_MAP = {
@@ -5492,6 +5494,18 @@ const sxBuild = ({ d, drName, crName, typeLabel, productNamesStr, detailedItems,
 
     const remark = (detailedItems || []).filter(x => x.label === 'Remark/Cause').map(x => x.value);
 
+    // The row's VISIBLE details block (party/item names + the formatted
+    // "qty @ rate" and amount strings) — indexed so what you see is searchable.
+    const detLabels = [];
+    const detValues = [];
+    const detSrc = Array.isArray(detailedItems) ? detailedItems : [];
+    for (let i = 0; i < detSrc.length; i++) {
+        const x = detSrc[i];
+        if (!x) continue;
+        detLabels.push(x.label);
+        detValues.push(x.value);
+    }
+
     return {
         ref: sxJoin(d.refNo, d.taxInvNo, d.otherRef, typeLabel),
         date: sxJoin(dateForms),
@@ -5511,6 +5525,7 @@ const sxBuild = ({ d, drName, crName, typeLabel, productNamesStr, detailedItems,
         terms: sxJoin(d.paymentTerms),
         bag: sxJoin(bagNos, d.bagCount),
         user: sxJoin(userName, d.currencyId),
+        det: sxJoin(detLabels, detValues),
         nums: { qty: nQty, rate: nRate, amt: nAmt }
     };
 };
@@ -5644,8 +5659,10 @@ const SX_SCOPE_CHIPS = [
     { id: 'item', label: 'Items' },
     { id: 'party', label: 'Party' },
     { id: 'ref', label: 'Ref' },
-    { id: 'ship', label: 'Shipment' },
-    { id: 'amt', label: 'Amount' }
+    { id: 'qty', label: 'Qty' },
+    { id: 'rate', label: 'Rate' },
+    { id: 'amt', label: 'Amount' },
+    { id: 'ship', label: 'Shipment' }
 ];
 
 const SX_HINT = 'ref:  date:  party:  narr:  item:  qty:  rate:  amt:  lot:  cont:  seal:  veh:  vessel:  port:  user:   |   qty:6000   rate:>1.25   amt:1000..5000   =exact   "two words"   —   every word must match (AND)';
@@ -5654,7 +5671,8 @@ const SX_FIELD_LABEL = {
     ref: 'Ref', date: 'Date', party: 'Party', narr: 'Narration', item: 'Item',
     amt: 'Amount', qty: 'Qty', qtyTxt: 'Qty', rate: 'Rate', rateTxt: 'Rate',
     lot: 'Lot', cont: 'Container', seal: 'Seal', veh: 'Vehicle', vessel: 'Vessel',
-    port: 'Port', transport: 'Transport', terms: 'Terms', bag: 'Bag', user: 'User'
+    port: 'Port', transport: 'Transport', terms: 'Terms', bag: 'Bag', user: 'User',
+    det: 'Detail'
 };
 
 // Which single field did this one token hit? (used for the "matched in" badge)
@@ -25992,8 +26010,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                         <div className="mt-1 pl-4 border-l border-blue-200 text-[10px] text-slate-500 animate-in slide-in-from-left-2">
                                                                             {row.details.filter(d => d.label !== 'Remark/Cause').map((d, i) => (
                                                                                 <div key={i} className="flex justify-between gap-4 py-0.5 border-b border-slate-50 last:border-0 italic">
-                                                                                    <span>{d.label}</span>
-                                                                                    <span className="font-black opacity-80">{d.value}</span>
+                                                                                    <span><HighlightText text={d.label} terms={sxTerms} /></span>
+                                                                                    <span className="font-black opacity-80"><HighlightText text={d.value} terms={sxTerms} /></span>
                                                                                 </div>
                                                                             ))}
                                                                         </div>
@@ -26040,7 +26058,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                     <>
                                                         {!hiddenCols.has('vch') && (
                                                             <td className="p-1.5 border-r border-slate-100">
-                                                                <span className={`px-1 rounded-[2px] text-[9px] font-black uppercase border ${row.vchType === 'JOURNAL' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{row.vchType}</span>
+                                                                <span className={`px-1 rounded-[2px] text-[9px] font-black uppercase border ${row.vchType === 'JOURNAL' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}><HighlightText text={row.vchType} terms={sxTerms} /></span>
                                                             </td>
                                                         )}
                                                         {!hiddenCols.has('part') && (
@@ -26052,8 +26070,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                         <div className="mt-1 pl-4 border-l border-blue-200 text-[10px] text-slate-500 animate-in slide-in-from-left-2">
                                                                             {row.details.map((d, i) => (
                                                                                 <div key={i} className="flex justify-between gap-4 py-0.5 border-b border-slate-50 last:border-0 italic">
-                                                                                    <span>{d.label}</span>
-                                                                                    <span className="font-black opacity-80">{d.value}</span>
+                                                                                    <span><HighlightText text={d.label} terms={sxTerms} /></span>
+                                                                                    <span className="font-black opacity-80"><HighlightText text={d.value} terms={sxTerms} /></span>
                                                                                 </div>
                                                                             ))}
                                                                         </div>
