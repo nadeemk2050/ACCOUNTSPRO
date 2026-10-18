@@ -44,6 +44,15 @@ const ManagementDashboard = ({
     onImportReceiptExcel,
     onImportJournalExcel,
     onImportPurchaseExcel,
+    onImportPaymentXml,
+    onImportReceiptXml,
+    onImportJournalXml,
+    onImportPurchaseXml,
+    onImportSalesXml,
+    onImportStockJournalXml,
+    onImportDayBookXml,
+    onImportAccountsMastersXml,
+    onImportStockMastersXml,
     onShowBackupLog,
     functions,
     dataOwnerId,
@@ -241,7 +250,7 @@ const ManagementDashboard = ({
                     requestedAt: parsed.requestedAt,
                     deviceId: devices[0] || '',
                     deviceIds: devices,
-                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.7.3',
+                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.7.4',
                     liveCompaniesCount: firstNumber(parsed.liveCompaniesCount, parsed.companyCount, parsed.liveDataCount, usage.liveCompaniesCount),
                     usageReads: firstNumber(parsed.reads, parsed.readCount, usage.reads, usage.readCount, usage.firestoreReads),
                     usageWrites: firstNumber(parsed.writes, parsed.writeCount, usage.writes, usage.writeCount, usage.firestoreWrites),
@@ -333,7 +342,7 @@ const ManagementDashboard = ({
                     status: { stringValue: 'inactive' },
                     createdAt: { timestampValue: new Date().toISOString() },
                     createdBy: { stringValue: currentUser.email || 'developer' },
-                    version: { stringValue: '2.7.3' },
+                    version: { stringValue: '2.7.4' },
                     isGenerated: { booleanValue: true },
                 }
             };
@@ -641,7 +650,7 @@ const ManagementDashboard = ({
         { id: 'rules', name: 'Rules', icon: <ShieldAlert className="w-6 h-6 md:w-8 md:h-8" /> },
         { id: 'transport', name: 'Transport SECTION', icon: <Truck className="w-6 h-6 md:w-8 md:h-8" /> },
         { id: 'staff', name: 'Staff and Team', icon: <Users className="w-6 h-6 md:w-8 md:h-8" /> },
-        { id: 'tools', name: 'Tools', icon: <Wrench className="w-6 h-6 md:w-8 md:h-8" /> },
+        { id: 'tools', name: 'Backup / Restore', icon: <Wrench className="w-6 h-6 md:w-8 md:h-8" /> },
         { id: 'customers_profile', name: 'Customers Profile', icon: <User className="w-6 h-6 md:w-8 md:h-8 text-indigo-400" /> },
         { id: 'recalculate', name: 'Recalculate', icon: <Zap className="w-6 h-6 md:w-8 md:h-8" /> },
         { id: 'recalculate_new', name: 'Recalculate (New)', icon: <RefreshCw className="w-6 h-6 md:w-8 md:h-8 text-green-400" /> },
@@ -653,6 +662,7 @@ const ManagementDashboard = ({
     }
 
     const [showTaxModule, setShowTaxModule] = useState(false);
+    const [toolsTab, setToolsTab] = useState('backup');
 
     return (
         <div className={`fixed inset-0 z-[100] ${bgGradient} text-white font-sans flex flex-col`}>
@@ -661,7 +671,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.7.3</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.7.4</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -1865,8 +1875,33 @@ const ManagementDashboard = ({
                     {
                         activeTab === 'tools' && (
                             <div className="mt-12 bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-md animate-in slide-in-from-bottom duration-500">
-                                <h3 className="text-xl font-bold mb-6 flex items-center gap-2"><Wrench className="text-blue-400" /> Utility Tools</h3>
+                                <h3 className="text-xl font-bold mb-4 flex items-center gap-2"><Wrench className="text-blue-400" /> Backup / Restore Tools</h3>
 
+                                <div className="flex flex-wrap gap-2 mb-6 border-b border-white/10 pb-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setToolsTab('backup')}
+                                        className={`px-4 py-2 rounded-lg text-[11px] font-black uppercase tracking-wide transition-all flex items-center gap-2 ${toolsTab === 'backup' ? 'bg-white/20 text-white ring-1 ring-white/30' : 'text-white/50 hover:text-white/80 hover:bg-white/10'}`}
+                                    >
+                                        <UploadCloud size={14} /> Backup / Restore
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setToolsTab('excel')}
+                                        className={`px-4 py-2 rounded-lg text-[11px] font-black uppercase tracking-wide transition-all flex items-center gap-2 ${toolsTab === 'excel' ? 'bg-white/20 text-white ring-1 ring-white/30' : 'text-white/50 hover:text-white/80 hover:bg-white/10'}`}
+                                    >
+                                        <FileSpreadsheet size={14} /> Import from Excel / CSV
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setToolsTab('tally_xml')}
+                                        className={`px-4 py-2 rounded-lg text-[11px] font-black uppercase tracking-wide transition-all flex items-center gap-2 ${toolsTab === 'tally_xml' ? 'bg-white/20 text-white ring-1 ring-white/30' : 'text-white/50 hover:text-white/80 hover:bg-white/10'}`}
+                                    >
+                                        <FileSpreadsheet size={14} /> Import Tally Data by XML
+                                    </button>
+                                </div>
+
+                                {toolsTab === 'backup' ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                                     <ActionCard
                                         title="Install / Re-install App"
@@ -1903,34 +1938,7 @@ const ManagementDashboard = ({
                                         color="teal"
                                         icon={<UploadCloud />}
                                     />
-                                    <ActionCard
-                                        title="IMP PAYM VCHR XLSX XML CSV"
-                                        desc="Universal Import: Excel, XML & CSV with multi-receiver payout bundling."
-                                        onClick={onImportPaymentExcel}
-                                        color="emerald"
-                                        icon={<FileSpreadsheet />}
-                                    />
-                                    <ActionCard
-                                        title="IMP RECPT VCHR XLSX XML CSV"
-                                        desc="Universal Import: Excel, XML & CSV with multi-giver collection bundling."
-                                        onClick={onImportReceiptExcel}
-                                        color="teal"
-                                        icon={<FileSpreadsheet />}
-                                    />
-                                    <ActionCard
-                                        title="IMP JRNL VCHR XLSX XML CSV"
-                                        desc="Universal Import: Excel, XML & CSV with double-entry Dr/Cr balance verification."
-                                        onClick={onImportJournalExcel}
-                                        color="indigo"
-                                        icon={<FileSpreadsheet />}
-                                    />
-                                    <ActionCard
-                                        title="IMPORT PURCHASE FROM XML"
-                                        desc="Separate section: purchase vouchers from Tally XML (ERP 9 / Prime) or Excel/CSV — item lines, rates, taxes."
-                                        onClick={onImportPurchaseExcel}
-                                        color="amber"
-                                        icon={<FileSpreadsheet />}
-                                    />
+                                    {/* Voucher importers moved to the "Import Tally Data by XML" tab */}
                                     <ActionCard
                                         title="Backup History"
                                         desc="View backup & restore activity log."
@@ -1946,6 +1954,117 @@ const ManagementDashboard = ({
                                         icon={<Key />}
                                     />
                                 </div>
+                                ) : toolsTab === 'excel' ? (
+                                <div className="space-y-4">
+                                    <p className="text-xs text-white/50 leading-relaxed">
+                                        Upload Excel (.xlsx / .xls), CSV or Tally XML. Each importer includes auto-detection and validation, the Solution Centre (create missing masters, resolve duplicates), a Ready-to-Import review, Import History with Rollback, and Instructions with Templates.
+                                    </p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                        <ActionCard
+                                            title="IMP PAYM VCHR XLSX XML CSV"
+                                            desc="Payment vouchers — multi-receiver payout bundling, duplicate and master checks."
+                                            onClick={onImportPaymentExcel}
+                                            color="teal"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMP RECPT VCHR XLSX XML CSV"
+                                            desc="Receipt vouchers — multi-giver collection bundling."
+                                            onClick={onImportReceiptExcel}
+                                            color="green"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMP JRNL VCHR XLSX XML CSV"
+                                            desc="Journal vouchers — double-entry Dr/Cr balance verification."
+                                            onClick={onImportJournalExcel}
+                                            color="purple"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMP PURCHASE VCHR XLSX XML CSV"
+                                            desc="Purchase vouchers — item lines, rates and taxes."
+                                            onClick={onImportPurchaseExcel}
+                                            color="orange"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                    </div>
+                                    <p className="text-[11px] text-white/35 leading-relaxed">
+                                        These importers also accept Tally XML. Tally-only voucher types (Sales, Stock Journal, Day Book) are on the “Import Tally Data by XML” tab.
+                                    </p>
+                                </div>
+                                ) : (
+                                <div className="space-y-4">
+                                    <p className="text-xs text-white/50 leading-relaxed">
+                                        Import vouchers exported from Tally (ERP 9 / Prime) as XML. Each importer validates the vouchers, checks the masters and skips duplicates before posting.
+                                    </p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                        <ActionCard
+                                            title="IMPORT PAYMENT VOUCHERS (XML)"
+                                            desc="Payment vouchers from Tally XML — multi-receiver payout bundling."
+                                            onClick={onImportPaymentXml}
+                                            color="teal"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT RECEIPT VOUCHERS (XML)"
+                                            desc="Receipt vouchers from Tally XML — multi-giver collection bundling."
+                                            onClick={onImportReceiptXml}
+                                            color="green"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT JOURNAL VOUCHERS (XML)"
+                                            desc="Journal vouchers from Tally XML — double-entry Dr/Cr balance verification."
+                                            onClick={onImportJournalXml}
+                                            color="purple"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT PURCHASE VOUCHERS (XML)"
+                                            desc="Purchase vouchers from Tally XML — item lines, rates and taxes."
+                                            onClick={onImportPurchaseXml}
+                                            color="orange"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT SALES VOUCHERS (XML)"
+                                            desc="Sales vouchers from Tally XML — invoice lines, party and stock movement."
+                                            onClick={onImportSalesXml}
+                                            color="blue"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT STOCK JOURNAL VOUCHERS (XML)"
+                                            desc="Stock Journal vouchers from Tally XML — consumed and produced items."
+                                            onClick={onImportStockJournalXml}
+                                            color="pink"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT DAY BOOK (XML)"
+                                            desc="Full Tally Day Book — every voucher type routed and posted to its own module."
+                                            onClick={onImportDayBookXml}
+                                            color="red"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT MASTERS OF ACCOUNTS FROM XML"
+                                            desc="Ledgers from Tally XML — customers, suppliers, bank/cash, expenses, income and capital."
+                                            onClick={onImportAccountsMastersXml}
+                                            color="green"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                        <ActionCard
+                                            title="IMPORT MASTERS OF STOCK FROM XML"
+                                            desc="Stock items from Tally XML — name, group, unit and opening quantity / rate."
+                                            onClick={onImportStockMastersXml}
+                                            color="teal"
+                                            icon={<FileSpreadsheet />}
+                                        />
+                                    </div>
+                                </div>
+                                )}
                             </div>
                         )
                     }
@@ -2315,7 +2434,7 @@ const ManagementDashboard = ({
                                                                 <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.7.3'}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.7.4'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/50 font-mono" title={(key.deviceIds || []).join(', ')}>{formatDeviceList(key.deviceIds || [])}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? '—'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
@@ -2432,7 +2551,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">App Version</div>
-                                                                <div className="text-[11px] text-white/50">{key.version || '2.7.3'}</div>
+                                                                <div className="text-[11px] text-white/50">{key.version || '2.7.4'}</div>
                                                             </div>
                                                         </div>
 

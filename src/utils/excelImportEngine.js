@@ -491,7 +491,7 @@ export function groupMultiLineVouchers(vouchers, options = {}) {
  * Parses Tally native XML (Data Interchange)
  */
 /** Tally exports its XML as UTF-16 (usually LE with BOM) — decode by BOM/heuristic instead of assuming UTF-8. */
-async function readXmlFileText(file) {
+export async function readXmlFileText(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let encoding = 'utf-8';
     let offset = 0;
@@ -556,6 +556,9 @@ export function classifyVoucherType(name) {
  */
 export function parseXMLFile(xmlText, options = {}) {
     const voucherMode = options.voucherMode || 'payment';
+    if (isDbcRegisterXml(xmlText)) {
+        throw new Error('This is a Tally ERP 9 REGISTER export (Day Book / Register columns). Open it with the PURCHASE importer, or export "Vouchers" from Tally Prime as XML (Data Interchange) for payment / receipt / journal.');
+    }
     const parser = new DOMParser();
     const sanitized = sanitizeTallyXml(xmlText);
     const xmlDoc = parser.parseFromString(sanitized, 'text/xml');
@@ -1125,12 +1128,27 @@ export async function executeBatchImport(rowsToImport, context) {
         onRowStatus,
         chunkSize = 1,
         control,
-        onBatchStart
+        onBatchStart,
+        lookups = {}
     } = context;
 
     const targetUid = dataOwnerId || user?.uid;
     if (!targetUid) throw new Error('User not identified');
     if (!rowsToImport || rowsToImport.length === 0) throw new Error('No rows to import');
+
+    const findIdIn = (list, name) => {
+        const key = normalizeMasterName(name);
+        if (!key) return '';
+        const hit = (list || []).find(x => normalizeMasterName(x.name) === key);
+        return hit?.id || '';
+    };
+    const findAnyId = (name) => findIdIn(lookups.parties, name)
+        || findIdIn(lookups.accounts, name)
+        || findIdIn(lookups.expenses, name)
+        || findIdIn(lookups.directExpenseAccounts, name)
+        || findIdIn(lookups.incomeAccounts, name)
+        || findIdIn(lookups.capitalAccounts, name)
+        || findIdIn(lookups.assetAccounts, name);
 
     const batchImportId = `BATCH_IMP_${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const timestampISO = new Date().toISOString();
@@ -1223,8 +1241,13 @@ export async function executeBatchImport(rowsToImport, context) {
                     amount: row.amount * (row.exchangeRate || 1),
                     foreignAmount: row.amount,
                     rows: [...drRows, ...crRows],
-                    drName: (row.drRows || []).map(r => r.targetName).join(', ') || 'Various',
-                    crName: (row.crRows || []).map(r => r.targetName).join(', ') || 'Various',
+                    // Ledger statements query journal vouchers by drId / crId, so mirror the first leg
+                    drId: drRows[0]?.id || null,
+                    drType: drRows[0]?.category || 'expense',
+                    crId: crRows[0]?.id || null,
+                    crType: crRows[0]?.category || 'party',
+                    drName: drRows.map(r => row.resolvedDrRows?.find(x => (x.targetId || x.matchedMaster?.id) === r.id)?.targetName).filter(Boolean).join(', ') || (row.drRows || []).map(r => r.targetName).join(', ') || 'Various',
+                    crName: crRows.map(r => row.resolvedCrRows?.find(x => (x.targetId || x.matchedMaster?.id) === r.id)?.targetName).filter(Boolean).join(', ') || (row.crRows || []).map(r => r.targetName).join(', ') || 'Various',
                     currencyId: row.currency || 'BASE',
                     exchangeRate: row.exchangeRate || 1.0,
                     currencySymbol,
@@ -1256,21 +1279,31 @@ export async function executeBatchImport(rowsToImport, context) {
             }
 
             const docRef = doc(collection(db, 'payments'));
-            const sourceAccountId = row.matchedPaidFrom?.match?.id || row.paidFromId || '';
+            const sourceAccountId = row.matchedPaidFrom?.match?.id || row.paidFromId || findIdIn(lookups.accounts, row.paidFrom);
 
             const splits = (row.resolvedSplits || []).map((s, idx) => ({
                 id: idx + 1,
                 category: s.category || 'party',
-                targetId: s.targetId || s.matchedMaster?.id || '',
+                targetId: s.targetId || s.matchedMaster?.id || findAnyId(s.targetName) || '',
+                targetName: s.targetName || s.matchedMaster?.name || '',
                 amount: s.amount || row.amount,
                 description: s.description || row.narration || ''
             }));
+
+            // The Ledger module locates payment vouchers through partyId (party ledgers) and
+            // accountId / toAccountId (account ledgers), so those must be written explicitly.
+            const primaryPartySplit = splits.find(s => s.category === 'party' && s.targetId);
+            const primaryAccountSplit = splits.find(s => s.category === 'account' && s.targetId);
 
             const paymentDoc = {
                 date: row.date,
                 refNo: row.vchNo,
                 type: voucherType,
                 accountId: sourceAccountId,
+                toAccountId: primaryAccountSplit?.targetId || null,
+                partyId: primaryPartySplit?.targetId || null,
+                partyName: primaryPartySplit?.targetName || null,
+                transactionCategory: 'multi',
                 amount: row.amount,
                 totalAmount: row.amount,
                 narration: row.narration || `Imported via ${row.format || 'Excel'}`,
@@ -1340,10 +1373,10 @@ export async function executeBatchImport(rowsToImport, context) {
         userId: targetUid,
         userName: effectiveName,
         action: 'IMPORTED',
-        docType: 'Imported',
+        docType: voucherType === 'journal' ? 'Journal Voucher' : (voucherType === 'in' ? 'Receipt Voucher' : 'Payment Voucher'),
         refNo: batchImportId,
         amount: rowsToImport.reduce((sum, r) => sum + (r.amount || 0), 0),
-        description: `Imported ${totalImported} payment vouchers from Excel (Batch: ${batchImportId})`,
+        description: `Imported ${totalImported} voucher(s) from ${context.docLabel || 'Excel'} (Batch: ${batchImportId})`,
         batchImportId,
         voucherCount: totalImported
     });
@@ -1356,6 +1389,8 @@ export async function executeBatchImport(rowsToImport, context) {
         count: totalImported,
         totalAmount: rowsToImport.reduce((sum, r) => sum + (r.amount || 0), 0),
         user: effectiveName,
+        voucherType: voucherType === 'journal' ? 'journal' : (voucherType === 'in' ? 'receipt' : 'payment'),
+        docLabel: context.docLabel || 'Voucher',
         status: 'COMPLETED'
     });
 
@@ -1399,6 +1434,15 @@ export async function rollbackBatchImport(batchImportId, context) {
             where('batchImportId', '==', batchImportId)
         ));
         colName = 'invoices';
+    }
+
+    if (snap.empty) {
+        snap = await getDocs(query(
+            collection(db, 'stock_journals'),
+            where('userId', '==', targetUid),
+            where('batchImportId', '==', batchImportId)
+        ));
+        colName = 'stock_journals';
     }
 
     if (snap.empty) {
@@ -1489,7 +1533,654 @@ export function extractTaxPercent(name) {
 /**
  * Parses Tally purchase vouchers (item invoices) from Tally ERP 9 / Tally Prime XML.
  */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Tally ERP 9 "Day Book / Register" XML export (DBC* tags)
+ * ERP 9 has no "Export Data → Vouchers"; `E: Export` on a register produces this
+ * flat column layout: one row per ledger/item line, each row starting with
+ * <DBCFIXED><DBCDATE/><DBCPARTY/></DBCFIXED>. The first row of a voucher carries
+ * the voucher meta (type / number / party / total); following rows are item lines.
+ * ──────────────────────────────────────────────────────────────────────────── */
+const decodeXmlEntities = (s) => String(s || '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&amp;/g, '&');
+
+export function isDbcRegisterXml(xmlText) {
+    const s = String(xmlText || '');
+    return /<DBCFIXED[\s>]/i.test(s) || /<DBCVCHNO[\s>]/i.test(s) || /<DBCPARTYNAME[\s>]/i.test(s);
+}
+
+/** Splits the flat DBC register into one object per printed row. */
+export function splitDbcRows(xmlText) {
+    const parts = String(xmlText || '').split(/<DBCFIXED\s*>/i).slice(1);
+    return parts.map((part) => {
+        const fixedEnd = part.search(/<\/DBCFIXED>/i);
+        const fixedText = fixedEnd >= 0 ? part.slice(0, fixedEnd) : '';
+        const body = fixedEnd >= 0 ? part.slice(fixedEnd + '</DBCFIXED>'.length) : part;
+        const pick = (tag, src) => {
+            const m = new RegExp(`<${tag}\\s*>([\\s\\S]*?)</${tag}\\s*>`, 'i').exec(src);
+            return m ? decodeXmlEntities(m[1]).trim() : '';
+        };
+        return {
+            date: pick('DBCDATE', fixedText),
+            fixedParty: pick('DBCPARTY', fixedText),
+            partyName: pick('DBCPARTYNAME', body),
+            vchType: pick('DBCVCHTYPE', body),
+            vchNo: pick('DBCVCHNO', body),
+            vchRef: pick('DBCVCHREF', body),
+            narration: pick('DBCNARR', body),
+            qty: pick('DBCQTY', body),
+            altUnits: pick('DBCALTUNITS', body),
+            rate: pick('DBCRATE', body),
+            amount: pick('DBCAMOUNT', body),
+            addlCost: pick('DBCADDLCOST', body),
+            grossAmt: pick('DBCGROSSAMT', body),
+            ledgerAmt: pick('DBCLEDAMT', body),
+        };
+    }).filter(r => r.date || r.fixedParty || r.partyName || r.amount);
+}
+
+/** Groups rows into vouchers: a row with a voucher number/type starts a new voucher. */
+export function groupDbcRows(xmlText) {
+    const rows = splitDbcRows(xmlText);
+    const groups = [];
+    let cur = null;
+    const flush = () => { if (cur) groups.push(cur); };
+    rows.forEach((r) => {
+        const isHeader = !!(r.vchNo || r.vchType) || (!cur && !!r.date);
+        if (isHeader) {
+            flush();
+            cur = { header: r, lines: [] };
+        } else if (cur) {
+            cur.lines.push(r);
+        }
+    });
+    flush();
+    return groups;
+}
+
+/**
+ * ERP 9 register → purchase vouchers in the same shape the validation middleware expects
+ * (party, items with qty/unit/rate/amount, tax entries, totals).
+ */
+export function parsePurchaseDbcRegister(xmlText, options = {}) {
+    const groups = groupDbcRows(sanitizeTallyXml(xmlText));
+    if (!groups.length) throw new Error('No register rows were found in this Tally XML.');
+
+    const expectedKind = options.voucherType === 'sales' ? 'sales' : 'purchase';
+    const refPrefix = expectedKind === 'sales' ? 'SAL' : 'PUR';
+    const fallbackType = expectedKind === 'sales' ? 'Sales' : 'Purchase';
+    const typeCounts = {};
+    const parsedVouchers = [];
+    const skippedTypes = [];
+    let skippedVoucherCount = 0;
+
+    groups.forEach((g, index) => {
+        const h = g.header || {};
+        const vchType = h.vchType || fallbackType;
+        typeCounts[vchType] = (typeCounts[vchType] || 0) + 1;
+
+        const kind = classifyVoucherType(vchType);
+        if (kind !== 'unknown' && kind !== 'other' && kind !== expectedKind) {
+            skippedVoucherCount++;
+            if (!skippedTypes.includes(vchType)) skippedTypes.push(vchType);
+            return;
+        }
+
+        const items = [];
+        const taxEntries = [];
+        const otherLines = [];
+
+        g.lines.forEach((l) => {
+            const name = (l.fixedParty || l.partyName || '').trim();
+            if (!name) return;
+            const amount = Math.abs(numFromTally(l.amount));
+            const { qty, unit } = splitQtyUnit(l.qty);
+            const absQty = Math.abs(qty);
+
+            if (absQty > 0) {
+                const rateParts = String(l.rate || '').split('/');
+                const rate = Math.abs(numFromTally(rateParts[0]));
+                items.push({
+                    itemName: name,
+                    qty: absQty,
+                    unit: unit || (rateParts[1] || '').trim(),
+                    rate: rate || (absQty ? amount / absQty : 0),
+                    amount: amount || r3(absQty * rate),
+                    discount: 0,
+                    taxHeads: []
+                });
+            } else if (TAX_LEDGER_RE.test(name)) {
+                taxEntries.push({ name, amount, percent: extractTaxPercent(name) });
+            } else if (amount > 0) {
+                otherLines.push({ name, amount });
+            }
+        });
+
+        const itemsTotal = r3(items.reduce((s, i) => s + (i.amount || 0), 0));
+        const taxAmount = r3(taxEntries.reduce((s, t) => s + (t.amount || 0), 0));
+        const otherTotal = r3(otherLines.reduce((s, o) => s + (o.amount || 0), 0));
+        const partyTotal = Math.abs(numFromTally(h.amount));
+        const amount = partyTotal || r3(itemsTotal + taxAmount + otherTotal);
+
+        parsedVouchers.push({
+            rowNumber: index + 1,
+            rawDate: h.date,
+            date: parseExcelDate(h.date),
+            vchNo: h.vchNo || `${refPrefix}-${index + 1}`,
+            vchType,
+            partyName: (h.partyName || h.fixedParty || '').trim(),
+            supplierInvoiceNo: h.vchRef || '',
+            narration: h.narration || '',
+            items,
+            itemCount: items.length,
+            itemsTotal,
+            taxEntries,
+            taxName: taxEntries.map(t => t.name).join(', '),
+            taxPercent: taxEntries.length ? (taxEntries[0].percent || 0) : 0,
+            taxAmount,
+            otherLines,
+            otherTotal,
+            ledgerEntries: [],
+            amount,
+            totalDr: amount,
+            totalCr: amount,
+            currency: 'BASE',
+            exchangeRate: 1.0,
+            format: 'tally_erp9_register',
+            paidTo: (h.partyName || h.fixedParty || '').trim(),
+            paidFrom: '',
+            splits: [],
+            isMultiSplit: items.length > 1
+        });
+    });
+
+    return {
+        formatType: 'tally_erp9_register',
+        headers: ['Date', 'Voucher No', expectedKind === 'sales' ? 'Customer' : 'Supplier', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Tax', 'Narration'],
+        vouchers: parsedVouchers,
+        expectedVoucherKind: expectedKind,
+        detectedVoucherTypes: Object.keys(typeCounts),
+        detectedVoucherTypeCounts: typeCounts,
+        skippedVoucherCount,
+        skippedVoucherTypes: skippedTypes,
+        typeMismatch: parsedVouchers.length === 0 && Object.keys(typeCounts).length > 0
+    };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * STOCK JOURNAL — ERP 9 register (DBC*) and Tally Prime voucher XML
+ * A stock journal posts consumption (source, negative amount) and production
+ * (destination, positive amount) of the same material in one voucher.
+ * ──────────────────────────────────────────────────────────────────────────── */
+export function parseStockJournalDbcRegister(xmlText, options = {}) {
+    const groups = groupDbcRows(sanitizeTallyXml(xmlText));
+    if (!groups.length) throw new Error('No register rows were found in this Tally XML.');
+
+    const typeCounts = {};
+    const skippedTypes = [];
+    let skippedVoucherCount = 0;
+    const vouchers = [];
+
+    groups.forEach((g, index) => {
+        const h = g.header || {};
+        const vchType = h.vchType || 'Stock Journal';
+        typeCounts[vchType] = (typeCounts[vchType] || 0) + 1;
+
+        const kind = classifyVoucherType(vchType);
+        if (kind !== 'unknown' && kind !== 'other' && kind !== 'stock_journal') {
+            skippedVoucherCount++;
+            if (!skippedTypes.includes(vchType)) skippedTypes.push(vchType);
+            return;
+        }
+
+        const consumed = [];
+        const produced = [];
+
+        g.lines.forEach((l) => {
+            const name = (l.fixedParty || l.partyName || '').trim();
+            if (!name) return;
+            const { qty, unit } = splitQtyUnit(l.qty);
+            const absQty = Math.abs(qty);
+            if (!(absQty > 0)) return;
+            const rateParts = String(l.rate || '').split('/');
+            const rate = Math.abs(numFromTally(rateParts[0]));
+            const signedAmount = numFromTally(l.amount);
+            const amount = Math.abs(signedAmount) || r3(absQty * rate);
+            const entry = {
+                itemName: name,
+                qty: absQty,
+                unit: unit || (rateParts[1] || '').trim(),
+                rate: rate || (absQty ? amount / absQty : 0),
+                amount,
+                discount: 0,
+                taxHeads: []
+            };
+            // ERP 9 prints the consumption (source) leg with a negative amount
+            if (signedAmount < 0) consumed.push(entry); else produced.push(entry);
+        });
+
+        const consumedTotal = r3(consumed.reduce((s, i) => s + (i.amount || 0), 0));
+        const producedTotal = r3(produced.reduce((s, i) => s + (i.amount || 0), 0));
+        const items = [
+            ...consumed.map(i => ({ ...i, side: 'consumed' })),
+            ...produced.map(i => ({ ...i, side: 'produced' }))
+        ];
+
+        vouchers.push({
+            rowNumber: index + 1,
+            rawDate: h.date,
+            date: parseExcelDate(h.date),
+            vchNo: h.vchNo || `SJ-${index + 1}`,
+            vchType,
+            narration: h.narration || '',
+            partyName: '',
+            items,
+            itemCount: items.length,
+            itemsTotal: producedTotal || consumedTotal,
+            consumed,
+            produced,
+            consumedTotal,
+            producedTotal,
+            amount: producedTotal || consumedTotal,
+            taxEntries: [],
+            taxName: '',
+            taxPercent: 0,
+            taxAmount: 0,
+            currency: 'BASE',
+            exchangeRate: 1.0,
+            format: 'tally_erp9_stock_journal',
+            paidTo: '',
+            paidFrom: '',
+            splits: [],
+            isMultiSplit: items.length > 2
+        });
+    });
+
+    return {
+        formatType: 'tally_erp9_stock_journal',
+        headers: ['Date', 'Voucher No', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Side', 'Narration'],
+        vouchers,
+        expectedVoucherKind: 'stock_journal',
+        detectedVoucherTypes: Object.keys(typeCounts),
+        detectedVoucherTypeCounts: typeCounts,
+        skippedVoucherCount,
+        skippedVoucherTypes: skippedTypes,
+        typeMismatch: vouchers.length === 0 && Object.keys(typeCounts).length > 0
+    };
+}
+
+/** Tally Prime / ERP 9 Stock Journal voucher XML (Data Interchange). */
+export function parseStockJournalXMLFile(xmlText, options = {}) {
+    if (isDbcRegisterXml(xmlText)) {
+        return parseStockJournalDbcRegister(xmlText, options);
+    }
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
+    const parseError = xmlDoc.getElementsByTagName('parsererror');
+    if (parseError.length > 0) throw new Error('Invalid XML file: ' + parseError[0].textContent);
+
+    const voucherNodes = Array.from(xmlDoc.getElementsByTagName('VOUCHER'));
+    if (!voucherNodes.length) throw new Error('No <VOUCHER> elements found in this XML document.');
+
+    const typeCounts = {};
+    voucherNodes.forEach(v => {
+        const t = v.getElementsByTagName('VOUCHERTYPENAME')[0]?.textContent?.trim() || v.getAttribute('VCHTYPE') || '';
+        if (t) typeCounts[t] = (typeCounts[t] || 0) + 1;
+    });
+    const skippedTypes = [];
+    let skippedVoucherCount = 0;
+    const vouchers = [];
+
+    const readLine = (n, side) => {
+        const itemName = readXmlTag(n, 'STOCKITEMNAME');
+        if (!itemName) return null;
+        const qtyText = readXmlTag(n, 'BILLEDQTY') || readXmlTag(n, 'ACTUALQTY') || readXmlTag(n, 'QUANTITY') || '';
+        const { qty, unit } = splitQtyUnit(qtyText);
+        const rate = Math.abs(numFromTally(readXmlTag(n, 'RATE')));
+        let amount = Math.abs(numFromTally(readXmlTag(n, 'AMOUNT')));
+        if (!amount) {
+            const alloc = n.getElementsByTagName('ACCOUNTINGALLOCATIONS.LIST')[0];
+            if (alloc) amount = Math.abs(numFromTally(readXmlTag(alloc, 'AMOUNT')));
+        }
+        const absQty = Math.abs(qty);
+        return {
+            itemName,
+            qty: absQty,
+            unit: unit || readXmlTag(n, 'UNIT') || '',
+            rate: rate || (absQty ? amount / absQty : 0),
+            amount: amount || r3(absQty * rate),
+            discount: 0,
+            taxHeads: [],
+            side
+        };
+    };
+
+    voucherNodes.forEach((vNode, index) => {
+        const vchType = vNode.getElementsByTagName('VOUCHERTYPENAME')[0]?.textContent?.trim() ||
+            vNode.getAttribute('VCHTYPE') || 'Stock Journal';
+        const kind = classifyVoucherType(vchType);
+        if (kind !== 'unknown' && kind !== 'other' && kind !== 'stock_journal') {
+            skippedVoucherCount++;
+            if (!skippedTypes.includes(vchType)) skippedTypes.push(vchType);
+            return;
+        }
+
+        // Stock Journal writes source rows in INVENTORYENTRIESIN.LIST and destination rows in INVENTORYENTRIESOUT.LIST
+        let consumed = Array.from(vNode.getElementsByTagName('INVENTORYENTRIESIN.LIST')).map(n => readLine(n, 'consumed')).filter(Boolean);
+        let produced = Array.from(vNode.getElementsByTagName('INVENTORYENTRIESOUT.LIST')).map(n => readLine(n, 'produced')).filter(Boolean);
+
+        if (consumed.length === 0 && produced.length === 0) {
+            // Fallback: generic item list where the sign of the amount tells the side
+            const generic = Array.from(vNode.getElementsByTagName('ALLINVENTORYENTRIES.LIST'))
+                .concat(Array.from(vNode.getElementsByTagName('INVENTORYENTRIES.LIST')));
+            consumed = [];
+            produced = [];
+            generic.forEach(n => {
+                const signed = numFromTally(readXmlTag(n, 'AMOUNT'));
+                const line = readLine(n, signed < 0 ? 'consumed' : 'produced');
+                if (!line) return;
+                (signed < 0 ? consumed : produced).push(line);
+            });
+        }
+
+        const consumedTotal = r3(consumed.reduce((s, i) => s + (i.amount || 0), 0));
+        const producedTotal = r3(produced.reduce((s, i) => s + (i.amount || 0), 0));
+        const items = [...consumed, ...produced];
+
+        vouchers.push({
+            rowNumber: index + 1,
+            rawDate: readXmlTag(vNode, 'DATE'),
+            date: parseExcelDate(readXmlTag(vNode, 'DATE')),
+            vchNo: readXmlTag(vNode, 'VOUCHERNUMBER') || `SJ-${index + 1}`,
+            vchType,
+            narration: readXmlTag(vNode, 'NARRATION'),
+            partyName: '',
+            items,
+            itemCount: items.length,
+            itemsTotal: producedTotal || consumedTotal,
+            consumed,
+            produced,
+            consumedTotal,
+            producedTotal,
+            amount: producedTotal || consumedTotal,
+            taxEntries: [],
+            taxName: '',
+            taxPercent: 0,
+            taxAmount: 0,
+            currency: 'BASE',
+            exchangeRate: 1.0,
+            format: 'tally_xml_stock_journal',
+            paidTo: '',
+            paidFrom: '',
+            splits: [],
+            isMultiSplit: items.length > 2
+        });
+    });
+
+    return {
+        formatType: 'tally_xml_stock_journal',
+        headers: ['Date', 'Voucher No', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Side', 'Narration'],
+        vouchers,
+        expectedVoucherKind: 'stock_journal',
+        detectedVoucherTypes: Object.keys(typeCounts),
+        detectedVoucherTypeCounts: typeCounts,
+        skippedVoucherCount,
+        skippedVoucherTypes: skippedTypes,
+        typeMismatch: vouchers.length === 0 && Object.keys(typeCounts).length > 0
+    };
+}
+
+/** Universal loader for stock journal files: .xml -> Tally parser. */
+export async function parseStockJournalUniversalFile(file, options = {}) {
+    const text = await readXmlFileText(file);
+    return parseStockJournalXMLFile(text, options);
+}
+
+/**
+ * Validates stock journal vouchers: stock items must exist (or be created from
+ * the Solution Centre), quantities must be positive, and both a consumption and
+ * a production side must be present.
+ */
+export function validateStockJournalBatch(vouchers, context = {}) {
+    const { existingVouchers = [], masters = {}, companyProfile = {} } = context;
+    const lockDate = companyProfile?.rules?.lockDate || null;
+    const existingRefSet = new Set(
+        (existingVouchers || []).map(v => String(v.refNo || '').trim().toLowerCase()).filter(Boolean)
+    );
+
+    const cleanRows = [];
+    const quarantinedRows = [];
+    const seenRefs = new Set();
+
+    (vouchers || []).forEach((v, index) => {
+        const issues = [];
+        const push = (type, rule, message, extra = {}) => issues.push({ type, rule, message, ...extra });
+
+        if (!v.date) push('CRITICAL', 'RULE_4_MANDATORY', 'Missing voucher date', { field: 'date' });
+        if (!v.items || v.items.length === 0) push('CRITICAL', 'RULE_4_MANDATORY', 'No item lines found in this stock journal', { field: 'items' });
+        if (!(v.consumed || []).length) push('CRITICAL', 'RULE_4_MANDATORY', 'No consumption (source) lines found', { field: 'consumed' });
+        if (!(v.produced || []).length) push('CRITICAL', 'RULE_4_MANDATORY', 'No production (destination) lines found', { field: 'produced' });
+
+        if (lockDate && v.date && v.date <= lockDate) {
+            push('CRITICAL', 'RULE_6_PERIOD_LOCK', `Date ${v.date} is on/before the locked date ${lockDate}`, { field: 'date' });
+        }
+
+        const ref = String(v.vchNo || '').trim();
+        if (ref && existingRefSet.has(ref.toLowerCase())) {
+            push('CRITICAL', 'RULE_1_DUPLICATE_REF', `Voucher no. ${ref} already exists in the system`, { solution: 'auto_renumber_or_skip' });
+        } else if (ref && seenRefs.has(ref.toLowerCase())) {
+            push('WARNING', 'RULE_1_DUPLICATE_REF', `Voucher no. ${ref} repeats within this file`, { solution: 'confirm_multi_line' });
+        }
+        if (ref) seenRefs.add(ref.toLowerCase());
+
+        const resolvedItems = (v.items || []).map((it, ii) => {
+            const pm = matchMaster(it.itemName, { products: masters.products || [] });
+            if (pm.match) {
+                if (!pm.isExact) {
+                    push('INFO', 'RULE_5_FUZZY_MATCH', `Item "${it.itemName}" fuzzy-matched to "${pm.match.name}" (${Math.round(pm.score * 100)}%)`, { suggestion: { ...pm, itemIndex: ii }, field: `items[${ii}]`, missingType: 'product', missingName: it.itemName });
+                }
+            } else {
+                push('CRITICAL', 'RULE_2_MISSING_MASTER', `Stock item "${it.itemName}" does not exist in Items`, { field: `items[${ii}]`, missingType: 'product', missingName: it.itemName });
+            }
+            if (!(Number(it.qty) > 0)) push('CRITICAL', 'RULE_4_MANDATORY', `Item "${it.itemName}" has no quantity`, { field: `items[${ii}]` });
+            return { ...it, matchedMaster: pm.match || null, productId: pm.match?.id || '' };
+        });
+
+        const consumedTotal = r3(resolvedItems.filter(i => i.side !== 'produced').reduce((s, i) => s + (i.amount || 0), 0));
+        const producedTotal = r3(resolvedItems.filter(i => i.side === 'produced').reduce((s, i) => s + (i.amount || 0), 0));
+
+        const hasCritical = issues.some(i => i.type === 'CRITICAL');
+        const hasWarning = issues.some(i => i.type === 'WARNING');
+        const status = hasCritical ? 'CRITICAL' : hasWarning ? 'WARNING' : 'VALID';
+
+        const rowItem = {
+            id: `sjrow_${index + 1}_${v.vchNo || Date.now()}`,
+            ...v,
+            status,
+            issues,
+            isResolved: !hasCritical,
+            resolvedItems,
+            consumedTotal: consumedTotal || v.consumedTotal || 0,
+            producedTotal: producedTotal || v.producedTotal || 0,
+            amount: producedTotal || v.amount || 0,
+            taxEntries: [],
+            resolvedTax: []
+        };
+
+        if (hasCritical || hasWarning) quarantinedRows.push(rowItem);
+        else cleanRows.push(rowItem);
+    });
+
+    return {
+        totalParsed: (vouchers || []).length,
+        cleanRows,
+        quarantinedRows,
+        stats: {
+            validCount: cleanRows.length,
+            quarantinedCount: quarantinedRows.length,
+            totalAmount: (vouchers || []).reduce((sum, v) => sum + (v.amount || 0), 0)
+        }
+    };
+}
+
+/** Posts validated stock journals into the `stock_journals` collection. */
+export async function executeStockJournalImport(rowsToImport, context = {}) {
+    const { user, dataOwnerId, effectiveName, onRowStatus, chunkSize = 1, control, onBatchStart, lookups = {} } = context;
+    const targetUid = dataOwnerId || user?.uid;
+    if (!targetUid) throw new Error('User not identified');
+    if (!rowsToImport || rowsToImport.length === 0) throw new Error('No rows to import');
+
+    const findProductId = (name) => {
+        const key = normalizeMasterName(name);
+        if (!key) return '';
+        const hit = (lookups.products || []).find(x => normalizeMasterName(x.name) === key);
+        return hit?.id || '';
+    };
+
+    const batchImportId = `BATCH_SJ_${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const timestampISO = new Date().toISOString();
+    const BATCH_CHUNK_SIZE = 400;
+    let totalImported = 0;
+    let totalValue = 0;
+
+    const CHUNK = Math.min(BATCH_CHUNK_SIZE, Math.max(1, Number(chunkSize) || 1));
+    const reportStatus = typeof onRowStatus === 'function' ? onRowStatus : null;
+    const ctl = control || {};
+    const isStoppedNow = () => (typeof ctl.isStopped === 'function' ? !!ctl.isStopped() : false);
+    const isRowSkipped = (id) => (typeof ctl.isRowSkipped === 'function' ? !!ctl.isRowSkipped(id) : false);
+    const waitWhilePaused = async () => {
+        if (typeof ctl.isPaused !== 'function' || !ctl.isPaused()) return !isStoppedNow();
+        while (ctl.isPaused()) {
+            if (isStoppedNow()) return false;
+            await new Promise(r => setTimeout(r, 150));
+        }
+        return !isStoppedNow();
+    };
+    let cancelledCount = 0;
+    if (typeof onBatchStart === 'function') onBatchStart(batchImportId);
+
+    for (let i = 0; i < rowsToImport.length; i += CHUNK) {
+        const chunk = rowsToImport.slice(i, i + CHUNK).filter(r => {
+            if (isStoppedNow() || isRowSkipped(r.id)) {
+                cancelledCount++;
+                if (reportStatus) reportStatus(r.id, 'cancelled');
+                return false;
+            }
+            return true;
+        });
+        if (chunk.length === 0) continue;
+        if (!(await waitWhilePaused())) {
+            chunk.forEach(r => { cancelledCount++; if (reportStatus) reportStatus(r.id, 'cancelled'); });
+            continue;
+        }
+        if (reportStatus) chunk.forEach(r => reportStatus(r.id, 'processing', i, rowsToImport.length));
+        const batch = writeBatch(db);
+
+        for (const row of chunk) {
+            const lines = row.resolvedItems || row.items || [];
+            const toEntry = (it, extra = {}) => ({
+                productId: it.productId || it.matchedMaster?.id || findProductId(it.itemName),
+                quantity: r3(it.qty ?? it.quantity),
+                rate: r3(it.rate),
+                total: r3(it.amount ?? it.total ?? (Number(it.qty) || 0) * (Number(it.rate) || 0)),
+                lotId: null,
+                pcs: 0,
+                ...extra
+            });
+
+            const consumed = lines.filter(it => it.side !== 'produced').map(it => toEntry(it));
+            const producedEntries = lines
+                .filter(it => it.side === 'produced')
+                .map(it => toEntry(it));
+            const consumedQty = consumed.reduce((s, i) => s + (i.quantity || 0), 0);
+            producedEntries.forEach(e => { e.percent = consumedQty > 0 ? r3((e.quantity / consumedQty) * 100) : 0; });
+
+            const consumedTotal = r3(consumed.reduce((s, i) => s + (i.total || 0), 0));
+            const producedTotal = r3(producedEntries.reduce((s, i) => s + (i.total || 0), 0));
+
+            const docRef = doc(collection(db, 'stock_journals'));
+            batch.set(docRef, {
+                date: row.date,
+                refNo: row.vchNo,
+                narration: row.narration || `Imported ${row.format === 'tally_xml_stock_journal' ? 'from Tally XML' : 'from Tally ERP 9 register'}`,
+                type: 'manufacturing',
+                consumed,
+                produced: producedEntries,
+                journalExpenses: [],
+                creditAccountId: null,
+                expenseJournalId: null,
+                consumedTotal,
+                producedTotal,
+                jumboEnabled: false,
+                bagCount: 0,
+                jumboBags: [],
+                soldBags: [],
+                productionStaffIds: [],
+                userId: targetUid,
+                ownerId: targetUid,
+                batchImportId,
+                isImported: true,
+                importedAt: timestampISO,
+                importedBy: user.uid,
+                importedByName: effectiveName,
+                createdAt: serverTimestamp(),
+                createdBy: user.uid,
+                createdByName: effectiveName,
+                updatedAt: serverTimestamp(),
+                lastModifiedBy: user.uid,
+                lastModifiedByName: effectiveName,
+                lastModifiedAt: serverTimestamp()
+            });
+
+            totalImported++;
+            totalValue += producedTotal;
+        }
+
+        try {
+            await batch.commit();
+            if (reportStatus) chunk.forEach(r => reportStatus(r.id, 'imported', i, rowsToImport.length));
+        } catch (chunkErr) {
+            if (reportStatus) chunk.forEach(r => reportStatus(r.id, 'error', i, rowsToImport.length));
+            throw chunkErr;
+        }
+    }
+
+    const auditBatch = writeBatch(db);
+    auditBatch.set(doc(collection(db, 'audit_logs')), {
+        date: serverTimestamp(),
+        ownerId: targetUid,
+        userId: targetUid,
+        userName: effectiveName,
+        action: 'IMPORTED',
+        docType: 'Stock Journal',
+        refNo: batchImportId,
+        amount: totalValue,
+        description: `Imported ${totalImported} stock journal voucher(s) from ${context.docLabel || 'Excel/XML'} (Batch: ${batchImportId})`,
+        batchImportId,
+        voucherCount: totalImported
+    });
+    await auditBatch.commit();
+
+    addBatchHistoryEntry({
+        batchImportId,
+        timestamp: timestampISO,
+        count: totalImported,
+        totalAmount: totalValue,
+        user: effectiveName,
+        voucherType: 'stock_journal',
+        docLabel: 'Stock Journal',
+        status: 'COMPLETED'
+    });
+
+    return { batchImportId, totalImported, totalValue, cancelledCount, timestamp: timestampISO };
+}
+
 export function parsePurchaseXMLFile(xmlText, options = {}) {
+    if (isDbcRegisterXml(xmlText)) {
+        return parsePurchaseDbcRegister(xmlText, options);
+    }
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
 
@@ -1512,21 +2203,24 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
     const skippedTypes = [];
     let skippedVoucherCount = 0;
 
+    const expectedKind = options.voucherType === 'sales' ? 'sales' : 'purchase';
+    const refPrefix = expectedKind === 'sales' ? 'SAL' : 'PUR';
+    const fallbackType = expectedKind === 'sales' ? 'Sales' : 'Purchase';
     const parsedVouchers = [];
 
     voucherNodes.forEach((vNode, index) => {
         const vchType = vNode.getElementsByTagName('VOUCHERTYPENAME')[0]?.textContent?.trim() ||
-                        vNode.getAttribute('VCHTYPE') || 'Purchase';
+                        vNode.getAttribute('VCHTYPE') || fallbackType;
 
         const kind = classifyVoucherType(vchType);
-        if (kind !== 'unknown' && kind !== 'other' && kind !== 'purchase') {
+        if (kind !== 'unknown' && kind !== 'other' && kind !== expectedKind) {
             skippedVoucherCount++;
             if (!skippedTypes.includes(vchType)) skippedTypes.push(vchType);
             return;
         }
 
         const rawDate = vNode.getElementsByTagName('DATE')[0]?.textContent?.trim();
-        const vchNo = vNode.getElementsByTagName('VOUCHERNUMBER')[0]?.textContent?.trim() || `PUR-${index + 1}`;
+        const vchNo = vNode.getElementsByTagName('VOUCHERNUMBER')[0]?.textContent?.trim() || `${refPrefix}-${index + 1}`;
         const supplierInvoiceNo = vNode.getElementsByTagName('REFERENCE')[0]?.textContent?.trim() ||
                                   vNode.getElementsByTagName('SUPPLIERINVOICENO')[0]?.textContent?.trim() || '';
         const narration = vNode.getElementsByTagName('NARRATION')[0]?.textContent?.trim() || '';
@@ -1623,7 +2317,7 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
             vchNo,
             vchType,
             partyName: resolvedParty,
-            supplierInvoiceNo,
+            supplierInvoiceNo: expectedKind === 'sales' ? '' : supplierInvoiceNo,
             narration,
             items,
             itemCount: items.length,
@@ -1638,7 +2332,7 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
             totalCr: ledgerEntries.filter(l => !l.isDeemedPositive).reduce((s, l) => s + l.amount, 0),
             currency: 'BASE',
             exchangeRate: 1.0,
-            format: 'tally_xml_purchase',
+            format: expectedKind === 'sales' ? 'tally_xml_sales' : 'tally_xml_purchase',
             paidTo: resolvedParty,
             paidFrom: '',
             splits: [],
@@ -1647,10 +2341,10 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
     });
 
     return {
-        formatType: 'tally_xml_purchase',
-        headers: ['Date', 'Voucher No', 'Supplier', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Tax', 'Narration'],
+        formatType: expectedKind === 'sales' ? 'tally_xml_sales' : 'tally_xml_purchase',
+        headers: ['Date', 'Voucher No', expectedKind === 'sales' ? 'Customer' : 'Supplier', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Tax', 'Narration'],
         vouchers: parsedVouchers,
-        expectedVoucherKind: 'purchase',
+        expectedVoucherKind: expectedKind,
         detectedVoucherTypes,
         detectedVoucherTypeCounts: typeCounts,
         skippedVoucherCount,
@@ -1814,6 +2508,9 @@ export async function parsePurchaseUniversalFile(file, options = {}) {
  */
 export function validatePurchaseBatch(vouchers, context = {}) {
     const { existingVouchers = [], masters = {}, companyProfile = {} } = context;
+    const isSales = context.voucherType === 'sales';
+    const partyLabel = isSales ? 'Customer' : 'Supplier';
+    const docWord = isSales ? 'sales' : 'purchase';
     const lockDate = companyProfile?.rules?.lockDate || null;
     const existingRefSet = new Set(
         (existingVouchers || []).map(v => String(v.refNo || '').trim().toLowerCase()).filter(Boolean)
@@ -1829,8 +2526,8 @@ export function validatePurchaseBatch(vouchers, context = {}) {
 
         // Rule 4 — mandatory fields
         if (!v.date) push('CRITICAL', 'RULE_4_MANDATORY', 'Missing voucher date', { field: 'date' });
-        if (!v.partyName) push('CRITICAL', 'RULE_4_MANDATORY', 'Missing supplier / party name', { field: 'partyName' });
-        if (!v.items || v.items.length === 0) push('CRITICAL', 'RULE_4_MANDATORY', 'No item lines found for this purchase voucher', { field: 'items' });
+        if (!v.partyName) push('CRITICAL', 'RULE_4_MANDATORY', `Missing ${partyLabel.toLowerCase()} / party name`, { field: 'partyName' });
+        if (!v.items || v.items.length === 0) push('CRITICAL', 'RULE_4_MANDATORY', `No item lines found for this ${docWord} voucher`, { field: 'items' });
         if (!(Number(v.amount) > 0)) push('CRITICAL', 'RULE_4_MANDATORY', 'Voucher amount is zero', { field: 'amount' });
 
         // Rule 6 — period lock
@@ -1859,10 +2556,10 @@ export function validatePurchaseBatch(vouchers, context = {}) {
             if (pm.match) {
                 matchedParty = pm.match;
                 if (!pm.isExact) {
-                    push('INFO', 'RULE_5_FUZZY_MATCH', `Supplier fuzzy-matched to "${pm.match.name}" (${Math.round(pm.score * 100)}%)`, { suggestion: pm, field: 'partyName' });
+                    push('INFO', 'RULE_5_FUZZY_MATCH', `${partyLabel} fuzzy-matched to "${pm.match.name}" (${Math.round(pm.score * 100)}%)`, { suggestion: pm, field: 'partyName', missingType: 'party', missingName: v.partyName });
                 }
             } else {
-                push('CRITICAL', 'RULE_2_MISSING_MASTER', `Supplier "${v.partyName}" does not exist in Parties`, { field: 'partyName', missingType: 'party', missingName: v.partyName });
+                push('CRITICAL', 'RULE_2_MISSING_MASTER', `${partyLabel} "${v.partyName}" does not exist in Parties`, { field: 'partyName', missingType: 'party', missingName: v.partyName });
             }
         }
 
@@ -1871,7 +2568,7 @@ export function validatePurchaseBatch(vouchers, context = {}) {
             const pm = matchMaster(it.itemName, { products: masters.products || [] });
             if (pm.match) {
                 if (!pm.isExact) {
-                    push('INFO', 'RULE_5_FUZZY_MATCH', `Item "${it.itemName}" fuzzy-matched to "${pm.match.name}" (${Math.round(pm.score * 100)}%)`, { suggestion: { ...pm, itemIndex: ii }, field: `items[${ii}]` });
+                    push('INFO', 'RULE_5_FUZZY_MATCH', `Item "${it.itemName}" fuzzy-matched to "${pm.match.name}" (${Math.round(pm.score * 100)}%)`, { suggestion: { ...pm, itemIndex: ii }, field: `items[${ii}]`, missingType: 'product', missingName: it.itemName });
                 }
             } else {
                 push('CRITICAL', 'RULE_2_MISSING_MASTER', `Stock item "${it.itemName}" does not exist in Items`, { field: `items[${ii}]`, missingType: 'product', missingName: it.itemName });
@@ -1884,7 +2581,7 @@ export function validatePurchaseBatch(vouchers, context = {}) {
         const resolvedTax = (v.taxEntries || []).map((t, ti) => {
             const tm = matchMaster(t.name, { taxRates: masters.taxRates || [] });
             if (tm.match) {
-                if (!tm.isExact) push('INFO', 'RULE_5_FUZZY_MATCH', `Tax "${t.name}" fuzzy-matched to "${tm.match.name}"`, { suggestion: { ...tm, taxIndex: ti }, field: `tax[${ti}]` });
+                if (!tm.isExact) push('INFO', 'RULE_5_FUZZY_MATCH', `Tax "${t.name}" fuzzy-matched to "${tm.match.name}"`, { suggestion: { ...tm, taxIndex: ti }, field: `tax[${ti}]`, missingType: 'tax', missingName: t.name, missingPercent: t.percent || 0 });
                 return { ...t, taxId: tm.match.id, taxName: tm.match.name, percent: Number(tm.match.percentage ?? tm.match.rate ?? t.percent) || 0 };
             }
             push('CRITICAL', 'RULE_2_MISSING_MASTER', `Tax "${t.name}" does not exist in Tax Rates`, { field: `tax[${ti}]`, missingType: 'tax', missingName: t.name, missingPercent: t.percent || 0 });
@@ -1900,7 +2597,7 @@ export function validatePurchaseBatch(vouchers, context = {}) {
         const status = hasCritical ? 'CRITICAL' : hasWarning ? 'WARNING' : 'VALID';
 
         const rowItem = {
-            id: `prow_${index + 1}_${v.vchNo || Date.now()}`,
+            id: `${isSales ? 'srow' : 'prow'}_${index + 1}_${v.vchNo || Date.now()}`,
             ...v,
             status,
             issues,
@@ -1935,12 +2632,23 @@ export function validatePurchaseBatch(vouchers, context = {}) {
  * Posts validated purchase vouchers as `invoices` documents (type 'purchase').
  */
 export async function executePurchaseImport(rowsToImport, context = {}) {
-    const { user, dataOwnerId, effectiveName, currencySymbol = 'AED', onRowStatus, chunkSize = 1, control, onBatchStart } = context;
+    const { user, dataOwnerId, effectiveName, currencySymbol = 'AED', onRowStatus, chunkSize = 1, control, onBatchStart, lookups = {} } = context;
     const targetUid = dataOwnerId || user?.uid;
     if (!targetUid) throw new Error('User not identified');
     if (!rowsToImport || rowsToImport.length === 0) throw new Error('No rows to import');
 
-    const batchImportId = `BATCH_PUR_${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    // Name→id resolvers: guarantees the voucher is linked to a real master even if the
+    // resolved master object was stale when the row was validated.
+    const findId = (list, name) => {
+        const key = normalizeMasterName(name);
+        if (!key) return '';
+        const hit = (list || []).find(x => normalizeMasterName(x.name) === key);
+        return hit?.id || '';
+    };
+
+    const isSales = context.voucherType === 'sales';
+    const docType = isSales ? 'sales' : 'purchase';
+    const batchImportId = `BATCH_${isSales ? 'SAL' : 'PUR'}_${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const timestampISO = new Date().toISOString();
     const BATCH_CHUNK_SIZE = 400;
     let totalImported = 0;
@@ -1985,7 +2693,7 @@ export async function executePurchaseImport(rowsToImport, context = {}) {
                 const qty = Number(it.qty) || 0;
                 const rate = Number(it.rate) || 0;
                 return {
-                    productId: it.productId || it.matchedMaster?.id || '',
+                    productId: it.productId || it.matchedMaster?.id || findId(lookups.products, it.itemName),
                     quantity: r3(qty),
                     rate: r3(rate),
                     total: r3(it.amount ?? qty * rate),
@@ -2002,11 +2710,11 @@ export async function executePurchaseImport(rowsToImport, context = {}) {
 
             const docRef = doc(collection(db, 'invoices'));
             batch.set(docRef, {
-                type: 'purchase',
+                type: docType,
                 date: row.date,
                 refNo: row.vchNo,
-                supplierInvoiceNo: row.supplierInvoiceNo || '',
-                partyId: row.matchedParty?.id || row.partyId || '',
+                supplierInvoiceNo: isSales ? '' : (row.supplierInvoiceNo || ''),
+                partyId: row.matchedParty?.id || row.partyId || findId(lookups.parties, row.partyName),
                 partyName: row.matchedParty?.name || row.partyName || '',
                 locationId: row.locationId || '',
                 narration: row.narration || `Imported via ${row.format || 'Excel'}`,
@@ -2021,7 +2729,7 @@ export async function executePurchaseImport(rowsToImport, context = {}) {
                 currencyId: 'BASE',
                 exchangeRate: 1.0,
                 currencySymbol,
-                taxId: row.taxId || null,
+                taxId: row.taxId || findId(lookups.taxRates, row.taxName) || null,
                 taxName: row.taxName || null,
                 taxPercent,
                 taxAmount: r3(taxAmount),
@@ -2067,10 +2775,10 @@ export async function executePurchaseImport(rowsToImport, context = {}) {
         userId: targetUid,
         userName: effectiveName,
         action: 'IMPORTED',
-        docType: 'Purchase Invoice',
+        docType: isSales ? 'Sales Invoice' : 'Purchase Invoice',
         refNo: batchImportId,
         amount: totalValue,
-        description: `Imported ${totalImported} purchase vouchers from ${context.docLabel || 'Excel/XML'} (Batch: ${batchImportId})`,
+        description: `Imported ${totalImported} ${docType} vouchers from ${context.docLabel || 'Excel/XML'} (Batch: ${batchImportId})`,
         batchImportId,
         voucherCount: totalImported
     });
@@ -2082,12 +2790,510 @@ export async function executePurchaseImport(rowsToImport, context = {}) {
         count: totalImported,
         totalAmount: totalValue,
         user: effectiveName,
-        voucherType: 'purchase',
-        docLabel: 'Purchase',
+        voucherType: docType,
+        docLabel: isSales ? 'Sales' : 'Purchase',
         status: 'COMPLETED'
     });
 
     return { batchImportId, totalImported, totalValue, cancelledCount, timestamp: timestampISO };
+}
+
+/**
+ * Day Book — one export containing every voucher type.
+ * Splits the file into homogeneous buckets that the dedicated parsers understand.
+ */
+const DAYBOOK_KINDS = ['payment', 'receipt', 'journal', 'purchase', 'sales', 'stock_journal'];
+
+export function classifyDayBookXml(xmlText) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
+    const parseError = doc.getElementsByTagName('parsererror');
+    if (parseError.length > 0) throw new Error('Invalid XML file: ' + parseError[0].textContent);
+
+    const nodes = Array.from(doc.getElementsByTagName('VOUCHER'));
+    if (!nodes.length) throw new Error('No <VOUCHER> elements found in this XML document.');
+
+    const serializer = new XMLSerializer();
+    const buckets = {};
+
+    nodes.forEach((n) => {
+        const type = n.getElementsByTagName('VOUCHERTYPENAME')[0]?.textContent?.trim() ||
+            n.getAttribute('VCHTYPE') || '';
+        const kind = classifyVoucherType(type);
+        const key = DAYBOOK_KINDS.includes(kind) ? kind : 'other';
+        if (!buckets[key]) buckets[key] = { kind: key, types: {}, nodes: [] };
+        const label = type || '(blank)';
+        buckets[key].types[label] = (buckets[key].types[label] || 0) + 1;
+        buckets[key].nodes.push(serializer.serializeToString(n));
+    });
+
+    const groups = {};
+    Object.entries(buckets).forEach(([key, b]) => {
+        groups[key] = {
+            kind: key,
+            count: b.nodes.length,
+            types: b.types,
+            xml: `<ENVELOPE>${b.nodes.join('')}</ENVELOPE>`
+        };
+    });
+
+    return { total: nodes.length, groups };
+}
+
+const DAYBOOK_LABELS = {
+    payment: 'Payment',
+    receipt: 'Receipt',
+    journal: 'Journal',
+    purchase: 'Purchase',
+    sales: 'Sales',
+    stock_journal: 'Stock Journal',
+    other: 'Other (skipped)'
+};
+
+/** Parses + validates a Day Book into one flat, mixed-type row list (feeds the Solution Centre). */
+export function parseDayBookRows(xmlText, context = {}) {
+    const { masters = {}, companyProfile = {}, invoices = [], payments = [], journalVouchers = [], stockJournals = [] } = context;
+    const classification = classifyDayBookXml(xmlText);
+    const cleanRows = [];
+    const quarantinedRows = [];
+    const groups = {};
+
+    DAYBOOK_KINDS.forEach((kind) => {
+        const group = classification.groups[kind];
+        if (!group) return;
+        try {
+            let parsed;
+            let validation;
+            if (kind === 'payment' || kind === 'receipt' || kind === 'journal') {
+                parsed = parseXMLFile(group.xml, { voucherMode: kind });
+                validation = validateImportBatch(parsed.vouchers, {
+                    masters,
+                    companyProfile,
+                    existingVouchers: kind === 'journal' ? journalVouchers : payments
+                });
+            } else if (kind === 'purchase' || kind === 'sales') {
+                parsed = parsePurchaseXMLFile(group.xml, { voucherType: kind });
+                validation = validatePurchaseBatch(parsed.vouchers, {
+                    voucherType: kind,
+                    masters,
+                    companyProfile,
+                    existingVouchers: (invoices || []).filter(i => i.type === kind)
+                });
+            } else {
+                parsed = parseStockJournalXMLFile(group.xml, {});
+                validation = validateStockJournalBatch(parsed.vouchers, {
+                    masters,
+                    companyProfile,
+                    existingVouchers: stockJournals
+                });
+            }
+
+            const tag = (r) => ({ ...r, id: `${kind}_${r.id}`, __kind: kind, __label: DAYBOOK_LABELS[kind] });
+            cleanRows.push(...(validation.cleanRows || []).map(tag));
+            quarantinedRows.push(...(validation.quarantinedRows || []).map(tag));
+
+            groups[kind] = {
+                count: group.count,
+                types: Object.keys(group.types),
+                parsed: parsed.vouchers.length,
+                clean: validation.cleanRows.length,
+                quarantined: validation.quarantinedRows.length,
+                totalAmount: validation.stats?.totalAmount || 0
+            };
+        } catch (err) {
+            groups[kind] = { count: group.count, types: Object.keys(group.types), parsed: 0, clean: 0, quarantined: group.count, error: err.message };
+        }
+    });
+
+    if (classification.groups.other) {
+        groups.other = {
+            count: classification.groups.other.count,
+            types: Object.keys(classification.groups.other.types),
+            parsed: 0,
+            clean: 0,
+            quarantined: classification.groups.other.count,
+            error: 'Unsupported voucher type — use its dedicated importer.'
+        };
+    }
+
+    return {
+        total: classification.total,
+        groups,
+        cleanRows,
+        quarantinedRows,
+        stats: {
+            validCount: cleanRows.length,
+            quarantinedCount: quarantinedRows.length,
+            totalAmount: cleanRows.reduce((s, r) => s + (Number(r.amount) || 0), 0)
+        }
+    };
+}
+
+/** Executes Day Book rows, routing each row to the executor of its own voucher type. */
+export async function executeDayBookRows(rows, context = {}) {
+    const byKind = {};
+    rows.forEach(r => { (byKind[r.__kind] = byKind[r.__kind] || []).push(r); });
+
+    const targetUid = context.dataOwnerId || context.user?.uid;
+
+    /** Reads the batch back from the store so the UI can prove the documents exist. */
+    const verifyBatch = async (collectionName, batchImportId) => {
+        if (!batchImportId) return null;
+        try {
+            const snap = await getDocs(query(
+                collection(db, collectionName),
+                where('batchImportId', '==', batchImportId)
+            ));
+            return snap.size;
+        } catch (e) {
+            return null;
+        }
+    };
+
+    const results = [];
+    for (const kind of DAYBOOK_KINDS) {
+        const list = byKind[kind];
+        if (!list || list.length === 0) continue;
+        let res;
+        let collectionName = 'payments';
+        if (kind === 'payment' || kind === 'receipt' || kind === 'journal') {
+            collectionName = kind === 'journal' ? 'journal_vouchers' : 'payments';
+            res = await executeBatchImport(list, {
+                ...context,
+                voucherType: kind === 'payment' ? 'out' : kind === 'receipt' ? 'in' : 'journal',
+                docLabel: DAYBOOK_LABELS[kind]
+            });
+        } else if (kind === 'purchase' || kind === 'sales') {
+            collectionName = 'invoices';
+            res = await executePurchaseImport(list, { ...context, voucherType: kind });
+        } else {
+            collectionName = 'stock_journals';
+            res = await executeStockJournalImport(list, context);
+        }
+        const verified = await verifyBatch(collectionName, res.batchImportId);
+        results.push({
+            kind,
+            label: DAYBOOK_LABELS[kind],
+            imported: res.totalImported || 0,
+            verified,
+            collectionName,
+            batchImportId: res.batchImportId || null
+        });
+    }
+    return results;
+}
+
+/**
+ * Day Book import: every voucher is routed to its own parser, validator and executor,
+ * so payments land in `payments`, sales in `invoices`, stock journals in `stock_journals`, etc.
+ */
+export async function importDayBook(xmlText, context = {}) {
+    const { masters = {}, companyProfile = {}, invoices = [], payments = [], journalVouchers = [], stockJournals = [], onProgress } = context;
+    const classification = classifyDayBookXml(xmlText);
+    const labels = {
+        payment: 'Payment',
+        receipt: 'Receipt',
+        journal: 'Journal',
+        purchase: 'Purchase',
+        sales: 'Sales',
+        stock_journal: 'Stock Journal',
+        other: 'Other (skipped)'
+    };
+
+    const results = [];
+
+    for (const kind of [...DAYBOOK_KINDS, 'other']) {
+        const group = classification.groups[kind];
+        if (!group) continue;
+
+        if (kind === 'other') {
+            results.push({
+                kind,
+                label: labels.other,
+                parsed: group.count,
+                imported: 0,
+                quarantined: 0,
+                skipped: group.count,
+                types: Object.keys(group.types),
+                reasons: ['Unsupported voucher type — use its dedicated importer.']
+            });
+            continue;
+        }
+
+        if (onProgress) onProgress({ kind, label: labels[kind], phase: 'parsing' });
+
+        let parsed;
+        let validation;
+        try {
+            if (kind === 'payment' || kind === 'receipt' || kind === 'journal') {
+                parsed = parseXMLFile(group.xml, { voucherMode: kind });
+                validation = validateImportBatch(parsed.vouchers, {
+                    masters,
+                    companyProfile,
+                    existingVouchers: kind === 'journal' ? journalVouchers : payments
+                });
+            } else if (kind === 'purchase' || kind === 'sales') {
+                parsed = parsePurchaseXMLFile(group.xml, { voucherType: kind });
+                validation = validatePurchaseBatch(parsed.vouchers, {
+                    voucherType: kind,
+                    masters,
+                    companyProfile,
+                    existingVouchers: (invoices || []).filter(i => i.type === kind)
+                });
+            } else {
+                parsed = parseStockJournalXMLFile(group.xml, {});
+                validation = validateStockJournalBatch(parsed.vouchers, {
+                    masters,
+                    companyProfile,
+                    existingVouchers: stockJournals
+                });
+            }
+        } catch (err) {
+            results.push({
+                kind,
+                label: labels[kind],
+                parsed: group.count,
+                imported: 0,
+                quarantined: 0,
+                skipped: group.count,
+                types: Object.keys(group.types),
+                reasons: [err.message]
+            });
+            continue;
+        }
+
+        const clean = validation.cleanRows || [];
+        const quarantined = validation.quarantinedRows || [];
+        const reasons = [];
+        quarantined.forEach(q => (q.issues || []).forEach(i => {
+            if (i.type === 'CRITICAL' && !reasons.includes(i.message)) reasons.push(i.message);
+        }));
+
+        const result = {
+            kind,
+            label: labels[kind],
+            parsed: parsed.vouchers.length,
+            imported: 0,
+            quarantined: quarantined.length,
+            skipped: 0,
+            types: Object.keys(group.types),
+            reasons: reasons.slice(0, 6)
+        };
+
+        if (clean.length > 0) {
+            if (onProgress) onProgress({ kind, label: labels[kind], phase: 'importing', total: clean.length });
+            if (kind === 'payment' || kind === 'receipt' || kind === 'journal') {
+                const r = await executeBatchImport(clean, {
+                    ...context,
+                    voucherType: kind === 'payment' ? 'out' : kind === 'receipt' ? 'in' : 'journal',
+                    docLabel: labels[kind]
+                });
+                result.imported = r.totalImported;
+            } else if (kind === 'purchase' || kind === 'sales') {
+                const r = await executePurchaseImport(clean, { ...context, voucherType: kind });
+                result.imported = r.totalImported;
+            } else {
+                const r = await executeStockJournalImport(clean, context);
+                result.imported = r.totalImported;
+            }
+        }
+
+        results.push(result);
+    }
+
+    return { total: classification.total, results };
+}
+
+/**
+ * Tally master XML — ledgers (accounts) and stock items.
+ */
+function mapLedgerParent(parent) {
+    const p = String(parent || '').toLowerCase();
+    if (/sundry debtors|customer/.test(p)) return { collection: 'parties', kind: 'party', role: 'customer', label: 'Customer' };
+    if (/sundry creditors|supplier/.test(p)) return { collection: 'parties', kind: 'party', role: 'supplier', label: 'Supplier' };
+    if (/^(bank|bank accounts|bank od|bank occ)/.test(p)) return { collection: 'accounts', kind: 'account', label: 'Bank' };
+    if (/cash-in-hand|cash/.test(p)) return { collection: 'accounts', kind: 'account', label: 'Cash' };
+    if (/sales accounts|direct income|indirect income/.test(p)) return { collection: 'income_accounts', kind: 'income', label: 'Income' };
+    if (/direct expense|direct expenses|purchase accounts/.test(p)) return { collection: 'direct_expenses', kind: 'direct_expense', label: 'Direct Expense' };
+    if (/indirect expense|expense/.test(p)) return { collection: 'expenses', kind: 'expense', label: 'Expense' };
+    if (/fixed asset/.test(p)) return { collection: 'asset_accounts', kind: 'asset', label: 'Fixed Asset' };
+    if (/capital/.test(p)) return { collection: 'capital_accounts', kind: 'capital', label: 'Capital' };
+    return { collection: 'accounts', kind: 'account', label: 'Ledger' };
+}
+
+export function parseLedgerMastersXml(xmlText) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) {
+        throw new Error('Invalid XML file: ' + doc.getElementsByTagName('parsererror')[0].textContent);
+    }
+    const nodes = Array.from(doc.getElementsByTagName('LEDGER'));
+    if (!nodes.length) throw new Error('No <LEDGER> master records found in this XML document.');
+
+    const masters = nodes.map(n => {
+        const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
+        if (!name) return null;
+        const parent = readXmlTag(n, 'PARENT');
+        const target = mapLedgerParent(parent);
+        return {
+            name,
+            parent,
+            currency: readXmlTag(n, 'CURRENCYNAME'),
+            openingBalance: numFromTally(readXmlTag(n, 'OPENINGBALANCE')),
+            collection: target.collection,
+            kind: target.kind,
+            role: target.role || '',
+            groupLabel: target.label
+        };
+    }).filter(Boolean);
+
+    const counts = {};
+    masters.forEach(m => { counts[m.collection] = (counts[m.collection] || 0) + 1; });
+
+    return { formatType: 'tally_ledger_masters', masters, total: masters.length, counts };
+}
+
+export function parseStockMastersXml(xmlText) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) {
+        throw new Error('Invalid XML file: ' + doc.getElementsByTagName('parsererror')[0].textContent);
+    }
+    const nodes = Array.from(doc.getElementsByTagName('STOCKITEM'));
+    if (!nodes.length) throw new Error('No <STOCKITEM> master records found in this XML document.');
+
+    const masters = nodes.map(n => {
+        const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
+        if (!name) return null;
+        return {
+            name,
+            group: readXmlTag(n, 'PARENT') || 'Primary',
+            unit: readXmlTag(n, 'BASEUNITS') || '',
+            altUnit: readXmlTag(n, 'ADDITIONALUNITS') || '',
+            openingQty: Math.abs(numFromTally(readXmlTag(n, 'OPENINGBALANCE'))),
+            openingRate: Math.abs(numFromTally(readXmlTag(n, 'OPENINGRATE'))),
+            openingValue: Math.abs(numFromTally(readXmlTag(n, 'OPENINGVALUE')))
+        };
+    }).filter(Boolean);
+
+    return { formatType: 'tally_stock_masters', masters, total: masters.length, counts: { products: masters.length } };
+}
+
+/** Bulk-create Tally masters, skipping names that already exist (case/space-insensitive). */
+export async function bulkImportMasters(masters, context = {}) {
+    const { user, dataOwnerId, effectiveName, onProgress } = context;
+    const targetUid = dataOwnerId || user?.uid;
+    if (!targetUid) throw new Error('User not identified');
+    if (!masters || masters.length === 0) throw new Error('Nothing to import');
+
+    const byCollection = {};
+    masters.forEach(m => { (byCollection[m.collection] = byCollection[m.collection] || []).push(m); });
+
+    const summary = {};
+    let totalCreated = 0;
+    let totalSkipped = 0;
+
+    for (const [collectionName, list] of Object.entries(byCollection)) {
+        const existingKeys = new Set();
+        try {
+            const snap = await getDocs(query(collection(db, collectionName), where('userId', '==', targetUid)));
+            snap.docs.forEach(d => existingKeys.add(normalizeMasterName(d.data()?.name)));
+        } catch (e) { /* offline / index */ }
+
+        const toCreate = [];
+        let skipped = 0;
+        const seen = new Set();
+        list.forEach(m => {
+            const key = normalizeMasterName(m.name);
+            if (!key || existingKeys.has(key) || seen.has(key)) { skipped++; return; }
+            seen.add(key);
+            toCreate.push(m);
+        });
+
+        for (let i = 0; i < toCreate.length; i += 400) {
+            const chunk = toCreate.slice(i, i + 400);
+            const batch = writeBatch(db);
+            chunk.forEach(m => {
+                const ref = doc(collection(db, collectionName));
+                batch.set(ref, buildMasterDoc(m, targetUid, user, effectiveName));
+            });
+            await batch.commit();
+            if (onProgress) onProgress({ collection: collectionName, done: Math.min(i + 400, toCreate.length), total: toCreate.length });
+        }
+
+        summary[collectionName] = { created: toCreate.length, skipped };
+        totalCreated += toCreate.length;
+        totalSkipped += skipped;
+    }
+
+    return { summary, totalCreated, totalSkipped };
+}
+
+function buildMasterDoc(m, targetUid, user, effectiveName) {
+    const base = {
+        name: m.name.trim(),
+        userId: targetUid,
+        createdAt: serverTimestamp(),
+        createdBy: user?.uid || 'import-engine',
+        createdByName: effectiveName || 'Import Engine',
+        balance: 0
+    };
+
+    switch (m.kind) {
+        case 'party': {
+            const isCustomer = m.role === 'customer';
+            return {
+                ...base,
+                type: isCustomer ? 'customer' : 'supplier',
+                partyType: isCustomer ? 'customer' : 'supplier',
+                category: isCustomer ? 'Sundry Debtors' : 'Sundry Creditors',
+                group: m.parent || (isCustomer ? 'Sundry Debtors' : 'Sundry Creditors'),
+                currency: m.currency || 'AED',
+                isImported: true
+            };
+        }
+        case 'product':
+            return {
+                ...base,
+                name_lowercase: m.name.trim().toLowerCase(),
+                hscode: '',
+                group: m.group || 'Primary',
+                unit: m.unit || '',
+                altUnit: m.altUnit || '',
+                openingStock: Number(m.openingQty) || 0,
+                openingRate: Number(m.openingRate) || 0,
+                openingBalance: Number(m.openingValue) || 0,
+                currentStock: Number(m.openingQty) || 0,
+                isImported: true
+            };
+        case 'tax':
+            return {
+                ...base,
+                name_lowercase: m.name.trim().toLowerCase(),
+                percentage: Number(m.percentage) || 0,
+                balance: undefined,
+                isImported: true
+            };
+        case 'expense':
+            return { ...base, group: m.parent || 'Administrative Expenses', isImported: true };
+        case 'direct_expense':
+            return { ...base, group: m.parent || 'Direct Expenses', isImported: true };
+        case 'income':
+            return { ...base, group: m.parent || 'Indirect Incomes', isImported: true };
+        case 'capital':
+            return { ...base, group: m.parent || 'Capital Account', isImported: true };
+        case 'asset':
+            return { ...base, group: m.parent || 'Fixed Assets', isImported: true };
+        default:
+            return {
+                ...base,
+                type: 'cash',
+                accountType: 'cash',
+                group: m.parent || '',
+                currency: m.currency || 'AED',
+                isImported: true
+            };
+    }
 }
 
 /**

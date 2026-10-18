@@ -47,6 +47,7 @@ export default function ImportJournalExcelModal({
     isOpen,
     onClose,
     onBack,
+    xmlOnly = false,
     user,
     dataOwnerId,
     companyProfile,
@@ -114,7 +115,7 @@ export default function ImportJournalExcelModal({
 
     const fileInputRef = useRef(null);
     // Import format: 'excel' (.xlsx/.xls/.csv) or 'xml' (Tally Data Interchange)
-    const [importFormat, setImportFormat] = useState('excel');
+    const [importFormat, setImportFormat] = useState(xmlOnly ? 'xml' : 'excel');
 
     // Refresh history on open
     useEffect(() => {
@@ -156,6 +157,10 @@ export default function ImportJournalExcelModal({
     // --- FILE UPLOAD & PARSE HANDLER ---
     const handleFileUpload = async (file) => {
         if (!file) return;
+        if (xmlOnly && !(file.name || '').toLowerCase().endsWith('.xml')) {
+            alert('This section imports Tally XML only. Use "Import from Excel / CSV" for spreadsheets.');
+            return;
+        }
         setFileName(file.name);
         setFileSize((file.size / 1024).toFixed(1) + ' KB');
         setIsParsing(true);
@@ -425,6 +430,7 @@ export default function ImportJournalExcelModal({
                 effectiveName,
                 companyProfile,
                 currencySymbol,
+                lookups: { parties, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts },
                 voucherType: 'journal',
                 docLabel: 'Journal',
                 chunkSize: 1, // one voucher at a time so every row's progress can be watched
@@ -684,7 +690,7 @@ export default function ImportJournalExcelModal({
                         </div>
 
                         {/* Import Format Selector — Excel/CSV or Tally XML */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className={xmlOnly ? 'hidden' : 'grid grid-cols-1 sm:grid-cols-2 gap-3'}>
                             <button
                                 type="button"
                                 onClick={() => { setImportFormat('excel'); if (fileInputRef.current) fileInputRef.current.value = ''; }}

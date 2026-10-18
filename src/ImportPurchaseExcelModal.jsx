@@ -12,6 +12,9 @@ import {
     validatePurchaseBatch,
     createMissingMaster,
     executePurchaseImport,
+    parseStockJournalUniversalFile,
+    validateStockJournalBatch,
+    executeStockJournalImport,
     rollbackBatchImport,
     getBatchHistory
 } from './utils/excelImportEngine';
@@ -45,6 +48,8 @@ export default function ImportPurchaseExcelModal({
     isOpen,
     onClose,
     onBack,
+    xmlOnly = false,
+    voucherType = 'purchase',
     user,
     dataOwnerId,
     companyProfile,
@@ -56,10 +61,19 @@ export default function ImportPurchaseExcelModal({
     taxRates = [],
     locations = [],
     invoices = [],
+    stockJournals = [],
     effectiveName = 'Admin',
     currencySymbol = 'AED',
     showToast
 }) {
+    // purchase | sales | stock_journal — the same pipeline drives every voucher family
+    const isSales = voucherType === 'sales';
+    const isStockJournal = voucherType === 'stock_journal';
+    const docWord = isStockJournal ? 'stock journal' : isSales ? 'sales' : 'purchase';
+    const docTitle = isStockJournal ? 'STOCK JOURNAL' : isSales ? 'SALES' : 'PURCHASE';
+    const docTitleCase = isStockJournal ? 'Stock Journal' : isSales ? 'Sales' : 'Purchase';
+    const partyLabel = isStockJournal ? 'Item' : isSales ? 'Customer' : 'Supplier';
+    const refPrefix = isSales ? 'SAL' : 'PUR';
     const [activeTab, setActiveTab] = useState('upload');
     const [fileName, setFileName] = useState('');
     const [fileSize, setFileSize] = useState('');
@@ -108,6 +122,7 @@ export default function ImportPurchaseExcelModal({
         name: '',
         type: 'party', // 'party' | 'product' | 'tax'
         percent: 0,
+        field: '',
         itemIndex: null,
         taxIndex: null,
         isSubmitting: false
@@ -116,6 +131,8 @@ export default function ImportPurchaseExcelModal({
     const fileInputRef = useRef(null);
     // Import format: 'xml' (Tally Data Interchange — the default here) or 'excel' (.xlsx/.xls/.csv)
     const [importFormat, setImportFormat] = useState('xml');
+    // XML tab opens this same pipeline without the Excel/CSV option
+    const effectiveFormat = xmlOnly ? 'xml' : importFormat;
 
     // Refresh history on open
     useEffect(() => {
@@ -156,13 +173,19 @@ export default function ImportPurchaseExcelModal({
     // --- FILE UPLOAD & PARSE HANDLER ---
     const handleFileUpload = async (file) => {
         if (!file) return;
+        if (xmlOnly && !(file.name || '').toLowerCase().endsWith('.xml')) {
+            alert('This section imports Tally XML only. Use "Import from Excel / CSV" for spreadsheets.');
+            return;
+        }
         setFileName(file.name);
         setFileSize((file.size / 1024).toFixed(1) + ' KB');
         setIsParsing(true);
         setImportResult(null);
 
         try {
-            const parsed = await parsePurchaseUniversalFile(file, {});
+            const parsed = isStockJournal
+                ? await parseStockJournalUniversalFile(file, {})
+                : await parsePurchaseUniversalFile(file, { voucherType });
             setParsedData(parsed);
 
             // Wrong voucher type guard (e.g. a Payment XML opened in the Purchase importer)
@@ -175,27 +198,42 @@ export default function ImportPurchaseExcelModal({
                     showToast({
                         type: 'error',
                         title: 'Wrong Voucher Type',
-                        message: `No purchase voucher found. Detected: ${found}.`
+                        message: `No ${docWord} voucher found. Detected: ${found}.`
                     });
                 }
-                alert(`No purchase vouchers found in this file.\n\nVoucher types detected: ${found}\nSkipped: ${parsed.skippedVoucherCount || 0} voucher(s).\n\nPlease export the purchase vouchers from Tally and try again.`);
+                alert(`No ${docWord} vouchers found in this file.\n\nVoucher types detected: ${found}\nSkipped: ${parsed.skippedVoucherCount || 0} voucher(s).\n\nPlease export the ${docWord} vouchers from Tally and try again.`);
                 return;
             }
 
-            // Run Purchase Validation Middleware (suppliers, stock items and tax masters)
-            const validation = validatePurchaseBatch(parsed.vouchers, {
-                existingVouchers: (invoices || []).filter(i => i.type === 'purchase'),
-                masters: {
-                    accounts,
-                    parties,
-                    expenses,
-                    directExpenseAccounts,
-                    products,
-                    taxRates,
-                    defaultLocationId: locations[0]?.id || ''
-                },
-                companyProfile
-            });
+            // Run Validation Middleware (party, stock items and tax masters)
+            const validation = isStockJournal
+                ? validateStockJournalBatch(parsed.vouchers, {
+                    existingVouchers: (stockJournals || []).filter(s => s.refNo),
+                    masters: {
+                        accounts,
+                        parties,
+                        expenses,
+                        directExpenseAccounts,
+                        products,
+                        taxRates,
+                        defaultLocationId: locations[0]?.id || ''
+                    },
+                    companyProfile
+                })
+                : validatePurchaseBatch(parsed.vouchers, {
+                    voucherType,
+                    existingVouchers: (invoices || []).filter(i => i.type === voucherType),
+                    masters: {
+                        accounts,
+                        parties,
+                        expenses,
+                        directExpenseAccounts,
+                        products,
+                        taxRates,
+                        defaultLocationId: locations[0]?.id || ''
+                    },
+                    companyProfile
+                });
 
             setCleanRows(validation.cleanRows);
             setQuarantinedRows(validation.quarantinedRows);
@@ -287,15 +325,48 @@ export default function ImportPurchaseExcelModal({
             name: missingName || row.partyName || '',
             type: missingType,
             percent: percent || 0,
+            field: field || '',
             itemIndex: field && field.startsWith('items') ? Number(idxMatch && idxMatch[1]) : null,
             taxIndex: field && field.startsWith('tax') ? Number(idxMatch && idxMatch[1]) : null,
             isSubmitting: false
         });
     };
 
+    // Friendly label for the "create instead of link" action
+    const createMasterLabel = (type) => (
+        type === 'product' ? 'Create New Item'
+            : type === 'tax' ? 'Create New Tax'
+                : type === 'party' ? 'Create New Party'
+                    : type === 'account' ? 'Create New Ledger'
+                        : type === 'expense' ? 'Create New Expense'
+                            : 'Create New Master'
+    );
+
+    // Resolve the Tally-side (original) name + master type behind a fuzzy-match issue
+    const fuzzyIssueTarget = (row, issue) => {
+        const s = issue.suggestion || {};
+        if (s.itemIndex !== undefined) {
+            const line = (row.items || [])[s.itemIndex] || {};
+            return { name: issue.missingName || line.itemName || '', type: 'product', field: `items[${s.itemIndex}]`, percent: 0 };
+        }
+        if (s.taxIndex !== undefined) {
+            const line = (row.taxEntries || [])[s.taxIndex] || {};
+            return { name: issue.missingName || line.name || '', type: 'tax', field: `tax[${s.taxIndex}]`, percent: Number(issue.missingPercent || line.percent) || 0 };
+        }
+        if (issue.field === 'partyName') {
+            return { name: issue.missingName || row.partyName || '', type: 'party', field: 'partyName', percent: 0 };
+        }
+        return {
+            name: issue.missingName || (s.match || s).name || '',
+            type: issue.missingType || 'product',
+            field: issue.field || '',
+            percent: Number(issue.missingPercent) || 0
+        };
+    };
+
     // Rule 2: Execute Missing Master Creation (supplier / stock item / tax rate)
     const handleConfirmCreateMaster = async () => {
-        const { rowId, name, type, percent, itemIndex, taxIndex } = createMasterModal;
+        const { rowId, name, type, percent, itemIndex, taxIndex, field } = createMasterModal;
         if (!name.trim()) return alert('Name cannot be empty');
 
         setCreateMasterModal(prev => ({ ...prev, isSubmitting: true }));
@@ -341,6 +412,11 @@ export default function ImportPurchaseExcelModal({
 
                 const updatedIssues = row.issues.filter(i => {
                     if (i.rule === 'RULE_2_MISSING_MASTER') {
+                        return i.missingName?.trim().toLowerCase() !== name.trim().toLowerCase();
+                    }
+                    // User chose "Create New" instead of linking — drop the fuzzy suggestion for that line
+                    if (i.rule === 'RULE_5_FUZZY_MATCH') {
+                        if (field) return i.field !== field;
                         return i.missingName?.trim().toLowerCase() !== name.trim().toLowerCase();
                     }
                     return true;
@@ -391,7 +467,7 @@ export default function ImportPurchaseExcelModal({
             showToast({
                 type: 'success',
                 title: 'Transaction Approved',
-                message: `Purchase voucher "${row.vchNo}" moved to Ready to Import queue.`
+                message: `${docTitleCase} voucher "${row.vchNo}" moved to Ready to Import queue.`
             });
         }
     };
@@ -437,18 +513,22 @@ export default function ImportPurchaseExcelModal({
         setCurrentBatchId(null);
 
         try {
-            const result = await executePurchaseImport(cleanRows, {
+            const batchContext = {
                 user,
                 dataOwnerId,
                 effectiveName,
                 companyProfile,
                 currencySymbol,
-                docLabel: importFormat === 'xml' ? 'Tally XML' : 'Excel',
+                lookups: { parties, products, taxRates, accounts, expenses, directExpenseAccounts },
+                docLabel: effectiveFormat === 'xml' ? 'Tally XML' : 'Excel',
                 chunkSize: 1, // one voucher at a time so progress is visible per row
                 onRowStatus: (id, status) => setRowStatus(prev => ({ ...prev, [id]: status })),
                 control: { isPaused: () => runCtlRef.current.paused, isStopped: () => runCtlRef.current.stopped, isRowSkipped },
                 onBatchStart: (id) => setCurrentBatchId(id)
-            });
+            };
+            const result = isStockJournal
+                ? await executeStockJournalImport(cleanRows, batchContext)
+                : await executePurchaseImport(cleanRows, { ...batchContext, voucherType });
 
             setImportProgress(100);
             setImportResult(result);
@@ -464,7 +544,7 @@ export default function ImportPurchaseExcelModal({
                 showToast({
                     type: 'success',
                     title: 'Batch Import Completed',
-                    message: `Successfully ingested ${result.totalImported} purchase vouchers. Batch ID: ${result.batchImportId}`
+                    message: `Successfully ingested ${result.totalImported} ${docWord} vouchers. Batch ID: ${result.batchImportId}`
                 });
             }
         } catch (err) {
@@ -512,24 +592,24 @@ export default function ImportPurchaseExcelModal({
 
         if (type === 'standard') {
             const sampleData = [
-                ['Date', 'Voucher No', 'Supplier', 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Tax %', 'Tax Amount', 'Bill No', 'Narration'],
-                ['2026-01-02', 'PUR-1001', 'GHANI BHAI PVC', 'KHALID ALUMINIUM', 650, 'KG', 615, 399750, 0, 0, 'INV-889', 'Aluminium bundle purchase'],
-                ['2026-01-05', 'PUR-1002', 'AL FALAH TRADING', 'PVC SCRAP', 1200, 'KG', 210, 252000, 5, 12600, 'INV-890', 'PVC scrap purchase']
+                ['Date', 'Voucher No', partyLabel, 'Item', 'Qty', 'Unit', 'Rate', 'Amount', 'Tax %', 'Tax Amount', 'Bill No', 'Narration'],
+                ['2026-01-02', `${refPrefix}-1001`, 'GHANI BHAI PVC', 'KHALID ALUMINIUM', 650, 'KG', 615, 399750, 0, 0, 'INV-889', 'Aluminium bundle'],
+                ['2026-01-05', `${refPrefix}-1002`, 'AL FALAH TRADING', 'PVC SCRAP', 1200, 'KG', 210, 252000, 5, 12600, 'INV-890', 'PVC scrap']
             ];
             ws = XLSX.utils.aoa_to_sheet(sampleData);
         } else {
-            // Tally XML is the recommended route for purchases — this shows the expected columns
+            // Tally XML is the recommended route — this shows the expected columns
             const sampleData = [
-                ['Purchase Register'],
+                [`${docTitleCase} Register`],
                 ['1-Jan-2026 to 31-Jan-2026'],
-                ['Date', 'Voucher No.', 'Supplier', 'Item Name', 'Quantity', 'Unit', 'Rate', 'Amount', 'Tax %', 'Narration'],
-                ['02-01-2026', '650 KG @ 615', 'GHANI BHAI PVC', 'KHALID ALUMINIUM', 650, 'KG', 615, 399750, 0, 'Aluminium bundle purchase']
+                ['Date', 'Voucher No.', partyLabel, 'Item Name', 'Quantity', 'Unit', 'Rate', 'Amount', 'Tax %', 'Narration'],
+                ['02-01-2026', '650 KG @ 615', 'GHANI BHAI PVC', 'KHALID ALUMINIUM', 650, 'KG', 615, 399750, 0, 'Aluminium bundle']
             ];
             ws = XLSX.utils.aoa_to_sheet(sampleData);
         }
 
         XLSX.utils.book_append_sheet(wb, ws, 'Template');
-        XLSX.writeFile(wb, `AccPro_Purchase_Template_${type}.xlsx`);
+        XLSX.writeFile(wb, `AccPro_${docTitleCase}_Template_${type}.xlsx`);
     };
 
     return (
@@ -555,10 +635,10 @@ export default function ImportPurchaseExcelModal({
                         <div>
                             <div className="flex items-center gap-2">
                                 <h1 className="text-base font-bold text-white tracking-tight leading-tight">
-                                    IMPORT PURCHASE FROM XML
+                                    IMPORT {docTitle} FROM XML
                                 </h1>
                                 <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                    Separate Purchase Section
+                                    Separate {docTitleCase} Section
                                 </span>
                             </div>
                             <p className="text-[11px] text-slate-400 font-medium leading-none mt-1">
@@ -684,15 +764,20 @@ export default function ImportPurchaseExcelModal({
                                     <Sparkles size={12} /> Auto-Detection & Real-Time Validation Pipeline
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Import Purchase Vouchers from XML
+                                    Import {docTitleCase} Vouchers from XML
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl">
-                                    Separate module from Payment / Receipt / Journal imports. Choose <span className="text-purple-300 font-semibold">Tally XML</span> for a Purchase export from Tally ERP 9 or Tally Prime, or <span className="text-amber-300 font-semibold">Excel / CSV</span> for a purchase sheet (one row per item line). Item lines, quantities, rates, supplier and tax are read automatically — missing suppliers, stock items and tax masters are routed to the Solution Centre for you to create.
+                                    {isStockJournal
+                                        ? <>Import stock journals from <span className="text-purple-300 font-semibold">Tally XML</span> — ERP 9 Stock Journal register or Tally Prime Data Interchange. Consumption (source) and production (destination) lines, quantities and rates are read automatically; missing stock items are routed to the Solution Centre.</>
+                                        : xmlOnly
+                                            ? <>Import {docWord} vouchers from <span className="text-purple-300 font-semibold">Tally XML</span> — ERP 9 register / Day Book export or Tally Prime Data Interchange. Item lines, quantities, rates, {partyLabel.toLowerCase()} and tax are read automatically; missing {partyLabel.toLowerCase()}s, stock items and tax masters are routed to the Solution Centre.</>
+                                            : <>Separate module from Payment / Receipt / Journal imports. Choose <span className="text-purple-300 font-semibold">Tally XML</span> for a {docTitleCase} export from Tally ERP 9 (register / Day Book XML) or Tally Prime (Data Interchange), or <span className="text-amber-300 font-semibold">Excel / CSV</span> for a {docWord} sheet (one row per item line). Item lines, quantities, rates, {partyLabel.toLowerCase()} and tax are read automatically — missing {partyLabel.toLowerCase()}s, stock items and tax masters are routed to the Solution Centre for you to create.</>}
                                 </p>
                             </div>
                         </div>
 
-                        {/* Import Format Selector — Excel/CSV or Tally XML */}
+                        {/* Import Format Selector — hidden in XML-only mode */}
+                        {!xmlOnly && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <button
                                 type="button"
@@ -719,6 +804,7 @@ export default function ImportPurchaseExcelModal({
                                 {importFormat === 'xml' && <span className="ml-auto w-3 h-3 rounded-full bg-purple-300" />}
                             </button>
                         </div>
+                        )}
 
                         {/* Drag & Drop Upload Dropzone */}
                         <div
@@ -733,7 +819,7 @@ export default function ImportPurchaseExcelModal({
                             <input
                                 ref={fileInputRef}
                                 type="file"
-                                accept={importFormat === 'xml' ? '.xml' : '.xlsx,.xls,.csv'}
+                                accept={effectiveFormat === 'xml' ? '.xml' : '.xlsx,.xls,.csv'}
                                 className="hidden"
                                 onChange={(e) => {
                                     if (e.target.files?.[0]) handleFileUpload(e.target.files[0]);
@@ -748,22 +834,24 @@ export default function ImportPurchaseExcelModal({
                                 {isParsing ? 'Parsing & Running Validation Rules...' : 'Click to Browse or Drag & Drop File'}
                             </h3>
                             <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
-                                Supports <span className="text-emerald-400 font-semibold">XLSX</span>, <span className="text-emerald-400 font-semibold">XML (Tally Interchange)</span>, and <span className="text-emerald-400 font-semibold">CSV</span> files. Reads item lines, quantities, rates, supplier and taxes.
+                                {xmlOnly
+                                    ? <>Tally <span className="text-purple-300 font-semibold">XML</span> only — ERP 9 register / Day Book export or Tally Prime Data Interchange. Reads item lines, quantities, rates, {partyLabel.toLowerCase()} and taxes.</>
+                                    : <>Supports <span className="text-emerald-400 font-semibold">XLSX</span>, <span className="text-emerald-400 font-semibold">XML (Tally Interchange)</span>, and <span className="text-emerald-400 font-semibold">CSV</span> files. Reads item lines, quantities, rates, {partyLabel.toLowerCase()} and taxes.</>}
                             </p>
 
                             <button
                                 type="button"
-                                className={`px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all flex items-center gap-2 ${importFormat === 'xml' ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'}`}
+                                className={`px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all flex items-center gap-2 ${effectiveFormat === 'xml' ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'}`}
                             >
-                                {importFormat === 'xml' ? <FileText size={16} /> : <FileSpreadsheet size={16} />}
-                                <span>{importFormat === 'xml' ? 'Select Tally XML File' : 'Select Excel / CSV File'}</span>
+                                {effectiveFormat === 'xml' ? <FileText size={16} /> : <FileSpreadsheet size={16} />}
+                                <span>{effectiveFormat === 'xml' ? 'Select Tally XML File' : 'Select Excel / CSV File'}</span>
                             </button>
 
                             <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-wider">
                                 <span className="px-2 py-1 rounded-md bg-slate-800/80 text-slate-300 border border-white/10">{fileName || 'No file selected'}</span>
                                 {parsedData && (
-                                    <span className={`px-2 py-1 rounded-md border ${parsedData.formatType === 'tally_xml' ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'}`}>
-                                        Detected: {parsedData.formatType === 'tally_xml' ? 'Tally XML (Data Interchange)' : 'Excel / CSV'}
+                                    <span className={`px-2 py-1 rounded-md border ${String(parsedData.formatType || '').startsWith('tally') ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'}`}>
+                                        Detected: {parsedData.formatType === 'tally_erp9_register' ? 'Tally ERP 9 Register (XML)' : String(parsedData.formatType || '').startsWith('tally') ? 'Tally XML (Data Interchange)' : 'Excel / CSV'}
                                     </span>
                                 )}
                             </div>
@@ -899,7 +987,15 @@ export default function ImportPurchaseExcelModal({
                                                             )}
                                                         </div>
                                                         <div className="text-sm font-bold text-white mt-0.5">
-                                                            Supplier: <span className="text-emerald-400">{row.partyName || row.paidTo || 'N/A'}</span>
+                                                            {isStockJournal ? (
+                                                                <span className="text-emerald-400">
+                                                                    Consumed {row.consumed?.length || row.resolvedItems?.filter(i => i.side !== 'produced').length || 0}
+                                                                    <span className="text-slate-500"> → </span>
+                                                                    Produced {row.produced?.length || row.resolvedItems?.filter(i => i.side === 'produced').length || 0}
+                                                                </span>
+                                                            ) : (
+                                                                <>{partyLabel}: <span className="text-emerald-400">{row.partyName || row.paidTo || 'N/A'}</span></>
+                                                            )}
                                                             {(row.items || row.resolvedItems || []).length > 0 && (
                                                                 <span className="text-slate-400 font-normal"> · Items: <b className="text-slate-200">{(row.items || row.resolvedItems || []).length}</b></span>
                                                             )}
@@ -979,15 +1075,28 @@ export default function ImportPurchaseExcelModal({
                                                                 </button>
                                                             )}
 
-                                                            {/* Rule 5: Fuzzy Suggestion Link */}
+                                                            {/* Rule 5: Fuzzy Suggestion — user decides: link to the similar master OR create a new one */}
                                                             {issue.rule === 'RULE_5_FUZZY_MATCH' && issue.suggestion && (
-                                                                <button
-                                                                    onClick={() => handleAcceptFuzzy(row.id, issue.suggestion)}
-                                                                    className="px-3 py-1 rounded-lg bg-blue-500 hover:bg-blue-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
-                                                                >
-                                                                    <Check size={14} />
-                                                                    <span>Link to "{issue.suggestion.name}"</span>
-                                                                </button>
+                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                    <button
+                                                                        onClick={() => handleAcceptFuzzy(row.id, issue.suggestion)}
+                                                                        className="px-3 py-1 rounded-lg bg-blue-500 hover:bg-blue-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
+                                                                    >
+                                                                        <Check size={14} />
+                                                                        <span>Link to "{(issue.suggestion.match || issue.suggestion).name}"</span>
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            const target = fuzzyIssueTarget(row, issue);
+                                                                            handleOpenCreateMaster(row, target.name, target.type, target.field, target.percent);
+                                                                        }}
+                                                                        className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
+                                                                        title="Create the Tally name as a brand-new master instead of linking to the similar one"
+                                                                    >
+                                                                        <Plus size={14} />
+                                                                        <span>{createMasterLabel(fuzzyIssueTarget(row, issue).type)}</span>
+                                                                    </button>
+                                                                </div>
                                                             )}
 
                                                             {/* Rule 1: Duplicate Reference Renumber */}
@@ -1040,7 +1149,7 @@ export default function ImportPurchaseExcelModal({
                                     <CheckCircle2 size={12} /> Verified & Audit-Ready Ingestion Queue
                                 </div>
                                 <h2 className="text-xl font-bold text-white tracking-tight">
-                                    Ready to Ingest: {cleanRows.length} Purchase Vouchers
+                                    Ready to Ingest: {cleanRows.length} {docTitleCase} Vouchers
                                 </h2>
                                 <p className="text-xs text-slate-400 max-w-xl mt-1">
                                     Total Amount: <b className="text-emerald-400 font-mono text-sm">{currencySymbol} {cleanRows.reduce((sum, r) => sum + (r.amount || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</b>. All records meet integrity rules and master links.
@@ -1140,7 +1249,7 @@ export default function ImportPurchaseExcelModal({
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">#</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Date</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Voucher No</th>
-                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">Supplier</th>
+                                            <th className="py-3 px-4 font-bold uppercase text-[10px]">{isStockJournal ? 'Lines' : partyLabel}</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Item Lines</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px]">Narration</th>
                                             <th className="py-3 px-4 font-bold uppercase text-[10px] text-right">Amount ({currencySymbol})</th>
@@ -1402,7 +1511,7 @@ export default function ImportPurchaseExcelModal({
                                 <label className="text-xs font-bold text-slate-300 block mb-1">Entity Classification</label>
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                     {[
-                                        { id: 'party', label: 'Supplier / Party' },
+                                        { id: 'party', label: isSales ? 'Customer / Party' : 'Supplier / Party' },
                                         { id: 'product', label: 'Item / Stock Item' },
                                         { id: 'account', label: 'Cash / Bank' },
                                         { id: 'expense', label: 'Expense Head' },
@@ -1441,7 +1550,7 @@ export default function ImportPurchaseExcelModal({
                                         className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-white text-xs font-bold focus:outline-none focus:border-amber-500"
                                     />
                                     <p className="text-[10px] text-slate-400 mt-1">
-                                        Saved to Tax Rates (Manage Tax Rates) and applied to the imported purchase vouchers as tax %.
+                                        Saved to Tax Rates (Manage Tax Rates) and applied to the imported {docWord} vouchers as tax %.
                                     </p>
                                 </div>
                             )}

@@ -144,6 +144,8 @@ const ImportPaymentExcelModal = lazy(() => import('./ImportPaymentExcelModal.jsx
 const ImportReceiptExcelModal = lazy(() => import('./ImportReceiptExcelModal.jsx'));
 const ImportJournalExcelModal = lazy(() => import('./ImportJournalExcelModal.jsx'));
 const ImportPurchaseExcelModal = lazy(() => import('./ImportPurchaseExcelModal.jsx'));
+const ImportDayBookXmlModal = lazy(() => import('./ImportDayBookXmlModal.jsx'));
+const ImportMastersXmlModal = lazy(() => import('./ImportMastersXmlModal.jsx'));
 const V201VerifyReportModal = lazy(() => import('./V201VerifyReportModal.jsx'));
 const V311ReportModal = lazy(() => import('./V311ReportModal.jsx'));
 const BackupHistoryModal = lazy(() => import('./BackupHistoryModal.jsx'));
@@ -780,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.7.3 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.7.4 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -835,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.4</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -859,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.4</div>
                 </div>
             </div>
         </Modal>
@@ -5979,7 +5981,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.7.3";
+    const SYSTEM_VERSION = "2.7.4";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6037,6 +6039,7 @@ export default function App() {
     const [currentRole, setCurrentRole] = useState(null); // role (owner, data_entry_1, etc)
     const [loading, setLoading] = useState(true);
     const [activeModal, setActiveModal] = useState(null);
+    const [importXmlOnly, setImportXmlOnly] = useState(false); // XML tab opens importers without the Excel/CSV option
     const [currency_manager, setCurrencyManager] = useState(false);
     const [modalStack, setModalStack] = useState([]);
 
@@ -6385,8 +6388,6 @@ export default function App() {
         setDashboardDate(newDate);
         // Also update register date range so all register modals reflect the new date
         setRegisterDateRange({ from: newDate, to: newDate });
-        // SYNC Dashboard Period
-        setDateRange({ from: newDate, to: newDate });
     };
 
     const handlePeriodChange = (start, end) => {
@@ -6394,8 +6395,6 @@ export default function App() {
         setGlobalDateCmd({ type: 'period', startDate: start, endDate: end, ts: Date.now() });
         // Also update register date range so all register modals reflect the new period
         setRegisterDateRange({ from: start, to: end });
-        // SYNC Dashboard Period
-        setDateRange({ from: start, to: end });
     };
 
     const handleDateCmdProcessed = () => {
@@ -10607,6 +10606,8 @@ export default function App() {
                 () => import('./ImportReceiptExcelModal.jsx'),
                 () => import('./ImportJournalExcelModal.jsx'),
                 () => import('./ImportPurchaseExcelModal.jsx'),
+                () => import('./ImportDayBookXmlModal.jsx'),
+                () => import('./ImportMastersXmlModal.jsx'),
                 () => import('./V201VerifyReportModal.jsx'),
                 () => import('./V311ReportModal.jsx'),
                 () => import('./BackupHistoryModal.jsx')
@@ -11282,7 +11283,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.3</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.4</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -13641,10 +13642,19 @@ export default function App() {
                     onRestore={handleRestore}
                     onExportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('export_voucher'); }}
                     onImportVoucher={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_voucher'); }}
-                    onImportPaymentExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_payment_excel'); }}
-                    onImportReceiptExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_receipt_excel'); }}
-                    onImportJournalExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_journal_excel'); }}
-                    onImportPurchaseExcel={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_purchase_excel'); }}
+                    onImportPaymentExcel={() => { setImportXmlOnly(false); setModalStack(s => [...s, 'management']); setActiveModal('import_payment_excel'); }}
+                    onImportReceiptExcel={() => { setImportXmlOnly(false); setModalStack(s => [...s, 'management']); setActiveModal('import_receipt_excel'); }}
+                    onImportJournalExcel={() => { setImportXmlOnly(false); setModalStack(s => [...s, 'management']); setActiveModal('import_journal_excel'); }}
+                    onImportPurchaseExcel={() => { setImportXmlOnly(false); setModalStack(s => [...s, 'management']); setActiveModal('import_purchase_excel'); }}
+                    onImportPaymentXml={() => { setImportXmlOnly(true); setModalStack(s => [...s, 'management']); setActiveModal('import_payment_excel'); }}
+                    onImportReceiptXml={() => { setImportXmlOnly(true); setModalStack(s => [...s, 'management']); setActiveModal('import_receipt_excel'); }}
+                    onImportJournalXml={() => { setImportXmlOnly(true); setModalStack(s => [...s, 'management']); setActiveModal('import_journal_excel'); }}
+                    onImportPurchaseXml={() => { setImportXmlOnly(true); setModalStack(s => [...s, 'management']); setActiveModal('import_purchase_excel'); }}
+                    onImportSalesXml={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_sales_xml'); }}
+                    onImportStockJournalXml={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_stock_journal_xml'); }}
+                    onImportDayBookXml={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_daybook_xml'); }}
+                    onImportAccountsMastersXml={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_accounts_masters_xml'); }}
+                    onImportStockMastersXml={() => { setModalStack(s => [...s, 'management']); setActiveModal('import_stock_masters_xml'); }}
                     onShowBackupLog={() => { setModalStack(s => [...s, 'management']); setActiveModal('backup_log'); }}
                     onChangePassword={handleChangePassword}
                     onManageUsers={() => { setModalStack(s => [...s, 'management']); setActiveModal('manage_users'); }}
@@ -13752,6 +13762,7 @@ export default function App() {
             <Suspense fallback={null}>
             <ImportPaymentExcelModal
                 isOpen={true}
+                xmlOnly={importXmlOnly}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -13761,6 +13772,9 @@ export default function App() {
                 parties={parties}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts}
+                incomeAccounts={incomeAccounts}
+                capitalAccounts={capitalAccounts}
+                assetAccounts={assetAccounts}
                 payments={payments}
                 effectiveName={effectiveName}
                 currencySymbol={currencySymbol}
@@ -13774,6 +13788,7 @@ export default function App() {
             <Suspense fallback={null}>
             <ImportReceiptExcelModal
                 isOpen={true}
+                xmlOnly={importXmlOnly}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -13784,6 +13799,8 @@ export default function App() {
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts}
                 incomeAccounts={incomeAccounts}
+                capitalAccounts={capitalAccounts}
+                assetAccounts={assetAccounts}
                 payments={payments}
                 effectiveName={effectiveName}
                 currencySymbol={currencySymbol}
@@ -13797,6 +13814,7 @@ export default function App() {
             <Suspense fallback={null}>
             <ImportJournalExcelModal
                 isOpen={true}
+                xmlOnly={importXmlOnly}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -13822,6 +13840,7 @@ export default function App() {
             <Suspense fallback={null}>
             <ImportPurchaseExcelModal
                 isOpen={true}
+                xmlOnly={importXmlOnly}
                 onClose={handleCloseModal}
                 onBack={handleModalBack}
                 user={user}
@@ -13838,6 +13857,117 @@ export default function App() {
                 invoices={invoices}
                 effectiveName={effectiveName}
                 currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+            </Suspense>
+            )}
+
+            {/* Import Sales Voucher From Tally XML (same pipeline as purchase, posts type: 'sales') */}
+            {getModalState('import_sales_xml').isOpen && (
+            <Suspense fallback={null}>
+            <ImportPurchaseExcelModal
+                isOpen={true}
+                voucherType="sales"
+                xmlOnly={true}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                products={products}
+                taxRates={taxRates}
+                locations={locations}
+                invoices={invoices}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+            </Suspense>
+            )}
+
+            {getModalState('import_stock_journal_xml').isOpen && (
+            <Suspense fallback={null}>
+            <ImportPurchaseExcelModal
+                isOpen={true}
+                voucherType="stock_journal"
+                xmlOnly={true}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                products={products}
+                taxRates={taxRates}
+                locations={locations}
+                invoices={invoices}
+                stockJournals={stockJournals}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+            </Suspense>
+            )}
+
+            {getModalState('import_daybook_xml').isOpen && (
+            <Suspense fallback={null}>
+            <ImportDayBookXmlModal
+                isOpen={true}
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                accounts={accounts}
+                parties={parties}
+                expenses={expenses}
+                directExpenseAccounts={directExpenseAccounts}
+                products={products}
+                taxRates={taxRates}
+                locations={locations}
+                invoices={invoices}
+                payments={payments}
+                journalVouchers={journalVouchers}
+                stockJournals={stockJournals}
+                effectiveName={effectiveName}
+                currencySymbol={currencySymbol}
+                showToast={setToast}
+            />
+            </Suspense>
+            )}
+
+            {getModalState('import_accounts_masters_xml').isOpen && (
+            <Suspense fallback={null}>
+            <ImportMastersXmlModal
+                isOpen={true}
+                mode="accounts"
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                effectiveName={effectiveName}
+                showToast={setToast}
+            />
+            </Suspense>
+            )}
+
+            {getModalState('import_stock_masters_xml').isOpen && (
+            <Suspense fallback={null}>
+            <ImportMastersXmlModal
+                isOpen={true}
+                mode="stock"
+                onClose={handleCloseModal}
+                onBack={handleModalBack}
+                user={user}
+                dataOwnerId={dataOwnerId}
+                effectiveName={effectiveName}
                 showToast={setToast}
             />
             </Suspense>
@@ -14131,7 +14261,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.3</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.4</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
