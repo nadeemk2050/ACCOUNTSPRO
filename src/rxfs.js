@@ -94,6 +94,43 @@ const matches = (id, docData, constraints) => {
     return true;
 };
 
+// ⚡ Bulk-write support ------------------------------------------------------------------
+// Large imports (Day Book / masters) write thousands of documents in a few seconds.
+// 1) During a bulk window the per-document cloud push is QUEUED instead of fired, so the
+//    write loop is not competing with hundreds of network round-trips.
+// 2) writeBatch() uses RxDB bulkInsert for brand-new documents and falls back to the exact
+//    legacy per-document path on any conflict/schema error.
+let bulkDepth = 0;
+const pendingChanges = [];
+
+const notifyChange = (payload) => {
+    if (bulkDepth > 0) { pendingChanges.push(payload); return; }
+    try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange(payload); } catch (e) { /* non-fatal */ }
+};
+
+export const beginBulkWrite = () => { bulkDepth++; };
+
+export const endBulkWrite = () => {
+    bulkDepth = Math.max(0, bulkDepth - 1);
+    if (bulkDepth > 0 || pendingChanges.length === 0) return;
+    const queued = pendingChanges.splice(0);
+    const map = new Map();
+    queued.forEach(c => map.set(`${c.collectionName}|${c.id}`, c));
+    void flushQueuedChanges(Array.from(map.values()));
+};
+
+async function flushQueuedChanges(list) {
+    const fn = window.__accproNotifyDataChange;
+    if (typeof fn !== 'function') return;
+    const CONCURRENCY = 6;
+    for (let i = 0; i < list.length; i += CONCURRENCY) {
+        const slice = list.slice(i, i + CONCURRENCY);
+        try {
+            await Promise.allSettled(slice.map(c => Promise.resolve().then(() => fn(c))));
+        } catch (e) { /* sync failures are non-fatal */ }
+    }
+}
+
 // ⚡ SQLite fast-path helpers (Electron desktop only) ------------------------
 const SQLITE_ENABLED = (() => { try { return isSqliteAvailable(); } catch (e) { return false; } })();
 const sqliteCompanyId = () => getActiveCompanyId() || '__master__';
@@ -416,8 +453,8 @@ export const addDoc = async (colRef, data) => {
     // ⚡ Mirror to SQLite (Electron fast read store)
     sqliteMirrorDoc(sqliteCompanyId(), { id: newId, collectionName: colRef.path, data: cleanData, timestamp: Date.now() });
 
-    // Notify sync layer
-    try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id: newId, collectionName: colRef.path, operation: 'INSERT' }); } catch(e) {}
+    // Notify sync layer (queued while a bulk import is running)
+    notifyChange({ id: newId, collectionName: colRef.path, operation: 'INSERT' });
 
     return { id: newId, path: `${colRef.path}/${newId}` };
 };
@@ -454,7 +491,7 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                 // ⚡ Mirror to SQLite
                 sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: options.merge ? { ...JSON.parse(JSON.stringify(exist.toJSON().data || {})), ...cleanData } : cleanData, timestamp: Date.now(), lastSync: exist.toJSON().lastSync });
                 // Notify sync layer for updates on existing docs
-                try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
+                notifyChange({ id, collectionName: colName, operation: 'UPDATE' });
             } else if (existAny) {
                 // Same id exists in another collection: treat as a move to target collection.
                 const anyData = JSON.parse(JSON.stringify(existAny.toJSON().data || {}));
@@ -462,7 +499,7 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                 await existAny.patch({ collectionName: colName, data: nextData, timestamp: Date.now() });
                 // ⚡ Mirror to SQLite
                 sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: nextData, timestamp: Date.now(), lastSync: existAny.toJSON().lastSync });
-                try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
+                notifyChange({ id, collectionName: colName, operation: 'UPDATE' });
             } else {
                 await db.offline_records.insert({
                     id: id,
@@ -473,7 +510,7 @@ export const setDoc = async (docRef, data, options = { merge: false }) => {
                 // ⚡ Mirror to SQLite
                 sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: cleanData, timestamp: Date.now() });
                 // Notify for new inserts too (backup)
-                try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'INSERT' }); } catch(e) {}
+                notifyChange({ id, collectionName: colName, operation: 'INSERT' });
             }
             return;
         } catch (e) {
@@ -515,7 +552,7 @@ export const updateDoc = async (docRef, data) => {
             // ⚡ Mirror to SQLite
             sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: mergedAny, timestamp: Date.now(), lastSync: existAny.toJSON().lastSync });
             // Notify sync layer
-            try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
+            notifyChange({ id, collectionName: colName, operation: 'UPDATE' });
             return;
         }
         try {
@@ -525,7 +562,7 @@ export const updateDoc = async (docRef, data) => {
             // ⚡ Mirror to SQLite
             sqliteMirrorDoc(sqliteCompanyId(), { id, collectionName: colName, data: merged, timestamp: Date.now(), lastSync: exist.toJSON().lastSync });
             // Notify sync layer directly (backup for RxDB $ observable)
-            try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'UPDATE' }); } catch(e) {}
+            notifyChange({ id, collectionName: colName, operation: 'UPDATE' });
             return;
         } catch (e) {
             if (isConflictError(e) && attempt < MAX_RETRIES - 1) {
@@ -556,7 +593,7 @@ export const deleteDoc = async (docRef) => {
             // ⚡ Mirror deletion to SQLite
             sqliteMirrorRemove(sqliteCompanyId(), id);
             // Notify sync layer
-            try { if (window.__accproNotifyDataChange) window.__accproNotifyDataChange({ id, collectionName: colName, operation: 'DELETE' }); } catch(e) {}
+            notifyChange({ id, collectionName: colName, operation: 'DELETE' });
             return; // success
         } catch (e) {
             const isConflict = e?.rxdb === true || e?.code === 'CONFLICT' ||
@@ -575,14 +612,74 @@ export const deleteDoc = async (docRef) => {
 export const writeBatch = () => {
     const ops = [];
     return {
-        set: (ref, data, opts) => ops.push(() => setDoc(ref, data, opts)),
-        update: (ref, data) => ops.push(() => updateDoc(ref, data)),
-        delete: (ref) => ops.push(() => deleteDoc(ref)),
+        set: (ref, data, opts) => ops.push({ kind: 'set', ref, data, opts }),
+        update: (ref, data) => ops.push({ kind: 'update', ref, data }),
+        delete: (ref) => ops.push({ kind: 'delete', ref }),
         commit: async () => {
-            for (const op of ops) await op();
+            const sets = ops.filter(o => o.kind === 'set');
+            const others = ops.filter(o => o.kind !== 'set');
+
+            // Fast path: many brand-new documents → one RxDB bulkInsert per collection.
+            if (sets.length > 1) {
+                const groups = new Map();
+                const orphan = [];
+                sets.forEach((o) => {
+                    const parts = String(o.ref?.path || '').split('/');
+                    const id = parts[parts.length - 1];
+                    const collectionName = parts.slice(0, -1).join('/');
+                    if (!collectionName || !id) { orphan.push(o); return; }
+                    if (!groups.has(collectionName)) groups.set(collectionName, []);
+                    groups.get(collectionName).push({ ref: o.ref, id, collectionName, data: o.data, options: o.opts });
+                });
+                for (const entries of groups.values()) {
+                    const ok = await bulkInsertDocs(entries);
+                    if (!ok) {
+                        // Any conflict / schema problem → exact legacy behaviour for this collection.
+                        for (const e of entries) await setDoc(e.ref, e.data, e.options);
+                    }
+                }
+                for (const o of orphan) await setDoc(o.ref, o.data, o.opts);
+            } else {
+                for (const o of sets) await setDoc(o.ref, o.data, o.opts);
+            }
+
+            for (const o of others) {
+                if (o.kind === 'update') await updateDoc(o.ref, o.data);
+                else await deleteDoc(o.ref);
+            }
         }
     };
 };
+
+/**
+ * Inserts a whole chunk of new documents in one RxDB call.
+ * Returns false when the fast path is unavailable (caller then uses setDoc per document).
+ */
+async function bulkInsertDocs(entries) {
+    let db;
+    try { db = await getDB(); } catch (e) { return false; }
+    if (!db || !db.offline_records) return false;
+
+    const now = Date.now();
+    const rows = entries.map(e => ({
+        id: e.id,
+        collectionName: e.collectionName,
+        data: wash(e.data),
+        timestamp: now
+    }));
+
+    try {
+        await db.offline_records.bulkInsert(rows);
+    } catch (e) {
+        return false;
+    }
+
+    rows.forEach((row) => {
+        sqliteMirrorDoc(sqliteCompanyId(), { id: row.id, collectionName: row.collectionName, data: row.data, timestamp: row.timestamp });
+        notifyChange({ id: row.id, collectionName: row.collectionName, operation: 'INSERT' });
+    });
+    return true;
+}
 
 export const runTransaction = async (db, callback) => {
     console.warn(`[runTransaction] START`);

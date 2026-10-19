@@ -11,7 +11,21 @@
  */
 
 import { db } from '../firebase.js';
-import { collection, doc, writeBatch, setDoc, getDoc, updateDoc, serverTimestamp, getDocs, query, where, deleteDoc } from 'firebase/firestore';
+import {
+    collection, doc, writeBatch, setDoc, getDoc, updateDoc,
+    serverTimestamp, getDocs, query, where, deleteDoc
+} from 'firebase/firestore';
+import * as fsShim from 'firebase/firestore';
+
+// Bulk-write window: while active, per-document cloud pushes are queued by the local shim
+// so a large import is not competing with hundreds of simultaneous network writes.
+const beginBulk = typeof fsShim.beginBulkWrite === 'function' ? fsShim.beginBulkWrite : () => {};
+const endBulk = typeof fsShim.endBulkWrite === 'function' ? fsShim.endBulkWrite : () => {};
+
+/** Wraps a document parser so it can run directly on nodes already in memory (no re-parse). */
+const voucherDocFor = (nodes) => ({
+    getElementsByTagName: (tag) => (tag === 'VOUCHER' ? nodes : [])
+});
 
 export const BATCH_HISTORY_KEY = 'accpro_excel_batch_history';
 
@@ -556,16 +570,22 @@ export function classifyVoucherType(name) {
  */
 export function parseXMLFile(xmlText, options = {}) {
     const voucherMode = options.voucherMode || 'payment';
-    if (isDbcRegisterXml(xmlText)) {
-        throw new Error('This is a Tally ERP 9 REGISTER export (Day Book / Register columns). Open it with the PURCHASE importer, or export "Vouchers" from Tally Prime as XML (Data Interchange) for payment / receipt / journal.');
-    }
-    const parser = new DOMParser();
-    const sanitized = sanitizeTallyXml(xmlText);
-    const xmlDoc = parser.parseFromString(sanitized, 'text/xml');
+    let xmlDoc;
+    if (options.doc) {
+        // Single-pass mode: the caller already parsed the document and filtered the nodes.
+        xmlDoc = options.doc;
+    } else {
+        if (isDbcRegisterXml(xmlText)) {
+            throw new Error('This is a Tally ERP 9 REGISTER export (Day Book / Register columns). Open it with the PURCHASE importer, or export "Vouchers" from Tally Prime as XML (Data Interchange) for payment / receipt / journal.');
+        }
+        const parser = new DOMParser();
+        const sanitized = sanitizeTallyXml(xmlText);
+        xmlDoc = parser.parseFromString(sanitized, 'text/xml');
 
-    const parseError = xmlDoc.getElementsByTagName('parsererror');
-    if (parseError.length > 0) {
-        throw new Error('Invalid XML file: ' + parseError[0].textContent);
+        const parseError = xmlDoc.getElementsByTagName('parsererror');
+        if (parseError.length > 0) {
+            throw new Error('Invalid XML file: ' + parseError[0].textContent);
+        }
     }
 
     const voucherNodes = xmlDoc.getElementsByTagName('VOUCHER');
@@ -1117,6 +1137,15 @@ export async function createMissingMaster({ name, type = 'party', partyRole = 's
  * Executes Atomic Batch Import (Rule 7)
  */
 export async function executeBatchImport(rowsToImport, context) {
+    beginBulk();
+    try {
+        return await runBatchImport(rowsToImport, context);
+    } finally {
+        endBulk();
+    }
+}
+
+async function runBatchImport(rowsToImport, context = {}) {
     const {
         user,
         dataOwnerId,
@@ -1831,13 +1860,18 @@ export function parseStockJournalDbcRegister(xmlText, options = {}) {
 
 /** Tally Prime / ERP 9 Stock Journal voucher XML (Data Interchange). */
 export function parseStockJournalXMLFile(xmlText, options = {}) {
-    if (isDbcRegisterXml(xmlText)) {
-        return parseStockJournalDbcRegister(xmlText, options);
+    let xmlDoc;
+    if (options.doc) {
+        xmlDoc = options.doc;
+    } else {
+        if (isDbcRegisterXml(xmlText)) {
+            return parseStockJournalDbcRegister(xmlText, options);
+        }
+        const parser = new DOMParser();
+        xmlDoc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
+        const parseError = xmlDoc.getElementsByTagName('parsererror');
+        if (parseError.length > 0) throw new Error('Invalid XML file: ' + parseError[0].textContent);
     }
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
-    const parseError = xmlDoc.getElementsByTagName('parsererror');
-    if (parseError.length > 0) throw new Error('Invalid XML file: ' + parseError[0].textContent);
 
     const voucherNodes = Array.from(xmlDoc.getElementsByTagName('VOUCHER'));
     if (!voucherNodes.length) throw new Error('No <VOUCHER> elements found in this XML document.');
@@ -2050,6 +2084,15 @@ export function validateStockJournalBatch(vouchers, context = {}) {
 
 /** Posts validated stock journals into the `stock_journals` collection. */
 export async function executeStockJournalImport(rowsToImport, context = {}) {
+    beginBulk();
+    try {
+        return await runStockJournalImport(rowsToImport, context);
+    } finally {
+        endBulk();
+    }
+}
+
+async function runStockJournalImport(rowsToImport, context = {}) {
     const { user, dataOwnerId, effectiveName, onRowStatus, chunkSize = 1, control, onBatchStart, lookups = {} } = context;
     const targetUid = dataOwnerId || user?.uid;
     if (!targetUid) throw new Error('User not identified');
@@ -2201,15 +2244,20 @@ export async function executeStockJournalImport(rowsToImport, context = {}) {
 }
 
 export function parsePurchaseXMLFile(xmlText, options = {}) {
-    if (isDbcRegisterXml(xmlText)) {
-        return parsePurchaseDbcRegister(xmlText, options);
-    }
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
+    let xmlDoc;
+    if (options.doc) {
+        xmlDoc = options.doc;
+    } else {
+        if (isDbcRegisterXml(xmlText)) {
+            return parsePurchaseDbcRegister(xmlText, options);
+        }
+        const parser = new DOMParser();
+        xmlDoc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
 
-    const parseError = xmlDoc.getElementsByTagName('parsererror');
-    if (parseError.length > 0) {
-        throw new Error('Invalid XML file: ' + parseError[0].textContent);
+        const parseError = xmlDoc.getElementsByTagName('parsererror');
+        if (parseError.length > 0) {
+            throw new Error('Invalid XML file: ' + parseError[0].textContent);
+        }
     }
 
     const voucherNodes = Array.from(xmlDoc.getElementsByTagName('VOUCHER'));
@@ -2676,6 +2724,15 @@ export function validatePurchaseBatch(vouchers, context = {}) {
  * Posts validated purchase vouchers as `invoices` documents (type 'purchase').
  */
 export async function executePurchaseImport(rowsToImport, context = {}) {
+    beginBulk();
+    try {
+        return await runPurchaseImport(rowsToImport, context);
+    } finally {
+        endBulk();
+    }
+}
+
+async function runPurchaseImport(rowsToImport, context = {}) {
     const { user, dataOwnerId, effectiveName, currencySymbol = 'AED', onRowStatus, chunkSize = 1, control, onBatchStart, lookups = {} } = context;
     const targetUid = dataOwnerId || user?.uid;
     if (!targetUid) throw new Error('User not identified');
@@ -2857,7 +2914,6 @@ export function classifyDayBookXml(xmlText) {
     const nodes = Array.from(doc.getElementsByTagName('VOUCHER'));
     if (!nodes.length) throw new Error('No <VOUCHER> elements found in this XML document.');
 
-    const serializer = new XMLSerializer();
     const buckets = {};
 
     nodes.forEach((n) => {
@@ -2868,17 +2924,31 @@ export function classifyDayBookXml(xmlText) {
         if (!buckets[key]) buckets[key] = { kind: key, types: {}, nodes: [] };
         const label = type || '(blank)';
         buckets[key].types[label] = (buckets[key].types[label] || 0) + 1;
-        buckets[key].nodes.push(serializer.serializeToString(n));
+        buckets[key].nodes.push(n);
     });
 
     const groups = {};
     Object.entries(buckets).forEach(([key, b]) => {
-        groups[key] = {
+        const group = {
             kind: key,
             count: b.nodes.length,
             types: b.types,
-            xml: `<ENVELOPE>${b.nodes.join('')}</ENVELOPE>`
+            // Live DOM nodes — the per-module parsers read these directly (single-pass parse).
+            nodes: b.nodes
         };
+        // Legacy `xml` accessor: only serialized if some external caller still asks for it.
+        let cachedXml = null;
+        Object.defineProperty(group, 'xml', {
+            enumerable: false,
+            get() {
+                if (cachedXml === null) {
+                    const serializer = new XMLSerializer();
+                    cachedXml = `<ENVELOPE>${b.nodes.map(n => serializer.serializeToString(n)).join('')}</ENVELOPE>`;
+                }
+                return cachedXml;
+            }
+        });
+        groups[key] = group;
     });
 
     return { total: nodes.length, groups };
@@ -2909,14 +2979,14 @@ export function parseDayBookRows(xmlText, context = {}) {
             let parsed;
             let validation;
             if (kind === 'payment' || kind === 'receipt' || kind === 'journal') {
-                parsed = parseXMLFile(group.xml, { voucherMode: kind });
+                parsed = parseXMLFile('', { voucherMode: kind, doc: voucherDocFor(group.nodes) });
                 validation = validateImportBatch(parsed.vouchers, {
                     masters,
                     companyProfile,
                     existingVouchers: kind === 'journal' ? journalVouchers : payments
                 });
             } else if (kind === 'purchase' || kind === 'sales') {
-                parsed = parsePurchaseXMLFile(group.xml, { voucherType: kind });
+                parsed = parsePurchaseXMLFile('', { voucherType: kind, doc: voucherDocFor(group.nodes) });
                 validation = validatePurchaseBatch(parsed.vouchers, {
                     voucherType: kind,
                     masters,
@@ -2924,7 +2994,7 @@ export function parseDayBookRows(xmlText, context = {}) {
                     existingVouchers: (invoices || []).filter(i => i.type === kind)
                 });
             } else {
-                parsed = parseStockJournalXMLFile(group.xml, {});
+                parsed = parseStockJournalXMLFile('', { doc: voucherDocFor(group.nodes) });
                 validation = validateStockJournalBatch(parsed.vouchers, {
                     masters,
                     companyProfile,
@@ -2978,6 +3048,16 @@ export async function executeDayBookRows(rows, context = {}) {
     const byKind = {};
     rows.forEach(r => { (byKind[r.__kind] = byKind[r.__kind] || []).push(r); });
 
+    // One bulk window for every module of this Day Book (queues cloud pushes until the end).
+    beginBulk();
+    try {
+        return await runDayBookRows(byKind, context);
+    } finally {
+        endBulk();
+    }
+}
+
+async function runDayBookRows(byKind, context = {}) {
     const targetUid = context.dataOwnerId || context.user?.uid;
 
     /** Reads the batch back from the store so the UI can prove the documents exist. */
@@ -3070,14 +3150,14 @@ export async function importDayBook(xmlText, context = {}) {
         let validation;
         try {
             if (kind === 'payment' || kind === 'receipt' || kind === 'journal') {
-                parsed = parseXMLFile(group.xml, { voucherMode: kind });
+                parsed = parseXMLFile('', { voucherMode: kind, doc: voucherDocFor(group.nodes) });
                 validation = validateImportBatch(parsed.vouchers, {
                     masters,
                     companyProfile,
                     existingVouchers: kind === 'journal' ? journalVouchers : payments
                 });
             } else if (kind === 'purchase' || kind === 'sales') {
-                parsed = parsePurchaseXMLFile(group.xml, { voucherType: kind });
+                parsed = parsePurchaseXMLFile('', { voucherType: kind, doc: voucherDocFor(group.nodes) });
                 validation = validatePurchaseBatch(parsed.vouchers, {
                     voucherType: kind,
                     masters,
@@ -3085,7 +3165,7 @@ export async function importDayBook(xmlText, context = {}) {
                     existingVouchers: (invoices || []).filter(i => i.type === kind)
                 });
             } else {
-                parsed = parseStockJournalXMLFile(group.xml, {});
+                parsed = parseStockJournalXMLFile('', { doc: voucherDocFor(group.nodes) });
                 validation = validateStockJournalBatch(parsed.vouchers, {
                     masters,
                     companyProfile,
@@ -3375,6 +3455,15 @@ export function parseStockMastersXml(xmlText) {
 
 /** Bulk-create Tally masters, skipping names that already exist (case/space-insensitive). */
 export async function bulkImportMasters(masters, context = {}) {
+    beginBulk();
+    try {
+        return await runBulkImportMasters(masters, context);
+    } finally {
+        endBulk();
+    }
+}
+
+async function runBulkImportMasters(masters, context = {}) {
     const { user, dataOwnerId, effectiveName, onProgress } = context;
     const targetUid = dataOwnerId || user?.uid;
     if (!targetUid) throw new Error('User not identified');

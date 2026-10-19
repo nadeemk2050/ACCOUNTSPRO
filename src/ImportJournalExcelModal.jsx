@@ -433,7 +433,7 @@ export default function ImportJournalExcelModal({
                 lookups: { parties, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts },
                 voucherType: 'journal',
                 docLabel: 'Journal',
-                chunkSize: 1, // one voucher at a time so every row's progress can be watched
+                chunkSize: 200, // batched: one bulk write per chunk, progress is throttled
                 onRowStatus: (id, status) => {
                     setRowStatus(prev => ({ ...prev, [id]: status }));
                     if (status === 'imported') {

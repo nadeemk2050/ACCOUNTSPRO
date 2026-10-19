@@ -431,7 +431,7 @@ export default function ImportPaymentExcelModal({
                 companyProfile,
                 currencySymbol,
                 lookups: { parties, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts },
-                chunkSize: 1, // one voucher at a time so progress is visible per row
+                chunkSize: 200, // batched: one bulk write per chunk, progress is throttled
                 onRowStatus: (id, status) => setRowStatus(prev => ({ ...prev, [id]: status })),
                 control: { isPaused: () => runCtlRef.current.paused, isStopped: () => runCtlRef.current.stopped, isRowSkipped },
                 onBatchStart: (id) => setCurrentBatchId(id)

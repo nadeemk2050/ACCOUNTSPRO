@@ -145,6 +145,28 @@ export default function ImportDayBookXmlModal({
     const [historyList, setHistoryList] = useState([]);
     const [importResult, setImportResult] = useState(null);
 
+    // Large files: progress is coalesced (~5 updates/sec) instead of re-rendering per voucher.
+    const rowStatusRef = React.useRef({});
+    const rowStatusTimer = React.useRef(null);
+    const queueRowStatus = (id, status) => {
+        rowStatusRef.current[id] = status;
+        if (rowStatusTimer.current) return;
+        rowStatusTimer.current = setTimeout(() => {
+            rowStatusTimer.current = null;
+            const patch = rowStatusRef.current;
+            rowStatusRef.current = {};
+            setRowStatus(prev => ({ ...prev, ...patch }));
+        }, 200);
+    };
+    useEffect(() => () => { if (rowStatusTimer.current) clearTimeout(rowStatusTimer.current); }, []);
+
+    // Guardrail for very large Day Books + light row virtualization for the long lists.
+    const BIG_FILE_LIMIT = 1500;
+    const INITIAL_VISIBLE_ROWS = 250;
+    const [bigFileAck, setBigFileAck] = useState(false);
+    const [showAllSolution, setShowAllSolution] = useState(false);
+    const [showAllReady, setShowAllReady] = useState(false);
+
     // Solution Centre filters
     const [moduleFilter, setModuleFilter] = useState('ALL');
     const [severityFilter, setSeverityFilter] = useState('ALL');
@@ -183,6 +205,9 @@ export default function ImportDayBookXmlModal({
         setIsParsing(true);
         setImportResult(null);
         setRowStatus({});
+        setBigFileAck(false);
+        setShowAllSolution(false);
+        setShowAllReady(false);
         try {
             const text = await readXmlFileText(file);
             setRawXml(text);
@@ -350,8 +375,8 @@ export default function ImportDayBookXmlModal({
                 companyProfile,
                 currencySymbol,
                 lookups: { parties, products, taxRates, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts },
-                chunkSize: 1,
-                onRowStatus: (id, status) => setRowStatus(prev => ({ ...prev, [id]: status }))
+                chunkSize: 200,
+                onRowStatus: queueRowStatus
             });
             setImportResult(results);
             setHistoryList(getBatchHistory());
@@ -359,8 +384,7 @@ export default function ImportDayBookXmlModal({
                 const next = { ...prev };
                 cleanRows.forEach(r => { if (!next[r.id] || next[r.id] === 'processing') next[r.id] = 'imported'; });
                 return next;
-            });
-            const imported = results.reduce((s, r) => s + r.imported, 0);
+            });            const imported = results.reduce((s, r) => s + r.imported, 0);
             if (showToast) {
                 showToast({
                     type: imported > 0 ? 'success' : 'warning',
@@ -415,6 +439,13 @@ export default function ImportDayBookXmlModal({
         }
         return row.partyName || '—';
     };
+
+    // Large-file guardrail + rendered-window limits (keeps thousands of rows responsive).
+    const totalParsed = summary?.total || 0;
+    const isBigFile = totalParsed > BIG_FILE_LIMIT;
+    const visibleReadyRows = showAllReady ? cleanRows : cleanRows.slice(0, INITIAL_VISIBLE_ROWS);
+    const visibleSolutionRows = showAllSolution ? filteredRows : filteredRows.slice(0, INITIAL_VISIBLE_ROWS);
+    const importBlocked = isImporting || cleanRows.length === 0 || (isBigFile && !bigFileAck);
 
     if (!isOpen) return null;
 
@@ -604,7 +635,7 @@ export default function ImportDayBookXmlModal({
                             <div className="p-10 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 text-center text-emerald-300 text-sm font-bold">
                                 Nothing left to resolve — open Ready to Import.
                             </div>
-                        ) : filteredRows.map(row => {
+                        ) : visibleSolutionRows.map(row => {
                             const critical = row.issues.some(i => i.type === 'CRITICAL');
                             return (
                                 <div key={row.id} className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 space-y-3">
@@ -707,12 +738,48 @@ export default function ImportDayBookXmlModal({
                                 </div>
                             );
                         })}
+                        {filteredRows.length > visibleSolutionRows.length && (
+                            <button
+                                onClick={() => setShowAllSolution(true)}
+                                className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300"
+                            >
+                                Show {filteredRows.length - visibleSolutionRows.length} more of {filteredRows.length}…
+                            </button>
+                        )}
                     </div>
                 )}
 
                 {/* ---------------- TAB 3: READY ---------------- */}
                 {activeTab === 'ready' && (
                     <div className="space-y-4">
+                        {isBigFile && (
+                            <div className={`rounded-2xl border p-4 ${bigFileAck ? 'border-emerald-500/30 bg-emerald-950/20' : 'border-amber-500/40 bg-amber-500/5'}`}>
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex items-start gap-3">
+                                        <AlertTriangle size={18} className={bigFileAck ? 'text-emerald-400 mt-0.5' : 'text-amber-400 mt-0.5'} />
+                                        <div>
+                                            <div className={`text-sm font-bold ${bigFileAck ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                                Large file: {totalParsed.toLocaleString()} vouchers
+                                            </div>
+                                            <div className="text-[11px] text-slate-400 mt-1 max-w-2xl">
+                                                This import runs in batches and may take a few minutes. For the fastest, safest result split the
+                                                Day Book by month in Tally (F2 → one month) and import one file per month.
+                                                {isBigFile && !bigFileAck ? ' Import stays locked until you acknowledge this.' : ''}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {!bigFileAck && (
+                                        <button
+                                            onClick={() => setBigFileAck(true)}
+                                            className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider"
+                                        >
+                                            I understand — continue
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
                         <div className="p-5 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-emerald-950/30 border border-emerald-500/30 flex flex-wrap items-center justify-between gap-4">
                             <div>
                                 <h2 className="text-lg font-bold">Ready to Ingest: {cleanRows.length} vouchers</h2>
@@ -722,7 +789,7 @@ export default function ImportDayBookXmlModal({
                             </div>
                             <button
                                 onClick={handleExecuteImport}
-                                disabled={isImporting || cleanRows.length === 0}
+                                disabled={importBlocked}
                                 className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-2"
                             >
                                 {isImporting ? <RefreshCw className="animate-spin" size={14} /> : <ShieldCheck size={14} />}
@@ -743,7 +810,7 @@ export default function ImportDayBookXmlModal({
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-white/5">
-                                    {cleanRows.map(row => (
+                                    {visibleReadyRows.map(row => (
                                         <tr key={row.id} className="hover:bg-white/[0.02]">
                                             <td className="py-2 px-3">
                                                 <span className={`px-2 py-0.5 rounded-md border text-[10px] font-black uppercase ${MODULE_STYLE[row.__kind] || ''}`}>
@@ -771,6 +838,16 @@ export default function ImportDayBookXmlModal({
                                     )}
                                 </tbody>
                             </table>
+                            {cleanRows.length > visibleReadyRows.length && (
+                                <div className="p-3 border-t border-white/10 text-center">
+                                    <button
+                                        onClick={() => setShowAllReady(true)}
+                                        className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-300"
+                                    >
+                                        Show {cleanRows.length - visibleReadyRows.length} more of {cleanRows.length}…
+                                    </button>
+                                </div>
+                            )}
                         </div>
 
                         {importResult && (
