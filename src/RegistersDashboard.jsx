@@ -519,7 +519,7 @@ const RegistersDashboard = ({
             <div className="flex h-7 shrink-0 items-center justify-between border-t border-white/5 px-3 text-[9px] uppercase tracking-[0.2em] text-white/25 md:px-4">
                 <span className="shrink-0">Audit Ready Reports</span>
                 <span className="hidden truncate px-3 md:block">Registers provide a chronological view of all transactions.</span>
-                <span className="shrink-0 font-mono">V2.7.4</span>
+                <span className="shrink-0 font-mono">V2.7.5</span>
             </div>
         </div>
     );

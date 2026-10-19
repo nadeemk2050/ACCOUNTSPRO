@@ -48,6 +48,8 @@ const ChartOfMastersModal = ({
     onChartUpdate,
     onChartDelete,
     onChartMove,
+    onChartGroupRename,
+    onChartGroupMove,
     autoEditCollection,
     autoEditId,
     onAutoEditHandled,
@@ -84,6 +86,7 @@ const ChartOfMastersModal = ({
     // Group row editing (stock / party / expense groups)
     const [editingGroupName, setEditingGroupName] = useState(null);
     const [groupEditForm, setGroupEditForm] = useState({});
+    const [groupMoveType, setGroupMoveType] = useState('');
 
     // "Add full details" expansion inside the create dialog
     const [quickAddShowAll, setQuickAddShowAll] = useState(false);
@@ -233,22 +236,31 @@ const ChartOfMastersModal = ({
 
     const groupFieldsFor = (collection) => groupEditFields[collection] || [];
 
+    // Groups that only exist as a `group` string on member ledgers (Fixed Assets,
+    // Capital, Income, Cash/Bank, Direct Expenses...) still get a name editor.
+    const VIRTUAL_GROUP_FIELDS = [{ key: 'name', label: 'Group Name', type: 'text', required: true }];
+    // Cash/Bank buckets are derived from the ledger `type`, not from a name field.
+    const virtualGroupFieldsFor = (tabId) => (tabId === 'CASH_BANK' ? [] : VIRTUAL_GROUP_FIELDS);
+
     const groupRecordFor = (gName) => {
         const coll = currentTab?.groupCollection;
         if (!coll) return null;
         return groupArrayFor(coll).find(g => (g.name || '') === gName) || null;
     };
 
+    const isVirtualGroup = (gName) => !currentTab?.groupCollection || !groupRecordFor(gName);
+
     const startGroupEdit = (gName) => {
         const rec = groupRecordFor(gName);
-        if (!rec) {
-            setRowMsg({ type: 'error', text: `Group "${gName}" is a built-in bucket and has no record to edit.` });
-            return;
-        }
-        const fields = groupFieldsFor(currentTab.groupCollection);
+        const coll = currentTab?.groupCollection;
+        const fields = rec ? groupFieldsFor(coll) : virtualGroupFieldsFor(activeTab);
         const next = {};
-        fields.forEach(f => { const v = rec[f.key]; next[f.key] = (v === undefined || v === null) ? '' : v; });
+        fields.forEach(f => {
+            const v = rec ? rec[f.key] : (f.key === 'name' ? gName : '');
+            next[f.key] = (v === undefined || v === null) ? '' : v;
+        });
         setGroupEditForm(next);
+        setGroupMoveType('');
         setRowMsg(null);
         setEditingGroupName(gName);
         setEditingRowId(null);
@@ -257,26 +269,60 @@ const ChartOfMastersModal = ({
     const cancelGroupEdit = () => {
         setEditingGroupName(null);
         setGroupEditForm({});
+        setGroupMoveType('');
     };
 
     const saveGroup = async (gName) => {
         const rec = groupRecordFor(gName);
         const coll = currentTab?.groupCollection;
-        if (!rec || !coll) return;
-        const fields = groupFieldsFor(coll);
+        const fields = rec ? groupFieldsFor(coll) : virtualGroupFieldsFor(activeTab);
         const missing = fields.find(f => f.required && !String(groupEditForm[f.key] ?? '').trim());
         if (missing) { setRowMsg({ type: 'error', text: `${missing.label} is required.` }); return; }
+        if (!rec && fields.length === 0) {
+            setRowMsg({ type: 'error', text: 'This group is derived from the ledger type, so it cannot be renamed. Use "Move group to" instead.' });
+            return;
+        }
 
         setSavingRow(true);
         setRowMsg(null);
         try {
-            const res = await onChartUpdate?.(coll, rec.id, groupEditForm);
+            if (rec && coll) {
+                const res = await onChartUpdate?.(coll, rec.id, groupEditForm);
+                if (res?.ok) {
+                    touchRowMeta(rec.id, 'UPDATED');
+                    cancelGroupEdit();
+                    setRowMsg({ type: 'success', text: `Group saved: "${groupEditForm.name}". Member records were re-grouped automatically.` });
+                } else if (!res?.cancelled) {
+                    setRowMsg({ type: 'error', text: res?.error || 'Group update failed.' });
+                }
+            } else {
+                const newName = String(groupEditForm.name || '').trim();
+                if (newName === gName) { cancelGroupEdit(); return; }
+                const res = await onChartGroupRename?.(currentTab.collectionName, gName, newName);
+                if (res?.ok) {
+                    cancelGroupEdit();
+                    setRowMsg({ type: 'success', text: `Group renamed: "${gName}" → "${newName}" (${res.updated ?? 0} ledger(s) updated).` });
+                } else if (!res?.cancelled) {
+                    setRowMsg({ type: 'error', text: res?.error || 'Group rename failed.' });
+                }
+            }
+        } finally {
+            setSavingRow(false);
+        }
+    };
+
+    const moveGroup = async (gName) => {
+        if (!groupMoveType) { setRowMsg({ type: 'error', text: 'Choose a new type for this group first.' }); return; }
+        setSavingRow(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartGroupMove?.(currentTab.collectionName, gName, groupMoveType);
             if (res?.ok) {
-                touchRowMeta(rec.id, 'UPDATED');
+                const label = MOVE_TARGETS.find(t => t.value === groupMoveType)?.label || groupMoveType;
                 cancelGroupEdit();
-                setRowMsg({ type: 'success', text: `Group saved: "${groupEditForm.name}". Member records were re-grouped automatically.` });
+                setRowMsg({ type: 'success', text: `Group "${gName}" moved to ${label}: ${res.moved ?? 0} ledger(s).${res.failed ? ` ${res.failed} failed.` : ''}` });
             } else if (!res?.cancelled) {
-                setRowMsg({ type: 'error', text: res?.error || 'Group update failed.' });
+                setRowMsg({ type: 'error', text: res?.error || 'Group move failed.' });
             }
         } finally {
             setSavingRow(false);
@@ -1157,15 +1203,15 @@ const ChartOfMastersModal = ({
                                                                     <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium ml-2">
                                                                         {items.length} {items.length === 1 ? 'record' : 'records'}
                                                                     </span>
-                                                                    {currentTab?.groupCollection && groupRecordFor(gName) && (
-                                                                        <span className="flex items-center gap-1 ml-2">
-                                                                            <button
-                                                                                onClick={(e) => { e.stopPropagation(); (editingGroupName === gName ? cancelGroupEdit() : startGroupEdit(gName)); }}
-                                                                                className={`p-1 rounded-md transition-colors ${editingGroupName === gName ? 'bg-amber-200 text-amber-800' : 'bg-slate-200 text-[#005994] hover:bg-slate-300'}`}
-                                                                                title={`Edit group "${gName}" (admin password required)`}
-                                                                            >
-                                                                                <Pencil size={12} />
-                                                                            </button>
+                                                                    <span className="flex items-center gap-1 ml-2">
+                                                                        <button
+                                                                            onClick={(e) => { e.stopPropagation(); (editingGroupName === gName ? cancelGroupEdit() : startGroupEdit(gName)); }}
+                                                                            className={`p-1 rounded-md transition-colors ${editingGroupName === gName ? 'bg-amber-200 text-amber-800' : 'bg-slate-200 text-[#005994] hover:bg-slate-300'}`}
+                                                                            title={`Edit group "${gName}" - rename / move type (admin password required)`}
+                                                                        >
+                                                                            <Pencil size={12} />
+                                                                        </button>
+                                                                        {currentTab?.groupCollection && groupRecordFor(gName) && (
                                                                             <button
                                                                                 onClick={(e) => { e.stopPropagation(); removeGroup(gName); }}
                                                                                 disabled={savingRow}
@@ -1174,8 +1220,8 @@ const ChartOfMastersModal = ({
                                                                             >
                                                                                 <Trash2 size={12} />
                                                                             </button>
-                                                                        </span>
-                                                                    )}
+                                                                        )}
+                                                                    </span>
                                                                 </div>
                                                                 {items.length > 0 && (
                                                                     <div className="text-[11px] font-mono font-black text-slate-600 whitespace-nowrap pl-3">
@@ -1189,14 +1235,22 @@ const ChartOfMastersModal = ({
                                                         <tr className="bg-amber-50/60 border-b-2 border-amber-200">
                                                             <td colSpan={7} className="p-4">
                                                                 <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
-                                                                    <div className="flex items-center justify-between mb-2 gap-2">
-                                                                        <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
-                                                                            Editing Group: {gName}
-                                                                        </span>
+                                                                    <div className="flex flex-wrap items-center justify-between mb-2 gap-2">
+                                                                        <div className="flex flex-wrap items-center gap-2">
+                                                                            <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
+                                                                                Editing Group: {gName}
+                                                                            </span>
+                                                                            <span className="text-[10px] font-black uppercase tracking-wide bg-[#005994]/10 text-[#005994] border border-[#005994]/20 px-2 py-0.5 rounded-full whitespace-nowrap">
+                                                                                Current Type: {currentTab?.label || '-'}
+                                                                            </span>
+                                                                            {isVirtualGroup(gName) && (
+                                                                                <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">{items.length} ledger(s) in this group</span>
+                                                                            )}
+                                                                        </div>
                                                                         <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">Renaming re-groups all member records - password required</span>
                                                                     </div>
                                                                     {renderFieldGrid(
-                                                                        groupFieldsFor(currentTab?.groupCollection),
+                                                                        groupRecordFor(gName) ? groupFieldsFor(currentTab?.groupCollection) : virtualGroupFieldsFor(activeTab),
                                                                         groupEditForm,
                                                                         (k, v) => setGroupEditForm(prev => ({ ...prev, [k]: v })),
                                                                         'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
@@ -1217,14 +1271,39 @@ const ChartOfMastersModal = ({
                                                                             <X size={13} />
                                                                             Cancel
                                                                         </button>
-                                                                        <button
-                                                                            onClick={() => removeGroup(gName)}
-                                                                            disabled={savingRow}
-                                                                            className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-600 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold"
-                                                                        >
-                                                                            <Trash2 size={13} />
-                                                                            Delete Group
-                                                                        </button>
+                                                                        {currentTab?.groupCollection && groupRecordFor(gName) && (
+                                                                            <button
+                                                                                onClick={() => removeGroup(gName)}
+                                                                                disabled={savingRow}
+                                                                                className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-600 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                            >
+                                                                                <Trash2 size={13} />
+                                                                                Delete Group
+                                                                            </button>
+                                                                        )}
+                                                                        {MOVE_SOURCE_TYPE[activeTab] && (
+                                                                            <div className="flex items-center gap-1.5 ml-auto bg-orange-50 border border-orange-200 rounded-lg px-2 py-1">
+                                                                                <ArrowRightLeft size={13} className="text-orange-600" />
+                                                                                <span className="text-[10px] font-black uppercase text-orange-700">Move group to</span>
+                                                                                <select
+                                                                                    value={groupMoveType}
+                                                                                    onChange={(e) => setGroupMoveType(e.target.value)}
+                                                                                    className="text-xs border border-orange-300 rounded px-1.5 py-1 font-bold text-orange-900 bg-white"
+                                                                                >
+                                                                                    <option value="">Select New Type...</option>
+                                                                                    {MOVE_TARGETS.filter(t => t.value !== MOVE_SOURCE_TYPE[activeTab]).map(t => (
+                                                                                        <option key={t.value} value={t.value}>{t.label}</option>
+                                                                                    ))}
+                                                                                </select>
+                                                                                <button
+                                                                                    onClick={() => moveGroup(gName)}
+                                                                                    disabled={savingRow}
+                                                                                    className="bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white px-2.5 py-1 rounded text-xs font-bold whitespace-nowrap"
+                                                                                >
+                                                                                    Move All
+                                                                                </button>
+                                                                            </div>
+                                                                        )}
                                                                     </div>
                                                                 </div>
                                                             </td>
@@ -1395,6 +1474,9 @@ const ChartOfMastersModal = ({
 
                                                                                         {MOVE_SOURCE_TYPE[activeTab] && (
                                                                                             <div className="flex items-center gap-1.5 ml-auto bg-orange-50 border border-orange-200 rounded-lg px-2 py-1">
+                                                                                                <span className="text-[10px] font-black uppercase text-[#005994] bg-white border border-[#005994]/20 rounded px-1.5 py-0.5 whitespace-nowrap">
+                                                                                                    Current Type: {currentTab?.label || '-'}
+                                                                                                </span>
                                                                                                 <ArrowRightLeft size={13} className="text-orange-600" />
                                                                                                 <span className="text-[10px] font-black uppercase text-orange-700">Move to</span>
                                                                                                 <select

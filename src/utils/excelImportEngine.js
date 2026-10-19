@@ -1446,6 +1446,24 @@ export async function rollbackBatchImport(batchImportId, context) {
     }
 
     if (snap.empty) {
+        // Master imports (groups / ledgers / items) are tagged the same way
+        const masterCollections = [
+            'party_groups', 'expense_groups', 'stock_groups',
+            'parties', 'accounts', 'expenses', 'direct_expenses',
+            'income_accounts', 'capital_accounts', 'asset_accounts',
+            'products', 'tax_rates'
+        ];
+        for (const col of masterCollections) {
+            const s = await getDocs(query(
+                collection(db, col),
+                where('userId', '==', targetUid),
+                where('batchImportId', '==', batchImportId)
+            ));
+            if (!s.empty) { snap = s; colName = col; break; }
+        }
+    }
+
+    if (snap.empty) {
         throw new Error(`No vouchers found for Batch ID: ${batchImportId}`);
     }
 
@@ -1867,21 +1885,26 @@ export function parseStockJournalXMLFile(xmlText, options = {}) {
             return;
         }
 
-        // Stock Journal writes source rows in INVENTORYENTRIESIN.LIST and destination rows in INVENTORYENTRIESOUT.LIST
-        let consumed = Array.from(vNode.getElementsByTagName('INVENTORYENTRIESIN.LIST')).map(n => readLine(n, 'consumed')).filter(Boolean);
-        let produced = Array.from(vNode.getElementsByTagName('INVENTORYENTRIESOUT.LIST')).map(n => readLine(n, 'produced')).filter(Boolean);
+        // Tally writes a Stock Journal as two item lists, but the names are counter-intuitive:
+        //   INVENTORYENTRIESIN.LIST  → Destination (Production)  — ISDEEMEDPOSITIVE = Yes, amount negative
+        //   INVENTORYENTRIESOUT.LIST → Source (Consumption)      — ISDEEMEDPOSITIVE = No,  amount positive
+        // (verified against Tally's own voucher screen: Source/Consumption = OUT list).
+        let produced = Array.from(vNode.getElementsByTagName('INVENTORYENTRIESIN.LIST')).map(n => readLine(n, 'produced')).filter(Boolean);
+        let consumed = Array.from(vNode.getElementsByTagName('INVENTORYENTRIESOUT.LIST')).map(n => readLine(n, 'consumed')).filter(Boolean);
 
         if (consumed.length === 0 && produced.length === 0) {
-            // Fallback: generic item list where the sign of the amount tells the side
+            // Fallback: generic item list — trust ISDEEMEDPOSITIVE first, then the amount sign.
             const generic = Array.from(vNode.getElementsByTagName('ALLINVENTORYENTRIES.LIST'))
                 .concat(Array.from(vNode.getElementsByTagName('INVENTORYENTRIES.LIST')));
             consumed = [];
             produced = [];
             generic.forEach(n => {
+                const deemed = (readXmlTag(n, 'ISDEEMEDPOSITIVE') || '').toLowerCase();
                 const signed = numFromTally(readXmlTag(n, 'AMOUNT'));
-                const line = readLine(n, signed < 0 ? 'consumed' : 'produced');
+                const isProduced = deemed ? (deemed === 'yes') : (signed < 0);
+                const line = readLine(n, isProduced ? 'produced' : 'consumed');
                 if (!line) return;
-                (signed < 0 ? consumed : produced).push(line);
+                (isProduced ? produced : consumed).push(line);
             });
         }
 
@@ -2291,6 +2314,8 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
 
         // Item invoices carry the tax inside the party ledger (and the rate heads inside the item),
         // so derive the tax amount / heads when no explicit tax ledger leg exists.
+        // Anything that cannot be tied to a real rate head (freight / loading / rent legs, round-off)
+        // is kept as a DERIVED voucher-level amount — it must never demand a Tax master.
         const partyLedgerAmount = ledgerEntries.find(l => l.isParty)?.amount || 0;
         const embeddedTax = Math.max(0, r3(partyLedgerAmount - itemsTotal));
         if (taxEntries.length === 0 && (embeddedTax > 0 || items.some(i => (i.taxHeads || []).length > 0))) {
@@ -2302,10 +2327,11 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
                 heads.forEach((h, hi) => taxEntries.push({
                     name: `${h.head} ${h.percent}%`.trim(),
                     amount: hi === 0 ? embeddedTax : 0,
-                    percent: h.percent
+                    percent: h.percent,
+                    derived: true
                 }));
             } else if (embeddedTax > 0) {
-                taxEntries.push({ name: 'Tax (from voucher)', amount: embeddedTax, percent: 0 });
+                taxEntries.push({ name: 'Tax / Charges (from voucher)', amount: embeddedTax, percent: 0, derived: true });
             }
         }
         const taxTotal = taxEntries.reduce((s, t) => s + (t.amount || 0), 0);
@@ -2579,10 +2605,28 @@ export function validatePurchaseBatch(vouchers, context = {}) {
 
         // Rule 2 / 5 — tax masters (GST / VAT / duty ledgers)
         const resolvedTax = (v.taxEntries || []).map((t, ti) => {
+            // Derived amounts (charges folded from the voucher total) never need a master
+            if (t.derived) {
+                return { ...t, taxId: '', taxName: '', percent: Number(t.percent) || 0, derived: true };
+            }
             const tm = matchMaster(t.name, { taxRates: masters.taxRates || [] });
             if (tm.match) {
                 if (!tm.isExact) push('INFO', 'RULE_5_FUZZY_MATCH', `Tax "${t.name}" fuzzy-matched to "${tm.match.name}"`, { suggestion: { ...tm, taxIndex: ti }, field: `tax[${ti}]`, missingType: 'tax', missingName: t.name, missingPercent: t.percent || 0 });
                 return { ...t, taxId: tm.match.id, taxName: tm.match.name, percent: Number(tm.match.percentage ?? tm.match.rate ?? t.percent) || 0 };
+            }
+            // The tax ledger may already exist as a normal ledger (e.g. under Duties & Taxes).
+            // In that case do NOT ask for a Tax master — keep the amount as a voucher-level tax.
+            const asLedger = matchMaster(t.name, {
+                parties: masters.parties || [],
+                accounts: masters.accounts || [],
+                expenses: masters.expenses || [],
+                directExpenseAccounts: masters.directExpenseAccounts || [],
+                incomeAccounts: masters.incomeAccounts || [],
+                capitalAccounts: masters.capitalAccounts || [],
+                assetAccounts: masters.assetAccounts || []
+            });
+            if (asLedger.match) {
+                return { ...t, taxId: '', taxName: t.name, percent: Number(t.percent) || 0, linkedLedgerId: asLedger.match.id };
             }
             push('CRITICAL', 'RULE_2_MISSING_MASTER', `Tax "${t.name}" does not exist in Tax Rates`, { field: `tax[${ti}]`, missingType: 'tax', missingName: t.name, missingPercent: t.percent || 0 });
             return { ...t, taxId: '', taxName: t.name, percent: t.percent || 0 };
@@ -2606,7 +2650,7 @@ export function validatePurchaseBatch(vouchers, context = {}) {
             resolvedItems,
             resolvedTax,
             taxId: primaryTax?.taxId || null,
-            taxName: primaryTax?.taxName || v.taxName || null,
+            taxName: primaryTax ? (primaryTax.taxName || null) : (v.taxName || null),
             taxPercent,
             taxAmount,
             locationId: masters.defaultLocationId || ''
@@ -3107,6 +3151,47 @@ export async function importDayBook(xmlText, context = {}) {
 /**
  * Tally master XML — ledgers (accounts) and stock items.
  */
+/**
+ * Tally master XML — GROUPS + ledgers (accounts) and stock groups + stock items.
+ * Ledgers are classified by their PRIMARY-group ancestry (not just the immediate parent),
+ * so a ledger under a custom sub-group (e.g. "MAIN VISA EXPENSES" → Indirect Expenses)
+ * still lands in the right AccPro collection, and the sub-group is created first.
+ */
+const TALLY_PRIMARY_GROUPS = {
+    // key = normalised Tally primary group name
+    sundrydebtors: { collection: 'parties', kind: 'party', role: 'customer', label: 'Customer' },
+    sundrycreditors: { collection: 'parties', kind: 'party', role: 'supplier', label: 'Supplier' },
+    cashinhand: { collection: 'accounts', kind: 'account', label: 'Cash' },
+    bankaccounts: { collection: 'accounts', kind: 'account', label: 'Bank' },
+    bankodac: { collection: 'accounts', kind: 'account', label: 'Bank OD' },
+    bankoccac: { collection: 'accounts', kind: 'account', label: 'Bank OCC' },
+    branchdivisions: { collection: 'accounts', kind: 'account', label: 'Branch / Division' },
+    currentliabilities: { collection: 'accounts', kind: 'account', label: 'Current Liability' },
+    loansliability: { collection: 'accounts', kind: 'account', label: 'Loan (Liability)' },
+    provisions: { collection: 'accounts', kind: 'account', label: 'Provision' },
+    dutiesandtaxes: { collection: 'accounts', kind: 'account', label: 'Duties & Taxes' },
+    dutiestaxes: { collection: 'accounts', kind: 'account', label: 'Duties & Taxes' },
+    suspenseac: { collection: 'accounts', kind: 'account', label: 'Suspense' },
+    suspenseaccount: { collection: 'accounts', kind: 'account', label: 'Suspense' },
+    capitalaccount: { collection: 'capital_accounts', kind: 'capital', label: 'Capital' },
+    currentassets: { collection: 'asset_accounts', kind: 'asset', label: 'Current Asset' },
+    fixedassets: { collection: 'asset_accounts', kind: 'asset', label: 'Fixed Asset' },
+    investments: { collection: 'asset_accounts', kind: 'asset', label: 'Investment' },
+    depositsasset: { collection: 'asset_accounts', kind: 'asset', label: 'Deposit (Asset)' },
+    loansadvancesasset: { collection: 'asset_accounts', kind: 'asset', label: 'Loan & Advance (Asset)' },
+    miscexpensesasset: { collection: 'asset_accounts', kind: 'asset', label: 'Misc. Expenses (Asset)' },
+    stockinhand: { collection: 'asset_accounts', kind: 'asset', label: 'Stock-in-Hand' },
+    directexpenses: { collection: 'direct_expenses', kind: 'direct_expense', label: 'Direct Expense' },
+    purchaseaccounts: { collection: 'direct_expenses', kind: 'direct_expense', label: 'Purchase Account' },
+    indirectexpenses: { collection: 'expenses', kind: 'expense', label: 'Expense' },
+    directincomes: { collection: 'income_accounts', kind: 'income', label: 'Direct Income' },
+    indirectincomes: { collection: 'income_accounts', kind: 'income', label: 'Indirect Income' },
+    salesaccounts: { collection: 'income_accounts', kind: 'income', label: 'Sales Account' }
+};
+
+const groupKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Legacy heuristic (used only when a ledger's parent group is not present in the file). */
 function mapLedgerParent(parent) {
     const p = String(parent || '').toLowerCase();
     if (/sundry debtors|customer/.test(p)) return { collection: 'parties', kind: 'party', role: 'customer', label: 'Customer' };
@@ -3121,36 +3206,99 @@ function mapLedgerParent(parent) {
     return { collection: 'accounts', kind: 'account', label: 'Ledger' };
 }
 
+/** Reads every <GROUP> node into a normalised map: key -> { name, parent }. */
+function readTallyGroups(doc) {
+    const map = new Map();
+    Array.from(doc.getElementsByTagName('GROUP')).forEach(n => {
+        const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
+        if (!name) return;
+        map.set(groupKey(name), { name, parent: readXmlTag(n, 'PARENT') || '' });
+    });
+    return map;
+}
+
+/** Walks up the group tree to the Tally primary group and returns its AccPro classification. */
+function classifyByGroupTree(parentName, groupMap) {
+    let current = parentName;
+    const seen = new Set();
+    let primary = '';
+    while (current) {
+        const key = groupKey(current);
+        if (!key || seen.has(key)) break;
+        seen.add(key);
+        const node = groupMap.get(key);
+        if (!node) break;
+        if (!node.parent) { primary = node.name; break; }
+        current = node.parent;
+    }
+
+    const direct = TALLY_PRIMARY_GROUPS[groupKey(parentName)];
+    const viaTree = TALLY_PRIMARY_GROUPS[groupKey(primary)];
+    if (direct) return { ...direct, primaryGroup: parentName };
+    if (viaTree) return { ...viaTree, primaryGroup: primary };
+    return null;
+}
+
 export function parseLedgerMastersXml(xmlText) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(sanitizeTallyXml(xmlText), 'text/xml');
     if (doc.getElementsByTagName('parsererror').length > 0) {
         throw new Error('Invalid XML file: ' + doc.getElementsByTagName('parsererror')[0].textContent);
     }
-    const nodes = Array.from(doc.getElementsByTagName('LEDGER'));
-    if (!nodes.length) throw new Error('No <LEDGER> master records found in this XML document.');
+    const ledgerNodes = Array.from(doc.getElementsByTagName('LEDGER'));
+    if (!ledgerNodes.length) throw new Error('No <LEDGER> master records found in this XML document.');
 
-    const masters = nodes.map(n => {
+    const groupMap = readTallyGroups(doc);
+    const masters = [];
+
+    // 1) GROUPS first — every group that belongs to a customer/supplier or expense tree
+    //    becomes an AccPro group master (parties → party_groups, expenses → expense_groups).
+    groupMap.forEach((g) => {
+        const cls = classifyByGroupTree(g.name, groupMap);
+        if (!cls) return;
+        const isPartyTree = cls.collection === 'parties';
+        const isExpenseTree = cls.collection === 'expenses' || cls.collection === 'direct_expenses';
+        if (!isPartyTree && !isExpenseTree) return;
+        masters.push({
+            name: g.name,
+            parent: g.parent || (isPartyTree ? cls.primaryGroup : cls.primaryGroup),
+            kind: isPartyTree ? 'party_group' : 'expense_group',
+            collection: isPartyTree ? 'party_groups' : 'expense_groups',
+            groupLabel: isPartyTree ? 'Customer / Supplier Group' : 'Expense Group',
+            treeRoot: cls.primaryGroup
+        });
+    });
+
+    // 2) LEDGERS — classified by ancestry, grouped under their immediate Tally parent.
+    ledgerNodes.forEach(n => {
         const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
-        if (!name) return null;
+        if (!name) return;
         const parent = readXmlTag(n, 'PARENT');
-        const target = mapLedgerParent(parent);
-        return {
+        const target = classifyByGroupTree(parent, groupMap) || mapLedgerParent(parent);
+        masters.push({
             name,
             parent,
+            group: parent || '',
             currency: readXmlTag(n, 'CURRENCYNAME'),
             openingBalance: numFromTally(readXmlTag(n, 'OPENINGBALANCE')),
             collection: target.collection,
             kind: target.kind,
             role: target.role || '',
             groupLabel: target.label
-        };
-    }).filter(Boolean);
+        });
+    });
 
     const counts = {};
     masters.forEach(m => { counts[m.collection] = (counts[m.collection] || 0) + 1; });
 
-    return { formatType: 'tally_ledger_masters', masters, total: masters.length, counts };
+    return {
+        formatType: 'tally_ledger_masters',
+        masters,
+        total: masters.length,
+        groupCount: masters.filter(m => m.kind === 'party_group' || m.kind === 'expense_group').length,
+        ledgerCount: ledgerNodes.length,
+        counts
+    };
 }
 
 export function parseStockMastersXml(xmlText) {
@@ -3162,21 +3310,67 @@ export function parseStockMastersXml(xmlText) {
     const nodes = Array.from(doc.getElementsByTagName('STOCKITEM'));
     if (!nodes.length) throw new Error('No <STOCKITEM> master records found in this XML document.');
 
-    const masters = nodes.map(n => {
+    // Units of measure first — stock items reference them by name.
+    const unitMasters = Array.from(doc.getElementsByTagName('UNIT')).map(n => {
+        const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
+        if (!name) return null;
+        return {
+            name,
+            symbol: name,
+            originalName: readXmlTag(n, 'ORIGINALNAME') || '',
+            kind: 'unit',
+            collection: 'units',
+            groupLabel: 'Unit of Measure'
+        };
+    }).filter(Boolean);
+
+    // Stock groups first (they carry a parent), so items can reference them.
+    // Tally sometimes repeats a group block (same GUID) — keep the first occurrence only.
+    const groupNodes = Array.from(doc.getElementsByTagName('STOCKGROUP'));
+    const seenGroupKeys = new Set();
+    const stockGroupMasters = groupNodes.map(n => {
+        const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
+        const key = groupKey(name);
+        if (!name || key === 'primary' || seenGroupKeys.has(key)) return null;
+        seenGroupKeys.add(key);
+        return {
+            name,
+            parent: readXmlTag(n, 'PARENT') || 'Primary',
+            kind: 'stock_group',
+            collection: 'stock_groups',
+            groupLabel: 'Stock Group'
+        };
+    }).filter(Boolean);
+
+    const itemMasters = nodes.map(n => {
         const name = (n.getAttribute('NAME') || readXmlTag(n, 'NAME') || '').trim();
         if (!name) return null;
         return {
             name,
             group: readXmlTag(n, 'PARENT') || 'Primary',
+            parent: readXmlTag(n, 'PARENT') || 'Primary',
             unit: readXmlTag(n, 'BASEUNITS') || '',
             altUnit: readXmlTag(n, 'ADDITIONALUNITS') || '',
             openingQty: Math.abs(numFromTally(readXmlTag(n, 'OPENINGBALANCE'))),
             openingRate: Math.abs(numFromTally(readXmlTag(n, 'OPENINGRATE'))),
-            openingValue: Math.abs(numFromTally(readXmlTag(n, 'OPENINGVALUE')))
+            openingValue: Math.abs(numFromTally(readXmlTag(n, 'OPENINGVALUE'))),
+            kind: 'product',
+            collection: 'products'
         };
     }).filter(Boolean);
 
-    return { formatType: 'tally_stock_masters', masters, total: masters.length, counts: { products: masters.length } };
+    const masters = [...unitMasters, ...stockGroupMasters, ...itemMasters];
+    const counts = { units: unitMasters.length, stock_groups: stockGroupMasters.length, products: itemMasters.length };
+
+    return {
+        formatType: 'tally_stock_masters',
+        masters,
+        total: masters.length,
+        groupCount: stockGroupMasters.length,
+        unitCount: unitMasters.length,
+        ledgerCount: itemMasters.length,
+        counts
+    };
 }
 
 /** Bulk-create Tally masters, skipping names that already exist (case/space-insensitive). */
@@ -3186,14 +3380,24 @@ export async function bulkImportMasters(masters, context = {}) {
     if (!targetUid) throw new Error('User not identified');
     if (!masters || masters.length === 0) throw new Error('Nothing to import');
 
+    const batchImportId = `BATCH_MST_${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const timestampISO = new Date().toISOString();
+
     const byCollection = {};
     masters.forEach(m => { (byCollection[m.collection] = byCollection[m.collection] || []).push(m); });
+
+    // Groups must exist before the ledgers/items that point at them.
+    const collectionOrder = Object.keys(byCollection).sort((a, b) => {
+        const rank = (c) => (c.endsWith('_groups') ? 0 : 1);
+        return rank(a) - rank(b);
+    });
 
     const summary = {};
     let totalCreated = 0;
     let totalSkipped = 0;
 
-    for (const [collectionName, list] of Object.entries(byCollection)) {
+    for (const collectionName of collectionOrder) {
+        const list = byCollection[collectionName];
         const existingKeys = new Set();
         try {
             const snap = await getDocs(query(collection(db, collectionName), where('userId', '==', targetUid)));
@@ -3215,7 +3419,7 @@ export async function bulkImportMasters(masters, context = {}) {
             const batch = writeBatch(db);
             chunk.forEach(m => {
                 const ref = doc(collection(db, collectionName));
-                batch.set(ref, buildMasterDoc(m, targetUid, user, effectiveName));
+                batch.set(ref, { ...buildMasterDoc(m, targetUid, user, effectiveName), batchImportId, importedAt: timestampISO });
             });
             await batch.commit();
             if (onProgress) onProgress({ collection: collectionName, done: Math.min(i + 400, toCreate.length), total: toCreate.length });
@@ -3226,7 +3430,20 @@ export async function bulkImportMasters(masters, context = {}) {
         totalSkipped += skipped;
     }
 
-    return { summary, totalCreated, totalSkipped };
+    if (totalCreated > 0) {
+        addBatchHistoryEntry({
+            batchImportId,
+            timestamp: timestampISO,
+            count: totalCreated,
+            totalAmount: 0,
+            user: effectiveName,
+            voucherType: 'masters',
+            docLabel: 'Masters',
+            status: 'COMPLETED'
+        });
+    }
+
+    return { summary, totalCreated, totalSkipped, batchImportId };
 }
 
 function buildMasterDoc(m, targetUid, user, effectiveName) {
@@ -3240,6 +3457,61 @@ function buildMasterDoc(m, targetUid, user, effectiveName) {
     };
 
     switch (m.kind) {
+        case 'party_group':
+            return {
+                name: m.name.trim(),
+                userId: targetUid,
+                addValues: 'Yes',
+                parent: m.parent || '',
+                treeRoot: m.treeRoot || '',
+                createdAt: serverTimestamp(),
+                createdBy: user?.uid || 'import-engine',
+                createdByName: effectiveName || 'Import Engine',
+                isImported: true
+            };
+        case 'expense_group':
+            return {
+                name: m.name.trim(),
+                userId: targetUid,
+                addValues: 'Yes',
+                parent: m.parent || '',
+                treeRoot: m.treeRoot || '',
+                createdAt: serverTimestamp(),
+                createdBy: user?.uid || 'import-engine',
+                createdByName: effectiveName || 'Import Engine',
+                isImported: true
+            };
+        case 'stock_group':
+            return {
+                name: m.name.trim(),
+                userId: targetUid,
+                parent: m.parent || 'Primary',
+                shouldQuantities: 'Yes',
+                shouldValues: 'Yes',
+                addInwardQty: 'Yes',
+                addInwardValue: 'Yes',
+                addOutwardQty: 'Yes',
+                addOutwardValue: 'Yes',
+                addClosingQty: 'Yes',
+                addClosingValue: 'Yes',
+                createdAt: serverTimestamp(),
+                createdBy: user?.uid || 'import-engine',
+                createdByName: effectiveName || 'Import Engine',
+                isImported: true
+            };
+        case 'unit':
+            return {
+                name: m.name.trim(),
+                symbol: m.symbol || m.name.trim(),
+                isBase: false,
+                originalName: m.originalName || '',
+                userId: targetUid,
+                updatedAt: serverTimestamp(),
+                createdAt: serverTimestamp(),
+                createdBy: user?.uid || 'import-engine',
+                createdByName: effectiveName || 'Import Engine',
+                isImported: true
+            };
         case 'party': {
             const isCustomer = m.role === 'customer';
             return {
@@ -3247,7 +3519,7 @@ function buildMasterDoc(m, targetUid, user, effectiveName) {
                 type: isCustomer ? 'customer' : 'supplier',
                 partyType: isCustomer ? 'customer' : 'supplier',
                 category: isCustomer ? 'Sundry Debtors' : 'Sundry Creditors',
-                group: m.parent || (isCustomer ? 'Sundry Debtors' : 'Sundry Creditors'),
+                group: m.group || m.parent || (isCustomer ? 'Sundry Debtors' : 'Sundry Creditors'),
                 currency: m.currency || 'AED',
                 isImported: true
             };
@@ -3275,21 +3547,21 @@ function buildMasterDoc(m, targetUid, user, effectiveName) {
                 isImported: true
             };
         case 'expense':
-            return { ...base, group: m.parent || 'Administrative Expenses', isImported: true };
+            return { ...base, group: m.group || m.parent || 'Administrative Expenses', isImported: true };
         case 'direct_expense':
-            return { ...base, group: m.parent || 'Direct Expenses', isImported: true };
+            return { ...base, group: m.group || m.parent || 'Direct Expenses', isImported: true };
         case 'income':
-            return { ...base, group: m.parent || 'Indirect Incomes', isImported: true };
+            return { ...base, group: m.group || m.parent || 'Indirect Incomes', isImported: true };
         case 'capital':
-            return { ...base, group: m.parent || 'Capital Account', isImported: true };
+            return { ...base, group: m.group || m.parent || 'Capital Account', isImported: true };
         case 'asset':
-            return { ...base, group: m.parent || 'Fixed Assets', isImported: true };
+            return { ...base, group: m.group || m.parent || 'Fixed Assets', isImported: true };
         default:
             return {
                 ...base,
                 type: 'cash',
                 accountType: 'cash',
-                group: m.parent || '',
+                group: m.group || m.parent || '',
                 currency: m.currency || 'AED',
                 isImported: true
             };

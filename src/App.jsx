@@ -782,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.7.4 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.7.5 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.4</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.5</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -861,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.4</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.5</div>
                 </div>
             </div>
         </Modal>
@@ -5981,7 +5981,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.7.4";
+    const SYSTEM_VERSION = "2.7.5";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6421,6 +6421,7 @@ export default function App() {
     const [assetAccounts, setAssetAccounts] = useState([]);
     const [lots, setLots] = useState([]); // <--- ADD THIS
     const [units, setUnits] = useState([]); // <--- NEW UNITS STATE
+    const [currencies, setCurrencies] = useState([]); // full currency master list (Statistics / Backup)
     const [staff, setStaff] = useState([]); // <--- NEW STAFF STATE
     const [attendanceRecords, setAttendanceRecords] = useState([]); // <--- NEW ATTENDANCE STATE
     const [lotStats, setLotStats] = useState({}); // &lt;--- ADD THIS
@@ -6805,9 +6806,11 @@ export default function App() {
                 GLOBAL_QTY_PRECISION = 3; // Default
             }
         });
-        const unsubCurrency = onSnapshot(query(collection(db, "currencies"), where("userId", "==", uid), where("isBase", "==", true)), (snap) => {
-            if (!snap.empty) setCurrencySymbol(snap.docs[0].data().symbol);
-            else setCurrencySymbol('AED'); // Fallback
+        const unsubCurrency = onSnapshot(query(collection(db, "currencies"), where("userId", "==", uid)), (snap) => {
+            const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            setCurrencies(list);
+            const base = list.find(c => c.isBase) || list[0];
+            setCurrencySymbol(base?.symbol || 'AED');
         });
 
         // --- TRANSACTIONS (Filtered for Data Entry 1) ---
@@ -8782,7 +8785,7 @@ export default function App() {
 
     // Ledger type move - logic copied 1:1 from MasterModal's move block (parity:
     // payments incl. splits/contra + journal vouchers; invoices are NOT rewritten).
-    const chartMasterMove = async (collectionName, id, formData, targetType) => {
+    const chartMasterMove = async (collectionName, id, formData, targetType, opts = {}) => {
         try {
             const uid = dataOwnerId || user?.uid;
             if (!uid) throw new Error('Session expired. Please login again.');
@@ -8805,7 +8808,7 @@ export default function App() {
             if (targetType === srcType) throw new Error('This record is already that type.');
             if (!srcType || !srcField || !tgtCol || !tgtField) throw new Error('This ledger type cannot be moved with the current mapping.');
 
-            if (!(await askAdminPassword('DANGER: Move Ledger Type - this will MOVE the record and UPDATE all its transactions'))) {
+            if (!opts.skipPassword && !(await askAdminPassword('DANGER: Move Ledger Type - this will MOVE the record and UPDATE all its transactions'))) {
                 return { ok: false, cancelled: true };
             }
 
@@ -8873,11 +8876,86 @@ export default function App() {
                 });
             } catch (le) { console.warn('Move log failed', le); }
 
-            setToast({ type: 'success', title: 'Ledger Moved', message: `"${movedData.name || ''}" is now in ${targetType}. Its transactions were updated.` });
+            if (!opts.silent) setToast({ type: 'success', title: 'Ledger Moved', message: `"${movedData.name || ''}" is now in ${targetType}. Its transactions were updated.` });
             return { ok: true, targetType, targetCollection: tgtCol };
         } catch (e) {
             console.error(e);
-            setToast({ type: 'error', title: 'Move Failed', message: e.message });
+            if (!opts.silent) setToast({ type: 'error', title: 'Move Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
+    };
+
+    // Bucket name a Chart of Masters group row represents for a given collection.
+    const chartGroupBucketOf = (collectionName, data) => {
+        if (collectionName === 'accounts') {
+            return data?.type === 'bank' ? 'Cash/Bank' : (data?.type ? String(data.type).toUpperCase() : 'Primary');
+        }
+        return String(data?.group || '').trim() || 'Primary';
+    };
+
+    // Bulk rename of a group (the `group` string on its member ledgers) — one password prompt.
+    const chartGroupRename = async (collectionName, oldName, newName) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+            const from = String(oldName || '').trim();
+            const to = String(newName || '').trim();
+            if (!from || !to) throw new Error('Group name is required.');
+            if (from === to) return { ok: true, updated: 0 };
+            if (!(await askAdminPassword(`Rename Group "${from}"`))) return { ok: false, cancelled: true };
+
+            const snap = await getDocs(query(collection(db, collectionName), where('userId', '==', uid)));
+            const targets = snap.docs.filter(d => chartGroupBucketOf(collectionName, d.data()) === from);
+            if (targets.length === 0) return { ok: true, updated: 0 };
+
+            let batch = writeBatch(db);
+            let n = 0;
+            for (const d of targets) {
+                batch.update(d.ref, { group: to });
+                n++;
+                if (n % 400 === 0) { await batch.commit(); batch = writeBatch(db); }
+            }
+            await batch.commit();
+            setToast({ type: 'success', title: 'Group Renamed', message: `"${from}" → "${to}" (${targets.length} ledger(s) updated).` });
+            return { ok: true, updated: targets.length };
+        } catch (e) {
+            setToast({ type: 'error', title: 'Group Rename Failed', message: e.message });
+            return { ok: false, error: e.message };
+        }
+    };
+
+    // Bulk move: every ledger of a group moves to another ledger type — one password prompt.
+    const chartGroupMove = async (collectionName, groupName, targetType) => {
+        try {
+            const uid = dataOwnerId || user?.uid;
+            if (!uid) throw new Error('Session expired. Please login again.');
+            const group = String(groupName || '').trim();
+            if (!group) throw new Error('Group name is required.');
+            if (!targetType) throw new Error('Select a new type first.');
+            if (!(await askAdminPassword(`DANGER: Move all ledgers of group "${group}" to ${targetType}`))) {
+                return { ok: false, cancelled: true };
+            }
+
+            const snap = await getDocs(query(collection(db, collectionName), where('userId', '==', uid)));
+            const members = snap.docs.filter(d => chartGroupBucketOf(collectionName, d.data()) === group);
+            if (members.length === 0) return { ok: true, moved: 0, failed: 0 };
+
+            let moved = 0;
+            const failures = [];
+            for (const d of members) {
+                const data = d.data();
+                const res = await chartMasterMove(collectionName, d.id, { name: data.name, group: data.group }, targetType, { skipPassword: true, silent: true });
+                if (res?.ok) moved++;
+                else failures.push(`${data.name || d.id}: ${res?.error || 'failed'}`);
+            }
+            setToast({
+                type: failures.length ? 'warning' : 'success',
+                title: 'Group Move Finished',
+                message: `${moved} ledger(s) moved${failures.length ? `, ${failures.length} failed` : ''}.`
+            });
+            return { ok: moved > 0, moved, failed: failures.length, errors: failures.slice(0, 5), targetType };
+        } catch (e) {
+            setToast({ type: 'error', title: 'Group Move Failed', message: e.message });
             return { ok: false, error: e.message };
         }
     };
@@ -8959,6 +9037,11 @@ export default function App() {
                 backupData.data.companies = [{ id: targetUid, ...companySnap.data(), userId: targetUid }];
             }
 
+            // Explicit per-collection manifest (currencies / units / groups etc.) so a restored file can be audited
+            backupData.meta.collectionCounts = Object.fromEntries(
+                Object.entries(backupData.data).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
+            );
+
             // --- FETCH RTDB TASKS ---
             try {
                 const tasksRef = ref(rtdb, `tasks/${targetUid}`);
@@ -8984,12 +9067,14 @@ export default function App() {
             // Log to backup history (with jumbo bag coverage)
             const bagCount = (backupData.data?.jumbo_bags || []).length;
             const reusableBagCount = (backupData.data?.reusable_jumbo_bags || []).length;
+            const currencyCount = (backupData.data?.currencies || []).length;
+            const unitCount = (backupData.data?.units || []).length;
             try {
                 const totalDocs = Object.values(backupData.data || {}).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
-                addBackupHistoryEntry({ action: 'backup', type: 'Full System Backup', count: totalDocs, details: `Backed up ${Object.keys(backupData.data).length} collections (${bagCount} jumbo bags, ${reusableBagCount} reusable bags — unused/orphan records included; review them in Filled Bags Intelligence)` });
+                addBackupHistoryEntry({ action: 'backup', type: 'Full System Backup', count: totalDocs, details: `Backed up ${Object.keys(backupData.data).length} collections (${bagCount} jumbo bags, ${reusableBagCount} reusable bags, ${currencyCount} currencies, ${unitCount} units — unused/orphan records included; review them in Filled Bags Intelligence)` });
             } catch {}
 
-            setToast({ type: 'success', title: 'Backup Complete', message: `Data downloaded successfully — ${bagCount} jumbo bag(s) & ${reusableBagCount} reusable bag(s) included.` });
+            setToast({ type: 'success', title: 'Backup Complete', message: `Data downloaded successfully — ${bagCount} jumbo bag(s), ${reusableBagCount} reusable bag(s), ${currencyCount} currenc${currencyCount === 1 ? 'y' : 'ies'} & ${unitCount} unit(s) included.` });
 
         } catch (e) {
             console.error(e);
@@ -9028,6 +9113,10 @@ export default function App() {
                         stockGroups: 'stock_groups',
                         expenseGroups: 'expense_groups',
                         taxRates: 'tax_rates',
+                        currency: 'currencies',
+                        currencies: 'currencies',
+                        currencyMaster: 'currencies',
+                        currenciesMaster: 'currencies',
                         incomeAccounts: 'income_accounts',
                         capitalAccounts: 'capital_accounts',
                         assetAccounts: 'asset_accounts',
@@ -9193,11 +9282,13 @@ export default function App() {
                     localStorage.removeItem(`accpro_stats_${activeCompanyId}`);
 
                     // Log to backup history
+                    const restoredCurrencies = Array.isArray(normalizedData.currencies) ? normalizedData.currencies.length : 0;
+                    const restoredUnits = Array.isArray(normalizedData.units) ? normalizedData.units.length : 0;
                     try {
-                        addBackupHistoryEntry({ action: 'restore', type: 'Full System Restore', count: restoreResult?.written || 0, details: `Restored ${restoreResult?.written || 0} records` });
+                        addBackupHistoryEntry({ action: 'restore', type: 'Full System Restore', count: restoreResult?.written || 0, details: `Restored ${restoreResult?.written || 0} records (${restoredCurrencies} currencies, ${restoredUnits} units)` });
                     } catch {}
 
-                    setToast({ type: 'success', title: 'Restore Complete', message: `${restoreResult.written} records restored successfully.` });
+                    setToast({ type: 'success', title: 'Restore Complete', message: `${restoreResult.written} records restored successfully — ${restoredCurrencies} currenc${restoredCurrencies === 1 ? 'y' : 'ies'} & ${restoredUnits} unit(s) included.` });
                     window.location.reload();
 
                 } catch (err) {
@@ -10688,6 +10779,7 @@ export default function App() {
                 { label: 'Expense Groups', count: expenseGroups.length },
                 { label: 'Locations', count: locations.length },
                 { label: 'Units', count: units.length },
+                { label: 'Currencies', count: currencies.length },
                 { label: 'Lots', count: lots.length },
                 { label: 'Tax Rates', count: taxRates.length },
                 { label: 'Users', count: subUsers.length }
@@ -10706,6 +10798,7 @@ export default function App() {
         expenseGroups,
         locations,
         units,
+        currencies,
         lots,
         taxRates,
         subUsers
@@ -11283,7 +11376,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.4</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.5</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -13929,6 +14022,9 @@ export default function App() {
                 parties={parties}
                 expenses={expenses}
                 directExpenseAccounts={directExpenseAccounts}
+                incomeAccounts={incomeAccounts}
+                capitalAccounts={capitalAccounts}
+                assetAccounts={assetAccounts}
                 products={products}
                 taxRates={taxRates}
                 locations={locations}
@@ -14226,6 +14322,8 @@ export default function App() {
                     onChartUpdate={chartMasterUpdate}
                     onChartDelete={chartMasterDelete}
                     onChartMove={chartMasterMove}
+                    onChartGroupRename={chartGroupRename}
+                    onChartGroupMove={chartGroupMove}
                     autoEditCollection={chartEditRequest?.collectionName}
                     autoEditId={chartEditRequest?.id}
                     onAutoEditHandled={() => setChartEditRequest(null)}
@@ -14261,7 +14359,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.4</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.5</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -14355,6 +14453,18 @@ export default function App() {
 // --- Sub-Components ---
 
 const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucherStats, masterStats, bagStats, onOpenBags, onDrillDown }) => {
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                onClose?.();
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isOpen, onClose]);
+
     if (!isOpen) return null;
 
     const handleVoucherClick = (label) => {
@@ -14385,6 +14495,7 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
             'Expense Groups': 'expense_groups',
             'Locations': 'locations',
             'Units': 'unit_manager',
+            'Currencies': 'currency_manager',
             'Lots': 'lots',
             'Tax Rates': 'tax_rates',
             'Users': 'manage_users'
@@ -14399,21 +14510,36 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
     };
 
     return (
-        <Modal
-            isOpen={isOpen}
-            onClose={onClose}
-            onBack={onBack}
-            zIndex={zIndex}
-            title="Statistics"
-            maxWidth="max-w-6xl"
-        >
-            <div className="space-y-4">
-                <div className="text-xs text-slate-500 flex justify-between items-center">
-                    <span>Period: <span className="font-bold text-slate-700">{statsPeriod?.label}</span></span>
-                    <span className="text-[10px] text-blue-500 font-bold italic">Click any row to view details</span>
+        <div className="fixed inset-0 z-[120] bg-slate-50 text-slate-900 flex flex-col animate-in fade-in duration-200">
+            {/* FULL-SCREEN BLEEDING HEADER */}
+            <div className="h-16 shrink-0 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shadow-sm">
+                <div className="flex items-center gap-3">
+                    <button
+                        onClick={onBack || onClose}
+                        className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
+                        title="Back (Esc)"
+                    >
+                        <ArrowLeft size={20} />
+                    </button>
+                    <div>
+                        <h2 className="text-lg md:text-xl font-black tracking-tight leading-none">Statistics</h2>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                            Period: <b className="text-slate-700">{statsPeriod?.label}</b>
+                        </div>
+                    </div>
                 </div>
+                <div className="flex items-center gap-4">
+                    <span className="hidden lg:block text-[10px] text-blue-500 font-bold italic">Click any row to view details</span>
+                    <button onClick={onClose} className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 transition-colors">
+                        <X size={20} />
+                    </button>
+                </div>
+            </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* FULL WIDTH / FULL HEIGHT SCROLL AREA */}
+            <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6">
+                <div className="w-full space-y-6">
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                     {/* Left: Voucher Types */}
                     <div className="space-y-2">
                         <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Types of Vouchers (Made)</div>
@@ -14487,8 +14613,9 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
                     </div>
                     <div className="text-xs text-slate-500">Click any row to open Filled Bags Inventory Intelligence (BAGS IN / BAGS OUT / BAGS REMAINING).</div>
                 </div>
+                </div>
             </div>
-        </Modal>
+        </div>
     );
 };
 

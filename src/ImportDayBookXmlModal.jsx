@@ -33,6 +33,15 @@ const masterLabel = (type) => (
                         : 'Create New Master'
 );
 
+/** When Tally only says "entity missing", infer the most likely master type from the ledger name. */
+const guessMasterType = (name, fallback) => {
+    const n = String(name || '').toLowerCase();
+    if (/\b(gst|vat|tax|duty|cess)\b/.test(n)) return 'tax';
+    if (/\b(bank|cash)\b/.test(n)) return 'account';
+    if (/(expense|exp\b|exp\d|charges|charge|fees|fee|salary|wages|rent|freight|labou?r|cartage|bill\b|repair|maintenance|commission)/.test(n)) return 'expense';
+    return fallback || 'party';
+};
+
 /** Applies a master (created or linked) to every reference of `originalName` inside a row. */
 function applyMasterToRow(row, { originalName, master, category }) {
     const key = norm(originalName);
@@ -110,6 +119,9 @@ export default function ImportDayBookXmlModal({
     parties = [],
     expenses = [],
     directExpenseAccounts = [],
+    incomeAccounts = [],
+    capitalAccounts = [],
+    assetAccounts = [],
     products = [],
     taxRates = [],
     locations = [],
@@ -144,9 +156,9 @@ export default function ImportDayBookXmlModal({
     });
 
     const masters = useMemo(() => ({
-        accounts, parties, expenses, directExpenseAccounts, products, taxRates,
+        accounts, parties, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts, products, taxRates,
         defaultLocationId: locations[0]?.id || ''
-    }), [accounts, parties, expenses, directExpenseAccounts, products, taxRates, locations]);
+    }), [accounts, parties, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts, products, taxRates, locations]);
 
     useEffect(() => {
         if (isOpen) setHistoryList(getBatchHistory());
@@ -263,11 +275,12 @@ export default function ImportDayBookXmlModal({
 
     const openCreateMaster = (row, issue) => {
         const name = issue.missingName || issue.originalName || '';
+        const base = issue.missingType || 'party';
         setCreateMasterModal({
             isOpen: true,
             rowId: row.id,
             name,
-            type: issue.missingType || 'party',
+            type: base === 'party' ? guessMasterType(name, 'party') : base,
             percent: issue.missingPercent || 0,
             rowKind: row.__kind,
             isSubmitting: false
@@ -336,7 +349,7 @@ export default function ImportDayBookXmlModal({
                 effectiveName,
                 companyProfile,
                 currencySymbol,
-                lookups: { parties, products, taxRates, accounts, expenses, directExpenseAccounts },
+                lookups: { parties, products, taxRates, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts },
                 chunkSize: 1,
                 onRowStatus: (id, status) => setRowStatus(prev => ({ ...prev, [id]: status }))
             });
@@ -648,7 +661,7 @@ export default function ImportDayBookXmlModal({
                                                             className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
                                                         >
                                                             <Plus size={13} />
-                                                            {masterLabel(issue.missingType)}?
+                                                            {masterLabel(issue.missingType === 'party' ? guessMasterType(issue.missingName, 'party') : issue.missingType)}?
                                                         </button>
                                                     )}
                                                     {issue.rule === 'RULE_5_FUZZY_MATCH' && issue.suggestion && (
@@ -665,7 +678,7 @@ export default function ImportDayBookXmlModal({
                                                                 className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
                                                             >
                                                                 <Plus size={13} />
-                                                                {masterLabel(issue.missingType || 'party')}
+                                                                {masterLabel(issue.missingType === 'party' ? guessMasterType(issue.missingName || issue.originalName, 'party') : (issue.missingType || 'party'))}
                                                             </button>
                                                         </>
                                                     )}
@@ -829,29 +842,153 @@ export default function ImportDayBookXmlModal({
 
                 {/* ---------------- TAB 5: INSTRUCTIONS ---------------- */}
                 {activeTab === 'help' && (
-                    <div className="space-y-4 text-sm text-slate-300 leading-relaxed">
+                    <div className="space-y-5 text-sm text-slate-300 leading-relaxed">
+
+                        {/* INTRO */}
+                        <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/5 p-5">
+                            <div className="flex items-center gap-2 text-sm font-bold text-cyan-300">
+                                <FileText size={16} /> Export the Day Book from Tally — 6 steps
+                            </div>
+                            <p className="text-xs text-slate-400 mt-2">
+                                Tally remembers these settings once you set them, so every later export is one keypress.
+                                Use this single file to import Payment, Receipt, Journal, Purchase, Sales and Stock Journal vouchers in one pass.
+                            </p>
+                        </div>
+
+                        {/* STEPS */}
                         <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-3">
-                            <h3 className="font-bold text-white">How to export from Tally</h3>
-                            <ol className="list-decimal ml-5 space-y-1 text-xs text-slate-400">
-                                <li>Gateway of Tally → Display More Reports → Day Book.</li>
-                                <li>Set the period, press <b className="text-slate-200">E: Export</b>, choose <b className="text-slate-200">XML (Data Interchange)</b>.</li>
-                                <li>Save the file and upload it here — one file can contain every voucher type.</li>
+                            <h3 className="font-bold text-white">Step by step</h3>
+                            <ol className="space-y-2 text-xs text-slate-300 list-none">
+                                <li className="flex gap-2">
+                                    <span className="shrink-0 w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-black flex items-center justify-center">1</span>
+                                    <span>Gateway of Tally → <b className="text-white">Display More Reports</b> → <b className="text-white">Day Book</b>.</span>
+                                </li>
+                                <li className="flex gap-2">
+                                    <span className="shrink-0 w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-black flex items-center justify-center">2</span>
+                                    <span>Press <b className="text-white">F2: Period</b> and set the <b className="text-white">date range</b> you want to import (e.g. 01-Apr-2022 to 31-Mar-2023). Use one range per export — one month, one quarter, or the whole year.</span>
+                                </li>
+                                <li className="flex gap-2">
+                                    <span className="shrink-0 w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-black flex items-center justify-center">3</span>
+                                    <span>Press <b className="text-white">E: Export</b> (or <b className="text-white">Ctrl + E</b>).</span>
+                                </li>
+                                <li className="flex gap-2">
+                                    <span className="shrink-0 w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-black flex items-center justify-center">4</span>
+                                    <span>On the export screen set: <b>Language</b> → Default (All Languages) · <b>Format</b> → <b className="text-amber-300">XML (Data Interchange)</b> · <b>Export Location</b> → Desktop / Documents (avoid Program Files) · <b>Output File Name</b> → e.g. <span className="font-mono text-cyan-300">daybook_sep2022.xml</span>.</span>
+                                </li>
+                                <li className="flex gap-2">
+                                    <span className="shrink-0 w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-black flex items-center justify-center">5</span>
+                                    <span>Press <b className="text-white">F12: Configure</b> and apply the settings in the table below — especially <b className="text-emerald-300">Select vouchers to show → All Vouchers</b>.</span>
+                                </li>
+                                <li className="flex gap-2">
+                                    <span className="shrink-0 w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-black flex items-center justify-center">6</span>
+                                    <span>Press <b className="text-white">Enter</b> on “Open Exported Folder: Yes”, then upload that <span className="font-mono">.xml</span> file in <b>1. Upload &amp; Parse</b>.</span>
+                                </li>
                             </ol>
-                            <h3 className="font-bold text-white pt-2">Recommended order</h3>
-                            <ol className="list-decimal ml-5 space-y-1 text-xs text-slate-400">
-                                <li><b className="text-slate-200">Import Masters of Accounts from XML</b> (customers, suppliers, ledgers).</li>
-                                <li><b className="text-slate-200">Import Masters of Stock from XML</b> (items + opening stock).</li>
-                                <li>Then run this Day Book import — issues will be far fewer.</li>
-                            </ol>
-                            <h3 className="font-bold text-white pt-2">Rules applied</h3>
-                            <ul className="list-disc ml-5 space-y-1 text-xs text-slate-400">
-                                <li>Rule 1 — duplicate voucher numbers (auto-renumber with <span className="font-mono">-IMP</span>).</li>
-                                <li>Rule 2 — missing masters (create party / ledger / item / tax right here).</li>
-                                <li>Rule 3 — foreign currency without an FX rate.</li>
-                                <li>Rule 4 — mandatory fields, zero amounts, unbalanced journals.</li>
-                                <li>Rule 5 — fuzzy name matches (link or create new).</li>
-                                <li>Rule 6 — period lock dates.</li>
-                            </ul>
+                        </div>
+
+                        {/* CONFIG TABLE */}
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-3">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <h3 className="font-bold text-white">F12: Configure — exact settings</h3>
+                                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                                    Match this screen
+                                </span>
+                            </div>
+                            <div className="overflow-x-auto rounded-xl border border-white/10">
+                                <table className="w-full text-left text-[11px]">
+                                    <thead className="bg-white/5 text-slate-400 uppercase text-[10px]">
+                                        <tr>
+                                            <th className="py-2 px-3">Setting</th>
+                                            <th className="py-2 px-3">Value</th>
+                                            <th className="py-2 px-3">Why it matters</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5">
+                                        <tr><td className="py-1.5 px-3">Format</td><td className="py-1.5 px-3 text-white font-bold">Detailed</td><td className="py-1.5 px-3 text-slate-400">Writes every ledger leg and item line.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show Voucher Numbers also</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Imported as the voucher reference — also enables duplicate detection.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show narrations</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Narration is stored on the voucher.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show bill wise details</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Keeps bill/reference information available.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show Cost Centre Details also</td><td className="py-1.5 px-3 text-slate-200 font-bold">No</td><td className="py-1.5 px-3 text-slate-400">Not used by AccPro — keeps the file smaller.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show inventory details</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400"><b>Required</b> for Purchase / Sales / Stock Journal item lines.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show additional description of Stock Item</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Needed for batch / godown information on items.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show Bank Details also</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Bank/allocation details on Payment &amp; Receipt vouchers.</td></tr>
+                                        <tr><td className="py-1.5 px-3 pl-7 italic">Show Additional Details</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Sub-option of Bank Details — keep it on.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show dependant Masters also</td><td className="py-1.5 px-3 text-emerald-300 font-bold">Yes</td><td className="py-1.5 px-3 text-slate-400">Carries the ledgers/items used by the vouchers.</td></tr>
+                                        <tr className="bg-emerald-500/5"><td className="py-2 px-3 font-bold text-white">Select vouchers to show</td><td className="py-2 px-3 text-emerald-300 font-black">All Vouchers</td><td className="py-2 px-3 text-slate-300">Never leave it on “Accounting Entries Only” — that drops item lines.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* ROUTING */}
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-3">
+                            <h3 className="font-bold text-white">Where each voucher is posted</h3>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                                {[
+                                    ['Payment', 'Payment vouchers (payments)'],
+                                    ['Receipt', 'Receipt vouchers (payments)'],
+                                    ['Journal', 'Journal vouchers (journal_vouchers)'],
+                                    ['Purchase', 'Purchase invoices (invoices)'],
+                                    ['Sales', 'Sales invoices (invoices)'],
+                                    ['Stock Journal', 'Manufacturing / stock journals (stock_journals)']
+                                ].map(([from, to]) => (
+                                    <div key={from} className="flex items-center gap-2 rounded-lg bg-black/30 border border-white/5 px-3 py-2">
+                                        <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">{from}</span>
+                                        <span className="text-slate-400">→ {to}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* MISTAKES */}
+                        <div className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-5 space-y-3">
+                            <h3 className="font-bold text-rose-300 flex items-center gap-2"><AlertTriangle size={15} /> Avoid these mistakes</h3>
+                            <div className="overflow-x-auto rounded-xl border border-white/10">
+                                <table className="w-full text-left text-[11px]">
+                                    <thead className="bg-white/5 text-slate-400 uppercase text-[10px]">
+                                        <tr><th className="py-2 px-3">Wrong choice</th><th className="py-2 px-3">What happens</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5 text-slate-300">
+                                        <tr><td className="py-1.5 px-3">Select vouchers = Accounting Entries Only</td><td className="py-1.5 px-3 text-slate-400">Purchase / Sales / Stock Journal arrive with <b>no item lines</b>.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show inventory details = No</td><td className="py-1.5 px-3 text-slate-400">Same problem — items missing from item vouchers.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Format = Excel / ASCII</td><td className="py-1.5 px-3 text-slate-400">Not XML — this importer cannot read it.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Show Voucher Numbers = No</td><td className="py-1.5 px-3 text-slate-400">Generated numbers → duplicate check cannot match existing vouchers.</td></tr>
+                                        <tr><td className="py-1.5 px-3">Export Location = Program Files</td><td className="py-1.5 px-3 text-slate-400">Windows may block the write or hide the file — use Desktop / Documents.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* ORDER + RULES */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-2">
+                                <h3 className="font-bold text-white">Recommended order</h3>
+                                <ol className="list-decimal ml-5 space-y-1 text-xs text-slate-400">
+                                    <li><b className="text-slate-200">Import Masters of Accounts from XML</b></li>
+                                    <li><b className="text-slate-200">Import Masters of Stock from XML</b></li>
+                                    <li>Then this Day Book import — far fewer Solution Centre issues.</li>
+                                </ol>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-2">
+                                <h3 className="font-bold text-white">Rules applied on import</h3>
+                                <ul className="list-disc ml-5 space-y-1 text-xs text-slate-400">
+                                    <li>Rule 1 — duplicate voucher numbers (auto-renumber with <span className="font-mono">-IMP</span>)</li>
+                                    <li>Rule 2 — missing masters (create party / ledger / item / tax inline)</li>
+                                    <li>Rule 3 — foreign currency without an FX rate</li>
+                                    <li>Rule 4 — mandatory fields, zero amounts, unbalanced journals</li>
+                                    <li>Rule 5 — fuzzy name matches (link or create new)</li>
+                                    <li>Rule 6 — period lock dates</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        {/* TIP */}
+                        <div className="rounded-xl border border-white/10 bg-black/30 p-4 text-[11px] text-slate-400 flex items-start gap-2">
+                            <Clock size={13} className="mt-0.5 text-cyan-300 shrink-0" />
+                            <span>
+                                <b className="text-slate-200">Tip:</b> export one clear file name per period (e.g. <span className="font-mono">daybook_apr2022_mar2023.xml</span>).
+                                If a voucher is rejected, it stays in the Solution Centre with its exact reason — import the missing masters first, then run the same file again.
+                            </span>
                         </div>
                     </div>
                 )}
