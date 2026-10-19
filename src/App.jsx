@@ -782,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.7.6 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.7.7 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.6</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.7.7</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -861,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.6</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.7.7</div>
                 </div>
             </div>
         </Modal>
@@ -5981,7 +5981,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.7.6";
+    const SYSTEM_VERSION = "2.7.7";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -10762,6 +10762,25 @@ export default function App() {
         return { items, total, typeCount };
     }, [invoices, payments, journalVouchers, stockJournals, statsPeriod]);
 
+    // All-time voucher counts — Statistics must never look empty when vouchers exist
+    // outside the selected period (e.g. imported Tally vouchers dated in another FY).
+    const voucherTotals = useMemo(() => {
+        const items = [
+            { label: 'Sales', count: invoices.filter(i => i.type === 'sales').length },
+            { label: 'Purchase', count: invoices.filter(i => i.type === 'purchase').length },
+            { label: 'Receipt', count: payments.filter(p => p.type === 'in').length },
+            { label: 'Payment', count: payments.filter(p => p.type === 'out').length },
+            { label: 'Contra', count: payments.filter(p => p.type === 'contra').length },
+            { label: 'Journal', count: journalVouchers.length },
+            { label: 'Stock Journal / Mfg', count: stockJournals.length }
+        ];
+        return {
+            items,
+            total: items.reduce((sum, item) => sum + item.count, 0),
+            typeCount: items.filter(i => i.count > 0).length
+        };
+    }, [invoices, payments, journalVouchers, stockJournals]);
+
     const masterStats = useMemo(() => {
         const ledgerTotal = parties.length + accounts.length + expenses.length + incomeAccounts.length + capitalAccounts.length + assetAccounts.length;
         return {
@@ -11376,7 +11395,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.6</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.7.7</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14131,6 +14150,7 @@ export default function App() {
                 onBack={handleModalBack}
                 statsPeriod={statsPeriod}
                 voucherStats={voucherStats}
+                voucherStatsAll={voucherTotals}
                 masterStats={masterStats}
                 bagStats={bagStats}
                 onOpenBags={(view) => {
@@ -14359,7 +14379,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.6</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.7.7</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -14452,7 +14472,18 @@ export default function App() {
 
 // --- Sub-Components ---
 
-const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucherStats, masterStats, bagStats, onOpenBags, onDrillDown }) => {
+const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucherStats, voucherStatsAll, masterStats, bagStats, onOpenBags, onDrillDown }) => {
+    // Voucher rows can be shown for the selected period or for ALL dates.
+    // Defaults to ALL when the period is empty but vouchers exist elsewhere, so the
+    // report never looks broken after importing Tally data from another financial year.
+    const [voucherScope, setVoucherScope] = useState('period');
+    useEffect(() => {
+        if (!isOpen) return;
+        const periodEmpty = (voucherStats?.total || 0) === 0;
+        const hasAny = (voucherStatsAll?.total || 0) > 0;
+        setVoucherScope(periodEmpty && hasAny ? 'all' : 'period');
+    }, [isOpen, voucherStats?.total, voucherStatsAll?.total]);
+
     useEffect(() => {
         if (!isOpen) return;
         const onKey = (e) => {
@@ -14466,6 +14497,12 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
     }, [isOpen, onClose]);
 
     if (!isOpen) return null;
+
+    const allVoucherStats = voucherStatsAll || voucherStats;
+    const activeVoucherStats = voucherScope === 'all' ? allVoucherStats : voucherStats;
+    const showOutsideNotice = voucherScope === 'period'
+        && (voucherStats?.total || 0) === 0
+        && (allVoucherStats?.total || 0) > 0;
 
     const handleVoucherClick = (label) => {
         const typeMap = {
@@ -14524,7 +14561,7 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
                     <div>
                         <h2 className="text-lg md:text-xl font-black tracking-tight leading-none">Statistics</h2>
                         <div className="text-[11px] text-slate-500 mt-1">
-                            Period: <b className="text-slate-700">{statsPeriod?.label}</b>
+                            Period: <b className="text-slate-700">{voucherScope === 'all' ? 'All dates' : statsPeriod?.label}</b>
                         </div>
                     </div>
                 </div>
@@ -14542,24 +14579,66 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                     {/* Left: Voucher Types */}
                     <div className="space-y-2">
-                        <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Types of Vouchers (Made)</div>
-                        <div className="border rounded-lg overflow-hidden bg-white shadow-sm">
-                            {voucherStats.items.map((item) => (
-                                <div
-                                    key={item.label}
-                                    onClick={() => handleVoucherClick(item.label)}
-                                    className="flex justify-between items-center px-4 py-2.5 text-sm border-b last:border-b-0 cursor-pointer hover:bg-blue-50 transition-colors group"
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Types of Vouchers (Made)</div>
+                            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
+                                <button
+                                    onClick={() => setVoucherScope('period')}
+                                    className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wide transition-colors ${voucherScope === 'period' ? 'bg-[#005994] text-white' : 'text-slate-500 hover:bg-slate-100'}`}
                                 >
-                                    <span className="text-slate-600 group-hover:text-blue-700 group-hover:font-bold transition-all">{item.label}</span>
-                                    <span className="font-bold text-slate-900 bg-slate-100 group-hover:bg-blue-100 px-2 py-0.5 rounded min-w-[30px] text-center">{item.count}</span>
-                                </div>
-                            ))}
-                            <div className="flex justify-between items-center px-4 py-3 text-sm font-bold bg-slate-50 border-t text-slate-800">
-                                <span>Total Vouchers</span>
-                                <span className="text-lg">{voucherStats.total}</span>
+                                    Period
+                                </button>
+                                <button
+                                    onClick={() => setVoucherScope('all')}
+                                    className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wide transition-colors ${voucherScope === 'all' ? 'bg-[#005994] text-white' : 'text-slate-500 hover:bg-slate-100'}`}
+                                >
+                                    All dates
+                                </button>
                             </div>
                         </div>
-                        <div className="text-xs text-slate-500">Voucher Types Used: <span className="font-bold">{voucherStats.typeCount}</span></div>
+
+                        {showOutsideNotice && (
+                            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 font-semibold">
+                                No vouchers inside this period, but {(allVoucherStats?.total || 0).toLocaleString()} voucher(s) exist on other dates.
+                                <button onClick={() => setVoucherScope('all')} className="ml-1 underline font-black">Show all dates</button>
+                            </div>
+                        )}
+
+                        <div className="border rounded-lg overflow-hidden bg-white shadow-sm">
+                            {activeVoucherStats.items.map((item) => {
+                                const allCount = (allVoucherStats?.items || []).find(x => x.label === item.label)?.count || 0;
+                                return (
+                                    <div
+                                        key={item.label}
+                                        onClick={() => handleVoucherClick(item.label)}
+                                        className="flex justify-between items-center px-4 py-2.5 text-sm border-b last:border-b-0 cursor-pointer hover:bg-blue-50 transition-colors group"
+                                    >
+                                        <span className="text-slate-600 group-hover:text-blue-700 group-hover:font-bold transition-all">{item.label}</span>
+                                        <span className="flex items-center gap-2">
+                                            {voucherScope === 'period' && allCount !== item.count && (
+                                                <span className="text-[10px] font-bold text-slate-400">of {allCount} all dates</span>
+                                            )}
+                                            <span className="font-bold text-slate-900 bg-slate-100 group-hover:bg-blue-100 px-2 py-0.5 rounded min-w-[30px] text-center">{item.count}</span>
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                            <div className="flex justify-between items-center px-4 py-3 text-sm font-bold bg-slate-50 border-t text-slate-800">
+                                <span>Total Vouchers</span>
+                                <span className="flex items-center gap-2">
+                                    {voucherScope === 'period' && (allVoucherStats?.total || 0) !== activeVoucherStats.total && (
+                                        <span className="text-[10px] font-bold text-slate-400">of {allVoucherStats?.total || 0} all dates</span>
+                                    )}
+                                    <span className="text-lg">{activeVoucherStats.total}</span>
+                                </span>
+                            </div>
+                        </div>
+                        <div className="text-xs text-slate-500">
+                            Voucher Types Used: <span className="font-bold">{activeVoucherStats.typeCount}</span>
+                            <span className="ml-2 text-slate-400">
+                                ({voucherScope === 'all' ? 'all dates' : `period ${statsPeriod?.label || ''}`})
+                            </span>
+                        </div>
                     </div>
 
                     {/* Right: Master Counts */}
