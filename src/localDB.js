@@ -258,6 +258,17 @@ if (typeof window !== 'undefined') {
     window.getDB = getDB;
 }
 
+/**
+ * Drops the cached database handles so the next getDB() opens a fresh connection.
+ * Used when the browser/Dexie closed the connection (e.g. another tab upgraded the schema).
+ * Data on disk is untouched.
+ */
+export const resetLocalDbConnections = () => {
+    masterDbPromise = null;
+    companyDbPromise = null;
+    try { companyDbCache.clear(); } catch (e) { /* ignore */ }
+};
+
 const companyDbCache = new Map();
 export const getCompanyDB = async (companyId) => {
     if (!companyId) return getMasterDB();
