@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Maximize, Minimize2, ArrowRight } from 'lucide-react';
 
+/* Registry of every currently-open Modal instance, in opening order. Ledgers and
+   registers stay MOUNTED (isOpen=true) while a voucher is stacked on top of them,
+   so without this guard a single Escape press would close both the voucher and the
+   report underneath it. Only the top-most modal reacts to keyboard shortcuts. */
+const openModalStack = [];
+let modalInstanceSeq = 0;
+
 export const Modal = ({
     isOpen,
     onClose,
@@ -27,6 +34,18 @@ export const Modal = ({
     const [position, setPosition] = useState({ x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
     const dragStartRef = useRef({ x: 0, y: 0 });
+    const instanceIdRef = useRef(null);
+    if (instanceIdRef.current === null) instanceIdRef.current = ++modalInstanceSeq;
+
+    // Register as an open modal so only the most recently opened one handles keys.
+    useEffect(() => {
+        const id = instanceIdRef.current;
+        openModalStack.push(id);
+        return () => {
+            const idx = openModalStack.lastIndexOf(id);
+            if (idx !== -1) openModalStack.splice(idx, 1);
+        };
+    }, []);
 
     useEffect(() => {
         if (isOpen) {
@@ -37,6 +56,9 @@ export const Modal = ({
 
     useEffect(() => {
         const handleKeyDown = (e) => {
+            const id = instanceIdRef.current;
+            const isTopMost = openModalStack.length === 0 || openModalStack[openModalStack.length - 1] === id;
+            if (!isTopMost) return;
             if (isOpen && e.key === 'Escape') {
                 e.stopPropagation();
                 onClose();

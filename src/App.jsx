@@ -782,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.3 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.4 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.4</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -861,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.3</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.4</div>
                 </div>
             </div>
         </Modal>
@@ -5987,7 +5987,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.3";
+    const SYSTEM_VERSION = "2.8.4";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6048,6 +6048,11 @@ export default function App() {
     const [importXmlOnly, setImportXmlOnly] = useState(false); // XML tab opens importers without the Excel/CSV option
     const [currency_manager, setCurrencyManager] = useState(false);
     const [modalStack, setModalStack] = useState([]);
+    // Screen that opened the Voucher V2 menu (e.g. 'ledgers'). Captured the moment the
+    // picker opens, so the new voucher can always return there when it is closed.
+    const voucherLaunchRef = useRef(null);
+    // Report to restore when the voucher closes, even if the modal stack lost it.
+    const voucherReturnRef = useRef(null);
 
     const [lastDate, setLastDate] = useState(new Date().toISOString().split('T')[0]); // <--- NEW DATE MEMORY
     const [registerDateRange, setRegisterDateRange] = useState({
@@ -7492,16 +7497,37 @@ export default function App() {
     };
 
     const handleVoucherV2Select = (id) => {
-        // Map Selection to Modals
-        if (id === 'sales_v2') { setEditData(null); setActiveModal('sales'); }
-        else if (id === 'purchase_v2') { setEditData(null); setActiveModal('purchase'); }
-        else if (id === 'payment_v2') { setEditData(null); setActiveModal('payment'); }
-        else if (id === 'receipt_v2') { setEditData(null); setActiveModal('payment'); } // Receipt uses payment modal too with in/out
-        else if (id === 'contra_v2') { setEditData(null); setActiveModal('payment'); } // Contra uses payment modal
-        else if (id === 'journal_v2') { setEditData(null); setActiveModal('journal'); }
-        else if (id === 'manufacturing_v2') { setEditData(null); setActiveModal('stock_journal'); }
+        // 🧭 Which screen must we return to once this voucher is saved/closed?
+        // Prefer the launch snapshot taken when the picker opened, fall back to the
+        // modal that is on screen right now (e.g. the Customer/Supplier ledger).
+        const launch = voucherLaunchRef.current || activeModal;
+        voucherLaunchRef.current = null;
+
+        const target = id === 'sales_v2' ? 'sales'
+            : id === 'purchase_v2' ? 'purchase'
+                : id === 'payment_v2' ? 'payment'
+                    : id === 'receipt_v2' ? 'payment'      // Receipt uses payment modal too with in/out
+                        : id === 'contra_v2' ? 'payment'   // Contra uses payment modal
+                            : id === 'journal_v2' ? 'journal'
+                                : id === 'manufacturing_v2' ? 'stock_journal'
+                                    : null;
+
+        if (target) {
+            // Keep the launching report mounted and stacked UNDER the new voucher, so
+            // closing/saving returns to that ledger — not the main gateway page.
+            // Mirrors the stack push already done by handleViewTransaction().
+            if (launch && launch !== target) {
+                voucherReturnRef.current = launch;
+                setModalStack(prev => (prev[prev.length - 1] === launch ? prev : [...prev, launch]));
+            }
+            setEditData(null);
+            setActiveModal(target);
+        }
         setShowVoucherV2Menu(false);
     };
+
+    // Vouchers that can be opened from a report and must return to it when closed.
+    const VOUCHER_MODAL_NAMES = ['sales', 'purchase', 'payment', 'receipt', 'contra', 'journal', 'stock_journal'];
 
     // --- SMART BACK/CLOSE HANDLER ---
     const handleCloseModal = () => {
@@ -7514,8 +7540,16 @@ export default function App() {
             const last = modalStack[modalStack.length - 1];
             setModalStack(s => s.slice(0, -1));
             setActiveModal(last);
+            voucherReturnRef.current = null;
             // Note: We intentionally DO NOT clear 'ledgerInitialState' here 
             // so the report stays filtered as it was.
+        } else if (voucherReturnRef.current && VOUCHER_MODAL_NAMES.includes(activeModal)) {
+            // Safety net: a voucher was launched from a report but the stack lost it —
+            // go back to that report instead of dumping the user on the gateway.
+            const back = voucherReturnRef.current;
+            voucherReturnRef.current = null;
+            setActiveModal(back);
+            setEditData(null);
         } else {
             // Standard Close
             setActiveModal(null);
@@ -7530,11 +7564,25 @@ export default function App() {
             const last = modalStack[modalStack.length - 1];
             setModalStack(s => s.slice(0, -1));
             setActiveModal(last);
+            voucherReturnRef.current = null;
+        } else if (voucherReturnRef.current && VOUCHER_MODAL_NAMES.includes(activeModal)) {
+            // Safety net: return to the report the voucher was launched from.
+            const back = voucherReturnRef.current;
+            voucherReturnRef.current = null;
+            setActiveModal(back);
+            setEditData(null);
         } else {
             // No history -> simply close
             setActiveModal(null);
             setEditData(null);
         }
+    };
+
+    // Switching from one voucher to another (e.g. Payment → Sales) must NOT pop the
+    // stack: the screen the voucher was launched from (ledger / register / day book)
+    // has to stay underneath, so closing the switched voucher returns there.
+    const handleSwitchVoucher = () => {
+        updateMyActivity('Viewing Dashboard');
     };
 
     // --- FORCE REFRESH (GET LATEST VERSION) ---
@@ -11413,7 +11461,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.3</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.4</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -12764,7 +12812,7 @@ export default function App() {
                 stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
-                    handleCloseModal();
+                    handleSwitchVoucher();
                     setEditData(null);
                     setTimeout(() => {
                         if (targetType === 'payment') setActiveModal('payment');
@@ -12809,7 +12857,7 @@ export default function App() {
                 stockJournals={stockJournals} // ✅ PASS PROP
                 defaultMaximized={true}
                 onSwitch={(targetType) => {
-                    handleCloseModal();
+                    handleSwitchVoucher();
                     setEditData(null);
                     setTimeout(() => {
                         if (targetType === 'payment') setActiveModal('payment');
@@ -12856,7 +12904,7 @@ export default function App() {
                 onUpdateProfile={setCompanyProfile}
                 confirmPassword={confirmPassword}
                 onSwitch={(targetType, convertedData) => {
-                    handleCloseModal();
+                    handleSwitchVoucher();
                     setEditData(convertedData || null);
                     setTimeout(() => {
                         if (targetType === 'purchase') setActiveModal('purchase');
@@ -12899,7 +12947,7 @@ export default function App() {
                 onUpdateProfile={setCompanyProfile}
                 confirmPassword={confirmPassword}
                 onSwitchVoucher={(newType, convertedData) => {
-                    handleCloseModal();
+                    handleSwitchVoucher();
                     setEditData(convertedData || null);
                     setTimeout(() => {
                         if (['payment', 'receipt', 'contra', 'purchase', 'sales', 'journal'].includes(newType)) {
@@ -14249,7 +14297,7 @@ export default function App() {
             {/* ✅ RESTORE THIS MISSING LEDGER MODAL */}
             <LedgerModal
                 {...getModalState('ledgers')}
-                onOpenVoucherPicker={() => setShowVoucherV2Menu(true)}
+                onOpenVoucherPicker={() => { voucherLaunchRef.current = activeModal || null; setShowVoucherV2Menu(true); }}
                 globalDateCmd={globalDateCmd} // ✅ PASS PROP
                 onAddToFavorites={handleAddToFavorites} // ✅ PASS FAVORITES
                 onClose={() => { setActiveModal(null); setModalStack([]); }}
@@ -14402,7 +14450,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.3</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.4</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
