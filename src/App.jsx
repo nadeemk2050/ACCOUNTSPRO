@@ -782,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.1 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.2 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.1</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.2</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -861,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.1</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.2</div>
                 </div>
             </div>
         </Modal>
@@ -5906,7 +5906,7 @@ const HighlightText = React.memo(({ text, terms }) => {
    Defined OUTSIDE LedgerModal and memoised. Pure presentation — it receives
    rows/totals that are already computed and renders them with the register's
    own look. Keep this component identical in both ACCPRO apps. */
-const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title, subtitle, partyLabel = 'CUSTOMER', footnote, onBack, onRowClick }) {
+const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title, subtitle, partyLabel = 'CUSTOMER', footnote, onBack, onRowClick, sortDir = 'desc', onToggleSort }) {
     const fmtQty = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
     const fmtVal = (n) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
     const t = totals || { vch: 0, qty: 0, val: 0, rate: 0 };
@@ -5943,7 +5943,13 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
                                 <th className="p-1.5 border-r border-slate-300 text-right w-10 font-black">#</th>
                                 <th className="p-1.5 border-r border-slate-300 text-left font-black">{partyLabel}</th>
                                 <th className="p-1.5 border-r border-slate-300 text-right w-24 font-black">VOUCHERS</th>
-                                <th className="p-1.5 border-r border-slate-300 text-right w-28 font-black">TOTAL QTY</th>
+                                <th
+                                    onClick={onToggleSort || undefined}
+                                    title={onToggleSort ? 'Click to sort: highest ⇄ lowest total qty' : undefined}
+                                    className={`p-1.5 border-r border-slate-300 text-right w-28 font-black ${onToggleSort ? 'cursor-pointer select-none hover:bg-blue-100' : ''}`}
+                                >
+                                    TOTAL QTY <span className="text-[#2b5797]">{onToggleSort ? (sortDir === 'asc' ? '↑' : '↓') : ''}</span>
+                                </th>
                                 <th className="p-1.5 border-r border-slate-300 text-right w-24 font-black">AVG RATE</th>
                                 <th className="p-1.5 border-r border-slate-300 text-right w-32 font-black">VALUE</th>
                                 <th className="p-1.5 text-right w-20 font-black">% QTY</th>
@@ -5981,7 +5987,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.1";
+    const SYSTEM_VERSION = "2.8.2";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6477,6 +6483,18 @@ export default function App() {
         const name = subUser?.name || userData?.name || user?.displayName || 'System';
         return `${name} (${user?.email || 'N/A'})`;
     }, [subUser, user, userData]);
+
+    // Header profile chip: name only — never expose e-mail addresses (or duplicate
+    // "name (email)" strings saved on older user documents).
+    const displayUserName = useMemo(() => {
+        const raw = subUser?.name || userData?.name || user?.displayName || user?.email || 'User';
+        const cleaned = String(raw)
+            .replace(/\([^)]*@[^)]*\)/g, ' ')            // drop "(someone@mail.com)"
+            .replace(/[^\s()]+@[^\s()]+\.[^\s()]+/g, ' ') // drop bare e-mail addresses
+            .replace(/\s+/g, ' ')
+            .trim();
+        return cleaned || 'User';
+    }, [subUser, userData, user]);
 
     const activeLiveRegistryEntry = useMemo(
         () => (Array.isArray(liveRegistryCompanies) ? liveRegistryCompanies.find((co) => co.id === dataOwnerId) : null) || null,
@@ -11395,7 +11413,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.1</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.2</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -11562,15 +11580,15 @@ export default function App() {
                             className="flex items-center gap-2 h-10 px-3 rounded-full bg-white/15 text-white hover:bg-white/25 transition-all border-2 border-white/30 shadow-sm hover:shadow-md active:scale-95"
                         title="User Profile"
                     >
-                        {effectiveName ? (
+                        {displayUserName ? (
                                 <div className="w-7 h-7 bg-white text-[#00457c] rounded-full flex items-center justify-center text-xs font-bold shadow-inner border border-white/30">
-                                {effectiveName[0].toUpperCase()}
+                                {displayUserName[0].toUpperCase()}
                             </div>
                         ) : (
                             <User size={20} />
                         )}
-                        {effectiveName && (
-                                <span className="text-xs font-bold hidden sm:inline text-white">{effectiveName}</span>
+                        {displayUserName && (
+                                <span className="text-xs font-bold hidden sm:inline text-white max-w-[160px] truncate">{displayUserName}</span>
                         )}
                     </button>
                 </div>
@@ -14384,7 +14402,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.1</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.2</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -23154,11 +23172,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [summaryMode, setSummaryMode] = useState('detailed'); // 'detailed', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'
     const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
 
-    // SUMMARIZE view ('' | 'party' | 'item'). Deliberately SEPARATE from summaryMode:
+    // SUMMARIZE view ('' | 'party' | 'item' | 'inward' | 'outward'). Deliberately SEPARATE from summaryMode:
     // summaryMode drives the breakup headers/rows and MUST stay 'detailed' while a
     // summary is shown, otherwise the breakup branch would replace the rows it reads.
     const [summarizeBy, setSummarizeBy] = useState('');
     const [showSummarizeOptions, setShowSummarizeOptions] = useState(false);
+    const [summarySortDir, setSummarySortDir] = useState('desc'); // 'desc' = highest qty first
     const [hiddenStack, setHiddenStack] = useState([]); // Stack of arrays of IDs
     const hiddenSet = useMemo(() => new Set(hiddenStack.flat()), [hiddenStack]);
     const [hiddenCols, setHiddenCols] = useState(new Set());
@@ -24814,22 +24833,50 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         return map.size ? map : null;
     }, [processedData, powerSearch, searchScope, powerSearchOn]);
 
-    // ── SUMMARIZE (customer/supplier-wise and item-wise) ─────────────────────
+    // ── SUMMARIZE (customer/supplier-wise, item-wise and item inward/outward) ──
     // Costs NOTHING until the user opens a summary: returns null immediately.
     // Source = the register's own processed list minus the opening/summary rows,
     // so the period, currency (DHS), ALL TYPES filter and search all apply.
     // NOTE: `isSalesPurchaseRegister` is declared AFTER this component's early
     // return, so the equivalent check is inlined here (avoids a TDZ crash).
     const summarizeData = useMemo(() => {
-        if (!isOpen || !summarizeBy || !['sales', 'purchase'].includes(filter.type)) return null;
+        const isItemFlow = summarizeBy === 'inward' || summarizeBy === 'outward';
+        if (!isOpen || !summarizeBy) return null;
+        if (!['sales', 'purchase', 'item'].includes(filter.type)) return null;
+        if (filter.type === 'item' && !isItemFlow) return null;
+        if (filter.type !== 'item' && isItemFlow) return null;
 
         const src = (detailedRows || []).filter(t => !t.isOpening && !t.isSummary);
         const map = new Map();
         // Inlined instead of calling getProductName(): keeps the memo's deps to
         // stable values only, so it does not recompute on every render.
         const nameOfItem = (id) => products.find(p => p.id === id)?.name || id || '(Unknown item)';
+        // Manufacturing / stock-journal vouchers have no supplier or buyer, they are
+        // grouped under one clearly-labelled bucket instead of showing a blank name.
+        const MFG_LABEL = 'MANUFACTURING VOUCHER';
+        const isMfgRow = (r) => {
+            const t = String(r.type || '').toLowerCase();
+            const v = String(r.vchType || '').toUpperCase();
+            return t === 'manufacturing' || t === 'stock_journal' || v.includes('MFG') || v.includes('MANUFACTUR');
+        };
 
-        if (summarizeBy === 'party') {
+        if (isItemFlow) {
+            // INWARD  = purchase-side flows (qty in, debit value)
+            // OUTWARD = sales-side flows   (qty out, credit value)
+            const inward = summarizeBy === 'inward';
+            for (const r of src) {
+                const qty = Math.abs(inward ? safeNum(r.qtyIn) : safeNum(r.qtyOut));
+                if (!(qty > 0)) continue;
+                const val = inward ? safeNum(r.displayIn) : safeNum(r.displayOut);
+                const mfg = isMfgRow(r);
+                const rawName = String(r.customerName || '').trim();
+                const name = mfg ? MFG_LABEL : (rawName && rawName !== '-' ? rawName : '(Blank)');
+                const key = mfg ? '__mfg__' : (r.partyId || rawName.toLowerCase() || '(blank)');
+                let g = map.get(key);
+                if (!g) { g = { key, name, vch: 0, qty: 0, val: 0 }; map.set(key, g); }
+                g.vch += 1; g.qty += qty; g.val += val;
+            }
+        } else if (summarizeBy === 'party') {
             for (const r of src) {
                 const key = r.partyId || String(r.customerName || '').trim().toLowerCase() || '(blank)';
                 const qty = Math.abs(safeNum(r.qtyIn) + safeNum(r.qtyOut));
@@ -24883,7 +24930,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         let gQty = 0, gVal = 0, gVch = 0;
         out.forEach(g => { g.rate = g.qty > 0 ? (g.val / g.qty) : 0; gQty += g.qty; gVal += g.val; gVch += g.vch; });
         out.forEach(g => { g.pct = gQty > 0 ? (g.qty / gQty) * 100 : 0; });
-        out.sort((a, b) => (b.qty - a.qty) || (b.val - a.val) || String(a.name).localeCompare(String(b.name)));
+        // QTY sort: highest→lowest (default) or lowest→highest, toggled from the
+        // TOTAL QTY column header. Name is the stable tiebreaker in both directions.
+        const dir = summarySortDir === 'asc' ? 1 : -1;
+        out.sort((a, b) => (dir * (a.qty - b.qty)) || (dir * (a.val - b.val)) || String(a.name).localeCompare(String(b.name)));
 
         const capped = out.slice(0, 1000);
         return {
@@ -24891,7 +24941,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             truncated: out.length > capped.length,
             totals: { vch: gVch, qty: gQty, val: gVal, rate: gQty > 0 ? (gVal / gQty) : 0 }
         };
-    }, [isOpen, summarizeBy, detailedRows, filter.type, products]);
+    }, [isOpen, summarizeBy, summarySortDir, detailedRows, filter.type, products]);
 
     // Stable identity so the memoised summary table can actually skip re-renders.
     const handleSummaryRowClick = useCallback((r) => {
@@ -25782,6 +25832,18 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
     if (!isOpen) return null;
     const isSalesPurchaseRegister = ['sales', 'purchase'].includes(filter.type);
+    // SUMMARIZE is offered on the Sales/Purchase registers AND on the Item Ledger
+    // (where it splits into INWARD / OUTWARD supplier-buyer summaries).
+    const canSummarizeRegister = isSalesPurchaseRegister || filter.type === 'item';
+    const summarizeOptions = filter.type === 'item'
+        ? [
+            { id: 'inward', label: 'Inward / Purchase View Summary', hint: 'Supplier-wise qty, value & average rate' },
+            { id: 'outward', label: 'Outward / Sales View Summary', hint: 'Buyer-wise qty, value & average rate' }
+        ]
+        : [
+            { id: 'party', label: filter.type === 'purchase' ? 'Supplier-wise Summary' : 'Customer-wise Summary', hint: 'Grouped by name' },
+            { id: 'item', label: 'Item-wise Summary', hint: 'Grouped by product' }
+        ];
     const isBreakupMode = summaryMode !== 'detailed';
     
     return (
@@ -25923,17 +25985,19 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         <div className="w-px h-6 bg-blue-300 opacity-50 mx-1 shrink-0"></div>
  
                         {/* --- SUMMARIZE (customer/supplier-wise or item-wise) --- */}
-                        {isSalesPurchaseRegister && (
+                        {canSummarizeRegister && (
                             <div className="relative shrink-0">
                                 <button
                                     onClick={() => setShowSummarizeOptions(!showSummarizeOptions)}
                                     className={`px-2 py-1 rounded-[2px] border transition-all text-[9.5px] font-black flex items-center gap-1 ${summarizeBy ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-300 text-[#2b5797] hover:bg-blue-50'}`}
-                                    title="Summarize by customer / supplier / item"
+                                    title={filter.type === 'item' ? 'Summarize inward (supplier) or outward (buyer)' : 'Summarize by customer / supplier / item'}
                                 >
                                     <LayoutGrid size={11} strokeWidth={3} />
                                     {summarizeBy === 'party'
                                         ? (filter.type === 'purchase' ? 'SUPPLIER WISE' : 'CUSTOMER WISE')
-                                        : summarizeBy === 'item' ? 'ITEM WISE' : 'SUMMARIZE'}
+                                        : summarizeBy === 'item' ? 'ITEM WISE'
+                                            : summarizeBy === 'inward' ? 'INWARD SUMMARY'
+                                                : summarizeBy === 'outward' ? 'OUTWARD SUMMARY' : 'SUMMARIZE'}
                                     <ChevronDown size={10} />
                                 </button>
                                 {showSummarizeOptions && (
@@ -25943,13 +26007,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 Summarize Report
                                             </div>
                                             <div className="p-1.5 max-h-[70vh] overflow-y-auto">
-                                                {[
-                                                    { id: 'party', label: filter.type === 'purchase' ? 'Supplier-wise Summary' : 'Customer-wise Summary', hint: 'Grouped by name' },
-                                                    { id: 'item', label: 'Item-wise Summary', hint: 'Grouped by product' }
-                                                ].map(opt => (
+                                                {summarizeOptions.map(opt => (
                                                     <button
                                                         key={opt.id}
-                                                        onClick={() => { setSummarizeBy(opt.id); setShowSummarizeOptions(false); }}
+                                                        onClick={() => { setSummarizeBy(opt.id); setShowSummarizeOptions(false); setSummarySortDir('desc'); }}
                                                         className={`grid grid-cols-1 gap-0.5 w-full text-left px-3 py-2 mb-1 text-[10.5px] font-black transition-colors rounded-[2px] border ${summarizeBy === opt.id ? 'bg-[#2b5797] text-white border-[#1e3e6d]' : 'bg-white border-blue-100 hover:bg-blue-50 text-[#1e3264]'}`}
                                                     >
                                                         <span className="uppercase tracking-wide">{opt.label}</span>
@@ -26328,10 +26389,22 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     truncated={!!summarizeData?.truncated}
                                     title={summarizeBy === 'party'
                                         ? `${filter.type === 'purchase' ? 'SUPPLIER-WISE' : 'CUSTOMER-WISE'} SUMMARY - ${filter.type === 'purchase' ? 'PURCHASE' : 'SALES'}`
-                                        : `ITEM-WISE SUMMARY - ${filter.type === 'purchase' ? 'PURCHASE' : 'SALES'}`}
+                                        : summarizeBy === 'item'
+                                            ? `ITEM-WISE SUMMARY - ${filter.type === 'purchase' ? 'PURCHASE' : 'SALES'}`
+                                            : summarizeBy === 'inward'
+                                                ? `INWARD / PURCHASE VIEW SUMMARY - ${getReportTitle()}`
+                                                : `OUTWARD / SALES VIEW SUMMARY - ${getReportTitle()}`}
                                     subtitle={getReportDuration()}
-                                    partyLabel={summarizeBy === 'party' ? (filter.type === 'purchase' ? 'SUPPLIER' : 'CUSTOMER') : 'ITEM'}
-                                    footnote={summarizeBy === 'item' ? "Item values are allocated from each voucher's register value so totals match the register." : ''}
+                                    partyLabel={summarizeBy === 'party'
+                                        ? (filter.type === 'purchase' ? 'SUPPLIER' : 'CUSTOMER')
+                                        : summarizeBy === 'inward' ? 'SUPPLIER' : summarizeBy === 'outward' ? 'CUSTOMER' : 'ITEM'}
+                                    footnote={summarizeBy === 'item'
+                                        ? "Item values are allocated from each voucher's register value so totals match the register."
+                                        : (summarizeBy === 'inward' || summarizeBy === 'outward')
+                                            ? 'Manufacturing / stock journal movements are grouped as MANUFACTURING VOUCHER. Click TOTAL QTY to toggle the sort.'
+                                            : ''}
+                                    sortDir={summarySortDir}
+                                    onToggleSort={() => setSummarySortDir(d => (d === 'desc' ? 'asc' : 'desc'))}
                                     onBack={() => setSummarizeBy('')}
                                     onRowClick={summarizeBy === 'party' ? handleSummaryRowClick : null}
                                 />
@@ -36162,8 +36235,6 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
 const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directExpenseAccounts = [], incomeAccounts, assetAccounts, accounts, capitalAccounts, taxRates = [], onSelect, user, dataOwnerId, userRole }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [activeTab, setActiveTab] = useState('all'); // all, party, expense, direct_expense, income, tax, asset, capital, bank
-    const [currentPage, setCurrentPage] = useState(1);
-    const itemsPerPage = 12;
     const inputRef = useRef(null);
 
     useEffect(() => {
@@ -36201,16 +36272,37 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
         return item.name.toLowerCase().includes(searchTerm.toLowerCase());
     });
 
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [searchTerm, activeTab]);
+    // Filter chips + per-type counts (all ledgers render in one scrollable list now).
+    const TABS = [
+        { key: 'all', label: 'All' },
+        { key: 'party', label: 'Party' },
+        { key: 'expense', label: 'Indirect Exp' },
+        { key: 'direct_expense', label: 'Direct Exp' },
+        { key: 'income', label: 'Income' },
+        { key: 'tax', label: 'Tax' },
+        { key: 'asset', label: 'Asset' },
+        { key: 'capital', label: 'Capital' },
+        { key: 'bank', label: 'Bank / Cash' }
+    ];
+    const tabCounts = useMemo(() => {
+        const counts = { all: allData.length };
+        allData.forEach((item) => { counts[item.type] = (counts[item.type] || 0) + 1; });
+        counts.bank = counts.account || 0;
+        return counts;
+    }, [allData]);
 
-    const paginatedItems = useMemo(() => {
-        const start = (currentPage - 1) * itemsPerPage;
-        return filtered.slice(start, start + itemsPerPage);
-    }, [filtered, currentPage, itemsPerPage]);
-
-    const totalPages = Math.ceil(filtered.length / itemsPerPage);
+    const typeChipClass = (type) => (
+        type === 'party' ? 'bg-blue-100 text-blue-700'
+            : type === 'expense' ? 'bg-orange-100 text-orange-700'
+                : type === 'direct_expense' ? 'bg-red-100 text-red-700'
+                    : type === 'income' ? 'bg-green-100 text-green-700'
+                        : type === 'tax' ? 'bg-amber-100 text-amber-700'
+                            : type === 'account' ? 'bg-purple-100 text-purple-700'
+                                : type === 'capital' ? 'bg-slate-200 text-slate-700'
+                                    : type === 'asset' ? 'bg-cyan-100 text-cyan-700'
+                                        : type === 'report' ? 'bg-pink-100 text-pink-700'
+                                            : 'bg-gray-100 text-gray-700'
+    );
 
     // --- AS OF DATE BALANCE CALCULATION ---
     const [viewDate, setViewDate] = useState('');
@@ -36356,133 +36448,171 @@ const GlobalSearchModal = ({ isOpen, onClose, zIndex, parties, expenses, directE
         }
     };
 
+    // Navigation must work from the search box AND from the filter chips: listen globally while
+    // the dialog is open, so ↑/↓ always walks the result list (the input keeps its focus for typing).
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                moveRowHighlight(e.key === 'ArrowDown' ? 1 : -1);
+                return;
+            }
+            if (e.key === 'Enter') {
+                if (activateHighlightedRow()) { e.preventDefault(); return; }
+                if (filtered.length > 0) { e.preventDefault(); handleKeyDown(e); }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                if (document.querySelector('.kb-row-active')) { clearRowHighlight(); return; }
+                onClose?.();
+            }
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [isOpen, filtered, onClose]);
+
+    // Put the caret in the search box as soon as the page appears (users start typing immediately).
+    useEffect(() => {
+        if (!isOpen) return;
+        clearRowHighlight();
+        const focusSearch = () => {
+            const el = inputRef.current;
+            if (!el) return;
+            el.focus({ preventScroll: true });
+            try { el.setSelectionRange(el.value.length, el.value.length); } catch (err) { /* ignore */ }
+        };
+        focusSearch();
+        const t1 = setTimeout(focusSearch, 60);
+        const t2 = setTimeout(focusSearch, 250);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
+    }, [isOpen]);
+
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} zIndex={zIndex} title="Go To / Search Report" maxWidth="max-w-5xl" centerTitle={true} defaultMaximized={true}>
-            <div className="flex flex-col h-full">
-                {/* Search Bar */}
-                <div className="relative mb-2">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+        <div className="fixed inset-0 z-[130] bg-slate-100 flex flex-col text-slate-900" style={zIndex ? { zIndex } : undefined}>
+            {/* FULL-BLEED HEADER */}
+            <div className="h-14 shrink-0 bg-[#0b1f33] text-white flex items-center gap-3 px-3 md:px-5">
+                <button
+                    onClick={onClose}
+                    className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors"
+                    title="Close (Esc)"
+                >
+                    <ArrowLeft size={18} />
+                </button>
+                <div className="min-w-0">
+                    <div className="text-sm font-black uppercase tracking-wide leading-none truncate">Go To / Search Report</div>
+                    <div className="text-[10px] text-white/50 font-bold uppercase tracking-widest mt-0.5">
+                        {filtered.length} of {allData.length} ledgers · {activeTab === 'all' ? 'all types' : (TABS.find(t => t.key === activeTab)?.label || '')}
+                    </div>
+                </div>
+
+                <div className="flex-1" />
+
+                <div className="relative w-full max-w-md">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-white/40" size={13} />
                     <input
                         ref={inputRef}
                         type="text"
-                        className="w-full pl-9 p-2 text-sm font-bold border rounded-lg shadow-inner bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                        placeholder="Type to search any ledger..."
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
-                        onKeyDown={handleKeyDown}
+                        placeholder="Type to search any ledger…"
                         autoFocus
+                        className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-white/10 border border-white/15 text-[11px] font-semibold text-white placeholder:text-white/40 focus:outline-none focus:border-emerald-400/60"
                     />
                 </div>
 
-                {/* Balance Filter removed to save Firebase reads as per user request */}
+                <div className="hidden sm:block px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 text-center min-w-[64px]">
+                    <div className="text-[9px] font-bold uppercase text-white/50 leading-none">Results</div>
+                    <div className="text-[13px] font-black leading-tight">{filtered.length}</div>
+                </div>
 
+                <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors" title="Close (Esc)">
+                    <X size={18} />
+                </button>
+            </div>
 
-                {/* Tabs */}
-                <div className="flex gap-1.5 overflow-x-auto pb-1.5 mb-1.5 no-scrollbar">
-                    {[
-                        { key: 'all', label: 'ALL' },
-                        { key: 'party', label: 'PARTY' },
-                        { key: 'expense', label: 'INDIRECT EXP' },
-                        { key: 'direct_expense', label: 'DIRECT EXP' },
-                        { key: 'income', label: 'INCOME' },
-                        { key: 'tax', label: 'TAX' },
-                        { key: 'asset', label: 'ASSET' },
-                        { key: 'capital', label: 'CAPITAL' },
-                        { key: 'bank', label: 'BANK / CASH' },
-                    ].map(({ key, label }) => (
+            {/* TYPE FILTER CHIPS */}
+            <div className="shrink-0 bg-white border-b border-slate-200 px-3 md:px-5 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                {TABS.map(({ key, label }) => {
+                    const active = activeTab === key;
+                    const count = tabCounts[key] || 0;
+                    return (
                         <button
                             key={key}
                             onClick={() => setActiveTab(key)}
-                            className={`px-3 py-1 rounded-full text-xs font-bold uppercase whitespace-nowrap transition-colors ${activeTab === key ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide whitespace-nowrap transition-colors ${active ? 'bg-[#0b1f33] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                         >
-                            {label} {activeTab === key && `(${filtered.length})`}
+                            {label} <span className={active ? 'text-emerald-300' : 'text-slate-400'}>({count})</span>
                         </button>
-                    ))}
-                </div>
-
-                {/* List */}
-                <div className="flex-1 overflow-y-auto border rounded-xl bg-white shadow-sm">
-                    {filtered.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                            <Search size={48} className="mb-2 opacity-20" />
-                            <div className="text-sm">No results found</div>
-                        </div>
-                    ) : (
-                        <table className="w-full text-left">
-                            <thead className="bg-slate-50 text-slate-500 sticky top-0 uppercase text-[10px] font-bold">
-                                <tr>
-                                    <th className="p-2 pl-3">Ledger Name</th>
-                                    <th className="p-2 pr-3">Type</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {paginatedItems.map((item, i) => (
-                                    <tr
-                                        key={item.id}
-                                        data-kb-row
-                                        onClick={() => { onSelect(item.type === 'report' ? item.reportType : item.type, item.id); }}
-                                        className={`cursor-pointer transition-colors group ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'} hover:bg-blue-50`}
-                                    >
-                                        <td className="p-2 pl-3">
-                                            <div className="font-bold text-slate-700 group-hover:text-blue-700 text-sm">{item.name}</div>
-                                        </td>
-                                        <td className="p-2 pr-3">
-                                            <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider
-                                                ${item.type === 'party' ? 'bg-blue-100 text-blue-700' :
-                                                    item.type === 'expense' ? 'bg-orange-100 text-orange-700' :
-                                                        item.type === 'direct_expense' ? 'bg-red-100 text-red-700' :
-                                                            item.type === 'income' ? 'bg-green-100 text-green-700' :
-                                                                item.type === 'tax' ? 'bg-amber-100 text-amber-700' :
-                                                                item.type === 'account' ? 'bg-purple-100 text-purple-700' :
-                                                                    'bg-gray-100 text-gray-700'}`}>
-                                                {item.typeLabel}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    )}
-                </div>
-
-                {/* PAGINATION CONTROLS */}
-                {totalPages > 1 && (
-                    <div className="mt-2 flex items-center justify-between px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl">
-                        <div className="text-[10px] font-black uppercase text-slate-500">
-                            Page <span className="text-blue-600">{currentPage}</span> of <span className="text-blue-600">{totalPages}</span>
-                        </div>
-                        <div className="flex gap-1">
-                            <button
-                                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                                disabled={currentPage === 1}
-                                className={`px-3 py-1 text-[10px] font-bold uppercase rounded border transition-colors ${currentPage === 1 ? 'bg-slate-100 text-slate-300 border-slate-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
-                            >
-                                Prev
-                            </button>
-                            <button
-                                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                                disabled={currentPage === totalPages}
-                                className={`px-3 py-1 text-[10px] font-bold uppercase rounded border transition-colors ${currentPage === totalPages ? 'bg-slate-100 text-slate-300 border-slate-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
-                            >
-                                Next
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                <div className="text-[10px] text-slate-400 text-center mt-2">
-                    Press <span className="font-bold border px-1 rounded">Enter</span> to select top result
-                </div>
+                    );
+                })}
+                <span className="ml-auto pl-3 text-[10px] font-bold text-slate-400 whitespace-nowrap hidden md:block">
+                    ↑ ↓ move · Enter open · Esc close
+                </span>
             </div>
-        </Modal>
+
+            {/* DENSE LIST */}
+            <div className="flex-1 overflow-y-auto">
+                {filtered.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                        <Search size={44} className="mb-2 opacity-20" />
+                        <div className="text-sm font-bold">No results found</div>
+                        <div className="text-[11px] mt-1">Try a different search or filter.</div>
+                    </div>
+                ) : (
+                    <table className="w-full text-left border-collapse">
+                        <thead className="sticky top-0 z-10 bg-slate-100 text-slate-500 uppercase text-[9px] font-black">
+                            <tr className="border-b border-slate-200 leading-none">
+                                <th className="w-10 py-1 pl-3">#</th>
+                                <th className="py-1">Ledger Name</th>
+                                <th className="py-1 w-44">Type</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filtered.map((item, i) => (
+                                <tr
+                                    key={`${item.type}-${item.id}`}
+                                    data-kb-row
+                                    onClick={() => { onSelect(item.type === 'report' ? item.reportType : item.type, item.id); }}
+                                    className={`cursor-pointer border-b border-slate-100 leading-none hover:bg-blue-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}
+                                >
+                                    <td className="py-[2px] pl-3 text-[10px] font-bold text-slate-400 tabular-nums">{i + 1}</td>
+                                    <td className="py-[2px] pr-3 text-[11px] font-bold text-slate-700 truncate">{item.name}</td>
+                                    <td className="py-[2px] pr-3">
+                                        <span className={`inline-block px-1.5 py-[1px] rounded text-[10px] leading-none font-black uppercase tracking-wide ${typeChipClass(item.type)}`}>
+                                            {item.typeLabel}
+                                        </span>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+
+            {/* FOOTER */}
+            <div className="shrink-0 bg-white border-t border-slate-200 px-3 md:px-5 py-1.5 flex items-center gap-3">
+                <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">{filtered.length} result(s)</span>
+                <span className="text-[10px] text-slate-400 hidden sm:block">
+                    Press <b className="text-slate-600">Enter</b> to open the highlighted / top result
+                </span>
+                <div className="flex-1" />
+                <button
+                    onClick={onClose}
+                    className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-[10px] font-black uppercase tracking-wide"
+                >
+                    Close
+                </button>
+            </div>
+        </div>
     );
 };
 
 // --- TOAST NOTIFICATION COMPONENT ---
-const Toast = ({ toast, onClose }) => {
-    if (!toast) return null;
+const Toast = ({ toast, onClose }) => {    if (!toast) return null;
 
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -36830,241 +36960,198 @@ const UserProfileModal = ({ isOpen, onClose, user, userData, subUser, companyPro
 };
 
 // --- GLOBAL ITEM SEARCH MODAL (F1) ---
-function GlobalItemSearchModal({ isOpen, onClose, zIndex, products = [], stockGroups = [], onSelect, currencySymbol }) {
-    const format3 = (n) => new Intl.NumberFormat('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0);
-    const formatCurrency = (n) => new Intl.NumberFormat('en-US', { style: 'decimal', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
+function GlobalItemSearchModal({ isOpen, onClose, zIndex, products = [], stockGroups = [], onSelect }) {
     const [searchTerm, setSearchTerm] = useState('');
-    const [viewDate, setViewDate] = useState('');
-    const [itemBalances, setItemBalances] = useState({}); // { itemId: { qty, val } }
-    const [calculating, setCalculating] = useState(false);
+    const [selectedGroup, setSelectedGroup] = useState('all');
     const inputRef = useRef(null);
 
     useEffect(() => {
         if (isOpen) {
             setSearchTerm('');
-            setViewDate(new Date().toISOString().split('T')[0]);
+            setSelectedGroup('all');
             setTimeout(() => inputRef.current?.focus(), 50);
         }
     }, [isOpen]);
 
-    useEffect(() => {
-        // Calculate Balances
-        if (!isOpen || !viewDate) { setItemBalances({}); return; }
-
-        let active = true;
-        const calc = async () => {
-            setCalculating(true);
-            try {
-                const userId = auth.currentUser?.uid;
-                if (!userId) { if (active) setCalculating(false); return; }
-
-                // 1. Initial Map from Product Definitions
-                const balMap = {};
-                products.forEach(p => {
-                    const opQty = Number(p.openingStock || 0); // Correct Field
-                    const opVal = Number(p.openingBalance || 0); // Correct Field
-                    const opRate = opQty !== 0 ? Math.abs(opVal / opQty) : Number(p.purchasePrice || 0);
-
-                    balMap[p.id] = {
-                        qty: opQty,
-                        rate: opRate, // Tracks Last Purchase Rate
-                        val: opVal,   // Not strictly used for closing rate tracking but good for debug
-                        name: p.name
-                    };
-                });
-
-                // 2. Query Transactions (Sorted by Date for Rate Accuracy)
-                const constraints = [where('userId', '==', userId), where('date', '<=', viewDate), orderBy('date', 'asc')];
-
-                const [invSnap, sjSnap] = await Promise.all([
-                    getDocs(query(collection(db, 'invoices'), ...constraints)),
-                    getDocs(query(collection(db, 'stock_journals'), ...constraints))
-                ]);
-
-                if (!active) return;
-
-                // 3. Process Invoices
-                invSnap.forEach(doc => {
-                    const d = doc.data();
-                    if (!d.items) return;
-                    d.items.forEach(item => {
-                        // Ensure item exists in map (if added after product load or missing)
-                        if (!balMap[item.productId]) {
-                            // Try to find in products (prop) if missed or init default
-                            const p = products.find(prod => prod.id === item.productId);
-                            balMap[item.productId] = {
-                                qty: 0,
-                                rate: Number(p?.purchasePrice || item.rate || 0),
-                                val: 0
-                            };
-                        }
-
-                        const qty = Number(item.quantity || 0);
-                        const rate = Number(item.rate || 0);
-                        const row = balMap[item.productId];
-
-                        if (d.type === 'sales') {
-                            row.qty -= qty;
-                        }
-                        else if (d.type === 'purchase') {
-                            row.qty += qty;
-                            row.rate = rate; // Update Last Purchase Rate
-                        }
-                        else if (d.type === 'sales_return') {
-                            row.qty += qty;
-                        }
-                        else if (d.type === 'purchase_return') {
-                            row.qty -= qty;
-                        }
-                    });
-                });
-
-                // 4. Process Stock Journals (Manufacturing/Consumption)
-                sjSnap.forEach(doc => {
-                    const d = doc.data();
-
-                    // Consumption
-                    if (d.consumed) d.consumed.forEach(item => {
-                        if (!balMap[item.productId]) return; // Should exist if consumed
-                        const qty = Number(item.quantity || 0);
-                        balMap[item.productId].qty -= qty;
-                    });
-
-                    // Production
-                    if (d.produced) d.produced.forEach(item => {
-                        if (!balMap[item.productId]) {
-                            const p = products.find(prod => prod.id === item.productId);
-                            balMap[item.productId] = {
-                                qty: 0,
-                                rate: Number(p?.purchasePrice || item.rate || 0),
-                                val: 0
-                            };
-                        }
-                        const qty = Number(item.quantity || 0);
-                        const rate = Number(item.rate || 0);
-                        const row = balMap[item.productId];
-
-                        row.qty += qty;
-                        row.rate = rate; // Update Last Purchase Rate (Production Cost)
-                    });
-                });
-
-                // 5. Finalize
-                const final = {};
-                for (const [id, val] of Object.entries(balMap)) {
-                    final[id] = { qty: val.qty, val: val.qty * val.rate };
-                }
-                setItemBalances(final);
-
-            } catch (e) { console.error(e); }
-            finally { if (active) setCalculating(false); }
-        };
-        calc();
-        return () => { active = false; };
-    }, [isOpen, viewDate, products]);
+    // Distinct stock groups (with counts) power the filter chips — the same pattern as the
+    // ledger search: All + one chip per group.
+    const groupLabelOf = (p) => String(p.group || '').trim() || 'Ungrouped';
+    const groupChips = useMemo(() => {
+        const counts = new Map();
+        products.forEach((p) => {
+            const g = groupLabelOf(p);
+            counts.set(g, (counts.get(g) || 0) + 1);
+        });
+        const list = Array.from(counts.entries())
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+        return [{ name: 'All', count: products.length, key: 'all' }, ...list.map(g => ({ ...g, key: g.name }))];
+    }, [products]);
 
     const filtered = useMemo(() => {
         let list = products;
+        if (selectedGroup !== 'all') list = list.filter(p => groupLabelOf(p) === selectedGroup);
         if (searchTerm) list = list.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
-        return list.sort((a, b) => a.name.localeCompare(b.name));
-    }, [products, searchTerm]);
+        return [...list].sort((a, b) => a.name.localeCompare(b.name));
+    }, [products, searchTerm, selectedGroup]);
+
+    // Navigation works from the search box AND from the filter chips.
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                moveRowHighlight(e.key === 'ArrowDown' ? 1 : -1);
+                return;
+            }
+            if (e.key === 'Enter') {
+                if (activateHighlightedRow()) { e.preventDefault(); return; }
+                if (filtered.length > 0) { e.preventDefault(); onSelect(filtered[0].id); }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                if (document.querySelector('.kb-row-active')) { clearRowHighlight(); return; }
+                onClose?.();
+            }
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [isOpen, filtered, onSelect, onClose]);
+
+    // Caret goes straight into the search box when the page opens.
+    useEffect(() => {
+        if (!isOpen) return;
+        clearRowHighlight();
+        const focusSearch = () => {
+            const el = inputRef.current;
+            if (!el) return;
+            el.focus({ preventScroll: true });
+            try { el.setSelectionRange(el.value.length, el.value.length); } catch (err) { /* ignore */ }
+        };
+        focusSearch();
+        const t1 = setTimeout(focusSearch, 60);
+        const t2 = setTimeout(focusSearch, 250);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
     return (
-        <Modal isOpen={isOpen} onClose={onClose} zIndex={zIndex} title="Item Search" defaultMaximized={true}>
-            <div className="flex flex-col h-full bg-slate-50 p-4">
-                {/* Search Bar */}
-                <div className="flex flex-col sm:flex-row items-center gap-4 mb-4">
-                    <div className="relative flex-1 w-full">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={24} />
-                        <input
-                            ref={inputRef}
-                            type="text"
-                            placeholder="Type to search any item ledger..."
-                            className="w-full pl-12 pr-4 py-4 text-xl border-2 border-blue-500 rounded-xl focus:outline-none focus:ring-4 focus:ring-blue-500/20 font-bold text-slate-700 placeholder:text-slate-300 shadow-xl bg-white"
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-
-                            onKeyDown={(e) => {
-                                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                                    e.preventDefault();
-                                    moveRowHighlight(e.key === 'ArrowDown' ? 1 : -1);
-                                    return;
-                                }
-                                if (e.key === 'Enter') {
-                                    if (activateHighlightedRow()) return;
-                                    if (filtered.length > 0) {
-                                        onSelect(filtered[0].id);
-                                    }
-                                }
-                            }}
-                        />
-                    </div>
-                    <div className="flex items-center gap-2 bg-white px-4 py-3 rounded-xl border border-slate-200 shadow-sm whitespace-nowrap">
-                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Balances As Of:</span>
-                        <input
-                            type="date"
-                            value={viewDate}
-                            onChange={(e) => setViewDate(e.target.value)}
-                            className="bg-transparent text-sm font-bold text-slate-800 outline-none border-b border-slate-300 focus:border-blue-500 transition-colors"
-                        />
-                        {calculating && <span className="text-xs text-blue-500 animate-pulse font-bold ml-2">Calculating...</span>}
+        <div className="fixed inset-0 z-[130] bg-slate-100 flex flex-col text-slate-900" style={zIndex ? { zIndex } : undefined}>
+            {/* FULL-BLEED HEADER */}
+            <div className="h-14 shrink-0 bg-[#0b1f33] text-white flex items-center gap-3 px-3 md:px-5">
+                <button
+                    onClick={onClose}
+                    className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors"
+                    title="Close (Esc)"
+                >
+                    <ArrowLeft size={18} />
+                </button>
+                <div className="min-w-0">
+                    <div className="text-sm font-black uppercase tracking-wide leading-none truncate">Item Search</div>
+                    <div className="text-[10px] text-white/50 font-bold uppercase tracking-widest mt-0.5 truncate whitespace-nowrap">
+                        {filtered.length} of {products.length} items · {selectedGroup === 'all' ? 'all groups' : selectedGroup}
                     </div>
                 </div>
 
-                {/* Table */}
-                <div className="flex-1 overflow-y-auto border rounded-xl bg-white shadow-sm custom-scrollbar">
+                <div className="flex-1" />
+
+                <div className="relative w-full max-w-md">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-white/40" size={13} />
+                    <input
+                        ref={inputRef}
+                        type="text"
+                        placeholder="Type to search any item ledger…"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        autoFocus
+                        className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-white/10 border border-white/15 text-[11px] font-semibold text-white placeholder:text-white/40 focus:outline-none focus:border-emerald-400/60"
+                    />
+                </div>
+
+                <div className="hidden sm:block px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 text-center min-w-[64px]">
+                    <div className="text-[9px] font-bold uppercase text-white/50 leading-none">Results</div>
+                    <div className="text-[13px] font-black leading-tight">{filtered.length}</div>
+                </div>
+
+                <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors" title="Close (Esc)">
+                    <X size={18} />
+                </button>
+            </div>
+
+            {/* GROUP FILTER CHIPS */}
+            <div className="shrink-0 bg-white border-b border-slate-200 px-3 md:px-5 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                {groupChips.map(({ key, name, count }) => {
+                    const active = selectedGroup === key;
+                    return (
+                        <button
+                            key={key}
+                            onClick={() => setSelectedGroup(key)}
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide whitespace-nowrap transition-colors ${active ? 'bg-[#0b1f33] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                        >
+                            {name} <span className={active ? 'text-emerald-300' : 'text-slate-400'}>({count})</span>
+                        </button>
+                    );
+                })}
+                <span className="ml-auto pl-3 text-[10px] font-bold text-slate-400 whitespace-nowrap hidden md:block">
+                    ↑ ↓ move · Enter open · Esc close
+                </span>
+            </div>
+
+            {/* DENSE LIST */}
+            <div className="flex-1 overflow-y-auto">
+                {filtered.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                        <Package size={44} className="mb-2 opacity-20" />
+                        <div className="text-sm font-bold">No items found</div>
+                        <div className="text-[11px] mt-1">Try a different search or group.</div>
+                    </div>
+                ) : (
                     <table className="w-full text-left border-collapse">
-                        <thead className="bg-slate-50 text-slate-500 sticky top-0 uppercase text-xs font-bold z-10 shadow-sm">
-                            <tr>
-                                <th className="p-4 pl-6 w-[40%]">Item Name</th>
-                                <th className="p-4 w-[20%]">Group</th>
-                                <th className="p-4 text-right w-[20%]">Balance Qty</th>
-                                <th className="p-4 text-right pr-6 w-[20%]">Closing Value</th>
+                        <thead className="sticky top-0 z-10 bg-slate-100 text-slate-500 uppercase text-[9px] font-black">
+                            <tr className="border-b border-slate-200 leading-none">
+                                <th className="w-10 py-1 pl-3">#</th>
+                                <th className="py-1">Item Name</th>
+                                <th className="py-1 w-56">Group</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {filtered.length === 0 ? (
-                                <tr>
-                                    <td colSpan={4} className="p-8 text-center text-slate-400 font-bold">
-                                        No items found matching "{searchTerm}"
-                                    </td>
+                        <tbody>
+                            {filtered.map((item, i) => (
+                                <tr
+                                    key={item.id}
+                                    data-kb-row
+                                    onClick={() => onSelect(item.id)}
+                                    className={`cursor-pointer border-b border-slate-100 leading-none hover:bg-blue-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}
+                                >
+                                    <td className="py-[3px] pl-3 text-[10px] font-bold text-slate-400 tabular-nums">{i + 1}</td>
+                                    <td className="py-[3px] pr-3 text-[11px] font-bold text-slate-700 truncate">{item.name}</td>
+                                    <td className="py-[3px] pr-3 text-[10px] font-bold text-slate-400 uppercase tracking-wide truncate">{groupLabelOf(item)}</td>
                                 </tr>
-                            ) : (
-                                filtered.map((item, i) => {
-                                    const bal = itemBalances[item.id] || { qty: 0, val: 0 };
-                                    return (
-                                        <tr
-                                            key={item.id}
-                                            data-kb-row
-                                            onClick={() => onSelect(item.id)}
-                                            className={`cursor-pointer transition-colors group border-l-4 border-transparent hover:border-blue-500 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50`}
-                                        >
-                                            <td className="p-4 pl-6">
-                                                <div className="font-bold text-slate-700 group-hover:text-blue-700 text-base">{item.name}</div>
-                                            </td>
-                                            <td className="p-4 text-xs font-bold text-slate-400 uppercase tracking-wide">{item.group || '-'}</td>
-                                            <td className="p-4 text-right">
-                                                <div className="font-mono font-bold text-slate-700 text-base">
-                                                    {format3(bal.qty)} <span className="text-[10px] text-slate-400 ml-1">{item.unit}</span>
-                                                </div>
-                                            </td>
-                                            <td className="p-4 text-right pr-6">
-                                                <div className="font-mono font-bold text-slate-800 text-base">
-                                                    {currencySymbol} {formatCurrency(bal.val)}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })
-                            )}
+                            ))}
                         </tbody>
                     </table>
-                </div>
+                )}
             </div>
-        </Modal>
+
+            {/* FOOTER */}
+            <div className="shrink-0 bg-white border-t border-slate-200 px-3 md:px-5 py-1.5 flex items-center gap-3">
+                <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">{filtered.length} item(s)</span>
+                <span className="text-[10px] text-slate-400 hidden sm:block">
+                    Press <b className="text-slate-600">Enter</b> to open the highlighted / top item
+                </span>
+                <div className="flex-1" />
+                <button
+                    onClick={onClose}
+                    className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-[10px] font-black uppercase tracking-wide"
+                >
+                    Close
+                </button>
+            </div>
+        </div>
     );
 }
+
+
 
 
