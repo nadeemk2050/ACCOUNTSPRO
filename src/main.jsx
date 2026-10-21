@@ -49,7 +49,7 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 });
 
-const APP_VERSION = 'V2.8.2'; // Update this string whenever you deploy a breaking change
+const APP_VERSION = 'V2.8.3'; // Update this string whenever you deploy a breaking change
 console.log(`ACCPRO Running Version: ${APP_VERSION}`);
 
 // ── Keep every open tab on the same build ───────────────────────────────────
