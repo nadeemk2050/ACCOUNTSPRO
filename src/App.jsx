@@ -782,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.0 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.1 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.0</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.1</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -861,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.0</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.1</div>
                 </div>
             </div>
         </Modal>
@@ -5981,7 +5981,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.0";
+    const SYSTEM_VERSION = "2.8.1";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -11395,7 +11395,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.0</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.1</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14384,7 +14384,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.0</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.1</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -17313,16 +17313,28 @@ const InvoiceModal = (props) => {
                     const field = isSales ? 'salesId' : 'purchaseId';
                     
                     const updateItemsAndBags = (loaded) => {
-                        // ðŸ›¡ï¸ GUARD: Never overwrite with empty when embedded bags were successfully loaded
-                        if (loaded.length === 0 && embeddedBags.length > 0) {
+                        // Merge with the invoice's embedded snapshot. The background query only ENRICHES
+                        // the bags (real ids/fields); it must never shrink the list. Firestore `in`
+                        // queries are capped at 30 values, which used to silently drop bags 31..N.
+                        const merged = [...(loaded || [])];
+                        const alreadyHave = (bag) => merged.some(m =>
+                            (bag.id && String(m.id) === String(bag.id)) ||
+                            (bag.bagNo && normalizeBagNoKey(m.bagNo) === normalizeBagNoKey(bag.bagNo))
+                        );
+                        embeddedBags.forEach(b => { if (!alreadyHave(b)) merged.push(b); });
+
+                        if (loaded.length < embeddedBags.length) {
+                            console.warn(`Bag query returned ${loaded.length} of ${embeddedBags.length} embedded bags — merged snapshot kept.`);
+                        }
+                        if (merged.length === 0) {
                             console.warn("Background bag query returned empty but embedded bags exist — keeping Phase 1 loaded bags.");
                             return;
                         }
-                        setJumboBags(loaded);
+                        setJumboBags(merged);
                         setJumboEnabled(true);
                         setItems(prevItems => {
                             return prevItems.map(item => {
-                                const rowBags = loaded.filter(b => b.productId === item.productId);
+                                const rowBags = merged.filter(b => b.productId === item.productId);
                                 return {
                                     ...item,
                                     selectedBags: rowBags
@@ -17342,18 +17354,21 @@ const InvoiceModal = (props) => {
                         if (loaded.length < embeddedBags.length && embeddedBags.length > 0) {
                             const bagNos = embeddedBags.map(b => b.bagNo).filter(Boolean);
                             if (bagNos.length > 0) {
-                                const qFallback = query(collection(db, 'jumbo_bags'), where('bagNo', 'in', bagNos.slice(0, 30)));
-                                getDocs(qFallback).then(snapFallback => {
-                                    const fallbackLoaded = snapFallback.docs.map(d => ({ id: d.id, ...d.data() }));
+                                // Firestore `in` accepts at most 30 values — query in chunks and merge ALL of them.
+                                const IN_LIMIT = 30;
+                                const chunks = [];
+                                for (let i = 0; i < bagNos.length; i += IN_LIMIT) chunks.push(bagNos.slice(i, i + IN_LIMIT));
+                                Promise.all(chunks.map(chunkNos =>
+                                    getDocs(query(collection(db, 'jumbo_bags'), where('bagNo', 'in', chunkNos))).catch(() => null)
+                                )).then(results => {
                                     const merged = [...loaded];
-                                    fallbackLoaded.forEach(fb => {
-                                        if (!merged.some(m => m.id === fb.id)) {
-                                            merged.push(fb);
-                                        }
-                                    });
+                                    results.forEach(snap => (snap?.docs || []).forEach(d => {
+                                        if (!merged.some(m => m.id === d.id)) merged.push({ id: d.id, ...d.data() });
+                                    }));
                                     updateItemsAndBags(merged);
                                 }).catch(err => {
                                     console.warn("Fallback bag query error (bags preserved from Phase 1):", err);
+                                    updateItemsAndBags(loaded);
                                 });
                                 return;
                             }
@@ -20510,6 +20525,15 @@ const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, i
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, initialSelectedKey]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isOpen, onClose]);
+
     if (!isOpen) return null;
 
     // Filter by targetProductId if provided (Row Mode), else show all
@@ -20541,93 +20565,161 @@ const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, i
 
     const totalSelectedQty = availableBags.filter(b => selectedIds.has(b.id)).reduce((s, b) => s + Number(b.qty), 0);
     const countSelected = selectedIds.size;
+    const allVisibleSelected = filtered.length > 0 && filtered.every(b => selectedIds.has(b.id));
+    const productNameFor = (id) => products.find(p => p.id === id)?.name || 'Unknown Item';
+    const targetName = targetProductId ? productNameFor(targetProductId) : '';
 
     return (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95">
-                <div className="p-4 bg-slate-800 text-white flex justify-between items-center">
-                    <div>
-                        <h2 className="text-xl font-black uppercase tracking-tight">Select Bags {targetProductId ? `for ${products.find(p => p.id === targetProductId)?.name}` : ''}</h2>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Only 'In Stock' bags are shown</p>
+        <div className="fixed inset-0 z-[1000] bg-slate-100 flex flex-col text-slate-900">
+            {/* FULL-BLEED HEADER */}
+            <div className="h-14 shrink-0 bg-[#0b1f33] text-white flex items-center gap-3 px-3 md:px-5">
+                <button
+                    onClick={onClose}
+                    className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors"
+                    title="Close (Esc)"
+                >
+                    <ArrowLeft size={18} />
+                </button>
+                <div className="min-w-0">
+                    <div className="text-sm font-black uppercase tracking-wide leading-none truncate">
+                        Select Bags{targetProductId ? ` — ${targetName}` : ''}
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full transition-colors"><X size={20} /></button>
-                </div>
-
-                <div className="p-4 bg-slate-100 border-b flex gap-4 items-center">
-                    <div className="flex-1 relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                        <input
-                            type="text"
-                            placeholder="Search available bags..."
-                            className="w-full pl-10 pr-4 py-2 border rounded-lg shadow-sm font-bold text-slate-700"
-                            value={searchTerm}
-                            onChange={e => setSearchTerm(e.target.value)}
-                            autoFocus
-                        />
-                    </div>
-                    <div className="flex gap-4">
-                        <div className="bg-white px-4 py-2 rounded-lg border shadow-sm flex flex-col items-center justify-center min-w-[80px]">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase">Count</span>
-                            <span className="text-lg font-black text-slate-800">{countSelected}</span>
-                        </div>
-                        <div className="bg-white px-4 py-2 rounded-lg border shadow-sm flex flex-col items-center justify-center min-w-[100px]">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase">Total Weight</span>
-                            <span className="text-lg font-black text-blue-600">{totalSelectedQty.toLocaleString()} kg</span>
-                        </div>
-                        <button
-                            onClick={handleConfirm}
-                            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold shadow-lg shadow-blue-200 active:scale-95 transition-all"
-                        >
-                            CONFIRM & FILL
-                        </button>
+                    <div className="text-[10px] text-white/50 font-bold uppercase tracking-widest mt-0.5">
+                        Only 'In Stock' bags · {filtered.length} available · {countSelected} selected
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-auto p-4">
-                    <table className="w-full text-left border-collapse">
-                        <thead className="bg-slate-50 sticky top-0 z-10">
-                            <tr className="text-[10px] uppercase font-black text-slate-500 border-b shadow-sm">
-                                <th className="p-3 w-10 text-center">
-                                    <input type="checkbox" onChange={e => {
-                                        if (e.target.checked) setSelectedIds(new Set(filtered.map(b => b.id)));
-                                        else setSelectedIds(new Set());
-                                    }} checked={filtered.length > 0 && selectedIds.size === filtered.length} />
-                                </th>
-                                <th className="p-3">Bag No.</th>
-                                {!targetProductId && <th className="p-3">Product</th>}
-                                <th className="p-3 text-right">Quantity</th>
-                                <th className="p-3">Date</th>
-                                <th className="p-3">Mfg Vch Ref</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {filtered.map(bag => (
-                                <tr
+                <div className="flex-1" />
+
+                <div className="relative hidden md:block w-72">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-white/40" size={13} />
+                    <input
+                        type="text"
+                        placeholder="Search bag no / product…"
+                        className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-white/10 border border-white/15 text-[11px] font-semibold text-white placeholder:text-white/40 focus:outline-none focus:border-emerald-400/60"
+                        value={searchTerm}
+                        onChange={e => setSearchTerm(e.target.value)}
+                        autoFocus
+                    />
+                </div>
+
+                <div className="hidden sm:flex items-center gap-2">
+                    <div className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 text-center min-w-[58px]">
+                        <div className="text-[9px] font-bold uppercase text-white/50 leading-none">Count</div>
+                        <div className="text-[13px] font-black leading-tight">{countSelected}</div>
+                    </div>
+                    <div className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 text-center min-w-[86px]">
+                        <div className="text-[9px] font-bold uppercase text-white/50 leading-none">Total Weight</div>
+                        <div className="text-[13px] font-black leading-tight text-emerald-300">{totalSelectedQty.toLocaleString()} kg</div>
+                    </div>
+                </div>
+
+                <button
+                    onClick={handleConfirm}
+                    className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3.5 py-2 rounded-lg text-[11px] font-black uppercase tracking-wide active:scale-95 transition-all whitespace-nowrap"
+                >
+                    Confirm &amp; Fill
+                </button>
+                <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors" title="Close (Esc)">
+                    <X size={18} />
+                </button>
+            </div>
+
+            {/* TOOLBAR */}
+            <div className="shrink-0 bg-white border-b border-slate-200 px-3 md:px-5 py-1.5 flex items-center gap-3">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                        type="checkbox"
+                        className="w-3.5 h-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        onChange={e => {
+                            if (e.target.checked) setSelectedIds(new Set(filtered.map(b => b.id)));
+                            else setSelectedIds(new Set());
+                        }}
+                        checked={allVisibleSelected}
+                    />
+                    <span className="text-[10px] font-black uppercase tracking-wide text-slate-600">Select all</span>
+                </label>
+                <div className="md:hidden relative flex-1 max-w-[240px]">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
+                    <input
+                        type="text"
+                        placeholder="Search bag no / product…"
+                        className="w-full pl-6 pr-2 py-1 rounded-md border border-slate-200 text-[10px] font-semibold text-slate-700 focus:outline-none focus:border-[#005994]"
+                        value={searchTerm}
+                        onChange={e => setSearchTerm(e.target.value)}
+                    />
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 ml-auto">
+                    Showing <b className="text-slate-700">{filtered.length}</b> of {availableBags.length} bag(s)
+                </span>
+            </div>
+
+            {/* DENSE MULTI-COLUMN LIST */}
+            <div className="flex-1 overflow-y-auto px-3 md:px-5 py-2">
+                {filtered.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center">
+                        <Package size={44} className="text-slate-300 mb-2" />
+                        <p className="text-slate-500 font-bold text-sm">No matching bags found</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Try a different search or clear the filter.</p>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-1.5">
+                        {filtered.map(bag => {
+                            const sel = selectedIds.has(bag.id);
+                            return (
+                                <button
+                                    type="button"
                                     key={bag.id}
                                     onClick={() => toggleBag(bag.id)}
-                                    className={`cursor-pointer transition-colors ${selectedIds.has(bag.id) ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                                    className={`text-left rounded-md border px-1.5 py-1 transition-colors ${sel
+                                        ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-500/40'
+                                        : 'border-slate-200 bg-white hover:border-[#005994]/40 hover:bg-blue-50/40'}`}
                                 >
-                                    <td className="p-3 text-center">
-                                        <input type="checkbox" checked={selectedIds.has(bag.id)} readOnly className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-                                    </td>
-                                    <td className="p-3 font-mono font-bold text-slate-700 text-lg">{bag.bagNo}</td>
-                                    {!targetProductId && <td className="p-3 text-xs font-semibold text-slate-600">
-                                        {products.find(p => p.id === bag.productId)?.name || 'Unknown Item'}
-                                    </td>}
-                                    <td className="p-3 text-right font-black text-slate-900 text-lg">{bag.qty} <span className="text-xs text-slate-400 font-normal">kg</span></td>
-                                    <td className="p-3 text-[10px] text-slate-400 font-bold">{bag.date}</td>
-                                    <td className="p-3 text-xs font-bold text-indigo-600 bg-indigo-50/30 rounded border border-indigo-100/50">{bag.stockJournalRefNo || bag.voucherRefNo || '-'}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    {filtered.length === 0 && (
-                        <div className="text-center py-20 bg-slate-50 rounded-xl mt-4 border-2 border-dashed border-slate-200">
-                            <Package size={48} className="mx-auto text-slate-300 mb-2" />
-                            <p className="text-slate-500 font-bold">No matching bags found</p>
-                        </div>
-                    )}
-                </div>
+                                    <div className="flex items-center justify-between gap-1">
+                                        <span className="flex items-center gap-1 min-w-0">
+                                            <span className={`w-3 h-3 rounded-sm border flex items-center justify-center shrink-0 ${sel ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-300 bg-white'}`}>
+                                                {sel && <Check size={8} strokeWidth={4} />}
+                                            </span>
+                                            <span className="font-mono font-black text-[10px] text-slate-800 truncate">{bag.bagNo}</span>
+                                        </span>
+                                        <span className="font-mono font-black text-[10px] text-emerald-700 shrink-0">
+                                            {Number(bag.qty).toLocaleString()}<span className="text-[9px] font-bold text-slate-400">kg</span>
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-1 mt-0.5 text-[10px]">
+                                        {!targetProductId && (
+                                            <span className="font-semibold text-slate-500 truncate">{productNameFor(bag.productId)}</span>
+                                        )}
+                                        <span className="flex items-center gap-1 shrink-0 font-bold">
+                                            <span className="text-slate-400">{bag.date}</span>
+                                            <span className="text-indigo-600 truncate max-w-[90px]">{bag.stockJournalRefNo || bag.voucherRefNo || '-'}</span>
+                                        </span>
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+
+            {/* FOOTER SUMMARY */}
+            <div className="shrink-0 bg-white border-t border-slate-200 px-3 md:px-5 py-1.5 flex items-center gap-3">
+                <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">
+                    {countSelected} selected · {totalSelectedQty.toLocaleString()} kg
+                </span>
+                <div className="flex-1" />
+                <button
+                    onClick={onClose}
+                    className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-[10px] font-black uppercase tracking-wide"
+                >
+                    Cancel
+                </button>
+                <button
+                    onClick={handleConfirm}
+                    className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-black uppercase tracking-wide active:scale-95 transition-all"
+                >
+                    Confirm &amp; Fill
+                </button>
             </div>
         </div>
     );
