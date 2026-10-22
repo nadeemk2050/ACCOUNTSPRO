@@ -782,7 +782,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.4 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.5 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.4</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.5</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -861,7 +861,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.4</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.5</div>
                 </div>
             </div>
         </Modal>
@@ -4451,37 +4451,48 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     };
 
     if (loading) return (
-        <div className="fixed inset-0 z-[1000] bg-[#e9f5e1] flex items-center justify-center">
-            <div className="text-[#2d5e46] font-mono text-xl animate-pulse">LOADING TALLY.MASTER...</div>
+        <div className="fixed inset-0 z-[1000] bg-[#0a0f1e] flex items-center justify-center overflow-hidden">
+            <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'linear-gradient(#4ade80 1px, transparent 1px), linear-gradient(90deg, #4ade80 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+            <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
+            <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/5 blur-[120px] rounded-full" />
+            <div className="relative z-10 flex flex-col items-center gap-4">
+                <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.25em]">ACCPRO</span>
+                    <span className="text-white font-black text-lg tracking-tight">Enterprise <span className="text-blue-500">Suite</span></span>
+                </div>
+                <div className="text-[13px] md:text-[15px] font-black font-mono text-emerald-400 animate-pulse uppercase tracking-[0.25em]">OPENING DATA CENTRE ACCPRO</div>
+                <div className="w-56 h-[3px] bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full w-1/3 bg-emerald-500 animate-pulse rounded-full" />
+                </div>
+            </div>
         </div>
     );
 
-    const MenuButton = ({ label, icon: Icon, shortcut, onClick, danger = false }) => (
+    const MenuButton = ({ label, icon: Icon, shortcut, onClick, danger = false, hint, fill = false }) => (
         <button
             onClick={onClick}
-            className={`w-full group relative flex items-center gap-4 px-6 py-4 rounded-xl transition-all duration-300 ${
-                danger 
-                ? 'hover:bg-red-500/10 border border-transparent hover:border-red-500/20' 
-                : 'hover:bg-blue-600/10 border border-transparent hover:border-blue-500/20'
+            className={`w-full group relative flex items-center gap-4 px-5 md:px-8 py-4 md:py-5 text-left border-b border-white/5 transition-colors ${fill ? 'flex-1' : ''} ${
+                danger ? 'hover:bg-red-500/10' : 'hover:bg-blue-600/10'
             }`}
         >
-            <div className={`p-2.5 rounded-lg transition-colors ${
-                danger ? 'bg-red-500/10 text-red-400' : 'bg-blue-500/10 text-blue-400'
-            } group-hover:bg-opacity-20`}>
+            <div className={`p-2.5 md:p-3 rounded-lg transition-colors ${
+                danger ? 'bg-red-500/10 text-red-400' : 'bg-white/5 text-blue-400 group-hover:bg-blue-600/20'
+            }`}>
                 {Icon && <Icon size={20} />}
             </div>
-            <div className="flex flex-col items-start">
-                <span className={`text-sm font-bold uppercase tracking-widest ${danger ? 'text-red-300' : 'text-slate-200'}`}>
+            <div className="flex flex-col items-start min-w-0">
+                <span className={`text-[14px] md:text-[15px] font-black uppercase tracking-wide ${danger ? 'text-red-300' : 'text-white'}`}>
                     {label}
                 </span>
-                {shortcut && (
-                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-tighter mt-0.5">
-                        Press <span className="text-blue-400/80">[{shortcut}]</span>
-                    </span>
-                )}
+                <span className="text-[10px] md:text-[11px] font-bold text-slate-500 uppercase tracking-widest mt-0.5">
+                    {hint || (shortcut ? `Press [${shortcut}]` : '')}
+                </span>
             </div>
-            <div className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
-                <ChevronRight size={16} className={danger ? 'text-red-400' : 'text-blue-400'} />
+            <div className="ml-auto flex items-center gap-3 shrink-0">
+                {shortcut && (
+                    <span className="hidden md:inline text-[11px] font-black text-slate-500 uppercase tracking-widest">[{shortcut}]</span>
+                )}
+                <ChevronRight size={18} className="text-slate-600 group-hover:text-blue-400 group-hover:translate-x-0.5 transition-all" />
             </div>
         </button>
     );
@@ -4527,71 +4538,82 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
             </div>
 
             {/* MAIN CONTENT AREA */}
-            <div className="flex-1 flex overflow-hidden relative z-10 items-center justify-center p-4">
+            <div className="flex-1 overflow-hidden relative z-10">
 
                     {view === 'menu' && (
-                        <div className="w-full max-w-sm">
-                            <div className="bg-slate-900/60 backdrop-blur-xl border border-white/10 shadow-2xl rounded-[32px] p-8 space-y-6">
-                                
-                                {/* License Identity Banner */}
-                                {myEmail && (
-                                    <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-blue-500/5 border border-blue-500/15">
-                                        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-black text-sm flex-shrink-0">
-                                            {(license?.userName || myEmail || '?')[0].toUpperCase()}
-                                        </div>
-                                        <div className="flex flex-col min-w-0">
-                                            <span className="text-[11px] font-black text-white/90 truncate normal-case">
-                                                {license?.userName || 'Licensed User'}
-                                            </span>
-                                            <span className="text-[9px] font-mono text-blue-400/70 truncate lowercase">
-                                                {myEmail}
-                                            </span>
-                                        </div>
-                                        <div className="ml-auto text-[8px] font-black text-green-400/70 uppercase tracking-wider bg-green-500/10 px-1.5 py-0.5 rounded border border-green-500/20 flex-shrink-0">
-                                            {mySerial || 'Licensed'}
-                                        </div>
-                                    </div>
-                                )}
+                        <div className="absolute inset-0 z-20 flex flex-col overflow-hidden animated-in fade-in">
 
-                                <div className="space-y-2">
-                                    <MenuButton 
-                                        icon={Briefcase} 
-                                        shortcut="S" 
-                                        label={`Select Company (${companies.length})`} 
-                                        onClick={() => setView('select')} 
-                                    />
-                                    <MenuButton 
-                                        icon={UploadCloud} 
-                                        shortcut="D" 
-                                        label={`Live Cloud Data (${filteredLive.length})`} 
-                                        onClick={() => setView('live')} 
-                                    />
-                                    <MenuButton 
-                                        icon={Plus} 
-                                        shortcut="C" 
-                                        label="Create Company" 
-                                        onClick={() => setView('create')} 
-                                    />
+                            {/* License Identity Strip (full width) */}
+                            {myEmail && (
+                                <div className="shrink-0 flex items-center gap-3 bg-[#0b1220] border-b border-white/10 px-4 md:px-8 py-3">
+                                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-black text-sm flex-shrink-0">
+                                        {(license?.userName || myEmail || '?')[0].toUpperCase()}
+                                    </div>
+                                    <div className="flex flex-col min-w-0">
+                                        <span className="text-[12px] font-black text-white/90 truncate normal-case">
+                                            {license?.userName || 'Licensed User'}
+                                        </span>
+                                        <span className="text-[10px] font-mono text-blue-400/70 truncate lowercase">
+                                            {myEmail}
+                                        </span>
+                                    </div>
+                                    <div className="ml-auto text-[9px] font-black text-green-400/70 uppercase tracking-wider bg-green-500/10 px-2 py-1 rounded border border-green-500/20 flex-shrink-0">
+                                        {mySerial || 'Licensed'}
+                                    </div>
                                 </div>
+                            )}
+
+                            {/* Three full-width selectable sections (Registers-Dashboard style) */}
+                            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar">
+                                <MenuButton
+                                    fill
+                                    icon={Briefcase}
+                                    shortcut="S"
+                                    hint={`${companies.length} Compan${companies.length === 1 ? 'y' : 'ies'} On This Device`}
+                                    label="Select Company"
+                                    onClick={() => setView('select')}
+                                />
+                                <MenuButton
+                                    fill
+                                    icon={UploadCloud}
+                                    shortcut="D"
+                                    hint={`${filteredLive.length} Compan${filteredLive.length === 1 ? 'y' : 'ies'} On Cloud`}
+                                    label="Live Cloud Data"
+                                    onClick={() => setView('live')}
+                                />
+                                <MenuButton
+                                    fill
+                                    icon={Plus}
+                                    shortcut="C"
+                                    hint="Initialize A New Local Company"
+                                    label="Create Company"
+                                    onClick={() => setView('create')}
+                                />
+                            </div>
+
+                            {/* Status bar */}
+                            <div className="shrink-0 flex items-center justify-between bg-[#0b1220] border-t border-white/10 px-4 md:px-8 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                                <span>Data Centre Ready</span>
+                                <span>{companies.length} Local · {filteredLive.length} Cloud</span>
                             </div>
                         </div>
                     )}
 
 
                     {view === 'select' && (
-                        <div className="absolute inset-0 z-20 flex items-center justify-center p-2 md:p-16 animated-in fade-in zoom-in-95">
-                            <div className="w-full max-w-5xl bg-[#0f172a] border border-white/10 rounded-2xl md:rounded-[40px] shadow-[0_32px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col h-full max-h-[95vh] md:max-h-[700px]">
-                                <div className="bg-white/5 px-4 md:px-8 py-3 md:py-6 flex justify-between items-center border-b border-white/5">
+                        <div className="absolute inset-0 z-20 flex flex-col overflow-hidden animated-in fade-in">
+                            <div className="w-full h-full bg-[#0f172a] overflow-hidden flex flex-col">
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-3 flex justify-between items-center border-b border-white/10 shrink-0">
                                     <div className="flex items-center gap-3 md:gap-4">
-                                        <div className="p-2 md:p-3 bg-blue-500/10 rounded-xl md:rounded-2xl text-blue-400">
-                                            <Briefcase size={isMobileDevice ? 18 : 24} />
+                                        <div className="p-2 md:p-3 bg-white/5 rounded-lg text-blue-400">
+                                            <Briefcase size={isMobileDevice ? 18 : 22} />
                                         </div>
                                         <div>
-                                            <h2 className="text-white font-black text-lg md:text-2xl tracking-tight uppercase">Select Company</h2>
+                                            <h2 className="text-white font-black text-[14px] md:text-[16px] tracking-wide uppercase">Select Company</h2>
                                             <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-[8px] md:text-[10px] text-slate-500 font-bold uppercase tracking-widest leading-none">Local Repository</span>
+                                                <span className="text-[10px] md:text-[11px] text-slate-500 font-bold uppercase tracking-widest leading-none">Local Repository</span>
                                                 <span className="w-0.5 h-0.5 rounded-full bg-slate-700"></span>
-                                                <span className="text-[8px] md:text-[10px] text-blue-400 font-mono tracking-tighter">C:\accpro\DATA</span>
+                                                <span className="text-[10px] md:text-[11px] text-blue-400 font-mono tracking-tight">C:\accpro\DATA</span>
                                             </div>
                                         </div>
                                     </div>
@@ -4692,14 +4714,14 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                     </div>
                                 )}
 
-                                <div className="flex-1 overflow-y-auto p-2 md:p-4 custom-scrollbar">
-                                    <table className="w-full text-left border-separate border-spacing-y-1.5 font-sans table-auto md:table-fixed">
-                                        <thead className="sticky top-0 bg-[#0f172a] z-10">
-                                            <tr className="text-[8px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                                <th className="px-4 md:px-6 py-2 md:py-4 md:w-[60%]">Company Profile</th>
-                                                <th className="hidden md:table-cell px-6 py-4 text-center md:w-[15%]">System ID</th>
-                                                <th className="hidden md:table-cell px-6 py-4 text-right md:w-[15%]">Financial Period</th>
-                                                <th className="px-4 md:px-6 py-2 md:py-4 text-center w-24 md:w-32">Control</th>
+                                <div className="flex-1 overflow-y-auto px-0 custom-scrollbar">
+                                    <table className="w-full text-left border-collapse font-sans table-auto md:table-fixed">
+                                        <thead className="sticky top-0 bg-[#0b1220] z-10">
+                                            <tr className="text-[10px] md:text-[11px] font-black text-slate-500 uppercase tracking-widest border-b border-white/10">
+                                                <th className="px-4 md:px-8 py-3 md:w-[60%]">Company Profile</th>
+                                                <th className="hidden md:table-cell px-6 py-3 text-center md:w-[15%]">System ID</th>
+                                                <th className="hidden md:table-cell px-6 py-3 text-right md:w-[15%]">Financial Period</th>
+                                                <th className="px-4 md:px-8 py-3 text-center w-24 md:w-32">Control</th>
                                             </tr>
                                         </thead>
                                         <tbody className="px-4">
@@ -4725,34 +4747,34 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                         onClick={() => onSelect(co.id)}
                                                         className="group cursor-pointer"
                                                     >
-                                                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-4 md:px-6 py-3 md:py-5 rounded-l-2xl md:rounded-l-[24px] transition-all border-y border-l border-white/5 group-hover:border-blue-500/20">
+                                                        <td className="px-4 md:px-8 py-3 md:py-4 group-hover:bg-blue-600/10 transition-colors border-b border-white/5">
                                                             <div className="flex flex-col gap-0.5 md:gap-1">
                                                                 <div className="flex items-center gap-2 md:gap-3">
-                                                                    <span className="text-white font-black text-sm md:text-lg tracking-tight group-hover:text-blue-200 transition-colors uppercase truncate max-w-[150px] md:max-w-none">
+                                                                    <span className="text-white font-black text-[14px] md:text-[15px] tracking-tight group-hover:text-blue-200 transition-colors uppercase truncate max-w-[150px] md:max-w-none">
                                                                         {co.name}
                                                                     </span>
                                                                     {co.settings?.isLive && (
-                                                                        <span className="bg-emerald-500/10 text-emerald-400 text-[8px] md:text-[9px] px-1.5 py-0.5 rounded-full font-black flex items-center gap-1 border border-emerald-500/20 animate-pulse">
+                                                                        <span className="bg-emerald-500/10 text-emerald-400 text-[9px] md:text-[10px] px-1.5 py-0.5 rounded-full font-black flex items-center gap-1 border border-emerald-500/20 animate-pulse">
                                                                             <UploadCloud size={8} className="md:w-3 md:h-3" /> LIVE
                                                                         </span>
                                                                     )}
                                                                 </div>
                                                                 <div className="md:hidden flex items-center gap-1.5">
-                                                                    <span className="font-mono text-[9px] text-slate-500 group-hover:text-blue-300">#{10000 + idx}</span>
-                                                                    <span className="text-[9px] font-bold text-slate-500 group-hover:text-blue-200 uppercase tracking-tighter">Apr 24 - Mar 25</span>
+                                                                    <span className="font-mono text-[10px] text-slate-500 group-hover:text-blue-300">#{10000 + idx}</span>
+                                                                    <span className="text-[10px] font-bold text-slate-500 group-hover:text-blue-200 uppercase tracking-tight">Apr 24 - Mar 25</span>
                                                                 </div>
                                                                 <div className="scale-90 md:scale-100 origin-left">
                                                                     <CompanyStatsSummary stats={co.stats} />
                                                                 </div>
                                                             </div>
                                                         </td>
-                                                        <td className="hidden md:table-cell bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-blue-500/20 text-center">
-                                                            <span className="font-mono text-[11px] text-slate-500 group-hover:text-blue-300">#{10000 + idx}</span>
+                                                        <td className="hidden md:table-cell px-6 py-4 group-hover:bg-blue-600/10 transition-colors border-b border-white/5 text-center">
+                                                            <span className="font-mono text-[12px] text-slate-500 group-hover:text-blue-300">#{10000 + idx}</span>
                                                         </td>
-                                                        <td className="hidden md:table-cell bg-white/5 group-hover:bg-blue-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-blue-500/20 text-right">
-                                                            <span className="text-[11px] font-bold text-slate-400 group-hover:text-blue-200 uppercase tracking-tighter">Apr 24 - Mar 25</span>
+                                                        <td className="hidden md:table-cell px-6 py-4 group-hover:bg-blue-600/10 transition-colors border-b border-white/5 text-right">
+                                                            <span className="text-[12px] font-bold text-slate-400 group-hover:text-blue-200 uppercase tracking-tight">Apr 24 - Mar 25</span>
                                                         </td>
-                                                        <td className="bg-white/5 group-hover:bg-blue-600/10 px-4 md:px-6 py-3 md:py-5 rounded-r-2xl md:rounded-r-[24px] transition-all border-y border-r border-white/5 group-hover:border-blue-500/20 text-center">
+                                                        <td className="px-4 md:px-8 py-3 md:py-4 group-hover:bg-blue-600/10 transition-colors border-b border-white/5 text-center">
                                                         <div className="flex items-center justify-center gap-1.5 md:gap-2">
                                                                 {!co.settings?.isLive && (
                                                                     <button
@@ -4795,7 +4817,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                         </tbody>
                                     </table>
                                 </div>
-                                <div className="bg-white/5 px-8 py-4 border-t border-white/5 text-slate-500 text-[10px] uppercase font-bold tracking-widest flex justify-between">
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-2 border-t border-white/10 text-slate-500 text-[10px] uppercase font-bold tracking-widest flex justify-between shrink-0">
                                     <span>Press ESC To Exit</span>
                                     <span>{companies.length} Companies Active</span>
                                 </div>
@@ -4805,18 +4827,18 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
                     {/* ✅ LIVE DATAS VIEW (MODERN) */}
                     {view === 'live' && (
-                        <div className="absolute inset-0 z-20 flex items-center justify-center p-8 md:p-16 animated-in fade-in zoom-in-95">
-                            <div className="w-full max-w-5xl bg-[#0f172a] border border-white/10 rounded-[40px] shadow-[0_32px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col h-full max-h-[700px]">
-                                <div className="bg-white/5 px-8 py-6 flex justify-between items-center border-b border-white/5">
-                                    <div className="flex items-center gap-4">
-                                        <div className="p-3 bg-emerald-500/10 rounded-2xl text-emerald-400">
+                        <div className="absolute inset-0 z-20 flex flex-col overflow-hidden animated-in fade-in">
+                            <div className="w-full h-full bg-[#0f172a] overflow-hidden flex flex-col">
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-3 flex justify-between items-center border-b border-white/10 shrink-0">
+                                    <div className="flex items-center gap-3 md:gap-4">
+                                        <div className="p-2 md:p-3 bg-white/5 rounded-lg text-emerald-400">
                                             <div className="relative">
-                                                <UploadCloud size={24} />
-                                                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-[#0f172a] animate-pulse"></span>
+                                                <UploadCloud size={isMobileDevice ? 18 : 22} />
+                                                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-[#0b1220] animate-pulse"></span>
                                             </div>
                                         </div>
                                         <div>
-                                            <h2 className="text-white font-black text-2xl tracking-tight uppercase tracking-tight">Cloud Registry</h2>
+                                            <h2 className="text-white font-black text-[14px] md:text-[16px] tracking-wide uppercase">Cloud Registry</h2>
                                             <div className="flex items-center gap-3 mt-0.5">
                                                 <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Real-time Live Sync</span>
                                                 {(myEmail || mySerial) && (
@@ -4889,13 +4911,13 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                     </div>
                                 )}
 
-                                <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                                    <table className="w-full text-left border-separate border-spacing-y-2 font-sans">
-                                        <thead className="sticky top-0 bg-[#0f172a] z-10 px-4">
-                                            <tr className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                                <th className="px-6 py-4">Cloud Asset / Ownership</th>
-                                                <th className="px-6 py-4 text-center">Cloud Status</th>
-                                                <th className="px-6 py-4 text-center w-36">Deployment</th>
+                                <div className="flex-1 overflow-y-auto px-0 custom-scrollbar">
+                                    <table className="w-full text-left border-collapse font-sans">
+                                        <thead className="sticky top-0 bg-[#0b1220] z-10">
+                                            <tr className="text-[10px] md:text-[11px] font-black text-slate-500 uppercase tracking-widest border-b border-white/10">
+                                                <th className="px-4 md:px-8 py-3">Cloud Asset / Ownership</th>
+                                                <th className="px-6 py-3 text-center">Cloud Status</th>
+                                                <th className="px-4 md:px-8 py-3 text-center w-36">Deployment</th>
                                             </tr>
                                         </thead>
                                         <tbody className="px-4">
@@ -4919,10 +4941,10 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                             onClick={() => isLocal && !isDownloading && onSelect(liveCo.id)}
                                                             className={`group transition-all ${isLocal && !isDownloading ? 'cursor-pointer' : 'cursor-default'}`}
                                                         >
-                                                            <td className="bg-white/5 group-hover:bg-emerald-600/10 px-6 py-5 rounded-l-[24px] transition-all border-y border-l border-white/5 group-hover:border-emerald-500/20">
+                                                            <td className="px-4 md:px-8 py-3 md:py-4 group-hover:bg-emerald-600/10 transition-colors border-b border-white/5">
                                                                 <div className="flex flex-col gap-1">
                                                                     <div className="flex items-center gap-3">
-                                                                        <span className="text-white font-black text-lg tracking-tight group-hover:text-emerald-200 uppercase">
+                                                                        <span className="text-white font-black text-[14px] md:text-[15px] tracking-tight group-hover:text-emerald-200 uppercase">
                                                                             {liveCo.name}
                                                                         </span>
                                                                         <div className="flex gap-2">
@@ -4953,7 +4975,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                                     <CompanyStatsSummary stats={liveCo.stats} />
                                                                 </div>
                                                             </td>
-                                                            <td className="bg-white/5 group-hover:bg-emerald-600/10 px-6 py-5 transition-all border-y border-white/5 group-hover:border-emerald-500/20 text-center">
+                                                            <td className="px-6 py-3 md:py-4 group-hover:bg-emerald-600/10 transition-colors border-b border-white/5 text-center">
                                                                 {isLocal ? (
                                                                     <span className="inline-flex items-center gap-2 bg-emerald-500/10 text-emerald-400 text-[9px] font-black px-3 py-1.5 rounded-full uppercase border border-emerald-500/20">
                                                                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
@@ -4966,7 +4988,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                                     </span>
                                                                 )}
                                                             </td>
-                                                            <td className="bg-white/5 group-hover:bg-emerald-600/10 px-6 py-5 rounded-r-[24px] transition-all border-y border-r border-white/5 group-hover:border-emerald-500/20 text-center">
+                                                            <td className="px-4 md:px-8 py-3 md:py-4 group-hover:bg-emerald-600/10 transition-colors border-b border-white/5 text-center">
                                                                 {isLocal ? (
                                                                     <button
                                                                         onClick={(e) => { e.stopPropagation(); onSelect(liveCo.id); }}
@@ -4993,7 +5015,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                         </tbody>
                                     </table>
                                 </div>
-                                <div className="bg-white/5 px-8 py-4 border-t border-white/5 text-slate-500 text-[10px] uppercase font-bold tracking-widest flex justify-between">
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-2 border-t border-white/10 text-slate-500 text-[10px] uppercase font-bold tracking-widest flex justify-between shrink-0">
                                     <span>Cloud Secure Protocol Active</span>
                                     <span>{filteredLive.length} Records In Buffer</span>
                                 </div>
@@ -5076,36 +5098,36 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
                     {/* ✅ CREATE COMPANY FORM VIEW (MODERN) */}
                     {view === 'create' && (
-                        <div className="absolute inset-0 z-20 flex items-center justify-center p-8 md:p-16 animated-in fade-in zoom-in-95">
+                        <div className="absolute inset-0 z-20 flex flex-col overflow-hidden animated-in fade-in">
                             <form 
                                 onSubmit={handleCreate} 
-                                className="w-full max-w-xl bg-[#0f172a] border border-white/10 rounded-[40px] shadow-[0_32px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col"
+                                className="w-full h-full bg-[#0f172a] overflow-hidden flex flex-col"
                             >
-                                <div className="bg-white/5 px-8 py-6 flex justify-between items-center border-b border-white/5">
-                                    <div className="flex items-center gap-4">
-                                        <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-400">
-                                            <Plus size={24} />
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-3 flex justify-between items-center border-b border-white/10 shrink-0">
+                                    <div className="flex items-center gap-3 md:gap-4">
+                                        <div className="p-2 md:p-3 bg-white/5 rounded-lg text-blue-400">
+                                            <Plus size={isMobileDevice ? 18 : 22} />
                                         </div>
                                         <div>
-                                            <h2 className="text-white font-black text-2xl tracking-tight uppercase">Create Company</h2>
+                                            <h2 className="text-white font-black text-[14px] md:text-[16px] tracking-wide uppercase">Create Company</h2>
                                             <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Initialization Wizard</span>
+                                                <span className="text-[10px] md:text-[11px] text-slate-500 font-bold uppercase tracking-widest">Initialization Wizard</span>
                                             </div>
                                         </div>
                                     </div>
                                     <button 
                                         type="button"
                                         onClick={() => setView('menu')}
-                                        className="p-3 hover:bg-white/5 rounded-2xl text-slate-400 hover:text-white transition-colors"
+                                        className="p-2 md:p-3 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-colors"
                                     >
-                                        <X size={24} />
+                                        <X size={20} className="md:w-6 md:h-6" />
                                     </button>
                                 </div>
 
-                                <div className="p-8 space-y-8">
-                                    <div className="bg-white/5 rounded-3xl p-6 border border-white/5 space-y-6">
+                                <div className="flex-1 overflow-y-auto px-4 md:px-8 py-5 space-y-5 custom-scrollbar">
+                                    <div className="bg-[#111a2b] rounded-lg p-4 md:p-6 border border-white/10 space-y-6">
                                         <div className="flex flex-col gap-2">
-                                            <label className="text-[10px] font-black text-blue-400 uppercase tracking-widest ml-1">Company Identity</label>
+                                            <label className="text-[11px] font-black text-blue-400 uppercase tracking-widest">Company Identity</label>
                                             <input
                                                 autoFocus
                                                 required
@@ -5113,49 +5135,49 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                 placeholder="ENTER COMPANY NAME"
                                                 value={newCompanyName}
                                                 onChange={e => setNewCompanyName(e.target.value)}
-                                                className="w-full bg-[#1e293b] border border-white/10 px-6 py-4 rounded-2xl font-black text-white text-lg tracking-tight outline-none focus:ring-4 ring-blue-500/20 focus:border-blue-500/40 transition-all placeholder:text-slate-600 uppercase"
+                                                className="w-full bg-[#1e293b] border border-white/10 px-4 md:px-5 py-3 rounded-lg font-black text-white text-[14px] md:text-[15px] tracking-tight outline-none focus:ring-2 ring-blue-500/20 focus:border-blue-500/40 transition-all placeholder:text-slate-600 uppercase"
                                             />
                                         </div>
 
-                                        <div className="grid grid-cols-2 gap-4 opacity-50 pointer-events-none">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-60 pointer-events-none">
                                             <div className="flex flex-col gap-1.5">
-                                                <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest ml-1">Mailing Name</label>
-                                                <div className="bg-white/5 px-4 py-2.5 rounded-xl text-slate-400 text-xs font-bold uppercase">{newCompanyName || '—'}</div>
+                                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Mailing Name</label>
+                                                <div className="bg-white/5 px-3 py-2 rounded-md text-slate-400 text-[12px] font-bold uppercase">{newCompanyName || '—'}</div>
                                             </div>
                                             <div className="flex flex-col gap-1.5">
-                                                <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest ml-1">Data Storage</label>
-                                                <div className="bg-white/5 px-4 py-2.5 rounded-xl text-slate-400 text-xs font-mono lowercase">C:\accpro\DATA</div>
+                                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Data Storage</label>
+                                                <div className="bg-white/5 px-3 py-2 rounded-md text-slate-400 text-[12px] font-mono lowercase">C:\accpro\DATA</div>
                                             </div>
                                         </div>
                                     </div>
 
-                                    <div className="flex items-center gap-4 p-4 bg-blue-500/5 rounded-2xl border border-blue-500/10">
-                                        <div className="p-2 bg-blue-400/10 rounded-lg text-blue-400">
+                                    <div className="flex items-center gap-3 p-3 md:p-4 bg-blue-500/5 rounded-lg border border-blue-500/10">
+                                        <div className="p-2 bg-blue-400/10 rounded-md text-blue-400">
                                             <Activity size={16} />
                                         </div>
-                                        <p className="text-[11px] text-slate-400 font-medium leading-relaxed">
+                                        <p className="text-[12px] text-slate-400 font-medium leading-relaxed">
                                             This company will be created locally on your PC. You can choose to <span className="text-blue-400 font-bold uppercase">"Make Live"</span> later to enable cloud synchronization.
                                         </p>
                                     </div>
                                 </div>
 
-                                <div className="bg-white/5 px-8 py-6 border-t border-white/5 flex items-center justify-between">
-                                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-3 border-t border-white/10 flex items-center justify-between shrink-0">
+                                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
                                         <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
                                         Secure Init Sequence
                                     </span>
-                                    <div className="flex gap-4">
+                                    <div className="flex gap-3">
                                         <button
                                             type="button"
                                             onClick={() => setView('menu')}
-                                            className="px-8 py-3 rounded-2xl text-slate-400 font-black text-xs uppercase hover:text-white transition-colors"
+                                            className="px-5 py-2 rounded-lg text-slate-400 font-black text-[11px] uppercase hover:text-white transition-colors"
                                         >
                                             Discard
                                         </button>
                                         <button
                                             disabled={creating || !newCompanyName.trim()}
                                             type="submit"
-                                            className="bg-blue-600 hover:bg-blue-500 text-white px-10 py-3 rounded-2xl font-black text-xs uppercase transition-all shadow-[0_12px_24px_rgba(37,99,235,0.3)] disabled:opacity-50 disabled:shadow-none flex items-center gap-2"
+                                            className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-black text-[11px] uppercase transition-all disabled:opacity-50 flex items-center gap-2"
                                         >
                                             {creating ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
                                             Create Company
@@ -5987,7 +6009,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.4";
+    const SYSTEM_VERSION = "2.8.5";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -7506,8 +7528,8 @@ export default function App() {
         const target = id === 'sales_v2' ? 'sales'
             : id === 'purchase_v2' ? 'purchase'
                 : id === 'payment_v2' ? 'payment'
-                    : id === 'receipt_v2' ? 'payment'      // Receipt uses payment modal too with in/out
-                        : id === 'contra_v2' ? 'payment'   // Contra uses payment modal
+                    : id === 'receipt_v2' ? 'receipt'      // Receipt = payment modal in 'in' mode
+                        : id === 'contra_v2' ? 'contra'    // Contra  = payment modal in 'contra' mode
                             : id === 'journal_v2' ? 'journal'
                                 : id === 'manufacturing_v2' ? 'stock_journal'
                                     : null;
@@ -11461,7 +11483,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.4</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.5</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -11753,7 +11775,7 @@ export default function App() {
                                 <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-1">Masters</div>
                                     {/* Create / Alter Masters moved to Management Hub -> Data (also on the M key). */}
                                     <MenuButton
-                                        label="Chart of Masters"
+                                        label="Manage Chart of Masters"
                                         shortcut="C"
                                         onClick={() => {
                                             setActiveModal('chart_of_masters');
@@ -14450,7 +14472,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.4</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.5</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -27552,7 +27574,7 @@ const PaymentModal = (props) => {
             setSplits([{ id: Date.now(), category: t === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
             setIsRefNoUnlocked(false);
         }
-    }, [isOpen]); // Only run on modal open/close to prevent state resets during edit
+    }, [isOpen, defaultType]); // Re-runs on open AND when opened as Payment / Receipt / Contra // Only run on modal open/close to prevent state resets during edit
 
     // Split Lines Logic
     const addLine = () => setSplits([...splits, { id: Date.now(), category: type === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);

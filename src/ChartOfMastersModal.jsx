@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight, Pencil, Trash2, Check, ArrowRightLeft, Loader2 } from 'lucide-react';
+import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight, Pencil, Trash2, Check, ArrowRightLeft, Loader2, ArrowUpAZ, ArrowDownZA } from 'lucide-react';
 import BankDetailsEditor from './BankDetailsEditor';
 import { db } from './firebase';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -62,6 +62,12 @@ const ChartOfMastersModal = ({
     const [isDetailedView, setIsDetailedView] = useState(false);
     const [expandedGroups, setExpandedGroups] = useState(new Set());
     const [loadingLogs, setLoadingLogs] = useState(false);
+
+    // "List of All Masters" — one flat list of every master in every type,
+    // with its own power filter (name / type / group) and A→Z sorting.
+    const [allMastersSearch, setAllMastersSearch] = useState('');
+    const [allMastersSort, setAllMastersSort] = useState('asc'); // 'asc' | 'desc'
+    const [allMastersType, setAllMastersType] = useState('ALL'); // type filter chip
 
     useEffect(() => {
         setExpandedGroups(new Set());
@@ -509,7 +515,9 @@ const ChartOfMastersModal = ({
         { id: 'LOCATIONS', label: 'Locations', data: locations, collectionName: 'locations', hasGroups: false },
         { id: 'TAX_RATES', label: 'Tax Rates', data: taxRates, collectionName: 'tax_rates', hasGroups: false },
         { id: 'STAFF', label: 'Staff', data: staff, collectionName: 'staff', hasGroups: false },
-        { id: 'UNITS', label: 'Units', data: units, collectionName: 'units', hasGroups: false }
+        { id: 'UNITS', label: 'Units', data: units, collectionName: 'units', hasGroups: false },
+        // Aggregate view (not a collection of its own)
+        { id: 'ALL_MASTERS', label: 'List Of All Masters', data: [], collectionName: null, hasGroups: false, isAllList: true }
     ];
 
     const currentTab = useMemo(() => tabs.find(t => t.id === activeTab), [activeTab]);
@@ -713,6 +721,63 @@ const ChartOfMastersModal = ({
         });
         return sum;
     }, [groupedMap]);
+
+    // ── LIST OF ALL MASTERS ───────────────────────────────────────────────────
+    // Flattens every tab into ONE list: master name + its type + its group name.
+    const allMastersList = useMemo(() => {
+        const rows = [];
+        const sourceTabs = tabs.filter(t => !t.isAllList);
+        for (const tab of sourceTabs) {
+            for (const item of (tab.data || [])) {
+                let groupName = 'Primary';
+                if (tab.id === 'CASH_BANK') {
+                    groupName = item.type === 'bank' ? 'Cash/Bank' : (item.type ? String(item.type).toUpperCase() : 'Primary');
+                } else if (item.group) {
+                    groupName = item.group;
+                }
+                rows.push({
+                    key: `${tab.id}::${item.id}`,
+                    id: item.id,
+                    name: item.name || '(Unnamed)',
+                    typeId: tab.id,
+                    typeLabel: tab.label,
+                    groupName,
+                    balance: Number(item.balance || item.openingBalance || 0)
+                });
+            }
+        }
+        return rows;
+    }, [products, lots, parties, expenses, directExpenses, incomeAccounts, capitalAccounts, accounts, assetAccounts, locations, taxRates, staff, units]);
+
+    // Type chips with counts for the aggregate view
+    const allMastersTypes = useMemo(() => {
+        const counts = new Map();
+        allMastersList.forEach(r => counts.set(r.typeId, (counts.get(r.typeId) || 0) + 1));
+        return Array.from(counts.entries()).map(([id, count]) => ({
+            id,
+            count,
+            label: tabs.find(t => t.id === id)?.label || id
+        }));
+    }, [allMastersList]);
+
+    // Power filter (space-separated tokens all must match) + A→Z / Z→A sorting
+    const filteredAllMasters = useMemo(() => {
+        const q = allMastersSearch.trim().toLowerCase();
+        const tokens = q ? q.split(/\s+/) : [];
+        const rows = allMastersList.filter(r => {
+            if (allMastersType !== 'ALL' && r.typeId !== allMastersType) return false;
+            if (tokens.length === 0) return true;
+            const hay = `${r.name} ${r.typeLabel} ${r.groupName}`.toLowerCase();
+            return tokens.every(t => hay.includes(t));
+        });
+        const dir = allMastersSort === 'asc' ? 1 : -1;
+        rows.sort((a, b) => {
+            const n = String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+            if (n !== 0) return n * dir;
+            return String(a.typeLabel).localeCompare(String(b.typeLabel)) * dir;
+        });
+        return rows;
+    }, [allMastersList, allMastersSearch, allMastersType, allMastersSort]);
 
     const fmtAmount = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -1067,14 +1132,18 @@ const ChartOfMastersModal = ({
                                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wider uppercase transition-all duration-150 ${
                                     activeTab === tab.id
                                         ? 'bg-[#005994] text-white shadow-sm'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                        : tab.isAllList
+                                            ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                                 }`}
                             >
                                 {tab.label}
                                 <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] ${
-                                    activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+                                    activeTab === tab.id
+                                        ? 'bg-white/20 text-white'
+                                        : tab.isAllList ? 'bg-amber-200 text-amber-800' : 'bg-slate-200 text-slate-700'
                                 }`}>
-                                    {tab.data?.length || 0}
+                                    {tab.isAllList ? allMastersList.length : (tab.data?.length || 0)}
                                 </span>
                             </button>
                         ))}
@@ -1088,7 +1157,104 @@ const ChartOfMastersModal = ({
                             {rowMsg.text}
                         </div>
                     )}
-                    {groupNamesList.length === 0 ? (
+                    {activeTab === 'ALL_MASTERS' ? (
+                        /* ── LIST OF ALL MASTERS (flat, A→Z, with power filter) ── */
+                        <div className="flex flex-col gap-3 h-full min-h-0">
+                            <div className="flex flex-col md:flex-row md:items-center gap-2">
+                                <div className="relative flex-1">
+                                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                    <input
+                                        type="text"
+                                        value={allMastersSearch}
+                                        onChange={(e) => setAllMastersSearch(e.target.value)}
+                                        placeholder="POWER FILTER: master name, type or group..."
+                                        className="w-full border border-slate-200 rounded-xl pl-9 pr-9 py-2 text-sm font-semibold text-slate-800 focus:border-[#005994] outline-none"
+                                    />
+                                    {allMastersSearch && (
+                                        <button
+                                            onClick={() => setAllMastersSearch('')}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-slate-100 text-slate-500"
+                                            title="Clear filter"
+                                        >
+                                            <X size={14} />
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                        onClick={() => setAllMastersSort(s => (s === 'asc' ? 'desc' : 'asc'))}
+                                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-black uppercase tracking-wide text-[#005994]"
+                                        title="Toggle A → Z / Z → A"
+                                    >
+                                        {allMastersSort === 'asc' ? <ArrowUpAZ size={14} /> : <ArrowDownZA size={14} />}
+                                        {allMastersSort === 'asc' ? 'A → Z' : 'Z → A'}
+                                    </button>
+                                    <span className="text-xs font-bold text-slate-500 whitespace-nowrap">
+                                        {filteredAllMasters.length} / {allMastersList.length}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Type chips */}
+                            <div className="flex flex-wrap gap-1.5">
+                                <button
+                                    onClick={() => setAllMastersType('ALL')}
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-colors ${allMastersType === 'ALL' ? 'bg-[#005994] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                >
+                                    All Types <span className="opacity-70">{allMastersList.length}</span>
+                                </button>
+                                {allMastersTypes.map(t => (
+                                    <button
+                                        key={t.id}
+                                        onClick={() => setAllMastersType(t.id)}
+                                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-colors ${allMastersType === t.id ? 'bg-[#005994] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                    >
+                                        {t.label} <span className="opacity-70">{t.count}</span>
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div className="flex-1 min-h-0 overflow-y-auto border border-slate-100 rounded-xl">
+                                <table className="w-full text-left border-collapse text-sm">
+                                    <thead className="sticky top-0 z-10">
+                                        <tr className="bg-slate-50 border-b border-slate-100">
+                                            <th className="py-2.5 px-4 font-semibold text-slate-700 w-16">S.No.</th>
+                                            <th
+                                                onClick={() => setAllMastersSort(s => (s === 'asc' ? 'desc' : 'asc'))}
+                                                className="py-2.5 px-6 font-semibold text-slate-700 cursor-pointer select-none hover:text-[#005994]"
+                                                title="Sort by name"
+                                            >
+                                                <span className="inline-flex items-center gap-1.5">
+                                                    Master Name
+                                                    {allMastersSort === 'asc' ? <ArrowUpAZ size={13} /> : <ArrowDownZA size={13} />}
+                                                </span>
+                                            </th>
+                                            <th className="py-2.5 px-6 font-semibold text-slate-700 w-56">Type</th>
+                                            <th className="py-2.5 px-6 font-semibold text-slate-700 w-56">Group Name</th>
+                                            <th className="py-2.5 px-6 font-semibold text-slate-700 text-right w-44">Balance</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {filteredAllMasters.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={5} className="py-16 text-center text-slate-400 text-sm font-medium">
+                                                    No master records match this filter.
+                                                </td>
+                                            </tr>
+                                        ) : filteredAllMasters.map((r, idx) => (
+                                            <tr key={r.key} className="border-b border-slate-100 hover:bg-[#005994]/5 transition-colors">
+                                                <td className="py-2 px-4 text-slate-400 font-bold">{idx + 1}</td>
+                                                <td className="py-2 px-6 font-bold text-slate-800 uppercase">{r.name}</td>
+                                                <td className="py-2 px-6 text-slate-600 font-semibold">{r.typeLabel}</td>
+                                                <td className="py-2 px-6 text-slate-600 font-semibold">{r.groupName}</td>
+                                                <td className="py-2 px-6 text-right font-black text-slate-700">{fmtAmount(r.balance)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    ) : groupNamesList.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-slate-400">
                             <FileText size={48} className="stroke-[1.5] mb-2" />
                             <p className="text-sm font-medium">No master records found matching the criteria.</p>

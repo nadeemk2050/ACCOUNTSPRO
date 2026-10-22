@@ -10,6 +10,47 @@ const OFFLINE_BACKUP_KEY = 'nadtally_offline_backup_v1';
 const DEVICE_ID_KEY = 'nadtally_device_id';
 const OFFLINE_GRACE_DAYS = 365;
 
+// ── Storage safety ────────────────────────────────────────────────────────────
+// localStorage can hit the browser quota (≈5 MB) after long use. A failing cache
+// write must NEVER stop a user from signing in, so every save goes through here:
+// on QuotaExceededError we drop regenerable caches and retry once.
+const PRUNABLE_CACHE_PREFIXES = [
+    'accpro_stats_',
+    'accpro_sync_status_',
+    'accpro_sync_lock_',
+    'nadtally_last_pull_'
+];
+
+function pruneVolatileCaches() {
+    let removed = 0;
+    try {
+        const doomed = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && PRUNABLE_CACHE_PREFIXES.some(p => k.startsWith(p))) doomed.push(k);
+        }
+        doomed.forEach(k => { try { localStorage.removeItem(k); removed++; } catch { /* ignore */ } });
+    } catch { /* ignore */ }
+    return removed;
+}
+
+function safeSetItem(key, value) {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch {
+        const removed = pruneVolatileCaches();
+        try {
+            localStorage.setItem(key, value);
+            if (removed) console.warn(`[Storage] Recovered ${removed} cache key(s) to free space.`);
+            return true;
+        } catch (err2) {
+            console.warn('[Storage] Quota still exceeded after clearing caches:', err2?.message || err2);
+            return false;
+        }
+    }
+}
+
 // --- Helpers ---
 async function sha256(text) {
     const data = new TextEncoder().encode(text + 'ndtly_salt_@2025');
@@ -35,7 +76,7 @@ function getAllStoredLicenses() {
             const parsed = JSON.parse(legacy);
             if (parsed && parsed.email) {
                 const migrated = { [parsed.email.toLowerCase()]: parsed };
-                localStorage.setItem(LICENSES_STORE_KEY, JSON.stringify(migrated));
+                safeSetItem(LICENSES_STORE_KEY, JSON.stringify(migrated));
                 return migrated;
             }
         }
@@ -57,7 +98,10 @@ function saveLicense(info) {
     if (!info || !info.email) return;
     const all = getAllStoredLicenses();
     all[info.email.toLowerCase()] = { ...info, cachedAt: new Date().toISOString() };
-    localStorage.setItem(LICENSES_STORE_KEY, JSON.stringify(all));
+    if (safeSetItem(LICENSES_STORE_KEY, JSON.stringify(all))) return;
+    // Last resort: keep ONLY this account so the current user can still sign in.
+    const only = { [info.email.toLowerCase()]: all[info.email.toLowerCase()] };
+    safeSetItem(LICENSES_STORE_KEY, JSON.stringify(only));
 }
 
 function clearLicense(email) {
@@ -68,7 +112,7 @@ function clearLicense(email) {
     }
     const all = getAllStoredLicenses();
     delete all[email.toLowerCase()];
-    localStorage.setItem(LICENSES_STORE_KEY, JSON.stringify(all));
+    safeSetItem(LICENSES_STORE_KEY, JSON.stringify(all));
 }
 
 function daysLeft(isoDate) {
@@ -94,7 +138,7 @@ function saveAuthEmail(email) {
     const list = getSavedAuthEmails();
     if (!list.includes(clean)) {
         const newList = [clean, ...list].slice(0, 5);
-        localStorage.setItem('nadtally_auth_history', JSON.stringify(newList));
+        safeSetItem('nadtally_auth_history', JSON.stringify(newList));
     }
 }
 
@@ -404,7 +448,7 @@ function LicenseProfileModal({ licenseInfo, onClose, onDeactivate, mode }) {
     );
 }
 
-const SYSTEM_VERSION = '2.8.4';
+const SYSTEM_VERSION = '2.8.5';
 const EDU_KEY = 'nadtally_edu_v1';
 
 export default function LicenseGate({ children }) {
@@ -873,34 +917,68 @@ export default function LicenseGate({ children }) {
                     </div>
                 </div>
 
-                <div style={{ ...S.card, margin: 0, animation: 'fadeInUp 0.4s ease' }}>
+                <div style={{ ...S.card, margin: 0, maxWidth: view === 'signup_hub' ? 760 : 480, animation: 'fadeInUp 0.4s ease' }}>
                     <div style={S.header}>
                         <div style={S.logo}>accpro · Professional Accounting</div>
-                        <div style={{ ...S.appName, fontSize: isFormView ? 22 : 28 }}>{isFormView ? (view === 'login' ? '👤 Sign In' : '🔑 Activation') : 'Welcome'}</div>
+                        <div style={{ ...S.appName, fontSize: isFormView ? 22 : 28 }}>{isFormView ? (view === 'login' ? '👤 Sign In' : '🔑 Activation') : view === 'signup_hub' ? '📝 Signup / Register' : 'Welcome'}</div>
                     </div>
                     <div style={S.body}>
-                        {!isFormView ? (
-                            <>
-                                <button style={{ ...S.modeBtn('#6366f1'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => setView('signup')}>
-                                    <div style={{ ...S.modeBtnIcon('#6366f1'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconUserPlus /></div>
-                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>Create New Account</div><div style={S.modeBtnSub}>Initial registration</div></div>
-                                </button>
-                                <button style={{ ...S.modeBtn('#10b981'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => setView('login')}>
-                                    <div style={{ ...S.modeBtnIcon('#10b981'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconUser /></div>
-                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>Previously Activated / Sign In</div><div style={S.modeBtnSub}>Enter system offline/online</div></div>
-                                </button>
-                                <div style={{ ...S.divider, margin: isMobile ? '12px 0' : '20px 0' }} />
-                                <button style={{ ...S.modeBtn('#4ade80'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => setView('activate')}>
-                                    <div style={{ ...S.modeBtnIcon('#4ade80'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconKey /></div>
-                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>Activate New Service</div><div style={S.modeBtnSub}>Enter serial key to start</div></div>
-                                </button>
-                                <div style={{ marginTop: 8 }}>
-                                    <button 
-                                        style={{ ...S.btnPrimary('#4ade8015'), border: '1px solid #4ade8044', color: '#4ade80', fontSize: isMobile ? 11 : 12, fontWeight: 800, padding: isMobile ? 10 : 14 }} 
-                                        onClick={handleGuestMode}
-                                    >
-                                        🚀 Continue as Guest (Trial Mode)
+                        {view === 'signup_hub' ? (
+                            /* ── SIGNUP / REGISTER — two steps + guidance ── */
+                            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 12 : 18, alignItems: 'stretch' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                                    <button style={{ ...S.modeBtn('#6366f1'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => { setView('signup'); setError(''); setSuccess(''); }}>
+                                        <div style={{ ...S.modeBtnIcon('#6366f1'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconUserPlus /></div>
+                                        <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>1. Create New Account</div><div style={S.modeBtnSub}>Initial registration</div></div>
                                     </button>
+                                    <button style={{ ...S.modeBtn('#4ade80'), padding: isMobile ? '8px 12px' : '16px 20px' }} onClick={() => { setView('activate'); setError(''); setSuccess(''); }}>
+                                        <div style={{ ...S.modeBtnIcon('#4ade80'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconKey /></div>
+                                        <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 12 : 14 }}>2. Activate Account With Serial Key</div><div style={S.modeBtnSub}>Enter serial key to start</div></div>
+                                    </button>
+                                    <div style={{ marginTop: 2 }}>
+                                        <button
+                                            style={{ ...S.btnPrimary('#4ade8015'), border: '1px solid #4ade8044', color: '#4ade80', fontSize: isMobile ? 11 : 12, fontWeight: 800, padding: isMobile ? 10 : 12 }}
+                                            onClick={handleGuestMode}
+                                        >
+                                            🚀 Continue as Guest (Trial Mode)
+                                        </button>
+                                    </div>
+                                    <div style={{ marginTop: 8 }}>
+                                        <button type="button" style={S.btnSecondary} onClick={() => { setView('main'); setError(''); setSuccess(''); }}>← Back</button>
+                                    </div>
+                                </div>
+
+                                {/* Warning / guidance (right side) */}
+                                <div style={{
+                                    width: isMobile ? '100%' : 250,
+                                    background: 'rgba(251,191,36,0.06)',
+                                    border: '1px solid rgba(251,191,36,0.35)',
+                                    borderRadius: 14,
+                                    padding: '14px 16px',
+                                    boxSizing: 'border-box'
+                                }}>
+                                    <div style={{ fontSize: 10, fontWeight: 900, color: '#fbbf24', letterSpacing: 1.2, marginBottom: 8 }}>⚠ IMPORTANT — READ FIRST</div>
+                                    <div style={{ fontSize: 11, color: '#f1f5f9', lineHeight: 1.7 }}>
+                                        1. <b>Create the account first</b> (step 1).<br />
+                                        2. Then <b>take the serial key from the developer</b>.<br />
+                                        3. Paste that key in <b>step 2</b> to activate.<br />
+                                        <span style={{ color: '#fbbf24' }}>Activation works only after the account exists, and only with the registered e-mail.</span>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : !isFormView ? (
+                            <>
+                                <button style={{ ...S.modeBtn('#10b981'), padding: isMobile ? '10px 14px' : '18px 20px' }} onClick={() => setView('login')}>
+                                    <div style={{ ...S.modeBtnIcon('#10b981'), width: isMobile ? 32 : 44, height: isMobile ? 32 : 44 }}><IconUser /></div>
+                                    <div><div style={{ ...S.modeBtnTitle, fontSize: isMobile ? 13 : 15 }}>ALREADY ACTIVATED / SIGN IN</div></div>
+                                </button>
+                                <div style={{ marginTop: isMobile ? 14 : 18, textAlign: 'center' }}>
+                                    <span
+                                        onClick={() => { setView('signup_hub'); setError(''); setSuccess(''); }}
+                                        style={{ fontSize: isMobile ? 10 : 11, color: '#4ade80', fontWeight: 800, letterSpacing: 1.2, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}
+                                    >
+                                        Signup / Register
+                                    </span>
                                 </div>
                             </>
                         ) : (
@@ -911,14 +989,14 @@ export default function LicenseGate({ children }) {
                                     <>
                                         {['activate', 'reactivate'].includes(view) && <Input label="Serial Key" value={serialKey} onChange={v => setSerialKey(v.toUpperCase())} required />}
                                         {(view === 'activate' || view === 'signup' || view === 'guest_setup') && <Input label="Name" value={userName} onChange={setUserName} required />}
-                                        <Input label="Email" type="email" value={email} onChange={setEmail} required autoFocus={view==='login'} />
+                                        <Input label={['activate', 'reactivate'].includes(view) ? 'Registered Email' : 'Email'} type="email" value={email} onChange={setEmail} required autoFocus={view==='login'} />
                                         <Input label="Password" type={showPwd ? 'text' : 'password'} value={password} onChange={setPassword} required rightEl={<span onClick={() => setShowPwd(!showPwd)}><IconEye show={showPwd}/></span>} />
                                         {view === 'login' && <div style={{ textAlign: 'right', marginTop: -8, marginBottom: 14 }}><span onClick={handleForgotPassword} style={{ fontSize: 11, color: '#4ade80', fontWeight: 700, cursor: 'pointer' }}>Forgot Password?</span></div>}
                                         <button type="submit" style={S.btnPrimary()} disabled={loading}>{loading ? <div style={{width:16,height:16,border:'2px solid #0004',borderTopColor:'#000',borderRadius:'50%',animation:'spin 0.6s linear infinite',margin:'0 auto'}}/> : 'Log In To Account'}</button>
                                     </>
                                 )}
                                 <div style={{ height: 10 }} />
-                                <button type="button" style={S.btnSecondary} onClick={() => setView('main')}>← Back</button>
+                                <button type="button" style={S.btnSecondary} onClick={() => setView(['signup', 'activate', 'reactivate', 'guest_setup'].includes(view) ? 'signup_hub' : 'main')}>← Back</button>
                             </form>
                         )}
                     </div>
