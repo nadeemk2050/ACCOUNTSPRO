@@ -673,9 +673,7 @@ const ChartOfMastersModal = ({
                 ...item,
                 groupName,
                 voucherCount: getVoucherCount(activeTab, item.id),
-                createdBy: meta.lastModified,
-                // Same rule the old Create / Alter Masters list used for its totals
-                amount: Number(item.balance || item.openingBalance || 0)
+                createdBy: meta.lastModified
             };
         });
 
@@ -713,17 +711,9 @@ const ChartOfMastersModal = ({
         return groups;
     }, [currentTab, searchTerm, activeTab, auditLogs, invoices, payments, journalVouchers, stockJournals, stockGroups, partyGroups, expenseGroups]);
 
-    // Grand Total over everything currently listed (balance, else opening balance)
-    const grandTotal = useMemo(() => {
-        let sum = 0;
-        Object.keys(groupedMap).forEach(g => {
-            (groupedMap[g] || []).forEach(it => { sum += Number(it.amount || 0); });
-        });
-        return sum;
-    }, [groupedMap]);
-
     // ── LIST OF ALL MASTERS ───────────────────────────────────────────────────
     // Flattens every tab into ONE list: master name + its type + its group name.
+    // No balances are pulled here — names / groups / types only (keeps it cheap).
     const allMastersList = useMemo(() => {
         const rows = [];
         const sourceTabs = tabs.filter(t => !t.isAllList);
@@ -741,8 +731,7 @@ const ChartOfMastersModal = ({
                     name: item.name || '(Unnamed)',
                     typeId: tab.id,
                     typeLabel: tab.label,
-                    groupName,
-                    balance: Number(item.balance || item.openingBalance || 0)
+                    groupName
                 });
             }
         }
@@ -779,9 +768,6 @@ const ChartOfMastersModal = ({
         return rows;
     }, [allMastersList, allMastersSearch, allMastersType, allMastersSort]);
 
-    const fmtAmount = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-    // Small reusable field grid shared by the create dialog and the row editors.
     const renderFieldGrid = (fields, values, onChange, cols = 'grid-cols-1 sm:grid-cols-2') => (
         <div className={`grid ${cols} gap-2`}>
             {fields.map(field => (
@@ -1231,13 +1217,12 @@ const ChartOfMastersModal = ({
                                             </th>
                                             <th className="py-2.5 px-6 font-semibold text-slate-700 w-56">Type</th>
                                             <th className="py-2.5 px-6 font-semibold text-slate-700 w-56">Group Name</th>
-                                            <th className="py-2.5 px-6 font-semibold text-slate-700 text-right w-44">Balance</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {filteredAllMasters.length === 0 ? (
                                             <tr>
-                                                <td colSpan={5} className="py-16 text-center text-slate-400 text-sm font-medium">
+                                                <td colSpan={4} className="py-16 text-center text-slate-400 text-sm font-medium">
                                                     No master records match this filter.
                                                 </td>
                                             </tr>
@@ -1247,7 +1232,6 @@ const ChartOfMastersModal = ({
                                                 <td className="py-2 px-6 font-bold text-slate-800 uppercase">{r.name}</td>
                                                 <td className="py-2 px-6 text-slate-600 font-semibold">{r.typeLabel}</td>
                                                 <td className="py-2 px-6 text-slate-600 font-semibold">{r.groupName}</td>
-                                                <td className="py-2 px-6 text-right font-black text-slate-700">{fmtAmount(r.balance)}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -1313,7 +1297,6 @@ const ChartOfMastersModal = ({
                                                 </button>
                                             </div>
                                         </th>
-                                        <th className="py-3 px-6 font-semibold text-slate-700 text-right w-36">Balance</th>
                                         <th className="py-3 px-6 font-semibold text-slate-700 text-center w-40">Vouchers Count</th>
                                         <th className="py-3 px-6 font-semibold text-slate-700">Last Modified By & Date</th>
                                         <th className="py-3 px-4 font-semibold text-slate-700 w-24 text-right">Actions</th>
@@ -1324,7 +1307,6 @@ const ChartOfMastersModal = ({
                                         let globalIndex = 0;
                                         return groupNamesList.map(gName => {
                                             const items = groupedMap[gName] || [];
-                                            const groupTotal = items.reduce((acc, it) => acc + Number(it.amount || 0), 0);
                                             const isExpanded = isDetailedView || expandedGroups.has(gName);
                                             return (
                                                 <React.Fragment key={gName}>
@@ -1343,7 +1325,7 @@ const ChartOfMastersModal = ({
                                                         }}
                                                         className="bg-[#005994]/5 border-y border-slate-100 font-bold text-slate-700 cursor-pointer hover:bg-[#005994]/10 transition-colors select-none"
                                                     >
-                                                        <td colSpan={7} className="py-2.5 px-4">
+                                                        <td colSpan={6} className="py-2.5 px-4">
                                                             <div className="flex items-center justify-between">
                                                                 <div className="flex items-center gap-2">
                                                                     {isExpanded ? (
@@ -1389,17 +1371,12 @@ const ChartOfMastersModal = ({
                                                                         )}
                                                                     </span>
                                                                 </div>
-                                                                {items.length > 0 && (
-                                                                    <div className="text-[11px] font-mono font-black text-slate-600 whitespace-nowrap pl-3">
-                                                                        Group Total: {fmtAmount(groupTotal)}
-                                                                    </div>
-                                                                )}
                                                             </div>
                                                         </td>
                                                     </tr>
                                                     {editingGroupName === gName && (
                                                         <tr className="bg-amber-50/60 border-b-2 border-amber-200">
-                                                            <td colSpan={7} className="p-4">
+                                                            <td colSpan={6} className="p-4">
                                                                 <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
                                                                     <div className="flex flex-wrap items-center justify-between mb-2 gap-2">
                                                                         <div className="flex flex-wrap items-center gap-2">
@@ -1518,16 +1495,6 @@ const ChartOfMastersModal = ({
                                                                                     <span className="text-[9px] bg-slate-100 border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded font-bold whitespace-nowrap">HS {item.hscode}</span>
                                                                                 )}
                                                                             </div>
-                                                                            {(Number(item.openingStock || 0) !== 0 || Number(item.openingBalance || 0) !== 0) && (
-                                                                                <div className="text-[9px] text-slate-400 font-medium mt-0.5">
-                                                                                    {Number(item.openingStock || 0) !== 0 && <span>Op Stk: {Number(item.openingStock).toLocaleString(undefined, { maximumFractionDigits: 3 })}</span>}
-                                                                                    {Number(item.openingStock || 0) !== 0 && Number(item.openingBalance || 0) !== 0 && <span className="mx-1">·</span>}
-                                                                                    {Number(item.openingBalance || 0) !== 0 && <span>Op Bal: {fmtAmount(item.openingBalance)}</span>}
-                                                                                </div>
-                                                                            )}
-                                                                        </td>
-                                                                        <td className={`py-3 px-6 text-right font-mono text-xs font-bold ${Number(item.amount || 0) === 0 ? 'text-slate-300' : 'text-slate-700'}`}>
-                                                                            {Number(item.amount || 0) === 0 ? '-' : fmtAmount(item.amount)}
                                                                         </td>
                                                                         <td className="py-3 px-6 text-center">
                                                                             {item.voucherCount > 0 ? (
@@ -1564,7 +1531,7 @@ const ChartOfMastersModal = ({
                                                                     </tr>,
                                                                     editingRowId === item.id && (
                                                                         <tr key={`${item.id}-editor`} className="bg-amber-50/60 border-b-2 border-amber-200">
-                                                                            <td colSpan={7} className="p-4">
+                                                                            <td colSpan={6} className="p-4">
                                                                                 <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
                                                                                     <div className="flex items-center justify-between mb-2 gap-2">
                                                                                         <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
@@ -1678,15 +1645,6 @@ const ChartOfMastersModal = ({
                                         });
                                     })()}
                                 </tbody>
-                                {groupNamesList.length > 0 && (
-                                    <tfoot className="bg-slate-800 text-white sticky bottom-0 z-20">
-                                        <tr>
-                                            <td colSpan={3} className="py-3 px-4 font-bold uppercase text-xs">Grand Total</td>
-                                            <td className="py-3 px-6 text-right font-mono font-bold text-xs">{fmtAmount(grandTotal)}</td>
-                                            <td colSpan={3}></td>
-                                        </tr>
-                                    </tfoot>
-                                )}
                             </table>
                         </div>
                     )}

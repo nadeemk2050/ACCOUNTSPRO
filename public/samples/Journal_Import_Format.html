@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"/>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:26px 30px 30px; font-family:"Segoe UI",system-ui,-apple-system,sans-serif; background:#f8fafc; color:#0f172a; width:1380px; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .brand { font-size:11px; font-weight:900; letter-spacing:3px; color:#7c3aed; text-transform:uppercase; }
+  h1 { font-size:25px; margin:4px 0 2px; letter-spacing:-.4px; }
+  .sub { font-size:12.5px; color:#64748b; }
+  .pill { background:#7c3aed; color:#fff; font-size:11px; font-weight:800; letter-spacing:1px; padding:7px 14px; border-radius:999px; }
+  h2 { font-size:12.5px; letter-spacing:1.4px; text-transform:uppercase; color:#7c3aed; margin:20px 0 7px; }
+  table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; }
+  th { background:#eef5ff; text-align:left; font-size:10.5px; letter-spacing:.8px; text-transform:uppercase; color:#1e3264; padding:8px 11px; border-bottom:1px solid #dbe6f5; }
+  td { font-size:12.5px; padding:7px 11px; border-bottom:1px solid #eef2f7; vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  .yes { color:#b91c1c; font-weight:800; } .rec { color:#b45309; font-weight:800; } .opt { color:#475569; font-weight:700; }
+  code { font-family:Consolas,monospace; font-size:11.5px; background:#f1f5f9; padding:1px 5px; border-radius:4px; }
+  .muted { color:#64748b; }
+  .rules { display:grid; grid-template-columns:1fr 1fr; gap:5px 26px; font-size:12.5px; }
+  .rules div { position:relative; padding-left:18px; line-height:1.5; }
+  .rules div:before { content:"•"; position:absolute; left:4px; color:#7c3aed; font-weight:900; }
+  .sample th { background:#0f172a; color:#e2e8f0; border-bottom:none; font-size:10px; }
+  .sample td { font-size:11.5px; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .note { margin-top:15px; background:#fffbeb; border:1px solid #fde68a; color:#92400e; font-size:12px; padding:9px 13px; border-radius:10px; }
+</style></head><body>
+  <div class="head">
+    <div>
+      <div class="brand">Accpro · Professional Accounting</div>
+      <h1>Journal Voucher Import — Excel / CSV Format</h1>
+      <div class="sub">Header row must be the first row of the sheet. Column order does not matter — names are matched automatically.</div>
+    </div>
+    <div class="pill">IMPORT FORMAT GUIDE</div>
+  </div>
+
+  <h2>1 · Columns</h2>
+  <table><tr><th style="width:170px">Column</th><th style="width:110px">Required</th><th style="width:340px">Accepted header names</th><th style="width:200px">Example</th><th>Notes</th></tr><tr><td><b>Date</b></td><td><span class="yes">YES</span></td><td>Date · Txn Date · Vch Date</td><td><code>01-04-2026</code></td><td class="muted">YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, YYYYMMDD or a real Excel date</td></tr><tr><td><b>Voucher No</b></td><td><span class="rec">Recommended</span></td><td>Voucher No · Vch No · Ref No · Doc No</td><td><code>JV-3001</code></td><td class="muted">Same No + Date on several rows = one multi-leg journal</td></tr><tr><td><b>Dr Ledger (Debit)</b></td><td><span class="yes">YES</span></td><td>Dr Ledger · Debit Ledger · Debit Account · Dr Account</td><td><code>Depreciation Expense</code></td><td class="muted">Must exist in masters (any ledger type)</td></tr><tr><td><b>Cr Ledger (Credit)</b></td><td><span class="yes">YES</span></td><td>Cr Ledger · Credit Ledger · Credit Account · Cr Account</td><td><code>Accumulated Depreciation</code></td><td class="muted">Must exist in masters (any ledger type)</td></tr><tr><td><b>Amount</b></td><td><span class="yes">YES</span></td><td>Amount · Gross · Total · Debit · Credit</td><td><code>4500</code></td><td class="muted">Same amount is posted to Dr and Cr (must balance)</td></tr><tr><td><b>Currency</b></td><td><span class="opt">Optional</span></td><td>Currency · Curr · Ccy</td><td><code>BASE</code></td><td class="muted">BASE = AED</td></tr><tr><td><b>Exchange Rate</b></td><td><span class="opt">Optional</span></td><td>Exchange Rate · Rate · FX</td><td><code>1</code></td><td class="muted">Required when Currency is not BASE</td></tr><tr><td><b>Narration</b></td><td><span class="opt">Optional</span></td><td>Narration · Remarks · Description · Notes</td><td><code>Annual vehicle depreciation</code></td><td class="muted">Saved on the voucher</td></tr></table>
+
+  <h2>2 · Sample Rows</h2>
+  <table class="sample"><tr><th>Date</th><th>Voucher No</th><th>Dr Ledger (Debit)</th><th>Cr Ledger (Credit)</th><th>Amount</th><th>Currency</th><th>Exchange Rate</th><th>Narration</th></tr><tr><td class="">01-04-2026</td><td class="">JV-3001</td><td class="">Depreciation Expense</td><td class="">Accumulated Depreciation</td><td class="num">4500</td><td class="">BASE</td><td class="num">1</td><td class="">Annual vehicle depreciation</td></tr><tr><td class="">02-04-2026</td><td class="">JV-3002</td><td class="">Office Stationery Exp</td><td class="">Petty Cash Custodian</td><td class="num">750</td><td class="">BASE</td><td class="num">1</td><td class="">Month end stationery adjustment</td></tr><tr><td class="">03-04-2026</td><td class="">JV-3003</td><td class="">Al Falah Trading LLC</td><td class="">Sunrise Trading FZE</td><td class="num">12000</td><td class="">BASE</td><td class="num">1</td><td class="">Inter-party balance settlement</td></tr></table>
+
+  <h2>3 · Automatic Rules &amp; Validation</h2>
+  <div class="rules"><div><b>Date</b>, <b>Dr Ledger</b>, <b>Cr Ledger</b> and <b>Amount</b> are mandatory.</div><div>Both ledgers must exist in masters (party, expense, cash / bank, capital, asset, income).</div><div>A journal voucher must stay <b>balanced</b> — the importer posts the same amount on both sides.</div><div>For multi-leg journals repeat the <b>same Voucher No + Date</b>; the rows are merged into one voucher.</div><div><b>Duplicate</b> voucher numbers already in the system are quarantined.</div><div>Dates inside the <b>locked period</b> are rejected.</div><div><b>Foreign currency</b> rows need a valid exchange rate.</div><div><b>Tally XML</b> journal vouchers are accepted on the same screen.</div></div>
+
+  <div class="note"><b>Tip:</b> Inside the app open <b>Management Hub → Import Journal → Instructions &amp; Templates</b> and press <b>Download Standard (.xlsx)</b> for a ready-made file with these exact headers.</div>
+</body></html>

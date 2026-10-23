@@ -1302,7 +1302,7 @@ export default function ImportReceiptExcelModal({
                             </p>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 space-y-3">
                                 <div className="flex items-center gap-2 font-bold text-white text-sm">
                                     <FileSpreadsheet className="text-teal-400" size={18} />
@@ -1335,6 +1335,27 @@ export default function ImportReceiptExcelModal({
                                     <Download size={14} />
                                     <span>Download Tally Format (.xlsx)</span>
                                 </button>
+                            </div>
+
+                            <div className="p-5 rounded-2xl bg-white/[0.02] border border-teal-500/20 space-y-3">
+                                <div className="flex items-center gap-2 font-bold text-white text-sm">
+                                    <FileText className="text-teal-400" size={18} />
+                                    <span>Format Guide &amp; Sample File</span>
+                                </div>
+                                <p className="text-xs text-slate-400 leading-relaxed">
+                                    One-page column guide (PNG) plus a ready sample workbook / CSV with the exact headers the importer expects.
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                    <a href="/samples/Receipt_Import_Format.png" target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold text-[11px] flex items-center gap-1.5">
+                                        <Search size={13} /><span>View Guide</span>
+                                    </a>
+                                    <a href="/samples/Receipt_Import_Sample.xlsx" download className="px-3 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-[11px] flex items-center gap-1.5">
+                                        <Download size={13} /><span>.xlsx</span>
+                                    </a>
+                                    <a href="/samples/Receipt_Import_Sample.csv" download className="px-3 py-2 rounded-xl bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-slate-500/30 font-bold text-[11px] flex items-center gap-1.5">
+                                        <Download size={13} /><span>.csv</span>
+                                    </a>
+                                </div>
                             </div>
                         </div>
                     </div>

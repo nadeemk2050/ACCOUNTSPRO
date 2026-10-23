@@ -1314,7 +1314,7 @@ export default function ImportJournalExcelModal({
                                 Use our sample templates to ensure your column names and formatting are 100% compliant with AccPro and Tally Prime double-entry rules.
                             </p>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <div className="p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3">
                                     <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm">
                                         <FileSpreadsheet size={18} />
@@ -1347,6 +1347,27 @@ export default function ImportJournalExcelModal({
                                         <Download size={14} />
                                         <span>Download Tally Format (.xlsx)</span>
                                     </button>
+                                </div>
+
+                                <div className="p-4 rounded-xl bg-white/[0.03] border border-purple-500/30 space-y-3">
+                                    <div className="flex items-center gap-2 text-purple-300 font-bold text-sm">
+                                        <FileText size={18} />
+                                        <span>Format Guide &amp; Sample File</span>
+                                    </div>
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                        One-page column guide (PNG) plus a ready sample workbook / CSV with the exact headers the importer expects.
+                                    </p>
+                                    <div className="flex flex-wrap gap-2">
+                                        <a href="/samples/Journal_Import_Format.png" target="_blank" rel="noreferrer" className="px-3 py-2 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                                            <Search size={13} /><span>View Guide</span>
+                                        </a>
+                                        <a href="/samples/Journal_Import_Sample.xlsx" download className="px-3 py-2 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                                            <Download size={13} /><span>.xlsx</span>
+                                        </a>
+                                        <a href="/samples/Journal_Import_Sample.csv" download className="px-3 py-2 rounded-lg bg-slate-500/20 hover:bg-slate-500/30 text-slate-300 border border-slate-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                                            <Download size={13} /><span>.csv</span>
+                                        </a>
+                                    </div>
                                 </div>
                             </div>
                         </div>

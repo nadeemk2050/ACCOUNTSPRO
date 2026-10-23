@@ -1,0 +1,6 @@
+Date,Voucher No,Received In (Bank/Cash),Received From (Customer),Amount,Currency,Exchange Rate,Narration
+01-04-2026,RCP-2001,Commercial Bank - ENBD,Global Metal Importers LLC,15000,BASE,1,Customer payment inv 892
+02-04-2026,RCP-2002,Main Cash,Sunrise Trading FZE,3500,BASE,1,Cash settlement bill 104
+03-04-2026,RCP-2003,Commercial Bank - ENBD,Direct Scrap Sale Cash,8200,BASE,1,Direct yard scrap sales
+05-04-2026,RCP-2004,Main Cash,Al Falah Trading LLC,2500,BASE,1,Advance received
+05-04-2026,RCP-2004,Main Cash,Gulf Steel Traders,1750,BASE,1,"↑ same voucher = ONE voucher, 2 splits"

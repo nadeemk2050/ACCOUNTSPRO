@@ -1,0 +1,9 @@
+Date,Voucher No,Paid From,Paid To,Amount,Currency,Exchange Rate,Narration
+01-04-2026,PAY-1001,Main Cash,Al Falah Trading LLC,5000.000,BASE,1,Payment against Invoice 402
+02-04-2026,PAY-1002,Commercial Bank - ENBD,Office Rent Expense,1200.000,BASE,1,April 2026 office rent
+03-04-2026,PAY-1003,Cash in Hand,Haris Fuel Petrol,180.000,BASE,1,Fuel - vehicle 71439
+05-04-2026,PAY-1004,Cash in Hand,Waliul Contra,306.000,BASE,1,Vehicle and labour expense
+05-04-2026,PAY-1004,Cash in Hand,Labour Expense,150.000,BASE,1,Vehicle and labour expense
+05-04-2026,PAY-1004,Cash in Hand,Rizwan Contra,156.000,BASE,1,Vehicle and labour expense
+07-04-2026,PAY-1005,Commercial Bank - ENBD,Global Steel Exports LLC,2500.000,USD,3.6725,Import payment - foreign currency
+10-04-2026,PAY-1006,Cash in Hand,Ahmed Transport Services,750.500,BASE,1,Transport charges - 3 trips

@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"/>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:26px 30px 30px; font-family:"Segoe UI",system-ui,-apple-system,sans-serif; background:#f8fafc; color:#0f172a; width:1380px; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .brand { font-size:11px; font-weight:900; letter-spacing:3px; color:#2563eb; text-transform:uppercase; }
+  h1 { font-size:25px; margin:4px 0 2px; letter-spacing:-.4px; }
+  .sub { font-size:12.5px; color:#64748b; }
+  .pill { background:#2563eb; color:#fff; font-size:11px; font-weight:800; letter-spacing:1px; padding:7px 14px; border-radius:999px; }
+  h2 { font-size:12.5px; letter-spacing:1.4px; text-transform:uppercase; color:#2563eb; margin:20px 0 7px; }
+  table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; }
+  th { background:#eef5ff; text-align:left; font-size:10.5px; letter-spacing:.8px; text-transform:uppercase; color:#1e3264; padding:8px 11px; border-bottom:1px solid #dbe6f5; }
+  td { font-size:12.5px; padding:7px 11px; border-bottom:1px solid #eef2f7; vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  .yes { color:#b91c1c; font-weight:800; } .rec { color:#b45309; font-weight:800; } .opt { color:#475569; font-weight:700; }
+  code { font-family:Consolas,monospace; font-size:11.5px; background:#f1f5f9; padding:1px 5px; border-radius:4px; }
+  .muted { color:#64748b; }
+  .rules { display:grid; grid-template-columns:1fr 1fr; gap:5px 26px; font-size:12.5px; }
+  .rules div { position:relative; padding-left:18px; line-height:1.5; }
+  .rules div:before { content:"•"; position:absolute; left:4px; color:#2563eb; font-weight:900; }
+  .sample th { background:#0f172a; color:#e2e8f0; border-bottom:none; font-size:10px; }
+  .sample td { font-size:11.5px; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .note { margin-top:15px; background:#fffbeb; border:1px solid #fde68a; color:#92400e; font-size:12px; padding:9px 13px; border-radius:10px; }
+</style></head><body>
+  <div class="head">
+    <div>
+      <div class="brand">Accpro · Professional Accounting</div>
+      <h1>Sales Voucher Import — Excel / CSV Format</h1>
+      <div class="sub">Header row must be the first row of the sheet. Column order does not matter — names are matched automatically.</div>
+    </div>
+    <div class="pill">IMPORT FORMAT GUIDE</div>
+  </div>
+
+  <h2>1 · Columns</h2>
+  <table><tr><th style="width:170px">Column</th><th style="width:110px">Required</th><th style="width:340px">Accepted header names</th><th style="width:200px">Example</th><th>Notes</th></tr><tr><td><b>Date</b></td><td><span class="yes">YES</span></td><td>Date · Txn Date · Vch Date</td><td><code>02-04-2026</code></td><td class="muted">YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, YYYYMMDD or a real Excel date</td></tr><tr><td><b>Voucher No</b></td><td><span class="rec">Recommended</span></td><td>Voucher No · Vch No · Ref No · Doc No</td><td><code>SAL-2001</code></td><td class="muted">Repeating the same No + Date merges item rows into one voucher</td></tr><tr><td><b>Customer</b></td><td><span class="yes">YES</span></td><td>Customer · Party · Buyer · Supplier</td><td><code>Global Metal Importers LLC</code></td><td class="muted">Must exist in Parties master</td></tr><tr><td><b>Item</b></td><td><span class="yes">YES</span></td><td>Item · Item Name · Product · Description</td><td><code>KHALID ALUMINIUM</code></td><td class="muted">Must exist in Items (stock) master</td></tr><tr><td><b>Qty</b></td><td><span class="yes">YES</span></td><td>Qty · Quantity · Qnty</td><td><code>650</code></td><td class="muted">Greater than 0</td></tr><tr><td><b>Unit</b></td><td><span class="opt">Optional</span></td><td>Unit · UOM · Units</td><td><code>KG</code></td><td class="muted">PCS / KG / LTR / BAG …</td></tr><tr><td><b>Rate</b></td><td><span class="yes">YES</span></td><td>Rate · Price · Unit Rate</td><td><code>615</code></td><td class="muted">Per unit</td></tr><tr><td><b>Amount</b></td><td><span class="opt">Optional</span></td><td>Amount · Value · Total · Gross</td><td><code>399750</code></td><td class="muted">Leave blank = Qty × Rate is calculated</td></tr><tr><td><b>Tax %</b></td><td><span class="opt">Optional</span></td><td>Tax % · GST % · VAT % · Tax Percent</td><td><code>5</code></td><td class="muted">Applied on the line / voucher total</td></tr><tr><td><b>Tax Amount</b></td><td><span class="opt">Optional</span></td><td>Tax Amount · VAT Amount · GST Amount</td><td><code>12600</code></td><td class="muted">Use when you already know the tax value</td></tr><tr><td><b>Bill No</b></td><td><span class="opt">Optional</span></td><td>Bill No · Invoice No · Supplier Invoice No · Ref</td><td><code>INV-889</code></td><td class="muted">Stored as the party invoice reference</td></tr><tr><td><b>Narration</b></td><td><span class="opt">Optional</span></td><td>Narration · Remarks · Description · Notes</td><td><code>Export sale</code></td><td class="muted">Saved on the voucher</td></tr></table>
+
+  <h2>2 · Sample Rows</h2>
+  <table class="sample"><tr><th>Date</th><th>Voucher No</th><th>Customer</th><th>Item</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Amount</th><th>Tax %</th><th>Tax Amount</th><th>Bill No</th><th>Narration</th></tr><tr><td class="">03-04-2026</td><td class="">SAL-2001</td><td class="">Global Metal Importers LLC</td><td class="">KHALID ALUMINIUM</td><td class="num">500</td><td class="">KG</td><td class="num">720</td><td class="num">360000</td><td class="num">5</td><td class="num">18000</td><td class="">INV-501</td><td class="">Export sale</td></tr><tr><td class="">06-04-2026</td><td class="">SAL-2002</td><td class="">Sunrise Trading FZE</td><td class="">PVC SCRAP</td><td class="num">900</td><td class="">KG</td><td class="num">265</td><td class="num">238500</td><td class="num">5</td><td class="num">11925</td><td class="">INV-502</td><td class="">Local sale</td></tr><tr><td class="">09-04-2026</td><td class="">SAL-2003</td><td class="">Gulf Steel Traders</td><td class="">KHALID ALUMINIUM</td><td class="num">150</td><td class="">KG</td><td class="num">735</td><td class="num">110250</td><td class="num">0</td><td class="num">0</td><td class="">INV-503</td><td class="">Spot sale</td></tr></table>
+
+  <h2>3 · Automatic Rules &amp; Validation</h2>
+  <div class="rules"><div><b>Date</b>, <b>Customer</b>, <b>Item</b>, <b>Qty</b> and <b>Rate</b> are mandatory.</div><div>Party and every item must exist in masters — missing ones appear in Solution Centre.</div><div>Rows sharing the <b>same Voucher No + Date</b> become one voucher with multiple item lines.</div><div><b>Amount</b> can be left empty — Qty × Rate is used. Tax % or Tax Amount is optional.</div><div><b>Duplicate</b> voucher numbers already in the system are quarantined (auto-renumber or skip).</div><div>Dates inside the <b>locked period</b> are rejected.</div><div>Stock is posted automatically for every item line (opening / closing quantities update).</div><div><b>Tally XML</b> sales vouchers are accepted on the same screen.</div></div>
+
+  <div class="note"><b>Tip:</b> Inside the app open <b>Management Hub → Import Sales → Instructions &amp; Templates</b> and press <b>Download Standard (.xlsx)</b> for a ready-made file with these exact headers.</div>
+</body></html>

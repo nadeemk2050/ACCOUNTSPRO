@@ -1,0 +1,4 @@
+Date,Voucher No,Dr Ledger (Debit),Cr Ledger (Credit),Amount,Currency,Exchange Rate,Narration
+01-04-2026,JV-3001,Depreciation Expense,Accumulated Depreciation,4500,BASE,1,Annual vehicle depreciation
+02-04-2026,JV-3002,Office Stationery Exp,Petty Cash Custodian,750,BASE,1,Month end stationery adjustment
+03-04-2026,JV-3003,Al Falah Trading LLC,Sunrise Trading FZE,12000,BASE,1,Inter-party balance settlement

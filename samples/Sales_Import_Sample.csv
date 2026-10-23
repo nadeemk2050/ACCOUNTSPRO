@@ -1,0 +1,4 @@
+Date,Voucher No,Customer,Item,Qty,Unit,Rate,Amount,Tax %,Tax Amount,Bill No,Narration
+03-04-2026,SAL-2001,Global Metal Importers LLC,KHALID ALUMINIUM,500,KG,720,360000,5,18000,INV-501,Export sale
+06-04-2026,SAL-2002,Sunrise Trading FZE,PVC SCRAP,900,KG,265,238500,5,11925,INV-502,Local sale
+09-04-2026,SAL-2003,Gulf Steel Traders,KHALID ALUMINIUM,150,KG,735,110250,0,0,INV-503,Spot sale
