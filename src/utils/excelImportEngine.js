@@ -542,6 +542,91 @@ export function sanitizeTallyXml(xmlText) {
     return out;
 }
 
+/* ── MULTI-CURRENCY (FOREX) SUPPORT ─────────────────────────────────────────
+   Tally writes a forex ledger leg as ONE text value inside <AMOUNT>:
+
+       -cad5000.00 @ AED 2.95/cad = -AED 14750.000
+        └ foreign ┘  rate (base/foreign)   └ base ┘
+
+   A plain parseFloat() on that string yields NaN → the voucher was imported as
+   zero. The helpers below read BOTH values (foreign + base) plus the currency
+   code and the rate, so the voucher can be created with its real amounts. */
+const FX_AMOUNT_RE = /^(-)?\s*([A-Za-z]{2,6})?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*@\s*([A-Za-z]{2,6})?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*\/\s*([A-Za-z]{2,6})\s*=\s*(-)?\s*([A-Za-z]{2,6})?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*$/;
+const FX_RATE_RE = /^\s*([A-Za-z]{2,6})?\s*(-?[0-9][0-9,]*(?:\.[0-9]+)?)\s*=\s*([A-Za-z]{2,6})?\s*(-?[0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:\/\s*([A-Za-z0-9._\/]+))?\s*$/;
+const tallyNum = (t) => Number(String(t == null ? '' : t).replace(/,/g, '')) || 0;
+
+/**
+ * Reads a Tally <AMOUNT> value that may be a forex expression.
+ * Returns { isForeign, base, foreign, currency, baseCurrency, rate } — `base`/`foreign` keep the sign.
+ */
+export function parseTallyFxAmount(text) {
+    const raw = String(text == null ? '' : text).trim();
+    const plain = raw === '' ? NaN : Number(raw.replace(/,/g, ''));
+    if (Number.isFinite(plain)) {
+        return { isForeign: false, base: plain, foreign: plain, currency: '', baseCurrency: '', rate: 1 };
+    }
+    const m = raw.match(FX_AMOUNT_RE);
+    if (!m) {
+        const fallback = parseFloat(raw.replace(/[^0-9.\-]/g, '')) || 0;
+        return { isForeign: false, base: fallback, foreign: fallback, currency: '', baseCurrency: '', rate: 1 };
+    }
+    const [, fSign, fCcy, fAmt, bCcy1, rateTxt, perCcy, bSign, bCcy2, bAmt] = m;
+    const rate = tallyNum(rateTxt) || 1;
+    const foreign = tallyNum(fAmt) * (fSign ? -1 : 1);
+    let base = tallyNum(bAmt) * (bSign ? -1 : 1);
+    if (!base) base = roundTally(foreign * rate);
+    return {
+        isForeign: true,
+        base,
+        foreign,
+        currency: String(perCcy || fCcy || '').toUpperCase(),
+        baseCurrency: String(bCcy2 || bCcy1 || '').toUpperCase(),
+        rate
+    };
+}
+
+/**
+ * Reads a Tally <RATE> that may be a forex expression: "cad5.00 = AED 14.450/kgs".
+ * Returns { isForeign, foreign, base, unit, rate }.
+ */
+export function parseTallyFxRate(text) {
+    const raw = String(text == null ? '' : text).trim();
+    const m = raw.match(FX_RATE_RE);
+    if (!m) {
+        const plain = parseFloat(raw.replace(/[^0-9.\-]/g, '')) || 0;
+        return { isForeign: false, foreign: plain, base: plain, unit: '', rate: 1 };
+    }
+    const [, ccy1, r1, ccy2, r2, unit] = m;
+    const foreign = tallyNum(r1);
+    const base = tallyNum(r2);
+    return {
+        isForeign: !!(ccy1 || ccy2),
+        foreign,
+        base,
+        unit: String(unit || '').trim(),
+        rate: foreign ? base / foreign : 1
+    };
+}
+
+const roundTally = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+
+/**
+ * Maps a Tally currency code (e.g. "CAD") to the app's currency master.
+ * Falls back to the raw code so the forex information is never lost.
+ */
+function resolveImportCurrency(code, context, baseSymbol) {
+    const raw = String(code || '').trim();
+    if (!raw || raw.toUpperCase() === 'BASE') return { id: 'BASE', symbol: baseSymbol };
+    const up = raw.toUpperCase();
+    const list = Array.isArray(context?.currencies) ? context.currencies : [];
+    const hit = list.find(c => String(c.symbol || '').trim().toUpperCase() === up)
+        || list.find(c => String(c.name || '').trim().toUpperCase().startsWith(up))
+        || list.find(c => String(c.id || '').trim().toUpperCase() === up);
+    return hit
+        ? { id: hit.id, symbol: hit.symbol || up }
+        : { id: up, symbol: up };
+}
+
 /**
  * Classifies a Tally voucher type name. Real-world names vary (Payment / Bank Payment / B.P.V /
  * C.P.V / R.C.P ...), so known "other" types are excluded and anything unrecognised is kept.
@@ -633,6 +718,12 @@ export function parseXMLFile(xmlText, options = {}) {
         let totalAmount = 0;
         let totalDr = 0;
         let totalCr = 0;
+        let totalForeign = 0;
+        let totalDrForeign = 0;
+        let totalCrForeign = 0;
+        let voucherCurrency = '';
+        let voucherRate = 1;
+        let baseCurrencyCode = '';
         const splits = [];
         const drRows = [];
         const crRows = [];
@@ -646,33 +737,63 @@ export function parseXMLFile(xmlText, options = {}) {
             return el ? (el.textContent || '').trim() : '';
         };
 
+        /** Reads one ledger leg. `fxAmount` keeps BOTH values of a multi-currency leg. */
+        const readLeg = (lNode) => {
+            const fx = parseTallyFxAmount(readTag(lNode, 'AMOUNT'));
+            const baseAbs = Math.abs(fx.base);
+            // Voucher-currency (foreign) value — same as base for single-currency legs.
+            const foreignAbs = fx.isForeign ? Math.abs(fx.foreign) : baseAbs;
+            if (fx.isForeign) {
+                if (!voucherCurrency) voucherCurrency = fx.currency;
+                if (fx.rate > 0) voucherRate = fx.rate;
+                if (!baseCurrencyCode) baseCurrencyCode = fx.baseCurrency;
+            }
+            return {
+                ledgerName: readTag(lNode, 'LEDGERNAME'),
+                isDeemedPositive: readTag(lNode, 'ISDEEMEDPOSITIVE'),
+                rawBase: fx.base,
+                baseAbs,
+                foreignAbs,
+                isForeign: fx.isForeign,
+                currency: fx.currency,
+                rate: fx.rate
+            };
+        };
+
         ledgerNodes.forEach(lNode => {
-            const ledgerName = readTag(lNode, 'LEDGERNAME');
-            const rawAmt = parseFloat(readTag(lNode, 'AMOUNT')) || 0;
-            const isDeemedPositive = readTag(lNode, 'ISDEEMEDPOSITIVE');
-            const absAmt = Math.abs(rawAmt);
+            const leg = readLeg(lNode);
+            const ledgerName = leg.ledgerName;
+            const rawAmt = leg.rawBase;
+            const isDeemedPositive = leg.isDeemedPositive;
+            const absAmt = leg.baseAbs;
+            const foreignAmt = leg.foreignAbs;
+            const fxMeta = { baseAmount: absAmt, foreignAmount: foreignAmt, currency: leg.currency, exchangeRate: leg.rate, isForeign: leg.isForeign };
 
             if (voucherMode === 'journal') {
                 if (isDeemedPositive === 'Yes' || (rawAmt < 0 && isDeemedPositive !== 'No')) {
-                    drRows.push({ targetName: ledgerName, amount: absAmt, description: narration, type: 'dr' });
+                    drRows.push({ targetName: ledgerName, amount: foreignAmt, description: narration, type: 'dr', ...fxMeta });
                     totalDr += absAmt;
+                    totalDrForeign += foreignAmt;
                 } else {
-                    crRows.push({ targetName: ledgerName, amount: absAmt, description: narration, type: 'cr' });
+                    crRows.push({ targetName: ledgerName, amount: foreignAmt, description: narration, type: 'cr', ...fxMeta });
                     totalCr += absAmt;
+                    totalCrForeign += foreignAmt;
                 }
             } else if (voucherMode === 'payment') {
                 if (isDeemedPositive === 'No' || (rawAmt > 0 && isDeemedPositive !== 'Yes')) {
                     if (!paidFrom) paidFrom = ledgerName;
                 } else {
-                    splits.push({ targetName: ledgerName, amount: absAmt, description: narration });
+                    splits.push({ targetName: ledgerName, amount: foreignAmt, description: narration, ...fxMeta });
                     totalAmount += absAmt;
+                    totalForeign += foreignAmt;
                 }
             } else {
                 if (isDeemedPositive === 'Yes' || (rawAmt < 0 && isDeemedPositive !== 'No')) {
                     if (!paidFrom) paidFrom = ledgerName;
                 } else {
-                    splits.push({ targetName: ledgerName, amount: absAmt, description: narration });
+                    splits.push({ targetName: ledgerName, amount: foreignAmt, description: narration, ...fxMeta });
                     totalAmount += absAmt;
+                    totalForeign += foreignAmt;
                 }
             }
         });
@@ -681,12 +802,23 @@ export function parseXMLFile(xmlText, options = {}) {
             paidTo = drRows.map(r => r.targetName).filter(Boolean).join(', ');
             paidFrom = crRows.map(r => r.targetName).filter(Boolean).join(', ');
             totalAmount = Math.max(totalDr, totalCr);
+            totalForeign = Math.max(totalDrForeign, totalCrForeign);
         } else if (splits.length === 0 && ledgerNodes.length >= 2) {
-            paidFrom = readTag(ledgerNodes[0], 'LEDGERNAME');
-            const secondName = readTag(ledgerNodes[1], 'LEDGERNAME');
-            const secondAmt = Math.abs(parseFloat(readTag(ledgerNodes[1], 'AMOUNT')) || 0);
-            splits.push({ targetName: secondName, amount: secondAmt, description: narration });
-            totalAmount = secondAmt;
+            const first = readLeg(ledgerNodes[0]);
+            const second = readLeg(ledgerNodes[1]);
+            paidFrom = first.ledgerName;
+            splits.push({
+                targetName: second.ledgerName,
+                amount: second.foreignAbs,
+                description: narration,
+                baseAmount: second.baseAbs,
+                foreignAmount: second.foreignAbs,
+                currency: second.currency,
+                exchangeRate: second.rate,
+                isForeign: second.isForeign
+            });
+            totalAmount = second.baseAbs;
+            totalForeign = second.foreignAbs;
         }
 
         if (voucherMode !== 'journal') {
@@ -701,15 +833,21 @@ export function parseXMLFile(xmlText, options = {}) {
             vchType,
             paidFrom,
             paidTo,
-            amount: totalAmount || (splits[0]?.amount || 0),
+            amount: totalAmount || (splits[0]?.baseAmount || splits[0]?.amount || 0),
             totalDr,
             totalCr,
             drRows,
             crRows,
             narration,
             splits: voucherMode === 'journal' ? [...drRows, ...crRows] : splits,
-            currency: 'BASE',
-            exchangeRate: 1.0,
+            currency: voucherCurrency || 'BASE',
+            exchangeRate: voucherCurrency ? voucherRate : 1.0,
+            // Forex figures so the voucher is created with BOTH currencies (base + foreign).
+            foreignAmount: totalForeign || totalAmount,
+            foreignTotal: totalForeign || totalAmount,
+            baseTotal: totalAmount,
+            baseCurrency: baseCurrencyCode || '',
+            isForeign: !!voucherCurrency,
             format: 'tally_xml',
             isMultiSplit: voucherMode === 'journal' ? (drRows.length > 1 || crRows.length > 1) : splits.length > 1
         });
@@ -1267,8 +1405,11 @@ async function runBatchImport(rowsToImport, context = {}) {
                     userId: targetUid,
                     ownerId: targetUid,
                     isMulti: true,
-                    amount: row.amount * (row.exchangeRate || 1),
-                    foreignAmount: row.amount,
+                    // Rows are stored in the VOUCHER currency (foreign for FX rows) — the voucher
+                    // total is always BASE currency, exactly like a hand-entered JV.
+                    amount: Number(row.baseTotal) > 0 ? Number(row.baseTotal) : row.amount * (row.exchangeRate || 1),
+                    foreignAmount: Number(row.foreignAmount) || row.amount,
+                    foreignTotal: Number(row.foreignAmount) || row.amount,
                     rows: [...drRows, ...crRows],
                     // Ledger statements query journal vouchers by drId / crId, so mirror the first leg
                     drId: drRows[0]?.id || null,
@@ -1277,9 +1418,9 @@ async function runBatchImport(rowsToImport, context = {}) {
                     crType: crRows[0]?.category || 'party',
                     drName: drRows.map(r => row.resolvedDrRows?.find(x => (x.targetId || x.matchedMaster?.id) === r.id)?.targetName).filter(Boolean).join(', ') || (row.drRows || []).map(r => r.targetName).join(', ') || 'Various',
                     crName: crRows.map(r => row.resolvedCrRows?.find(x => (x.targetId || x.matchedMaster?.id) === r.id)?.targetName).filter(Boolean).join(', ') || (row.crRows || []).map(r => r.targetName).join(', ') || 'Various',
-                    currencyId: row.currency || 'BASE',
+                    currencyId: row.currency ? resolveImportCurrency(row.currency, context, currencySymbol).id : 'BASE',
                     exchangeRate: row.exchangeRate || 1.0,
-                    currencySymbol,
+                    currencySymbol: row.currency ? resolveImportCurrency(row.currency, context, currencySymbol).symbol : currencySymbol,
                     batchImportId,
                     isImported: true,
                     importedAt: timestampISO,
@@ -1290,7 +1431,6 @@ async function runBatchImport(rowsToImport, context = {}) {
                     createdByName: effectiveName
                 };
                 batch.set(docRef, jvDoc);
-
                 // Accumulate balance impacts for Journal
                 drRows.forEach(r => {
                     if (r.id) {
@@ -1335,13 +1475,16 @@ async function runBatchImport(rowsToImport, context = {}) {
                 transactionCategory: 'multi',
                 amount: row.amount,
                 totalAmount: row.amount,
+                // Multi-currency: splits hold the voucher-currency value, the voucher holds both totals.
+                foreignAmount: Number(row.foreignAmount) || row.amount,
+                foreignTotal: Number(row.foreignAmount) || row.amount,
                 narration: row.narration || `Imported via ${row.format || 'Excel'}`,
                 description: row.narration || '',
                 isMulti: true,
                 splits,
-                currencyId: row.currency || 'BASE',
+                currencyId: row.currency ? resolveImportCurrency(row.currency, context, currencySymbol).id : 'BASE',
                 exchangeRate: row.exchangeRate || 1.0,
-                currencySymbol,
+                currencySymbol: row.currency ? resolveImportCurrency(row.currency, context, currencySymbol).symbol : currencySymbol,
                 userId: targetUid,
                 ownerId: targetUid,
                 // Rule 7: Batch Isolation & Audit Stamps
@@ -1358,12 +1501,14 @@ async function runBatchImport(rowsToImport, context = {}) {
             batch.set(docRef, paymentDoc);
 
             // Accumulate balance impacts
+            const rowRate = Number(row.exchangeRate) > 0 ? Number(row.exchangeRate) : 1;
             if (sourceAccountId) {
                 trackChange(doc(db, 'accounts', sourceAccountId), row.amount, voucherType, 'account');
             }
             splits.forEach(s => {
                 if (s.targetId) {
-                    trackChange(doc(db, targetCol(s.category), s.targetId), s.amount, voucherType, s.category);
+                    // Split values are in the voucher currency — balances live in BASE currency.
+                    trackChange(doc(db, targetCol(s.category), s.targetId), (Number(s.amount) || 0) * rowRate, voucherType, s.category);
                 }
             });
 
@@ -1890,11 +2035,13 @@ export function parseStockJournalXMLFile(xmlText, options = {}) {
         if (!itemName) return null;
         const qtyText = readXmlTag(n, 'BILLEDQTY') || readXmlTag(n, 'ACTUALQTY') || readXmlTag(n, 'QUANTITY') || '';
         const { qty, unit } = splitQtyUnit(qtyText);
-        const rate = Math.abs(numFromTally(readXmlTag(n, 'RATE')));
-        let amount = Math.abs(numFromTally(readXmlTag(n, 'AMOUNT')));
+        const rateFx = parseTallyFxRate(readXmlTag(n, 'RATE'));
+        const rate = Math.abs(rateFx.base); // BASE-currency rate (forex "cad5.00 = AED 14.450" -> 14.45)
+        const amtFx = parseTallyFxAmount(readXmlTag(n, 'AMOUNT'));
+        let amount = Math.abs(amtFx.base);
         if (!amount) {
             const alloc = n.getElementsByTagName('ACCOUNTINGALLOCATIONS.LIST')[0];
-            if (alloc) amount = Math.abs(numFromTally(readXmlTag(alloc, 'AMOUNT')));
+            if (alloc) amount = Math.abs(parseTallyFxAmount(readXmlTag(alloc, 'AMOUNT')).base);
         }
         const absQty = Math.abs(qty);
         return {
@@ -1934,7 +2081,7 @@ export function parseStockJournalXMLFile(xmlText, options = {}) {
             produced = [];
             generic.forEach(n => {
                 const deemed = (readXmlTag(n, 'ISDEEMEDPOSITIVE') || '').toLowerCase();
-                const signed = numFromTally(readXmlTag(n, 'AMOUNT'));
+                const signed = parseTallyFxAmount(readXmlTag(n, 'AMOUNT')).base;
                 const isProduced = deemed ? (deemed === 'yes') : (signed < 0);
                 const line = readLine(n, isProduced ? 'produced' : 'consumed');
                 if (!line) return;
@@ -2307,8 +2454,12 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
             const itemName = readXmlTag(n, 'STOCKITEMNAME');
             const qtyText = readXmlTag(n, 'BILLEDQTY') || readXmlTag(n, 'ACTUALQTY') || readXmlTag(n, 'QUANTITY') || '';
             const { qty, unit } = splitQtyUnit(qtyText);
-            const rate = numFromTally(readXmlTag(n, 'RATE'));
-            const amount = Math.abs(numFromTally(readXmlTag(n, 'AMOUNT')));
+            const rateFx = parseTallyFxRate(readXmlTag(n, 'RATE'));
+            // Item values stay in the VOUCHER currency (foreign for FX invoices), same as the
+            // app's own invoice model, where items/tax are foreign and totalAmount is base.
+            const rate = rateFx.isForeign ? Math.abs(rateFx.foreign) : Math.abs(rateFx.base);
+            const amtFx = parseTallyFxAmount(readXmlTag(n, 'AMOUNT'));
+            const amount = Math.abs(amtFx.isForeign ? amtFx.foreign : amtFx.base);
             const discount = Math.abs(numFromTally(readXmlTag(n, 'DISCOUNT')));
             // GST / VAT rate heads live inside the item's RATEDETAILS.LIST on Tally item invoices
             const taxHeads = Array.from(n.getElementsByTagName('RATEDETAILS.LIST')).map(rl => {
@@ -2324,6 +2475,10 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
                 unit: unit || readXmlTag(n, 'UNIT') || '',
                 rate: Math.abs(rate) || 0,
                 amount: amount || (Math.abs(qty) * Math.abs(rate)) || 0,
+                baseAmount: Math.abs(amtFx.base) || 0,
+                isForeign: rateFx.isForeign || amtFx.isForeign,
+                currency: amtFx.currency || '',
+                exchangeRate: amtFx.isForeign ? amtFx.rate : (rateFx.rate || 1),
                 discount,
                 taxHeads
             };
@@ -2335,7 +2490,8 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
 
         const ledgerEntries = ledgerNodes.map(n => {
             const name = readXmlTag(n, 'LEDGERNAME');
-            const rawAmt = numFromTally(readXmlTag(n, 'AMOUNT'));
+            const amtFx = parseTallyFxAmount(readXmlTag(n, 'AMOUNT'));
+            const rawAmt = amtFx.isForeign ? amtFx.foreign : amtFx.base;
             const isDeemedPositive = (readXmlTag(n, 'ISDEEMEDPOSITIVE') || '').toLowerCase() === 'yes';
             const isParty = (readXmlTag(n, 'ISPARTYLEDGER') || '').toLowerCase() === 'yes' ||
                             !!(partyName && name && name.trim().toLowerCase() === partyName.trim().toLowerCase());
@@ -2343,11 +2499,20 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
                 name,
                 amount: Math.abs(rawAmt),
                 signedAmount: rawAmt,
+                baseAmount: Math.abs(amtFx.base),
                 isDeemedPositive,
                 isParty,
+                isForeign: amtFx.isForeign,
+                currency: amtFx.currency,
+                exchangeRate: amtFx.rate,
                 isTax: !isParty && TAX_LEDGER_RE.test(name)
             };
         }).filter(l => l.name);
+
+        // Voucher-level currency: any forex leg carries the code + the base rate for the whole voucher.
+        const fxLeg = ledgerEntries.find(l => l.isForeign) || items.find(i => i.isForeign);
+        const voucherCurrency = fxLeg ? (fxLeg.currency || '') : '';
+        const voucherRate = fxLeg && fxLeg.exchangeRate > 0 ? fxLeg.exchangeRate : 1;
 
         const taxEntries = ledgerEntries.filter(l => l.isTax).map(t => ({
             name: t.name,
@@ -2383,6 +2548,9 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
             }
         }
         const taxTotal = taxEntries.reduce((s, t) => s + (t.amount || 0), 0);
+        // Voucher value in the voucher currency (items + tax/charges); base figure lives in `amount`.
+        const voucherForeignTotal = r3(amount + taxTotal);
+        const amountBase = voucherCurrency ? r3(voucherForeignTotal * voucherRate) : amount;
 
         parsedVouchers.push({
             rowNumber: index + 1,
@@ -2401,11 +2569,15 @@ export function parsePurchaseXMLFile(xmlText, options = {}) {
             taxPercent: taxEntries.length ? (taxEntries[0].percent || 0) : 0,
             taxAmount: taxTotal,
             ledgerEntries,
-            amount,
+            amount: amountBase,
+            foreignAmount: voucherCurrency ? voucherForeignTotal : amount,
+            foreignTotal: voucherCurrency ? voucherForeignTotal : amount,
+            baseTotal: amountBase,
             totalDr: ledgerEntries.filter(l => l.isDeemedPositive).reduce((s, l) => s + l.amount, 0),
             totalCr: ledgerEntries.filter(l => !l.isDeemedPositive).reduce((s, l) => s + l.amount, 0),
-            currency: 'BASE',
-            exchangeRate: 1.0,
+            currency: voucherCurrency || 'BASE',
+            exchangeRate: voucherCurrency ? voucherRate : 1.0,
+            isForeign: !!voucherCurrency,
             format: expectedKind === 'sales' ? 'tally_xml_sales' : 'tally_xml_purchase',
             paidTo: resolvedParty,
             paidFrom: '',
@@ -2808,6 +2980,11 @@ async function runPurchaseImport(rowsToImport, context = {}) {
             const taxPercent = Number(row.taxPercent) || 0;
             const taxAmount = Number(row.taxAmount) || r3(taxable * taxPercent / 100);
             const grand = r3(taxable + taxAmount);
+            // items / tax stay in the voucher currency; the invoice carries base total + forex total.
+            const rowFxRate = Number(row.exchangeRate) > 0 ? Number(row.exchangeRate) : 1;
+            const isFx = !!(row.currency && row.currency !== 'BASE');
+            const grandForeign = isFx ? r3(Number(row.foreignTotal) > 0 ? Number(row.foreignTotal) : grand) : grand;
+            const grandBase = r3(grandForeign * (isFx ? rowFxRate : 1));
 
             const docRef = doc(collection(db, 'invoices'));
             batch.set(docRef, {
@@ -2825,11 +3002,11 @@ async function runPurchaseImport(rowsToImport, context = {}) {
                 addlExpCreditId: null,
                 addlExpTotal: 0,
                 salesExpenseMode: null,
-                totalAmount: grand,
-                foreignTotal: grand,
-                currencyId: 'BASE',
-                exchangeRate: 1.0,
-                currencySymbol,
+                totalAmount: grandBase,
+                foreignTotal: grandForeign,
+                currencyId: isFx ? resolveImportCurrency(row.currency, context, currencySymbol).id : 'BASE',
+                exchangeRate: isFx ? rowFxRate : 1.0,
+                currencySymbol: isFx ? resolveImportCurrency(row.currency, context, currencySymbol).symbol : currencySymbol,
                 taxId: row.taxId || findId(lookups.taxRates, row.taxName) || null,
                 taxName: row.taxName || null,
                 taxPercent,

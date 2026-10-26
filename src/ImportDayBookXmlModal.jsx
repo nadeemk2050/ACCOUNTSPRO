@@ -131,6 +131,7 @@ export default function ImportDayBookXmlModal({
     stockJournals = [],
     effectiveName = 'Admin',
     currencySymbol = 'AED',
+    currencies = [],
     showToast
 }) {
     const [activeTab, setActiveTab] = useState('upload');
@@ -279,7 +280,10 @@ export default function ImportDayBookXmlModal({
             if (row.id !== rowId) return row;
             const issues = row.issues.filter(i => i.rule !== 'RULE_3_MISSING_FX');
             const stillCritical = issues.some(i => i.type === 'CRITICAL');
-            return { ...row, exchangeRate: rate, issues, status: stillCritical ? 'WARNING' : 'VALID', isResolved: !stillCritical };
+            // Re-derive the BASE amount from the forex amount so both currencies stay in sync.
+            const foreignAmt = Number(row.foreignAmount) || 0;
+            const baseAmount = foreignAmt > 0 ? Math.round(foreignAmt * rate * 1000) / 1000 : (Number(row.amount) || 0);
+            return { ...row, exchangeRate: rate, amount: baseAmount, baseTotal: baseAmount, issues, status: stillCritical ? 'WARNING' : 'VALID', isResolved: !stillCritical };
         }));
     };
 
@@ -374,6 +378,7 @@ export default function ImportDayBookXmlModal({
                 effectiveName,
                 companyProfile,
                 currencySymbol,
+                currencies,
                 lookups: { parties, products, taxRates, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts },
                 chunkSize: 200,
                 onRowStatus: queueRowStatus
@@ -662,6 +667,11 @@ export default function ImportDayBookXmlModal({
                                                 <div className="text-base font-black text-white">
                                                     {currencySymbol} {(Number(row.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                                 </div>
+                                                {!!row.isForeign && (
+                                                    <div className="text-[10px] font-mono text-emerald-300">
+                                                        {row.currency} {(Number(row.foreignAmount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} @ {Number(row.exchangeRate) || 1}
+                                                    </div>
+                                                )}
                                                 <div className="text-[10px] text-slate-500 font-mono">{row.__kind}</div>
                                             </div>
                                             <button
@@ -822,6 +832,11 @@ export default function ImportDayBookXmlModal({
                                             <td className="py-2 px-3 text-slate-400 max-w-xs truncate">{rowSubtitle(row)}</td>
                                             <td className="py-2 px-3 text-right font-mono text-emerald-300">
                                                 {(Number(row.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                                {!!row.isForeign && (
+                                                    <div className="text-[10px] text-emerald-500/80">
+                                                        {row.currency} {(Number(row.foreignAmount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} @ {Number(row.exchangeRate) || 1}
+                                                    </div>
+                                                )}
                                             </td>
                                             <td className="py-2 px-3">
                                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${rowStatus[row.id] === 'imported' ? 'bg-emerald-500/15 text-emerald-300'
