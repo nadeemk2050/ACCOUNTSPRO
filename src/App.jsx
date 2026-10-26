@@ -386,6 +386,26 @@ const computeLedgerBalances = ({ invDocs = [], payDocs = [], jvDocs = [], accoun
     return { accBal, partyBal };
 };
 
+/* ── PAYMENT LEG TARGET RESOLUTION ────────────────────────────────────────
+   Returns the id of the "other side" ledger of a payment / receipt / contra,
+   with EXACTLY the field priority used by computeLedgerBalances(). Some
+   vouchers (entered through the universal ledger picker) keep the destination
+   in the `partyId` slot even when that destination is an ACCOUNT — the report
+   and the dashboard count those legs, so the account ledger view must count
+   them too (otherwise a single voucher makes the two screens disagree). */
+const getPaymentLegTargetId = (v) => {
+    if (!v) return null;
+    const cat = v.transactionCategory;
+    if (cat === 'party') return v.partyId || null;
+    if (cat === 'expense') return v.expenseId || null;
+    if (cat === 'account' || v.type === 'contra') return v.toAccountId || null;
+    if (cat === 'capital') return v.capitalId || null;
+    if (cat === 'asset') return v.assetId || null;
+    if (cat === 'income') return v.incomeId || null;
+    // No category stored — same first-found order as the shared balance engine.
+    return v.partyId || v.expenseId || v.toAccountId || v.capitalId || v.assetId || v.incomeId || null;
+};
+
 const getEmbeddedBagsFromJournal = (journal) => {
     if (!journal) return [];
     return [
@@ -16992,6 +17012,70 @@ const AttendanceModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, s
     );
 };
 
+// --- AUTO-FIT NARRATION FIELD -------------------------------------------------
+// Keeps the narration inside a MAX 2-LINE box: if the text does not fit on one
+// line the font height shrinks and the text wraps to a second line; if it still
+// does not fit in two lines the font weight (thickness) is reduced.
+const NARRATION_FIT_STEPS = [
+    { size: 11, weight: 700 },
+    { size: 10.5, weight: 700 },
+    { size: 10, weight: 700 },
+    { size: 9.5, weight: 700 },
+    { size: 9, weight: 700 },
+    { size: 11, weight: 500 },
+    { size: 10.5, weight: 500 },
+    { size: 10, weight: 500 },
+    { size: 9.5, weight: 500 },
+    { size: 9, weight: 500 }
+];
+
+const AutoFitNarration = ({ value, onChange, placeholder = '', maxLength = 120, className = '' }) => {
+    const taRef = useRef(null);
+    const [fit, setFit] = useState({ size: 11, weight: 700, height: 20 });
+
+    useEffect(() => {
+        const el = taRef.current;
+        if (!el) return;
+        const applyStep = (s) => {
+            el.style.fontSize = `${s.size}px`;
+            el.style.fontWeight = String(s.weight);
+            el.style.lineHeight = '1.2';
+        };
+        const measure = (s) => {
+            const lh = Math.ceil(s.size * 1.2);
+            const lines = Math.max(1, Math.round(el.scrollHeight / lh));
+            return { lh, lines, overflow: el.scrollHeight > lh * 2 + 1 };
+        };
+        applyStep(NARRATION_FIT_STEPS[0]);
+        let i = 0;
+        let m = measure(NARRATION_FIT_STEPS[0]);
+        while (i < NARRATION_FIT_STEPS.length - 1 && m.overflow) {
+            i += 1;
+            applyStep(NARRATION_FIT_STEPS[i]);
+            m = measure(NARRATION_FIT_STEPS[i]);
+        }
+        const s = NARRATION_FIT_STEPS[i];
+        const lines = el.scrollHeight > m.lh + 1 ? 2 : 1;
+        const next = { size: s.size, weight: s.weight, height: m.lh * lines + 4 };
+        setFit(prev => (prev.size === next.size && prev.weight === next.weight && prev.height === next.height ? prev : next));
+    }, [value]);
+
+    return (
+        <textarea
+            ref={taRef}
+            rows={1}
+            spellCheck={false}
+            maxLength={maxLength}
+            placeholder={placeholder}
+            value={value}
+            onChange={e => onChange(e.target.value.replace(/[\r\n]+/g, ' '))}
+            onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
+            style={{ fontSize: `${fit.size}px`, fontWeight: fit.weight, lineHeight: 1.2, height: `${fit.height}px` }}
+            className={`w-0 flex-1 resize-none overflow-hidden bg-transparent border border-white/20 rounded-md px-2 py-0 text-white outline-none focus:border-white/40 placeholder:text-white/25 uppercase tracking-tight transition-[height] duration-150 ${className}`}
+        />
+    );
+};
+
 // --- Complex Transaction Modals ---
 
 // --- UPDATED INVOICE MODAL (With Container/Seal/Other Ref) ---
@@ -19354,16 +19438,14 @@ const InvoiceModal = (props) => {
                 </div>
 
                 {/* NARRATION BOTTOM BAR */}
-                <div className="bg-gradient-to-r from-[#1a2b53] to-[#0f1b35] border-t border-white/10 text-white flex items-center h-10 shrink-0 px-4 gap-3 z-20">
+                <div className="bg-gradient-to-r from-[#1a2b53] to-[#0f1b35] border-t border-white/10 text-white flex items-center min-h-10 shrink-0 px-4 py-1 gap-3 z-20">
                     <span className="text-[8px] font-black uppercase text-white tracking-widest shrink-0" style={{textShadow:'0 0 10px rgba(255,255,255,0.7)'}}>Narration</span>
-                    <input
+                    <AutoFitNarration
                         placeholder="Enter voucher narration / remarks..."
                         maxLength={120}
-                        className="w-0 flex-1 max-w-[480px] bg-transparent border border-white/20 rounded-md px-2 py-1 text-[11px] font-bold text-white outline-none focus:border-white/40 placeholder:text-white/25 uppercase tracking-tight"
                         value={formData.narration || ''}
-                        onChange={e => setFormData({ ...formData, narration: e.target.value })}
+                        onChange={v => setFormData({ ...formData, narration: v })}
                     />
-                    <div className="flex-1" />
                     <button
                         type="button"
                         onClick={() => setShowInvoiceOptions(true)}
@@ -23267,7 +23349,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [showDateModal, setShowDateModal] = useState(false);
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [showDateOptionsMenu, setShowDateOptionsMenu] = useState(false);
-    const [showRegisterPicker, setShowRegisterPicker] = useState(false);
     const [summaryMode, setSummaryMode] = useState('detailed'); // 'detailed', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'
     const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
 
@@ -23409,16 +23490,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         setHiddenStack(prev => prev.slice(0, -1));
     };
 
-    const quickRegisterOptions = [
-        { key: 'purchase', label: 'Purchase Register', type: 'purchase', voucherType: 'purchase' },
-        { key: 'sales', label: 'Sales Register', type: 'sales', voucherType: 'sales' },
-        { key: 'payments', label: 'Payments Register', type: 'daybook', voucherType: 'out' },
-        { key: 'receipts', label: 'Receipts Register', type: 'daybook', voucherType: 'in' },
-        { key: 'contra', label: 'Contra Register', type: 'daybook', voucherType: 'contra' },
-        { key: 'journal', label: 'Journal Register', type: 'daybook', voucherType: 'journal' },
-        { key: 'daybook', label: 'Day Book', type: 'daybook', voucherType: 'ALL' }
-    ];
-
     const getCurrentQuickRegisterLabel = () => {
         if (filter.type === 'purchase') return 'Purchase Register';
         if (filter.type === 'sales') return 'Sales Register';
@@ -23432,14 +23503,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         return getReportTitle();
     };
 
-    const applyQuickRegister = (opt) => {
-        setFilter(prev => ({ ...prev, type: opt.type, id: '' }));
-        setVoucherTypeFilter(opt.voucherType || 'ALL');
-        setCurrentPage(1);
-        setShowRegisterPicker(false);
+    // Header title for a ledger: ONLY the entity name (no "Customer Ledger :" / "Ledger View")
+    // Registers keep their normal label.
+    const getLedgerHeaderName = () => {
+        const label = getCurrentQuickRegisterLabel();
+        const sep = label.indexOf(' : ');
+        return sep >= 0 ? label.slice(sep + 3) : label;
     };
-
-
 
     // ✅ GLOBAL DATE LISTENER FOR REPORT
     useEffect(() => {
@@ -23509,7 +23579,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             setViewFilter('all');
             setViewCurrency('ALL');
             setVoucherTypeFilter(initialState?.voucherType || 'ALL');
-            setShowRegisterPicker(false);
             if (initialState?.openGraphView) { setShowGraphView(true); } else { setShowGraphView(false); }
             setSummarizeBy('');
 
@@ -23526,7 +23595,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             setOpeningBalance(0);
             setOpeningQty(0);
             setOpeningRate(0);
-            setShowRegisterPicker(false);
             setSummarizeBy('');
         }
     }, [isOpen, initialState]);
@@ -23723,10 +23791,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             }
                         } else if (docType === 'pay') {
                             const amt = baseVal;
+                            const legTargetId = getPaymentLegTargetId(d);
                             if (!d.isMulti) {
                                 if (filter.type === 'account' && d.accountId === filter.id) {
                                     amtIn += d.type === 'in' ? amt : 0; amtOut += d.type !== 'in' ? amt : 0;
                                 } else if (filter.type === 'account' && (d.type === 'contra' || d.transactionCategory === 'account') && d.toAccountId === filter.id) {
+                                    if (d.type === 'in') amtOut += amt; else amtIn += amt;
+                                } else if (filter.type === 'account' && legTargetId === filter.id) {
+                                    // Destination ledger stored in another slot (partyId / capitalId / ...)
+                                    // but it IS an account — count it like the shared balance engine does.
                                     if (d.type === 'in') amtOut += amt; else amtIn += amt;
                                 } else if (filter.type === 'party' && d.partyId === filter.id) {
                                     amtIn += d.type === 'out' ? amt : 0; amtOut += d.type === 'in' ? amt : 0;
@@ -23742,10 +23815,11 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                             } else {
                                 if (filter.type === 'account' && d.accountId === filter.id) {
                                     amtIn += d.type === 'in' ? amt : 0; amtOut += d.type !== 'in' ? amt : 0;
-                                }
-                                if (d.splits) {
+                                } else if (filter.type === 'account' && (d.type === 'contra' || d.transactionCategory === 'account') && d.toAccountId === filter.id) {
+                                    if (d.type === 'in') amtOut += amt; else amtIn += amt;
+                                } else if (d.splits) {
                                     let sAmt = 0;
-                                    d.splits.forEach(s => { if (s.targetId === filter.id) sAmt += (Number(s.amount) || 0); });
+                                    d.splits.forEach(s => { if ((s.targetId || s.partyId || s.accountId) === filter.id) sAmt += (Number(s.amount) || 0); });
                                     if (sAmt > 0) { if (d.type === 'in') amtOut += sAmt; else amtIn += sAmt; }
                                 }
                             }
@@ -24214,7 +24288,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         let sBaseAmt = 0;
                         if (d.isMulti && d.splits) {
                             d.splits.forEach(s => {
-                                if (s.targetId === activeFilter.id) sAmt += (Number(s.amount) || 0);
+                                if ((s.targetId || s.partyId || s.accountId) === activeFilter.id) sAmt += (Number(s.amount) || 0);
                             });
                         }
                         if (sAmt > 0) {
@@ -24226,10 +24300,20 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                         if (activeFilter.type === 'account') {
                             const isSource = d.accountId === activeFilter.id;
                             const isDest = (d.type === 'contra' || d.transactionCategory === 'account') && d.toAccountId === activeFilter.id;
+                            // Destination ledger stored in another slot (partyId / capitalId / assetId /
+                            // incomeId / expenseId) yet that id IS this account — e.g. a transfer booked
+                            // through the universal ledger picker. computeLedgerBalances() counts it, so
+                            // the ledger must show it too, otherwise the two screens disagree.
+                            const isLegTarget = !isSource && !isDest && getPaymentLegTargetId(d) === activeFilter.id;
 
                             if (isSource) row = buildRow(doc, d, { amtIn: d.type === 'in' ? amt : 0, amtOut: d.type !== 'in' ? amt : 0, foreignIn: d.type === 'in' ? fAmt : 0, foreignOut: d.type !== 'in' ? fAmt : 0 });
                             else if (isDest) {
                                 // FIX: If Receipt (in), the 'toAccountId' (Giver) is CREDITED.
+                                if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: amt, foreignIn: 0, foreignOut: fAmt });
+                                else row = buildRow(doc, d, { amtIn: amt, amtOut: 0, foreignIn: fAmt, foreignOut: 0 });
+                            }
+                            else if (isLegTarget) {
+                                // Same signs as the destination rule above.
                                 if (d.type === 'in') row = buildRow(doc, d, { amtIn: 0, amtOut: amt, foreignIn: 0, foreignOut: fAmt });
                                 else row = buildRow(doc, d, { amtIn: amt, amtOut: 0, foreignIn: fAmt, foreignOut: 0 });
                             }
@@ -25150,11 +25234,6 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 e.preventDefault();
                 setExpandDetails(prev => !prev);
             }
-            if (e.altKey && e.key === 'F4') {
-                e.preventDefault();
-                e.stopPropagation();
-                setShowRegisterPicker(true);
-            }
             if (e.altKey && key === 'f2') {
                 e.preventDefault();
                 e.stopPropagation();
@@ -25959,38 +26038,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 <ArrowLeft size={10} />â† {savedBreakupState.summaryMode.toUpperCase()} VIEW
                             </button>
                         )}
-                        <div className="flex flex-col border-l border-blue-300 pl-2 leading-tight hidden xl:flex border-r pr-3 mr-1 relative">
-                            <span className="text-[7px] opacity-60 uppercase font-black text-[#2b5797]">Ledger View</span>
-                            <button
-                                onClick={() => setShowRegisterPicker(prev => !prev)}
-                                className="text-[10px] font-black truncate max-w-[180px] text-left text-[#1e3264] hover:text-blue-700 transition-colors flex items-center gap-1"
-                                title="Alt+F4: Change Register"
-                            >
-                                <span className="truncate">{getCurrentQuickRegisterLabel()}</span>
-                                <ChevronDown size={11} />
-                            </button>
-                            {showRegisterPicker && (
-                                <>
-                                    <div className="fixed inset-0 z-[115]" onClick={() => setShowRegisterPicker(false)}></div>
-                                    <div className="absolute top-[30px] left-0 z-[120] w-[240px] bg-white border border-blue-300 rounded-md shadow-2xl overflow-hidden">
-                                        <div className="px-3 py-2 bg-[#eef5ff] border-b border-blue-200 text-[9px] font-black uppercase tracking-widest text-[#2b5797] flex items-center justify-between">
-                                            Change Register
-                                            <span className="text-[8px] text-slate-500">Alt+F4</span>
-                                        </div>
-                                        <div className="p-1.5 space-y-1 max-h-[260px] overflow-auto">
-                                            {quickRegisterOptions.map(opt => (
-                                                <button
-                                                    key={opt.key}
-                                                    onClick={() => applyQuickRegister(opt)}
-                                                    className={`w-full text-left px-2.5 py-2 rounded text-[10.5px] font-black transition-colors border ${getCurrentQuickRegisterLabel() === opt.label ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-[#1e3264] border-blue-100 hover:bg-blue-50'}`}
-                                                >
-                                                    {opt.label}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </>
-                            )}
+                        <div className="flex items-center border-l border-blue-300 pl-2 border-r pr-3 mr-1">
+                            <span className="text-[12px] font-black truncate max-w-[260px] text-[#1e3264] uppercase" title={getLedgerHeaderName()}>
+                                {getLedgerHeaderName()}
+                            </span>
                         </div>
                     </div>
 
