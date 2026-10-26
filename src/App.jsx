@@ -802,7 +802,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.7 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.8 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -857,7 +857,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.7</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.8</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -881,7 +881,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.7</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.8</div>
                 </div>
             </div>
         </Modal>
@@ -6029,7 +6029,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.7";
+    const SYSTEM_VERSION = "2.8.8";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -11503,7 +11503,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.7</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.8</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14522,7 +14522,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.7</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.8</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -17117,6 +17117,8 @@ const InvoiceModal = (props) => {
     const [showPaymentTermsPicker, setShowPaymentTermsPicker] = useState(false);
     const [showPayTermsMenu, setShowPayTermsMenu] = useState(false);
     const [showInvoiceOptions, setShowInvoiceOptions] = useState(false);
+    // Quick currency switcher (click the currency in the "Rate (CUR)" column heading)
+    const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
     // Adjust Advances
     const [adjustAdvRef, setAdjustAdvRef] = useState(null);      // { refNo, type, balance, partyId }
     const [adjustAdvAmount, setAdjustAdvAmount] = useState('');  // amount to adjust
@@ -18323,6 +18325,12 @@ const InvoiceModal = (props) => {
 
     if (!isOpen) return null;
     const currentSym = formData.currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === formData.currencyId)?.symbol || '?');
+    const foreignCurrencyList = (currencies || []).filter(c => !c.isBase);
+    const isForeignCurrency = formData.currencyId !== 'BASE';
+    const applyVoucherCurrency = (id) => {
+        setFormData(prev => ({ ...prev, currencyId: id, exchangeRate: id === 'BASE' ? 1 : (Number(prev.exchangeRate) || 1) }));
+        setShowCurrencyPicker(false);
+    };
 
     return (
         <Modal 
@@ -19024,7 +19032,66 @@ const InvoiceModal = (props) => {
                                     <th className="p-0.5 pl-1.5 w-[460px]">Item</th>
                                     <th className="p-0.5 w-[80px] text-center bg-blue-50/50 text-blue-700">Pcs</th>
                                     <th className="p-0.5 w-[108px] text-center">Qty</th>
-                                    <th className="p-0.5 w-[80px] text-right">Rate ({currentSym})</th>
+                                    <th className="p-0.5 w-[80px] text-right relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowCurrencyPicker(v => !v)}
+                                            className={`inline-flex items-center gap-0.5 px-1 py-0.5 -mr-1 rounded transition-colors ${isForeignCurrency ? 'text-purple-700 hover:bg-purple-100' : 'text-slate-500 hover:bg-blue-100 hover:text-blue-700'}`}
+                                            title="Click to change voucher currency"
+                                        >
+                                            Rate (<span className="underline decoration-dotted decoration-1 underline-offset-2 font-black">{currentSym}</span>)
+                                            <ChevronDown size={8} />
+                                        </button>
+                                        {showCurrencyPicker && (
+                                            <>
+                                                <div className="fixed inset-0 z-[115]" onClick={() => setShowCurrencyPicker(false)}></div>
+                                                <div className="absolute top-full right-0 z-[120] w-[190px] bg-white border border-blue-300 rounded-md shadow-2xl overflow-hidden normal-case tracking-normal text-left">
+                                                    <div className="px-2 py-1 bg-[#eef5ff] border-b border-blue-200 text-[8px] font-black uppercase tracking-widest text-[#2b5797]">Voucher Currency</div>
+                                                    <div className="p-1 space-y-0.5 max-h-[220px] overflow-auto">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => applyVoucherCurrency('BASE')}
+                                                            className={`w-full text-left px-2 py-1.5 rounded text-[10px] font-black border transition-colors ${!isForeignCurrency ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-slate-700 border-blue-100 hover:bg-blue-50'}`}
+                                                        >
+                                                            {currencySymbol} · Base
+                                                        </button>
+                                                        {foreignCurrencyList.map(c => (
+                                                            <button
+                                                                key={c.id}
+                                                                type="button"
+                                                                onClick={() => applyVoucherCurrency(c.id)}
+                                                                className={`w-full text-left px-2 py-1.5 rounded text-[10px] font-black border transition-colors ${formData.currencyId === c.id ? 'bg-purple-600 text-white border-purple-700' : 'bg-white text-slate-700 border-blue-100 hover:bg-blue-50'}`}
+                                                            >
+                                                                {c.symbol || c.name}
+                                                                <span className={`ml-1 font-bold ${formData.currencyId === c.id ? 'text-white/70' : 'text-slate-400'}`}>{c.name}</span>
+                                                            </button>
+                                                        ))}
+                                                        {foreignCurrencyList.length === 0 && (
+                                                            <div className="px-2 py-2 text-[9px] text-slate-400 italic">No foreign currency added yet — add one in Manage Currencies.</div>
+                                                        )}
+                                                    </div>
+                                                    {isForeignCurrency && (
+                                                        <div className="p-1.5 border-t border-blue-100 bg-amber-50/60">
+                                                            <div className="text-[7px] font-black uppercase text-amber-700 tracking-widest mb-0.5">Conversion Rate</div>
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="text-[9px] font-bold text-slate-500">1 {currentSym} =</span>
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.001"
+                                                                    autoFocus
+                                                                    className="w-full px-1.5 py-1 border border-amber-300 rounded text-[11px] font-black text-amber-800 bg-white outline-none focus:border-amber-500"
+                                                                    value={formData.exchangeRate}
+                                                                    onChange={e => setFormData(prev => ({ ...prev, exchangeRate: e.target.value }))}
+                                                                    onKeyDown={e => { if (e.key === 'Enter') setShowCurrencyPicker(false); }}
+                                                                />
+                                                                <span className="text-[9px] font-bold text-slate-500">{currencySymbol}</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </>
+                                        )}
+                                    </th>
                                     <th className="p-0.5 w-[148px] text-right">Amt ({currentSym})</th>
                                     <th className="p-0.5 w-12 text-center">
                                         <button
@@ -19424,6 +19491,21 @@ const InvoiceModal = (props) => {
                             <span className="w-px h-4 bg-slate-300 shrink-0" />
                             <span className="text-[10px] font-black text-purple-600 uppercase tracking-wide shrink-0">VAT</span>
                             <span className="text-[11px] font-black text-purple-700 font-mono shrink-0">{format3(totals.taxAmount)} <span className="text-slate-400">{currentSym}</span></span>
+                        </>)}
+                        {/* FX conversion — only when the voucher is in a foreign currency */}
+                        {isForeignCurrency && (<>
+                            <span className="w-px h-4 bg-slate-300 shrink-0" />
+                            <span className="text-[10px] font-black text-purple-600 uppercase tracking-wide shrink-0">FX</span>
+                            <span className="text-[10px] font-bold text-slate-500 shrink-0">1 {currentSym} =</span>
+                            <input
+                                type="number"
+                                step="0.001"
+                                className="w-16 px-1.5 py-0.5 border border-purple-300 rounded text-[11px] font-black text-purple-800 bg-purple-50 outline-none focus:border-purple-500 shrink-0"
+                                value={formData.exchangeRate}
+                                onChange={e => setFormData(prev => ({ ...prev, exchangeRate: e.target.value }))}
+                                title={`Conversion rate: 1 ${currentSym} to ${currencySymbol}`}
+                            />
+                            <span className="text-[10px] font-bold text-slate-500 shrink-0">{currencySymbol}</span>
                         </>)}
                     </div>
                     {/* Right: balance value only */}
