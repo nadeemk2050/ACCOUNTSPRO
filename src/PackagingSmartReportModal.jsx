@@ -1,24 +1,49 @@
 import React, { useState } from 'react';
 import {
-    X, Package, Search, Filter, Download, 
+    X, Package, Filter, Download, 
     Printer, Calendar, ChevronRight, ChevronLeft,
     TrendingUp, BarChart3, Layers, Box, Archive,
     FileSearch, Info, AlertCircle, Clock, List, Recycle, Plus, Trash2, FileSpreadsheet, FileText
 } from 'lucide-react';
 import { 
     getFirestore, collection, query, where, onSnapshot, orderBy,
-    doc, updateDoc, getDoc, getDocs, limit, addDoc, serverTimestamp, deleteDoc, deleteField, writeBatch
+    doc, updateDoc, getDoc, getDocs, limit, addDoc, setDoc, serverTimestamp, deleteDoc, deleteField, writeBatch
 } from 'firebase/firestore';
 import { RefreshCw, Check } from 'lucide-react';
 import { createPortal } from 'react-dom';
+import {
+    usePackageLabel,
+    setPackageLabel,
+    packageLabelFromProfile,
+    getPackageLabelSingular,
+    getPackageLabelPlural,
+    getPackageLabelCompany,
+    cachePackageLabelLocally
+} from './packageLabel';
+
+// Password required to change the finished-package wording.
+const PACKAGE_NAME_PASSWORD = 'abcd';
+// Reusable containers are ALWAYS called this, whatever the finished package is renamed to.
+const REUSABLE_CONTAINER_LABEL = 'Reusable Dustbins';
 const PackagingSmartReportModal = ({ 
     isOpen, onClose, zIndex = 1500, currencySymbol = 'AED',
-    user, subUser, dataOwnerId, products, units, launchView
+    user, subUser, dataOwnerId, products, units, launchView, companyProfile, showToast
 }) => {
     const [activeTab, setActiveTab] = useState('jumbo_bags');
     // Opens straight into the Filled Bags Inventory Intelligence dashboard — the old
     // "Module Under Development" launcher / tabs page is skipped.
     const [isDeepAnalysing, setIsDeepAnalysing] = useState(true);
+    // Reconciliation panel can be collapsed with its own heading (kept open by default).
+    const [showReconPanel, setShowReconPanel] = useState(true);
+    // Finished-package wording ("Bags" can be renamed to Pipes / Rolls / ...)
+    const packageLabel = usePackageLabel();
+    const packageLabelSingular = getPackageLabelSingular();
+    const [showRenameDialog, setShowRenameDialog] = useState(false);
+    const [renameStage, setRenameStage] = useState('confirm'); // 'confirm' | 'password' | 'edit'
+    const [renameValue, setRenameValue] = useState('');
+    const [renamePassword, setRenamePassword] = useState('');
+    const [renamePasswordError, setRenamePasswordError] = useState('');
+    const [renameSaving, setRenameSaving] = useState(false);
     const [viewingDetail, setViewingDetail] = useState(null); // 'jumbo_in', 'jumbo_out', 'manuf_reg', 'ready_stock', 'jumbo_allocated', 'reusable_bags'
     const [dateRange, setDateRange] = useState({ 
         from: '2025-01-01', 
@@ -91,9 +116,54 @@ const PackagingSmartReportModal = ({
     const db = getFirestore();
     const targetUid = dataOwnerId || user?.uid;
 
+    /**
+     * Saves the finished-package wording on the company document so the whole app
+     * (vouchers, registers, inventory reports, this dashboard) uses the new word.
+     */
+    const handleSavePackageLabel = async () => {
+        const next = String(renameValue || '').trim();
+        if (!next) return;
+        setRenameSaving(true);
+        try {
+            const companyId = companyProfile?.id || targetUid;
+            // The wording is per company: never write for a company that is not the open one
+            // (e.g. the report was left open while the user switched company).
+            const boundCompany = getPackageLabelCompany();
+            if (boundCompany && String(companyId) !== String(boundCompany)) {
+                if (typeof showToast === 'function') {
+                    showToast({ type: 'error', title: 'Company changed', message: 'This report belongs to another company. Reopen it for the company you are working in.' });
+                }
+                setShowRenameDialog(false);
+                return;
+            }
+            const existingRules = (companyProfile && companyProfile.rules) ? companyProfile.rules : {};
+            // 1) The live-synced copy — everything under companies_live/<companyId>/records reaches
+            //    every other PC instantly through the existing live-sync listener.
+            try {
+                await setDoc(
+                    doc(db, 'company_settings', 'package_label'),
+                    { id: 'package_label', packageLabel: next, userId: companyId, updatedAt: serverTimestamp() },
+                    { merge: true }
+                );
+            } catch (e) { console.warn('[packageLabel] live settings write failed', e); }
+            // 2) Company document rules (nested object, never a dotted key) for profile-based loads.
+            const payload = { rules: { ...existingRules, packageLabel: next }, packageLabel: next };
+            try { await updateDoc(doc(db, 'nadtally_live_registry', companyId), payload); } catch (e) { console.warn('[packageLabel] registry update failed', e); }
+            try { await updateDoc(doc(db, 'companies', companyId), payload); } catch (e) { console.warn('[packageLabel] company update failed', e); }
+            cachePackageLabelLocally(companyId, next);
+            setPackageLabel(next);
+            setShowRenameDialog(false);
+            if (typeof showToast === 'function') {
+                showToast({ type: 'success', title: 'Name Updated', message: `Finished packages are now called "${next}" everywhere in the app.` });
+            }
+        } finally {
+            setRenameSaving(false);
+        }
+    };
+
     const handleDeleteOrphanBag = async (bag) => {
         if (!bag || !bag.id) {
-            alert('Cannot delete this bag because it lacks a valid database ID. It may be an embedded or virtual record.');
+            alert(`Cannot delete this ${packageLabelSingular.toLowerCase()} because it lacks a valid database ID. It may be an embedded or virtual record.`);
             return;
         }
         setDeleteBagPrompt(bag);
@@ -102,7 +172,7 @@ const PackagingSmartReportModal = ({
 
     const handleForceReleaseBag = (bag) => {
         if (!bag || (!bag.bagNo && !bag.id)) {
-            alert('Cannot release: valid bag number or ID missing.');
+            alert(`Cannot release: valid ${packageLabelSingular.toLowerCase()} number or ID missing.`);
             return;
         }
         setForceReleaseBagPrompt(bag);
@@ -260,10 +330,10 @@ const PackagingSmartReportModal = ({
 
             setForceReleaseBagPrompt(null);
             setForceReleasePassword('');
-            alert(`✅ Bag #${cleanBagNo || forceReleaseBagPrompt.bagNo} has been completely force-released in local database and synchronized!\n\nIt is now restored to IN STOCK.`);
+            alert(`✅ ${packageLabelSingular} #${cleanBagNo || forceReleaseBagPrompt.bagNo} has been completely force-released in local database and synchronized!\n\nIt is now restored to IN STOCK.`);
         } catch (err) {
             console.error('Force release failed:', err);
-            alert('❌ Failed to release bag: ' + (err?.message || 'Unknown error'));
+            alert(`❌ Failed to release ${packageLabelSingular.toLowerCase()}: ` + (err?.message || 'Unknown error'));
         } finally {
             setForceReleaseLoading(false);
         }
@@ -613,7 +683,7 @@ const PackagingSmartReportModal = ({
             const normalizedNo = newReusableBagNo.trim().toUpperCase().replace(/^#/, '');
             // Check if already exists
             const existing = reusableBags.find(rb => rb.bagNo?.toUpperCase().replace(/^#/, '') === normalizedNo);
-            if (existing) { alert(`Bag #${normalizedNo} is already in the reusable bag registry.`); return; }
+            if (existing) { alert(`Reusable dustbin #${normalizedNo} is already in the reusable registry.`); return; }
             await addDoc(collection(db, 'reusable_jumbo_bags'), {
                 bagNo: normalizedNo,
                 status: 'active',
@@ -1218,7 +1288,7 @@ const PackagingSmartReportModal = ({
                             <div>
                                 <div className="flex items-center gap-3 mb-0.5">
                                     <h2 className="text-[23px] font-black text-[#1e3264] uppercase tracking-tight">
-                                        Filled Bags Inventory Intelligence
+                                        Finished Packages Report
                                     </h2>
                                     <div className="flex items-center gap-2 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
                                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
@@ -1226,31 +1296,29 @@ const PackagingSmartReportModal = ({
                                             DB Cache: {bags.length} Records
                                         </span>
                                     </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setRenameValue(getPackageLabelPlural()); setRenameStage('confirm'); setShowRenameDialog(true); }}
+                                        className="ml-2 px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-300 text-[9px] font-black uppercase tracking-widest text-amber-800 transition-colors"
+                                        title={`Current finished package name: ${packageLabel}`}
+                                    >
+                                        Change the name of finished packages
+                                    </button>
                                 </div>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-                                    {viewingDetail ? viewingDetail.replace('_', ' ') : 'Filled Bags Traceability & Analysis Dashboard'}
-                                </p>
+                                {viewingDetail && (
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
+                                        {viewingDetail === 'jumbo_in' ? `${packageLabel} Inventory (In)`
+                                            : viewingDetail === 'jumbo_out' ? `${packageLabel} Outflow`
+                                                : viewingDetail === 'jumbo_allocated' ? `${packageLabel} Allocated`
+                                                    : viewingDetail === 'manuf_reg' ? 'Manufacturing Register'
+                                                        : viewingDetail === 'ready_stock' ? 'Ready Stock'
+                                                            : viewingDetail === 'reusable_bags' ? REUSABLE_CONTAINER_LABEL
+                                                                : viewingDetail.replace(/_/g, ' ')}
+                                    </p>
+                                )}
                             </div>
                         </div>
-                        <div className="flex items-center gap-4 flex-1 max-w-md ml-10">
-                            <div className="relative w-full">
-                                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                                <input 
-                                    type="text"
-                                    placeholder="Search by Ref No or Item..."
-                                    className="w-full pl-12 pr-4 py-2.5 bg-slate-100 border-none rounded-2xl text-[11px] font-bold text-[#1e3264] focus:ring-2 focus:ring-[#1e3264]/20 outline-none transition-all"
-                                    value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                    autoComplete="off"
-                                    autoCorrect="off"
-                                    spellCheck="false"
-                                    data-lpignore="true"
-                                    data-form-type="other"
-                                />
-                            </div>
-                        </div>
-
-                        <div className="flex items-center gap-3 ml-4 bg-slate-50 p-2 rounded-2xl border border-slate-200">
+                        <div className="flex items-center gap-3 ml-auto bg-slate-50 p-2 rounded-2xl border border-slate-200">
                             <div className="flex flex-col px-3 border-r border-slate-200">
                                 <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Period From</span>
                                 <input 
@@ -1271,7 +1339,6 @@ const PackagingSmartReportModal = ({
                             </div>
                         </div>
 
-
                         <button 
                             onClick={onClose}
                             className="w-10 h-10 rounded-full hover:bg-red-50 hover:text-red-500 text-slate-400 flex items-center justify-center transition-all active:scale-90"
@@ -1288,11 +1355,20 @@ const PackagingSmartReportModal = ({
 
                                 {/* Reconciliation Panel */}
                                 <div className="mb-8 p-5 bg-slate-50 border border-blue-200 rounded-2xl shadow-md">
-                                    <div className="text-[10px] font-black text-blue-900 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowReconPanel(v => !v)}
+                                        className="w-full text-[10px] font-black text-blue-900 uppercase tracking-widest mb-2 flex items-center gap-2 hover:text-blue-700 transition-colors"
+                                        title={showReconPanel ? 'Click to hide the reconciliation panel' : 'Click to show the reconciliation panel'}
+                                    >
                                         <BarChart3 size={14} className="inline-block text-blue-700" />
                                         Reconciliation Panel
-                                    </div>
-                                    {(() => {
+                                        <ChevronRight
+                                            size={14}
+                                            className={`ml-1 text-blue-700 transition-transform duration-200 ${showReconPanel ? 'rotate-90' : ''}`}
+                                        />
+                                    </button>
+                                    {showReconPanel && (() => {
                                         // Compute Inward, Outward, Ready, Orphan from deduped live dashboard collections
                                         const manufacturedBags = inwardDashboardBags;
                                         const soldBags = outwardDashboardBags;
@@ -1366,25 +1442,25 @@ const PackagingSmartReportModal = ({
                                             let columns = [];
                                             if (type === 'inward') {
                                                 rows = getRunningBalanceRows([...manufacturedBags].sort((a,b)=>new Date(a.date)-new Date(b.date)), 'inward');
-                                                columns = ['Bag No.', 'Ref No.', 'Date Mfg', 'Qty', 'Running Qty Balance'];
+                                                columns = [`${packageLabelSingular} No.`, 'Ref No.', 'Date Mfg', 'Qty', 'Running Qty Balance'];
                                             } else if (type === 'outward') {
                                                 rows = getRunningBalanceRows([...soldBags].sort((a,b)=>new Date(a.soldDate||a.date)-new Date(b.soldDate||b.date)), 'outward');
-                                                columns = ['Bag No.', 'Ref No.', 'Date Sales', 'Qty', 'Running Qty Balance'];
+                                                columns = [`${packageLabelSingular} No.`, 'Ref No.', 'Date Sales', 'Qty', 'Running Qty Balance'];
                                             } else if (type === 'ready') {
                                                 rows = getRunningBalanceRows([...readyBags].sort((a,b)=>new Date(a.date)-new Date(b.date)), 'ready');
-                                                columns = ['Bag No.', 'Ref No.', 'Date Mfg', 'Qty', 'Running Qty Balance'];
+                                                columns = [`${packageLabelSingular} No.`, 'Ref No.', 'Date Mfg', 'Qty', 'Running Qty Balance'];
                                             } else if (type === 'orphan') {
                                                 const orphanRows = [...orphanBags].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
                                                 return (
                                                     <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center p-4">
                                                         <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-5xl max-h-[85vh] overflow-auto relative">
                                                             <button className="absolute top-2 right-2 text-slate-400 hover:text-red-500" onClick={() => setDetailModal(null)}><X size={20} /></button>
-                                                            <div className="font-black text-lg mb-1 uppercase tracking-widest">Orphan / Unused Bag Records</div>
-                                                            <div className="text-[11px] text-slate-500 mb-4">Bag records that are <b>not part of the live inventory</b> (IN / OUT / REMAINING). Check the reason, then delete with the admin password if the record is not needed.</div>
+<div className="font-black text-lg mb-1 uppercase tracking-widest">Orphan / Unused {packageLabelSingular} Records</div>
+                                                        <div className="text-[11px] text-slate-500 mb-4">{packageLabelSingular} records that are <b>not part of the live inventory</b> (IN / OUT / REMAINING). Check the reason, then delete with the admin password if the record is not needed.</div>
 
                                                             <table className="w-full text-xs border">
                                                                 <thead>
-                                                                    <tr>{['Bag No.', 'Ref No.', 'Date', 'Qty (KG)', 'Reason', 'Delete'].map((c, i) => (<th key={i} className="px-3 py-2 bg-slate-100 border-b font-black uppercase">{c}</th>))}</tr>
+                                                                    <tr>{[`${packageLabelSingular} No.`, 'Ref No.', 'Date', 'Qty (KG)', 'Reason', 'Delete'].map((c, i) => (<th key={i} className="px-3 py-2 bg-slate-100 border-b font-black uppercase">{c}</th>))}</tr>
                                                                 </thead>
                                                                 <tbody>
                                                                     {orphanRows.map((b, i) => (
@@ -1397,7 +1473,7 @@ const PackagingSmartReportModal = ({
                                                                             <td className="px-2 py-1">{b.id ? (<button className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-bold hover:bg-red-200 transition-colors" onClick={(e) => { e.stopPropagation(); setBagDeleteTarget('jumbo_bags'); handleDeleteOrphanBag(b); }}>Delete</button>) : (<span className="text-slate-400 text-xs">N/A</span>)}</td>
                                                                         </tr>
                                                                     ))}
-                                                                    {orphanRows.length === 0 && (<tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">No orphan / unused bag records. ✅</td></tr>)}
+                                                                    {orphanRows.length === 0 && (<tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">No orphan / unused {String(packageLabelSingular).toLowerCase()} records. ✅</td></tr>)}
                                                                 </tbody>
                                                             </table>
 
@@ -1405,7 +1481,7 @@ const PackagingSmartReportModal = ({
                                                             <div className="text-[11px] text-slate-500 mb-2">Registry entries touched by this login but <b>not part of the active owner registry</b> (legacy / duplicate scope). Delete if not needed.</div>
                                                             <table className="w-full text-xs border">
                                                                 <thead>
-                                                                    <tr>{['Bag No.', 'Status', 'Start', 'Last', 'Owner', 'Delete'].map((c, i) => (<th key={i} className="px-3 py-2 bg-teal-50 border-b font-black uppercase">{c}</th>))}</tr>
+                                                                    <tr>{[`${packageLabelSingular} No.`, 'Status', 'Start', 'Last', 'Owner', 'Delete'].map((c, i) => (<th key={i} className="px-3 py-2 bg-teal-50 border-b font-black uppercase">{c}</th>))}</tr>
                                                                 </thead>
                                                                 <tbody>
                                                                     {legacyReusableBags.map((rb, i) => (
@@ -1429,7 +1505,7 @@ const PackagingSmartReportModal = ({
                                                 <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center">
                                                     <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-4xl max-h-[80vh] overflow-auto relative">
                                                         <button className="absolute top-2 right-2 text-slate-400 hover:text-red-500" onClick={()=>setDetailModal(null)}><X size={20}/></button>
-                                                        <div className="font-black text-lg mb-4 uppercase tracking-widest">{type.replace(/^(.)/,c=>c.toUpperCase())} Bags Details</div>
+                                                        <div className="font-black text-lg mb-4 uppercase tracking-widest">{type.replace(/^(.)/,c=>c.toUpperCase())} {packageLabel} Details</div>
                                                         <table className="w-full text-xs border">
                                                             <thead>
                                                                 <tr>{columns.map((c,i)=>(<th key={i} className="px-3 py-2 bg-slate-100 border-b font-black uppercase">{c}</th>))}</tr>
@@ -1457,17 +1533,17 @@ const PackagingSmartReportModal = ({
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[11px]">
                                                 <div className="bg-white border border-blue-100 rounded-xl p-3 flex flex-col items-center cursor-pointer hover:shadow-lg transition" onClick={()=>openDetail('inward')}>
                                                     <div className="font-black text-blue-700 uppercase text-[9px] mb-1">Inward (Manufactured)</div>
-                                                    <div className="text-blue-900 font-extrabold text-lg">{dashboardInward} Bags</div>
+                                                    <div className="text-blue-900 font-extrabold text-lg">{dashboardInward} {packageLabel}</div>
                                                     <div className="text-blue-500 font-bold">{format(sumWeight(manufacturedBags))} KG</div>
                                                 </div>
                                                 <div className="bg-white border border-emerald-100 rounded-xl p-3 flex flex-col items-center cursor-pointer hover:shadow-lg transition" onClick={()=>openDetail('outward')}>
                                                     <div className="font-black text-emerald-700 uppercase text-[9px] mb-1">Outward (Sold)</div>
-                                                    <div className="text-emerald-900 font-extrabold text-lg">{dashboardOutward} Bags</div>
+                                                    <div className="text-emerald-900 font-extrabold text-lg">{dashboardOutward} {packageLabel}</div>
                                                     <div className="text-emerald-500 font-bold">{format(sumWeight(soldBags))} KG</div>
                                                 </div>
                                                 <div className={`bg-white border ${mismatch ? 'border-red-400' : 'border-amber-100'} rounded-xl p-3 flex flex-col items-center cursor-pointer hover:shadow-lg transition`} onClick={()=>openDetail('ready')}>
                                                     <div className={`font-black uppercase text-[9px] mb-1 ${mismatch ? 'text-red-700' : 'text-amber-700'}`}>Ready (In Stock)</div>
-                                                    <div className={`font-extrabold text-lg ${mismatch ? 'text-red-700' : 'text-amber-900'}`}>{dashboardReady} Bags</div>
+                                                    <div className={`font-extrabold text-lg ${mismatch ? 'text-red-700' : 'text-amber-900'}`}>{dashboardReady} {packageLabel}</div>
                                                     <div className={`font-bold ${mismatch ? 'text-red-500' : 'text-amber-500'}`}>{format(sumWeight(readyBags))} KG</div>
                                                     {mismatch && (
                                                         <div className="mt-2 text-xs text-red-600 font-bold flex items-center gap-2">
@@ -1479,7 +1555,7 @@ const PackagingSmartReportModal = ({
                                             </div>
                                             <div className="mt-4 text-[11px] text-orange-700 font-bold flex items-center gap-2 cursor-pointer hover:underline" onClick={()=>openDetail('orphan')}>
                                                 <Recycle size={14} />
-                                                Orphan / Unused Bag Records: {orphanBags.length}
+                                                Orphan / Unused {packageLabelSingular} Records: {orphanBags.length}
                                                 {legacyReusableBags.length > 0 && <span className="text-teal-700">· Legacy Reusable Records: {legacyReusableBags.length}</span>}
                                                 <span className="text-orange-500 font-normal">(no parent link, dangling voucher link, duplicates or unused — click to review &amp; delete)</span>
                                             </div>
@@ -1487,31 +1563,6 @@ const PackagingSmartReportModal = ({
                                         </>;
                                     })()}
                                 </div>
-
-                                <div className="mb-8 p-5 bg-white border border-slate-200 rounded-2xl shadow-sm">
-                                    <div className="text-[10px] font-black text-[#1e3264] uppercase tracking-widest mb-2">
-                                        Logic Notice Board
-                                    </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-[11px]">
-                                        <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
-                                            <div className="font-black text-blue-700 uppercase text-[9px] mb-1">Inward Rule</div>
-                                            <div className="text-slate-700 font-semibold">Manufacturing save creates allocated filled bags and links them to voucher reference.</div>
-                                        </div>
-                                        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
-                                            <div className="font-black text-emerald-700 uppercase text-[9px] mb-1">Outward Rule</div>
-                                            <div className="text-slate-700 font-semibold">Sales save marks only selected in-stock bags as sold and records sales reference.</div>
-                                        </div>
-                                        <div className="bg-amber-50 border border-amber-100 rounded-xl p-3">
-                                            <div className="font-black text-amber-700 uppercase text-[9px] mb-1">Ready Stock Rule</div>
-                                            <div className="text-slate-700 font-semibold">Ready Bags = Total Inward - Total Outward (sold). Dashboard syncs live with voucher updates.</div>
-                                        </div>
-                                        <div className="bg-orange-50 border border-orange-100 rounded-xl p-3">
-                                            <div className="font-black text-orange-700 uppercase text-[9px] mb-1">Orphan Rule</div>
-                                            <div className="text-slate-700 font-semibold">Bags with missing parent links are flagged as orphan and can be removed with admin password.</div>
-                                        </div>
-                                    </div>
-                                </div>
-
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
 
@@ -1529,12 +1580,12 @@ const PackagingSmartReportModal = ({
                                             <Layers size={32} />
                                         </div>
                                         <h3 className="text-base font-black text-[#1e3264] uppercase tracking-tight mb-3 leading-tight">
-                                            JBW Inventory (IN)
+                                            {packageLabel} Inventory (In)
                                         </h3>
                                         <div className="flex flex-col gap-1 mb-6">
                                             <div className="flex items-center justify-center gap-2">
                                                 <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
-                                                    {inwardDashboardBags.length} BAGS
+                                                    {inwardDashboardBags.length} {packageLabel.toUpperCase()}
                                                 </span>
                                                 <span className="text-[10px] font-black text-[#1e3264] bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
                                                     {inwardDashboardRefs} REF NOS
@@ -1544,7 +1595,7 @@ const PackagingSmartReportModal = ({
                                                 </span>
                                             </div>
                                             <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
-                                                Detailed traceability for manufactured bags with lot association.
+                                                Detailed traceability for manufactured {String(packageLabel).toLowerCase()} with lot association.
                                             </p>
                                         </div>
                                         <div className="mt-auto px-4 py-2 bg-blue-50 text-blue-700 text-[9px] font-black rounded-full opacity-0 group-hover:opacity-100 transition-opacity uppercase">
@@ -1570,7 +1621,7 @@ const PackagingSmartReportModal = ({
                                                     {stockJournals.length} VOUCHERS
                                                 </span>
                                                 <span className="text-[10px] font-black text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
-                                                    {stockJournals.reduce((acc, sj) => acc + getBagsForVoucher(sj).filter(b => !isBagReusable(b)).length, 0)} BAGS
+                                                    {stockJournals.reduce((acc, sj) => acc + getBagsForVoucher(sj).filter(b => !isBagReusable(b)).length, 0)} {packageLabel.toUpperCase()}
                                                 </span>
                                                 <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
                                                     {formatWeight(stockJournals.reduce((acc, sj) => acc + (sj.produced || []).reduce((sum, p) => sum + Number(p.quantity || 0), 0), 0))} KG
@@ -1599,12 +1650,12 @@ const PackagingSmartReportModal = ({
                                             <TrendingUp size={32} />
                                         </div>
                                         <h3 className="text-base font-black text-[#1e3264] uppercase tracking-tight mb-3 leading-tight">
-                                            Jumbo Bags Outflow
+                                            {packageLabel} Outflow
                                         </h3>
                                         <div className="flex flex-col gap-1 mb-6">
                                             <div className="flex items-center justify-center gap-2">
                                                 <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
-                                                    {outwardDashboardBags.length} BAGS
+                                                    {outwardDashboardBags.length} {packageLabel.toUpperCase()}
                                                 </span>
                                                 <span className="text-[10px] font-black text-[#1e3264] bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
                                                     {outwardDashboardRefs} REF NOS
@@ -1632,7 +1683,7 @@ const PackagingSmartReportModal = ({
                                             <Recycle size={32} />
                                         </div>
                                         <h3 className="text-base font-black text-[#1e3264] uppercase tracking-tight mb-3 leading-tight">
-                                            Reusable Jumbo Bags
+                                            {REUSABLE_CONTAINER_LABEL}
                                         </h3>
                                         <div className="flex flex-col gap-1 mb-6">
                                             <div className="flex flex-wrap items-center justify-center gap-1.5 px-2">
@@ -1647,11 +1698,11 @@ const PackagingSmartReportModal = ({
                                                 </span>
                                             </div>
                                             <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
-                                                Bags approved for multiple reuses across production cycles.
+                                                Dustbins approved for multiple reuses across production cycles.
                                             </p>
                                         </div>
                                         <div className="mt-auto px-4 py-2 bg-teal-50 text-teal-700 text-[9px] font-black rounded-full opacity-0 group-hover:opacity-100 transition-opacity uppercase">
-                                            Manage Reusable Bags
+                                            Manage {REUSABLE_CONTAINER_LABEL}
                                         </div>
                                     </button>
 
@@ -1674,7 +1725,7 @@ const PackagingSmartReportModal = ({
                                         <div className="flex flex-col gap-1 mb-6">
                                             <div className="flex items-center justify-center gap-2">
                                                 <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
-                                                    {readyDashboardBags.length} BAGS
+                                                    {readyDashboardBags.length} {packageLabel.toUpperCase()}
                                                 </span>
                                                 <span className="text-[10px] font-black text-[#1e3264] bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
                                                     {readyDashboardRefs} REF NOS
@@ -1684,21 +1735,13 @@ const PackagingSmartReportModal = ({
                                                 </span>
                                             </div>
                                             <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
-                                                Live view of available bags. Sold bags are excluded.
+                                                Live view of available {String(packageLabel).toLowerCase()}. Sold {String(packageLabel).toLowerCase()} are excluded.
                                             </p>
                                         </div>
                                         <div className="mt-auto px-6 py-2 bg-amber-100 text-amber-800 text-[8px] font-black rounded-full uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
                                             Open Report
                                         </div>
                                     </button>
-                                </div>
-
-                                {/* Deep Analysis Footer Note */}
-                                <div className="mt-10 p-6 bg-[#1e3264]/5 border border-[#1e3264]/10 rounded-2xl flex items-start gap-4">
-                                    <Info size={20} className="text-[#1e3264] shrink-0 mt-0.5" />
-                                    <p className="text-[11px] text-[#1e3264]/70 font-medium leading-relaxed uppercase">
-                                        <strong>Real-time Sync:</strong> All data displayed in this deep analysis view is synced with the main inventory ledger. Any changes in manufacturing or sales vouchers reflect here instantly.
-                                    </p>
                                 </div>
                             </div>
                         ) : viewingDetail === 'jumbo_allocated' ? (() => {
@@ -1760,7 +1803,7 @@ const PackagingSmartReportModal = ({
                                 <div className="w-full h-full p-0 flex flex-col">
                                     <div className="bg-white border-none shadow-none overflow-hidden flex flex-col h-full">
                                         <div className="px-6 py-3 bg-violet-50 border-b border-violet-100 flex items-center gap-3 text-[10px] font-black uppercase tracking-widest">
-                                            <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full border border-violet-200">{allocatedList.length} BAGS</span>
+                                            <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full border border-violet-200">{allocatedList.length} {packageLabel.toUpperCase()}</span>
                                             <span className="bg-[#1e3264]/10 text-[#1e3264] px-2 py-0.5 rounded-full border border-[#1e3264]/20">{uniqueAllocatedRefCount} REF NOS</span>
                                             <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200">{formatWeight(totalAllocatedWeight)} KG</span>
                                         </div>
@@ -1778,7 +1821,7 @@ const PackagingSmartReportModal = ({
                                                             className="px-6 py-4 text-[10px] font-black uppercase tracking-widest cursor-pointer hover:bg-violet-800 transition-colors"
                                                             onClick={() => requestSort('bagNo')}
                                                         >
-                                                            Bag No. <SortIcon column="bagNo" />
+                                                            {packageLabelSingular} No. <SortIcon column="bagNo" />
                                                         </th>
                                                         <th 
                                                             className="px-6 py-4 text-[10px] font-black uppercase tracking-widest cursor-pointer hover:bg-violet-800 transition-colors"
@@ -2228,19 +2271,19 @@ const PackagingSmartReportModal = ({
                                                                             onClick={() => setReadyStockSubTab('in')}
                                                                             className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${readyStockSubTab === 'in' ? 'bg-white text-[#1e3264] shadow-lg' : 'text-white/60 hover:text-white hover:bg-white/10'}`}
                                                                         >
-                                                                            BAGS IN
+                                                                            {packageLabel.toUpperCase()} IN
                                                                         </button>
                                                                         <button
                                                                             onClick={() => setReadyStockSubTab('out')}
                                                                             className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${readyStockSubTab === 'out' ? 'bg-white text-[#1e3264] shadow-lg' : 'text-white/60 hover:text-white hover:bg-white/10'}`}
                                                                         >
-                                                                            BAGS OUT
+                                                                            {packageLabel.toUpperCase()} OUT
                                                                         </button>
                                                                         <button
                                                                             onClick={() => setReadyStockSubTab('remaining')}
                                                                             className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${readyStockSubTab === 'remaining' ? 'bg-white text-[#1e3264] shadow-lg' : 'text-white/60 hover:text-white hover:bg-white/10'}`}
                                                                         >
-                                                                            BAGS REMAINING
+                                                                            {packageLabel.toUpperCase()} REMAINING
                                                                         </button>
                                                                     </div>
                                                                 </div>
@@ -2268,7 +2311,7 @@ const PackagingSmartReportModal = ({
                                                                     onClick={() => requestSort('bagNo')}
                                                                 >
                                                                     <div className="text-white mb-1 text-[26px] font-bold leading-tight tracking-tighter">{filteredBagsList.filter(b => !isBagReusable(b)).length}</div>
-                                                                    BAGS <SortIcon column="bagNo" />
+                                                                    {packageLabel.toUpperCase()} <SortIcon column="bagNo" />
                                                                 </th>
                                                                 <th 
                                                                     className="px-6 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer hover:bg-[#2b458a] transition-colors"
@@ -2311,17 +2354,17 @@ const PackagingSmartReportModal = ({
                                                                     <div className="text-white mb-1 text-[26px] font-bold leading-tight tracking-tighter text-center">
                                                                         {getSummary().reduce((acc, s) => acc + s.totalIn, 0)}
                                                                     </div>
-                                                                    IN BAGS
+                                                                    IN {packageLabel.toUpperCase()}
                                                                 </th>
                                                                 <th className="px-6 py-2 text-center text-[10px] font-black uppercase tracking-widest text-red-300">
                                                                     <div className="text-red-300 mb-1 text-[26px] font-bold leading-tight tracking-tighter text-center">
                                                                         {getSummary().reduce((acc, s) => acc + s.totalOut, 0)}
                                                                     </div>
-                                                                    OUT BAGS
+                                                                    OUT {packageLabel.toUpperCase()}
                                                                 </th>
                                                                 <th className="px-6 py-2 text-right text-[10px] font-black uppercase tracking-widest text-emerald-300">
                                                                     <div className="text-white mb-1 text-[26px] font-bold leading-tight tracking-tighter text-right">
-                                                                        {getSummary().reduce((acc, s) => acc + s.remaining, 0)} BAGS
+                                                                        {getSummary().reduce((acc, s) => acc + s.remaining, 0)} {packageLabel.toUpperCase()}
                                                                         <div className="text-[11px] opacity-80 mt-[-4px] font-mono">{formatWeight(getSummary().reduce((acc, s) => acc + s.remainingWeight, 0))} KG</div>
                                                                     </div>
                                                                     STOCK BALANCE (IN-OUT)
@@ -2344,7 +2387,7 @@ const PackagingSmartReportModal = ({
                                                                         </span>
                                                                         {(bag.isReusable || bag.isRefill || bag.reusableBagId || reusableBags.some(rb => String(rb.bagNo || '').replace(/^#/, '').trim().toUpperCase() === String(bag.bagNo || '').replace(/^#/, '').trim().toUpperCase())) && (
                                                                             <span className="bg-teal-100 text-teal-800 px-1.5 py-0.5 rounded text-[8px] font-black uppercase border border-teal-200 ml-1">
-                                                                                REUSE BAG
+                                                                                REUSE {packageLabelSingular.toUpperCase()}
                                                                             </span>
                                                                         )}
                                                                         <span className="text-[8px] font-bold text-slate-400 uppercase truncate max-w-[150px]">
@@ -2356,16 +2399,16 @@ const PackagingSmartReportModal = ({
                                                                     {getBagRefNo(bag) === '-' && readyStockSubTab === 'in' ? (
                                                                         <div className="flex items-center justify-between w-full">
                                                                             <span className="text-red-500 bg-red-50 border border-red-200 px-2 py-0.5 rounded font-black text-[9px] uppercase tracking-widest truncate">
-                                                                                ORPHAN BAG
+                                                                                ORPHAN {packageLabelSingular.toUpperCase()}
                                                                             </span>
                                                                             <button 
                                                                                 onClick={(e) => { 
                                                                                     e.stopPropagation(); 
-                                                                                    alert("Trash icon clicked for bag: " + (bag.bagNo || 'Unknown'));
+                                                                                    alert(`Trash icon clicked for ${String(packageLabelSingular).toLowerCase()}: ` + (bag.bagNo || 'Unknown'));
                                                                                     handleDeleteOrphanBag(bag); 
                                                                                 }} 
                                                                                 className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1 rounded transition-colors ml-2"
-                                                                                title="Delete Orphan Bag"
+                                                                                title={`Delete Orphan ${packageLabelSingular}`}
                                                                             >
                                                                                 <Trash2 size={12} />
                                                                             </button>
@@ -2399,7 +2442,7 @@ const PackagingSmartReportModal = ({
                                                                         <button
                                                                             onClick={(e) => { e.stopPropagation(); handleForceReleaseBag(bag); }}
                                                                             className="p-1 rounded transition-all text-amber-500 hover:text-amber-700 hover:bg-amber-50"
-                                                                            title={`Force release bag #${bag.bagNo} back to IN STOCK`}
+                                                                            title={`Force release ${String(packageLabelSingular).toLowerCase()} #${bag.bagNo} back to IN STOCK`}
                                                                         >
                                                                             <RefreshCw size={12} />
                                                                         </button>
@@ -2417,7 +2460,7 @@ const PackagingSmartReportModal = ({
                                                                     setViewMode('detail');
                                                                 }}
                                                                 className={`h-[40px] ${i % 2 === 0 ? 'bg-white' : 'bg-blue-50/10'} hover:bg-blue-50 transition-colors group text-[11px] cursor-pointer`}
-                                                                title={`View remaining bags details for ${getProductName(s.productId)}`}
+                                                                title={`View remaining ${String(packageLabel).toLowerCase()} details for ${getProductName(s.productId)}`}
                                                             >
                                                                 <td className="px-6 py-0 font-black text-slate-400 text-[10px] italic">{i + 1}</td>
                                                                 <td className="px-6 py-0">
@@ -2440,7 +2483,7 @@ const PackagingSmartReportModal = ({
                                                                 <td className="px-6 py-0 text-right">
                                                                     <div className="flex flex-col items-end">
                                                                         <span className="px-3 py-0.5 rounded bg-emerald-600 text-white text-[13px] font-black shadow-sm mb-0.5">
-                                                                            {s.remaining} BAGS
+                                                                            {s.remaining} {packageLabel.toUpperCase()}
                                                                         </span>
                                                                         <div className="text-[11px] font-black text-emerald-700 font-mono">
                                                                             {formatWeight(s.remainingWeight)} <span className="text-[8px] opacity-60 ml-0.5 uppercase">KG</span>
@@ -2455,7 +2498,7 @@ const PackagingSmartReportModal = ({
                                                             <td colSpan={5} className="px-6 py-20 text-center">
                                                                 <Clock size={40} className="mx-auto text-slate-300 mb-4" />
                                                                 <div className="text-sm font-bold text-slate-400 uppercase tracking-widest">
-                                                                    {searchTerm ? 'No stock matches your search' : 'No Jumbo Bags in Stock'}
+                                                                    {searchTerm ? 'No stock matches your search' : `No ${packageLabel} in Stock`}
                                                                 </div>
                                                             </td>
                                                         </tr>
@@ -2519,7 +2562,7 @@ const PackagingSmartReportModal = ({
                                         <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-[10px] font-black uppercase tracking-widest">
                                             <div className="flex items-center gap-3">
                                                 <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">{totalVouchersCount} Vouchers</span>
-                                                <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full border border-violet-200">{totalBagsProduced} Jumbo Bags</span>
+                                                <span className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full border border-violet-200">{totalBagsProduced} {packageLabel}</span>
                                                 <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200">{formatWeight(totalWeightProduced)} KG Produced</span>
                                             </div>
                                             <button
@@ -2553,7 +2596,7 @@ const PackagingSmartReportModal = ({
                                                             onClick={() => requestSort('bagsCount')}
                                                         >
                                                             <div className="text-white mb-1 text-[26px] font-bold leading-tight tracking-tighter text-center">{totalBagsProduced}</div>
-                                                            Jumbo Bags <SortIcon column="bagsCount" />
+                                                            {packageLabel} <SortIcon column="bagsCount" />
                                                         </th>
                                                         <th 
                                                             className="px-6 py-4 text-right text-[10px] font-black uppercase tracking-widest cursor-pointer hover:bg-[#2b458a] transition-colors"
@@ -2602,7 +2645,7 @@ const PackagingSmartReportModal = ({
                                                                                 onClick={() => setViewBagListVch(sj)}
                                                                                 className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-[9px] font-black border border-blue-100 hover:bg-blue-100 uppercase transition-colors"
                                                                             >
-                                                                                {mfgBags.length} Bags
+                                                                                {mfgBags.length} {packageLabel}
                                                                             </button>
                                                                         ) : (
                                                                             <span className="text-slate-400 text-[10px] font-bold">-</span>
@@ -2616,7 +2659,7 @@ const PackagingSmartReportModal = ({
                                                                         <td colSpan="6" className="px-8 py-4 border-l-4 border-blue-500">
                                                                             <div className="flex flex-col gap-3">
                                                                                 <div className="text-[10px] font-black text-blue-600 uppercase tracking-widest">
-                                                                                    Voucher Bag Association Details
+                                                                                    Voucher {packageLabelSingular} Association Details
                                                                                 </div>
                                                                                 {mfgBags.length > 0 ? (
                                                                                     <div className="flex flex-wrap gap-2">
@@ -2636,7 +2679,7 @@ const PackagingSmartReportModal = ({
                                                                                     </div>
                                                                                 ) : (
                                                                                     <div className="text-[10px] text-slate-400 font-bold uppercase italic">
-                                                                                        No raw bags individually serialized in this voucher.
+                                                                                        No raw {packageLabel.toLowerCase()} individually serialized in this voucher.
                                                                                     </div>
                                                                                 )}
                                                                             </div>
@@ -2682,10 +2725,10 @@ const PackagingSmartReportModal = ({
                                         <div>
                                             <h3 className="text-base font-black text-[#1e3264] uppercase tracking-tight flex items-center gap-2">
                                                 <Recycle size={18} className="text-teal-500" />
-                                                Reusable Jumbo Bags Registry
+                                                {REUSABLE_CONTAINER_LABEL} Registry
                                             </h3>
                                             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
-                                                Bags approved for multiple reuses — select in manufacturing allocation
+                                                Dustbins approved for multiple reuses — select in manufacturing allocation
                                             </p>
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -2693,17 +2736,17 @@ const PackagingSmartReportModal = ({
                                                 onClick={handleFixSpoofedReusableBags}
                                                 disabled={spoofFixLoading}
                                                 className="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-800 text-white text-[11px] font-black rounded-xl shadow-lg shadow-slate-700/20 active:scale-95 transition-all uppercase tracking-widest disabled:opacity-60"
-                                                title="Detect bags wrongly shown in sellable inventory that belong to the reusable registry, mark them reusable and deactivate them"
+                                                title="Detect dustbins wrongly shown in sellable inventory that belong to the reusable registry, mark them reusable and deactivate them"
                                             >
                                                 <AlertCircle size={15} />
-                                                {spoofFixLoading ? 'Fixing...' : 'Detect & Fix Spoofed Bags'}
+                                                {spoofFixLoading ? 'Fixing...' : 'Detect & Fix Spoofed Dustbins'}
                                             </button>
                                             <button
                                                 onClick={() => setShowMakeReusableModal(true)}
                                                 className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-black rounded-xl shadow-lg shadow-teal-600/20 active:scale-95 transition-all uppercase tracking-widest"
                                             >
                                                 <Plus size={15} />
-                                                Make Reusable Bags
+                                                Make Reusable Dustbins
                                             </button>
                                         </div>
                                     </div>
@@ -2714,14 +2757,14 @@ const PackagingSmartReportModal = ({
                                             onClick={() => setReusableSubTab('all')}
                                             className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${reusableSubTab === 'all' ? 'bg-teal-700 text-white shadow-lg shadow-teal-700/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                                         >
-                                            All Reusable Bags ({reusableBags.length})
+                                            All Reusable Dustbins ({reusableBags.length})
                                         </button>
                                         <button
                                             onClick={() => setReusableSubTab('deactivated')}
                                             className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${reusableSubTab === 'deactivated' ? 'bg-slate-700 text-white shadow-lg shadow-slate-700/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                                            title="Show reusable bags that were made and then deactivated"
+                                            title="Show reusable dustbins that were made and then deactivated"
                                         >
-                                            Deactivated Reusable Bags ({reusableBags.filter(rb => rb.status === 'closed').length})
+                                            Deactivated Reusable Dustbins ({reusableBags.filter(rb => rb.status === 'closed').length})
                                         </button>
                                     </div>
 
@@ -2740,9 +2783,9 @@ const PackagingSmartReportModal = ({
                                             onClick={handleManualFixBags}
                                             disabled={spoofFixLoading}
                                             className="px-4 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all disabled:opacity-60"
-                                            title="Mark these exact bag numbers as reusable (removed from sellable) and deactivate their registry entries"
+                                            title="Mark these exact dustbin numbers as reusable (removed from sellable) and deactivate their registry entries"
                                         >
-                                            {spoofFixLoading ? 'Fixing...' : 'Fix Specified Bags'}
+                                            {spoofFixLoading ? 'Fixing...' : 'Fix Specified Dustbins'}
                                         </button>
                                     </div>
 
@@ -2753,9 +2796,9 @@ const PackagingSmartReportModal = ({
                                                 <thead>
                                                     <tr className="bg-teal-800 text-white">
                                                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">#</th>
-                                                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Bag Number</th>
+                                                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Dustbin Number</th>
                                                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Weight (KG)</th>
-                                                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Allowed to Reuse in Jumbo Bag Allocation?</th>
+                                                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Allowed to Reuse in {packageLabelSingular} Allocation?</th>
                                                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Status</th>
                                                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Start Date</th>
                                                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Last Date</th>
@@ -2812,9 +2855,9 @@ const PackagingSmartReportModal = ({
                                                     {filteredReusable.length === 0 && (
                                                         <tr>
                                                             <td colSpan="8" className="px-6 py-20 text-center text-slate-400 font-bold uppercase tracking-widest italic">
-                                                                {reusableSubTab === 'deactivated' ? 'No deactivated reusable bags found.' : 'No reusable bags registered yet.'}
+                                                                {reusableSubTab === 'deactivated' ? 'No deactivated reusable dustbins found.' : 'No reusable dustbins registered yet.'}
                                                                 <br/>
-                                                                <span className="text-[10px] opacity-60">{reusableSubTab === 'deactivated' ? 'Close an active reusable bag and it will appear here.' : 'Click "Make Reusable Bags" to add one.'}</span>
+                                                                <span className="text-[10px] opacity-60">{reusableSubTab === 'deactivated' ? 'Close an active reusable dustbin and it will appear here.' : 'Click "Make Reusable Dustbins" to add one.'}</span>
                                                             </td>
                                                         </tr>
                                                     )}
@@ -2848,7 +2891,7 @@ const PackagingSmartReportModal = ({
                                     <div className="bg-gradient-to-r from-teal-500 to-cyan-600 px-6 py-4 flex items-center justify-between text-white">
                                         <div>
                                             <div className="text-white font-black uppercase text-sm tracking-tight">
-                                                Reusable Bag Details: #{selectedReusableBag.bagNo}
+                                                Reusable Dustbin Details: #{selectedReusableBag.bagNo}
                                             </div>
                                             <div className="text-white/70 text-[10px] font-bold uppercase tracking-widest mt-0.5">
                                                 Filled {selectedReusableBag.refillCount || (selectedReusableBag.usageHistory || []).reduce((s, h) => s + Number(h.fillCount || 1), 0)} time(s)
@@ -2900,7 +2943,7 @@ const PackagingSmartReportModal = ({
                                                 {(selectedReusableBag.usageHistory || []).length === 0 && (
                                                     <tr>
                                                         <td colSpan="6" className="px-6 py-20 text-center text-slate-400 font-bold uppercase tracking-widest italic">
-                                                            No reuse history yet for this reusable bag.
+                                                            No reuse history yet for this reusable dustbin.
                                                         </td>
                                                     </tr>
                                                 )}
@@ -2929,7 +2972,7 @@ const PackagingSmartReportModal = ({
                                                 <Box size={20} />
                                             </div>
                                             <div>
-                                                <div className="text-white font-black uppercase text-sm tracking-tight">Jumbo Bag Breakdown</div>
+                                                <div className="text-white font-black uppercase text-sm tracking-tight">{packageLabelSingular} Breakdown</div>
                                                 <div className="text-white/60 text-[10px] font-bold uppercase tracking-widest">Voucher: {viewBagListVch.refNo}</div>
                                             </div>
                                         </div>
@@ -2941,7 +2984,7 @@ const PackagingSmartReportModal = ({
                                         <table className="w-full text-left border-collapse">
                                             <thead className="bg-slate-50 sticky top-0">
                                                 <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
-                                                    <th className="px-6 py-3">Bag Number</th>
+                                                    <th className="px-6 py-3">{packageLabelSingular} Number</th>
                                                     <th className="px-6 py-3">Item / Product</th>
                                                     <th className="px-6 py-3 text-right">Weight (kg)</th>
                                                 </tr>
@@ -2967,7 +3010,7 @@ const PackagingSmartReportModal = ({
                                     </div>
                                     <div className="bg-slate-50 px-6 py-4 border-t border-slate-100 flex justify-between items-center">
                                         <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                            Total Bags: {getBagsForVoucher(viewBagListVch).length}
+                                            Total {packageLabel}: {getBagsForVoucher(viewBagListVch).length}
                                         </div>
 
                                         <button onClick={() => setViewBagListVch(null)} className="px-6 py-2 bg-[#1e3264] text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-900/20 active:scale-95 transition-all">
@@ -2989,14 +3032,14 @@ const PackagingSmartReportModal = ({
                         <div className="flex items-center justify-between">
                             <h3 className="text-base font-black text-[#1e3264] uppercase tracking-tight flex items-center gap-2">
                                 <Recycle size={18} className="text-teal-500" />
-                                Issue New Reusable Bag
+                                Issue New Reusable Dustbin
                             </h3>
                             <button onClick={() => setShowMakeReusableModal(false)} className="text-slate-400 hover:text-red-500 transition-colors">
                                 <X size={20} />
                             </button>
                         </div>
                         <div>
-                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Bag Number</label>
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Dustbin Number</label>
                             <input
                                 type="text"
                                 value={newReusableBagNo}
@@ -3020,6 +3063,140 @@ const PackagingSmartReportModal = ({
                     </div>
                 </div>
             )}
+            {/* Change the finished-package name (Bags -> Pipes / Rolls / ...) */}
+            {showRenameDialog && (
+                <div className="fixed inset-0 flex items-center justify-center bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200" style={{ zIndex: 999999 }}>
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full mx-4 border border-slate-200 animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-10 h-10 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                                <Package size={20} />
+                            </div>
+                            <div>
+                                <div className="text-sm font-black text-[#1e3264] uppercase tracking-wide">Finished Package Name</div>
+                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                    Current: {packageLabel}
+                                </div>
+                            </div>
+                        </div>
+
+                        {renameStage === 'confirm' ? (
+                            <>
+                                <p className="text-[12px] text-slate-600 font-semibold leading-relaxed mb-5">
+                                    Your finished packages are currently called <b className="text-[#1e3264]">"{packageLabel}"</b>.
+                                    Do you want to edit this name <b>everywhere in the app</b> — manufacturing voucher, sales voucher,
+                                    packaging reports, stock inventory report, reconciliation section and every other place?
+                                </p>
+                                <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 font-bold mb-5">
+                                    This name is saved for <b>this company only</b> ({companyProfile?.name || 'current company'}). Other companies keep their own wording.
+                                </p>
+                                <div className="flex gap-2 justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowRenameDialog(false)}
+                                        className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-600"
+                                    >
+                                        No
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setRenamePassword(''); setRenamePasswordError(''); setRenameStage('password'); }}
+                                        className="px-4 py-2 rounded-lg bg-[#1e3264] hover:bg-[#2b5797] text-[11px] font-black uppercase tracking-wider text-white"
+                                    >
+                                        Yes, edit name
+                                    </button>
+                                </div>
+                            </>
+                        ) : renameStage === 'password' ? (
+                            <>
+                                <p className="text-[12px] text-slate-600 font-semibold leading-relaxed mb-3">
+                                    Enter the administrator password to unlock the finished package name.
+                                </p>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Password</label>
+                                <input
+                                    type="password"
+                                    autoFocus
+                                    value={renamePassword}
+                                    onChange={(e) => { setRenamePassword(e.target.value); setRenamePasswordError(''); }}
+                                    onKeyDown={(e) => {
+                                        if (e.key !== 'Enter') return;
+                                        if (String(renamePassword) !== PACKAGE_NAME_PASSWORD) {
+                                            setRenamePasswordError('Incorrect password.');
+                                            return;
+                                        }
+                                        setRenameValue(packageLabel);
+                                        setRenameStage('edit');
+                                    }}
+                                    placeholder="Enter password"
+                                    className={`w-full px-3 py-2.5 border rounded-xl text-sm font-black text-[#1e3264] outline-none mb-1 ${renamePasswordError ? 'border-red-400 bg-red-50' : 'border-slate-300 focus:border-[#1e3264]'}`}
+                                />
+                                {renamePasswordError && (
+                                    <div className="text-[10px] font-black text-red-600 mb-2">{renamePasswordError}</div>
+                                )}
+                                <p className="text-[10px] text-slate-400 font-semibold mb-5">
+                                    The name field stays locked until the correct password is entered.
+                                </p>
+                                <div className="flex gap-2 justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => { setRenameStage('confirm'); setRenamePassword(''); setRenamePasswordError(''); }}
+                                        className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-600"
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (String(renamePassword) !== PACKAGE_NAME_PASSWORD) {
+                                                setRenamePasswordError('Incorrect password.');
+                                                return;
+                                            }
+                                            setRenameValue(packageLabel);
+                                            setRenameStage('edit');
+                                        }}
+                                        className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-[11px] font-black uppercase tracking-wider text-white"
+                                    >
+                                        Unlock
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">New name</label>
+                                <input
+                                    type="text"
+                                    autoFocus
+                                    value={renameValue}
+                                    onChange={(e) => setRenameValue(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') handleSavePackageLabel(); }}
+                                    placeholder="e.g. Pipes"
+                                    maxLength={20}
+                                    className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm font-black text-[#1e3264] outline-none focus:border-[#1e3264] mb-2"
+                                />
+                                <p className="text-[10px] text-slate-400 font-semibold mb-5">
+                                    This word replaces “Bags” in vouchers, registers and reports. Leave it as “{packageLabel}” to cancel.
+                                </p>
+                                <div className="flex gap-2 justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => setRenameStage('confirm')}
+                                        className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-600"
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={renameSaving || !String(renameValue).trim()}
+                                        onClick={handleSavePackageLabel}
+                                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-[11px] font-black uppercase tracking-wider text-white"
+                                    >
+                                        {renameSaving ? 'Saving…' : 'Save'}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
             {/* Custom Prompt Modal for Orphan Bag Deletion inside Deep Analysis */}
             {deleteBagPrompt && (
                 <div className="fixed inset-0 flex items-center justify-center bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200" style={{ zIndex: 999999 }}>
@@ -3028,10 +3205,10 @@ const PackagingSmartReportModal = ({
                             <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
                                 <Trash2 size={20} />
                             </div>
-                            <h3 className="font-black text-[14px] uppercase tracking-tight">Delete Orphan Bag</h3>
+                            <h3 className="font-black text-[14px] uppercase tracking-tight">Delete Orphan {packageLabelSingular}</h3>
                         </div>
                         <p className="text-[12px] font-bold text-slate-500 mb-2">
-                            Bag No: <span className="text-slate-800">{deleteBagPrompt.bagNo}</span>
+                            {packageLabelSingular} No: <span className="text-slate-800">{deleteBagPrompt.bagNo}</span>
                         </p>
                         <p className="text-[11px] font-medium text-slate-500 mb-6 leading-relaxed">
                             This action cannot be undone. Enter password to confirm removal.
@@ -3075,12 +3252,12 @@ const PackagingSmartReportModal = ({
                             <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center shrink-0 border border-amber-200">
                                 <RefreshCw size={20} />
                             </div>
-                            <h3 className="font-black text-[14px] uppercase tracking-tight">Force Release Bag</h3>
+                            <h3 className="font-black text-[14px] uppercase tracking-tight">Force Release {packageLabelSingular}</h3>
                         </div>
                         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
-                            <p className="text-[13px] font-black text-amber-800 mb-1">Bag #{forceReleaseBagPrompt.bagNo}</p>
+                            <p className="text-[13px] font-black text-amber-800 mb-1">{packageLabelSingular} #{forceReleaseBagPrompt.bagNo}</p>
                             <p className="text-[11px] font-medium text-amber-700 leading-relaxed">
-                                This bag is marked SOLD in database but missing from the voucher. Releasing it will reset its status to <strong>IN STOCK</strong> so you can select it again.
+                                This {String(packageLabelSingular).toLowerCase()} is marked SOLD in database but missing from the voucher. Releasing it will reset its status to <strong>IN STOCK</strong> so you can select it again.
                             </p>
                             {forceReleaseBagPrompt.salesRefNo && (
                                 <p className="text-[10px] text-amber-600 mt-2 font-mono">Linked to: <strong>{forceReleaseBagPrompt.salesRefNo}</strong></p>
@@ -3423,7 +3600,7 @@ const PackagingSmartReportModal = ({
     }
 
     const tabs = [
-        { id: 'jumbo_bags', label: 'Jumbo Bags Allocated Inventory', icon: <Box size={16} />, status: 'Coming Soon' },
+        { id: 'jumbo_bags', label: `${getPackageLabelPlural()} Allocated Inventory`, icon: <Box size={16} />, status: 'Coming Soon' },
         { id: 'other_reports', label: 'Other Packaging Reports', icon: <Archive size={16} />, status: 'Coming Soon' },
         { id: 'stock_summary', label: 'Packaging Stock Summary', icon: <Layers size={16} />, status: 'Coming Soon' },
         { id: 'consumption', label: 'Consumption Analysis', icon: <TrendingUp size={16} />, status: 'Coming Soon' }
@@ -3444,7 +3621,7 @@ const PackagingSmartReportModal = ({
                         </div>
                         <div>
                             <h2 className="text-2xl font-black text-[#1e3264] uppercase tracking-tighter leading-tight italic">
-                                Packaging Smart Report
+                                Finished Packages Report
                             </h2>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-1">
                                 Advanced Packaging & Inventory Intelligence
@@ -3510,7 +3687,7 @@ const PackagingSmartReportModal = ({
                                 </div>
                                 <div className="text-[12px] font-black text-[#1e3264] uppercase mb-2">Deep Tracking Analysis</div>
                                 <p className="text-[10px] text-slate-400 font-bold uppercase leading-relaxed">
-                                    Trace every bag from procurement to final shipping with surgical precision.
+                                    Trace every {String(packageLabelSingular).toLowerCase()} from procurement to final shipping with surgical precision.
                                 </p>
                             </button>
                             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center text-center">
@@ -3526,7 +3703,7 @@ const PackagingSmartReportModal = ({
 
                         <div className="mt-12 flex items-center gap-3 px-6 py-3 bg-[#1e3264] text-white rounded-full text-[10px] font-black uppercase tracking-widest shadow-xl shadow-blue-900/30">
                             <AlertCircle size={14} className="text-blue-300" />
-                            Expected Release: Version 2.8.8
+                            Expected Release: Version 2.8.9
                         </div>
                     </div>
                 </div>
@@ -3535,7 +3712,7 @@ const PackagingSmartReportModal = ({
                 <div className="bg-white px-8 py-5 border-t border-slate-200 flex items-center justify-between text-slate-400">
                     <div className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
                         <Info size={14} />
-                        Accpro Intelligence Framework V2.8.8
+                        Accpro Intelligence Framework V2.8.9
                     </div>
                     <div className="flex gap-3">
                         <button disabled className="px-6 py-2.5 rounded-xl border border-slate-200 text-[10px] font-black uppercase tracking-widest opacity-50 cursor-not-allowed">
@@ -3554,10 +3731,10 @@ const PackagingSmartReportModal = ({
                                     <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
                                         <Trash2 size={20} />
                                     </div>
-                                    <h3 className="font-black text-[14px] uppercase tracking-tight">Delete Orphan Bag</h3>
+                                    <h3 className="font-black text-[14px] uppercase tracking-tight">Delete Orphan {packageLabelSingular}</h3>
                                 </div>
                                 <p className="text-[12px] font-bold text-slate-500 mb-2">
-                                    Bag No: <span className="text-slate-800">{deleteBagPrompt.bagNo}</span>
+                                    {packageLabelSingular} No: <span className="text-slate-800">{deleteBagPrompt.bagNo}</span>
                                 </p>
                                 <p className="text-[11px] font-medium text-slate-500 mb-6 leading-relaxed">
                                     This action cannot be undone. Enter password to confirm removal.

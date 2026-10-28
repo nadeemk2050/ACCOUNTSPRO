@@ -155,6 +155,7 @@ import EditToolsModal from './EditToolsModal.jsx';
 
 
 import { resolveStoredImages } from './storageAsset';
+import { usePackageLabel, setPackageLabel, packageLabelFromProfile, getPackageLabelSingular, syncPackageLabelForCompany } from './packageLabel';
 
 // Helper for Column Names (A, B, ... AA, AB) without needing jspreadsheet lib
 const getColumnName = (index) => {
@@ -195,6 +196,55 @@ const round6 = (val) => {
 
 const createAutoCalcBomMaterial = () => ({ productId: '', percent: '' });
 const createAutoCalcBomExpense = () => ({ expenseId: '', ratePerTon: '' });
+
+// ── PC WISE BOM CALC (finished-package weight helper) ──────────────────────
+// When a BOM rule is marked "PC Wise", the app can also derive the WEIGHT of the
+// produced piece from its dimensions, so the user does not have to weigh it.
+const AUTO_CALC_PC_TYPES = [
+    { id: 'hdpe100', label: 'HDPE 100 PIPES', ready: true },
+    { id: 'hdpe', label: 'HDPE PIPES', ready: false },
+    { id: 'pvc', label: 'PVC PIPES', ready: false },
+    { id: 'gi', label: 'GI PIPES', ready: false },
+    { id: 'ms', label: 'MS PIPES', ready: false },
+    { id: 'more', label: 'COMING MORE SOON …', ready: false }
+];
+
+// PE100 SDR → nominal pressure (PN) for water service at 20 °C.
+const PC_WISE_SDR_OPTIONS = [
+    { sdr: '41', pn: '4' },
+    { sdr: '33', pn: '5' },
+    { sdr: '26', pn: '6' },
+    { sdr: '21', pn: '8' },
+    { sdr: '17', pn: '10' },
+    { sdr: '13.6', pn: '12.5' },
+    { sdr: '11', pn: '16' },
+    { sdr: '9', pn: '20' },
+    { sdr: '7.4', pn: '25' }
+];
+
+// Mass of one PE100 pipe:  m = π × (D − t) × t × ρ ÷ 1000 × length
+// D and t in millimetres, ρ = 0.960 g/cm³ (PE100 compound) → kilograms.
+const HDPE100_DENSITY_G_CM3 = 0.96;
+const computeHdpe100UnitWeight = (diameterMm, wallThicknessMm, lengthM) => {
+    const d = Number(diameterMm) || 0;
+    const t = Number(wallThicknessMm) || 0;
+    const len = Number(lengthM) || 0;
+    if (d <= 0 || t <= 0 || len <= 0 || t >= d) return 0;
+    const kgPerMetre = (Math.PI * (d - t) * t * HDPE100_DENSITY_G_CM3) / 1000;
+    return Math.round(kgPerMetre * len * 1000000) / 1000000;
+};
+
+const createPcWiseForm = () => ({
+    enabled: false,
+    type: '',
+    sdr: '',
+    pn: '',
+    diameterMm: '',
+    wallThicknessMm: '',
+    lengthM: '',
+    unitWeightKg: 0
+});
+
 const createAutoCalcBomForm = () => ({
     recordId: '',
     mainProductId: '',
@@ -202,7 +252,8 @@ const createAutoCalcBomForm = () => ({
     consumed: [createAutoCalcBomMaterial()],
     expenses: [],
     byProducts: [],
-    lockedProduct: false
+    lockedProduct: false,
+    pcWise: createPcWiseForm()
 });
 
 const toQtyNum = (val) => {
@@ -724,7 +775,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
             icon: <Package className="text-[#8b0000]" />,
             items: [
                 { label: "5.1 Product Master", desc: "Managing Item Names, Groups (e.g., HDPE 100), and base Units of Measure (UOM)." },
-                { label: "5.2 Multi-Level Packaging", desc: "Tracking inventory in Bags, Jumbo Bags, or Kilos with automatic conversion." },
+                { label: "5.2 Multi-Level Packaging", desc: "Tracking inventory in Bags or Kilos with automatic conversion." },
                 { label: "5.3 Lot & Batch Tracking", desc: "Drill-down tracking of specific batches for quality and aging analysis." },
                 { label: "5.4 Stock Valuation Modal", desc: "Real-time pop-up window showing current stock levels and monetary value." }
             ]
@@ -802,7 +853,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.8 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.9 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -857,7 +908,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.8</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.9</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -881,7 +932,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.8</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.9</div>
                 </div>
             </div>
         </Modal>
@@ -6029,7 +6080,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.8";
+    const SYSTEM_VERSION = "2.8.9";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6482,6 +6533,49 @@ export default function App() {
     const [invoices, setInvoices] = useState([]);
     const [vehicles, setVehicles] = useState([]); // <--- TRANSPORT STATE
     const [companyProfile, setCompanyProfile] = useState(null); // <--- COMPANY PROFILE STATE
+    // Keep the finished-package wording in sync with the company document (set from the
+    // Finished Packages Report → "Change the name of finished packages").
+    // Finished-package wording is PER COMPANY: re-synced (and reset) whenever the open
+    // company changes, so a renamed package never leaks into another company's data.
+    const activeCompanyKey = companyProfile?.id || dataOwnerId || '';
+    useEffect(() => {
+        syncPackageLabelForCompany(activeCompanyKey, companyProfile);
+    }, [activeCompanyKey, companyProfile]);
+    // LIVE sync of the finished-package wording. `company_settings/package_label` lives inside
+    // companies_live/<companyId>/records, so the existing live-sync listener brings a rename from
+    // ANY other PC into this one within a second — and it can never fade back to the default.
+    useEffect(() => {
+        if (!activeCompanyKey) return;
+        let unsub = null;
+        try {
+            unsub = onSnapshot(doc(db, 'company_settings', 'package_label'), (snap) => {
+                if (!snap || !snap.exists()) return;
+                const data = snap.data() || {};
+                if (!data.packageLabel) return;
+                syncPackageLabelForCompany(activeCompanyKey, { packageLabel: data.packageLabel });
+            }, () => { /* offline — the local per-company cache still holds the wording */ });
+        } catch (e) { /* ignore */ }
+        return () => { if (typeof unsub === 'function') unsub(); };
+    }, [activeCompanyKey]);
+    // LIVE sync of the company document: renaming the finished package on one PC must reach
+    // every other signed-in PC immediately (and must never fall back to the default on its own).
+    useEffect(() => {
+        if (!activeCompanyKey) return;
+        let unsub = null;
+        try {
+            unsub = onSnapshot(doc(db, 'companies', activeCompanyKey), (snap) => {
+                if (!snap || !snap.exists()) return;
+                const data = snap.data() || {};
+                const hasLabel = !!(data.rules && Object.prototype.hasOwnProperty.call(data.rules, 'packageLabel')) || !!data.packageLabel;
+                if (!hasLabel) return; // nothing saved for this company yet — keep current wording
+                syncPackageLabelForCompany(activeCompanyKey, data);
+                setCompanyProfile(prev => (prev ? { ...prev, rules: data.rules || prev.rules, packageLabel: data.packageLabel ?? prev.packageLabel } : { ...data, id: activeCompanyKey }));
+            }, () => { /* offline / permission — the local per-company cache still holds the wording */ });
+        } catch (e) { /* ignore */ }
+        return () => { if (typeof unsub === 'function') unsub(); };
+    }, [activeCompanyKey]);
+    // Current wording ("Bags" unless the owner renamed it) — used by dashboard/statistics labels.
+    const packageLabel = usePackageLabel();
     const [dashboardLogCount, setDashboardLogCount] = useState(0);
     const [liveRegistryCompanies, setLiveRegistryCompanies] = useState([]);
     const [systemInfo, setSystemInfo] = useState(null);
@@ -11140,11 +11234,11 @@ export default function App() {
         return {
             loading: bagStatsData === null || reusableBagStatsData === null,
             items: [
-                { label: 'Jumbo Bags In (Mfg / Allotted)', count: inwardBags.length, weight: sumW(inwardBags), view: { detail: 'jumbo_in', subTab: 'in' } },
-                { label: 'Jumbo Bags Out (Sales)', count: outwardBags.length, weight: sumW(outwardBags), view: { detail: 'jumbo_out', subTab: 'out' } },
-                { label: 'Bags Remaining (Ready Stock)', count: readyBags.length, weight: sumW(readyBags), view: { detail: 'ready_stock', subTab: 'remaining' } },
-                { label: 'Reusable Jumbo Bags (Active Registry)', count: activeReusable.length, weight: reusableWeight, note: `${closedReusable} closed · ${registry.length} total`, view: { detail: 'reusable_bags' } },
-                { label: 'Orphan / Unused Bag Records', count: orphanRecords.length, weight: sumW(orphanRecords), note: 'review & delete', view: { detail: 'orphan_bags' } },
+                { label: `${packageLabel} In (Mfg / Allotted)`, count: inwardBags.length, weight: sumW(inwardBags), view: { detail: 'jumbo_in', subTab: 'in' } },
+                { label: `${packageLabel} Out (Sales)`, count: outwardBags.length, weight: sumW(outwardBags), view: { detail: 'jumbo_out', subTab: 'out' } },
+                { label: `${packageLabel} Remaining (Ready Stock)`, count: readyBags.length, weight: sumW(readyBags), view: { detail: 'ready_stock', subTab: 'remaining' } },
+                { label: `Reusable ${packageLabel} (Active Registry)`, count: activeReusable.length, weight: reusableWeight, note: `${closedReusable} closed · ${registry.length} total`, view: { detail: 'reusable_bags' } },
+                { label: `Orphan / Unused ${getPackageLabelSingular()} Records`, count: orphanRecords.length, weight: sumW(orphanRecords), note: 'review & delete', view: { detail: 'orphan_bags' } },
                 { label: 'Legacy Reusable Records (other scope)', count: legacyReusableRecords.length, weight: legacyReusableRecords.reduce((s, rb) => s + (Number(rb.totalWeight || 0) || (Array.isArray(rb.usageHistory) ? rb.usageHistory.reduce((a, h) => a + Number(h?.qty || 0), 0) : 0)), 0), note: 'review & delete', view: { detail: 'orphan_bags' } }
             ]
         };
@@ -11503,7 +11597,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.8</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.9</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -11833,7 +11927,7 @@ export default function App() {
                                         onClick={() => { setActiveModal('order_vouchers'); onMenuClick(); setActiveSubMenu(null); }}
                                     />
                                     <MenuButton
-                                        label="Packaging Smart Report"
+                                        label="Finished Packages Report"
                                         shortcut="K"
                                         onClick={() => { setActiveModal('packaging_smart_report'); onMenuClick(); setActiveSubMenu(null); }}
                                         className="text-[#005994] font-black"
@@ -13056,6 +13150,8 @@ export default function App() {
                 user={user}
                 subUser={subUser}
                 dataOwnerId={dataOwnerId}
+                companyProfile={companyProfile}
+                showToast={setToast}
                 products={products}
                 units={units}
                 currencySymbol={currencySymbol}
@@ -14522,7 +14618,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.8</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.9</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -14805,7 +14901,7 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
                 {/* JUMBO BAGS (IN / OUT / REMAINING) — clickable drill-down into Bag Intelligence */}
                 <div className="space-y-2">
                     <div className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                        <span>Jumbo Bags — Production &amp; Despatch</span>
+                        <span>{packageLabel} — Production &amp; Despatch</span>
                         {bagStats?.loading && <span className="text-[10px] text-blue-500 font-bold italic normal-case">Loading bags…</span>}
                     </div>
                     <div className="border rounded-lg overflow-hidden bg-white shadow-sm">
@@ -14829,7 +14925,7 @@ const StatisticsModal = ({ isOpen, onClose, onBack, zIndex, statsPeriod, voucher
                             </div>
                         ))}
                         <div className="flex justify-between items-center px-4 py-3 text-sm font-bold bg-slate-50 border-t text-slate-800">
-                            <span>Jumbo Bags Balance (In − Out)</span>
+                            <span>{packageLabel} Balance (In − Out)</span>
                             <span className="text-lg">{Math.max(0, (bagStats?.items?.[0]?.count || 0) - (bagStats?.items?.[1]?.count || 0))}</span>
                         </div>
                     </div>
@@ -17083,6 +17179,8 @@ const AutoFitNarration = ({ value, onChange, placeholder = '', maxLength = 120, 
 const InvoiceModal = (props) => {
     const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances, stockJournals } = props;
     const companyBanks = companyProfile?.banks || [];
+    // Company-wide wording for finished packages (default "Bags", renameable to Pipes/Rolls/…)
+    const packageLabel = usePackageLabel();
     const headerScrollRef = useRef(null);
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const [formData, setFormData] = useState({
@@ -17884,7 +17982,7 @@ const InvoiceModal = (props) => {
                     });
 
                     // Validation: Ensure bagging matches
-                    if (consolidatedBags.length === 0) return alert("Please select bags for the items! (Reselect items to open bag window)");
+                    if (consolidatedBags.length === 0) return alert(`Please select ${String(packageLabel).toLowerCase()} for the items! (Reselect items to open the ${String(packageLabel).toLowerCase()} window)`);
 
                     handleFinalSave(consolidatedBags, 0); // Directly Save
                 } catch (e) { console.error(e); alert("Failed to process bags"); }
@@ -18319,9 +18417,10 @@ const InvoiceModal = (props) => {
     // Memoize product options — prevents new array creation on every Firestore snapshot update (stops trembling)
     const productOptions = useMemo(() => products.map(p => {
         const bagCount = productsBagMap[p.id] || 0;
-        const bagLabel = bagCount > 0 ? ` [${bagCount} BAGS]` : (voucherType === 'sales' && formData.packingType === 'bags' ? ' [0 BAGS]' : '');
+        const pkgUpper = String(packageLabel || 'Bags').toUpperCase();
+        const bagLabel = bagCount > 0 ? ` [${bagCount} ${pkgUpper}]` : (voucherType === 'sales' && formData.packingType === 'bags' ? ` [0 ${pkgUpper}]` : '');
         return { value: p.id, text: `${p.name}${bagLabel}` };
-    }), [products, productsBagMap, voucherType, formData.packingType]);
+    }), [products, productsBagMap, voucherType, formData.packingType, packageLabel]);
 
     if (!isOpen) return null;
     const currentSym = formData.currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === formData.currencyId)?.symbol || '?');
@@ -18443,9 +18542,9 @@ const InvoiceModal = (props) => {
                             type="button" 
                             onClick={() => setFormData({ ...formData, packingType: formData.packingType === 'loose' ? 'bags' : 'loose' })} 
                             className={`h-7 px-3 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm ${formData.packingType === 'bags' ? 'bg-orange-600 text-white border-orange-400 animate-pulse' : 'bg-white/5 text-white border-white/20 hover:bg-white/10'}`}
-                            title="Switch between Loose items and Bag-wise inventory"
+                            title={`Switch between Loose items and ${packageLabel}-wise inventory`}
                         >
-                            <Box size={10} /> {formData.packingType === 'bags' ? 'BAG-WISE' : 'LOOSE MODE'}
+                            <Box size={10} /> {formData.packingType === 'bags' ? `${String(packageLabel || 'Bags').toUpperCase()}-WISE` : 'LOOSE MODE'}
                         </button>
 
                         {/* 2. LOT PICKER */}
@@ -18518,7 +18617,7 @@ const InvoiceModal = (props) => {
                         {/* FILL JUMBO BAGS (purchase only, opens directly) */}
                         {voucherType === 'purchase' && (
                             <button type="button" onClick={() => setShowJumboEntry(true)} className="h-7 px-2 rounded border font-black text-[8px] uppercase transition-all flex items-center gap-1.5 shadow-sm bg-orange-600/30 text-white border-orange-400/50 hover:bg-orange-600">
-                                <Box size={10} /> FILL JUMBO BAGS
+                                <Box size={10} /> FILL {packageLabel.toUpperCase()}
                             </button>
                         )}
                         {/* + DETAILS BUTTON (moved from Section C) */}
@@ -19167,8 +19266,8 @@ const InvoiceModal = (props) => {
                                                     >
                                                         <ShoppingBag size={10} />
                                                         {(jumboBags || []).filter(b => b.productId === item.productId).length > 0
-                                                            ? 'Edit Bags'
-                                                            : 'Select Bags / Scan'}
+                                                            ? `Edit ${packageLabel}`
+                                                            : `Select ${packageLabel} / Scan`}
                                                     </button>
                                                 )}
                                             </td>
@@ -19432,7 +19531,7 @@ const InvoiceModal = (props) => {
                                     <div className="flex items-center gap-2">
                                         <div className="p-1 bg-amber-100 rounded text-amber-600"><Box size={12} /></div>
                                         <span className="text-[10px] font-black text-amber-800 uppercase tracking-wide">
-                                            {voucherType === 'sales' ? 'Sold Bags' : 'Bags Received'} — {jumboBags.length} Bag{jumboBags.length !== 1 ? 's' : ''}
+                                            {voucherType === 'sales' ? `Sold ${packageLabel}` : `${packageLabel} Received`} — {jumboBags.length} {jumboBags.length !== 1 ? packageLabel : (packageLabel.replace(/s$/i, '') || packageLabel)}
                                         </span>
                                     </div>
                                     {voucherType === 'sales' && formData.packingType === 'bags' && (
@@ -20347,6 +20446,29 @@ const InvoiceModal = (props) => {
     );
 };
 
+// ── FINISHED-PACKAGE NUMBER HELPERS ───────────────────────────────────────
+// Vouchers EMBED their package list (jumboBags / producedBags / soldBags / produced[].jumboBags),
+// so a uniqueness check that only looks at the `jumbo_bags` collection misses numbers that were
+// saved inside a voucher — that is how "A1" could be assigned twice.
+const normalizeFinishedPackageNo = (v) => String(v == null ? '' : v).replace(/^#/, '').trim().toUpperCase();
+const collectEmbeddedFinishedPackageNos = (doc) => {
+    if (!doc || typeof doc !== 'object') return [];
+    const out = [];
+    const pushList = (arr) => (Array.isArray(arr) ? arr : []).forEach((b) => {
+        if (!b || typeof b !== 'object') return;
+        const no = b.bagNo ?? b.no ?? b.number;
+        if (no !== undefined && no !== null && String(no).trim()) out.push(String(no));
+    });
+    pushList(doc.jumboBags);
+    pushList(doc.jumbo_bags);
+    pushList(doc.producedBags);
+    pushList(doc.soldBags);
+    pushList(doc.bags);
+    (Array.isArray(doc.produced) ? doc.produced : []).forEach((p) => { pushList(p?.jumboBags); pushList(p?.jumbo_bags); });
+    (Array.isArray(doc.consumed) ? doc.consumed : []).forEach((p) => { pushList(p?.jumboBags); pushList(p?.jumbo_bags); });
+    return out;
+};
+
 // --- NEW MANUFACTURING / BOM VOUCHER (Fixed Transaction Order) ---
 // --- UPDATED MANUFACTURING MODAL (Now saves to Audit Log) ---
 // --- UPDATED STOCK JOURNAL MODAL (3-Digit Precision Inputs & Display) ---
@@ -20354,6 +20476,8 @@ const InvoiceModal = (props) => {
 // --- JUMBO BAG ALLOCATION MODAL ---
 const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, producedQtyMap, showToast, lastBagNoSeed, initialBags, user, dataOwnerId, cloudDb, mode = 'production', voucherRefNo = '' }) => {
 
+    const packageLabel = usePackageLabel();
+    const packageLabelSingular = getPackageLabelSingular();
     const [bags, setBags] = useState([]);
     const [nextBagNo, setNextBagNo] = useState('');
     const [selectedItem, setSelectedItem] = useState('');
@@ -20361,6 +20485,8 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
     const [useReusablePicker, setUseReusablePicker] = useState(false);
     const [reusableBagOptions, setReusableBagOptions] = useState([]);
     const [selectedReusableBag, setSelectedReusableBag] = useState('');
+    // 🔒 Strict registry: every number already assigned anywhere (bag docs + voucher-embedded lists).
+    const [usedBagMap, setUsedBagMap] = useState({});
 
     // Initialize/Reset
     useEffect(() => {
@@ -20397,23 +20523,52 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                     const targetUid = dataOwnerId || (user ? user.uid : null);
                     if (!targetUid) return;
 
-                    const qSeed = query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), limit(1000));
-                    const snap = await getDocs(qSeed);
+                    // 🔒 Build the FULL used-number registry: bag documents + numbers embedded in
+                    // vouchers (this is what used to be missed, allowing "A1" twice).
+                    const map = {};
+                    const ownNos = new Set((initialBags || []).map(b => normalizeFinishedPackageNo(b.bagNo)).filter(Boolean));
+                    const ownVoucherId = initialBags?.[0]?.stockJournalId || null;
 
-                    let maxNumeric = 0;
-                    snap.forEach(d => {
-                        let bNo = d.data().bagNo;
-                        let val = 0;
-                        if (mode === 'production' && String(bNo).startsWith('A')) val = parseInt(String(bNo).substring(1));
-                        else val = Number(bNo);
+                    const [bagsSnap, sjSnap, reusableSnap] = await Promise.all([
+                        getDocs(query(collection(db, 'jumbo_bags'), where('userId', '==', targetUid), limit(5000))).catch(() => null),
+                        getDocs(query(collection(db, 'stock_journals'), where('userId', '==', targetUid), limit(5000))).catch(() => null),
+                        getDocs(query(collection(db, 'reusable_jumbo_bags'), where('ownerId', '==', targetUid))).catch(() => null)
+                    ]);
 
-                        if (!isNaN(val) && Number.isInteger(val) && val > maxNumeric) maxNumeric = val;
+                    bagsSnap?.forEach(d => {
+                        const x = d.data() || {};
+                        const no = normalizeFinishedPackageNo(x.bagNo);
+                        if (!no) return;
+                        if (ownVoucherId && x.stockJournalId === ownVoucherId) return;
+                        if (!map[no]) map[no] = { ref: x.stockJournalRefNo || x.voucherRefNo || x.purchaseRefNo || 'another voucher', date: x.date || '' };
+                    });
+                    sjSnap?.forEach(d => {
+                        const x = d.data() || {};
+                        if (ownVoucherId && d.id === ownVoucherId) return;
+                        collectEmbeddedFinishedPackageNos(x).forEach(raw => {
+                            const no = normalizeFinishedPackageNo(raw);
+                            if (!no || ownNos.has(no)) return;
+                            if (!map[no]) map[no] = { ref: x.refNo || 'MFG', date: x.date || '' };
+                        });
+                    });
+                    reusableSnap?.forEach(d => {
+                        const x = d.data() || {};
+                        const no = normalizeFinishedPackageNo(x.bagNo);
+                        if (no && !map[no]) map[no] = { ref: 'reusable registry', date: '' };
                     });
 
-                    // If we found a higher number than the prop, update it.
-                    if (mode === 'production' && maxNumeric > (parseInt(lastBagNoSeed) || 0)) {
-                        setNextBagNo('A' + (maxNumeric + 1).toString());
-                    }
+                    setUsedBagMap(map);
+
+                    // Next number = highest used number + 1, skipped forward if it is taken.
+                    let maxNumeric = 0;
+                    Object.keys(map).forEach(no => {
+                        const m = no.match(/^([A-Z]*)(\d+)$/);
+                        if (m && (m[1] === '' || m[1] === 'A')) maxNumeric = Math.max(maxNumeric, parseInt(m[2], 10) || 0);
+                    });
+                    const prefix = mode === 'production' ? 'A' : '';
+                    let candidate = maxNumeric + 1;
+                    while (map[String(prefix + candidate).toUpperCase()]) candidate += 1;
+                    setNextBagNo(prefix + candidate);
                 } catch (e) { console.warn("Jumbo Fresh Seed Error", e); }
             };
             if (mode === 'production') fetchFreshSeed();
@@ -20490,6 +20645,17 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
         // ✅ LOCAL DUPLICATE CHECK (current allocation list)
         if (!useReusablePicker && bags.some(b => normalizeBagNo(b.bagNo) === cleanNext)) {
             return showToast({ type: 'error', title: 'Duplicate', message: `Bag No ${cleanNext} is already in this allocation list!` });
+        }
+
+        // 🔒 STRICT REGISTRY CHECK — a number already assigned to ANY other voucher can never be
+        // picked again (covers numbers embedded in vouchers, which the jumbo_bags query misses).
+        if (!useReusablePicker && usedBagMap[cleanNext]) {
+            const info = usedBagMap[cleanNext];
+            return showToast({
+                type: 'error',
+                title: `${packageLabelSingular} No. already used`,
+                message: `#${cleanNext} is already assigned${info.date ? ` on ${info.date}` : ''} (Ref: ${info.ref || 'another voucher'}). Duplicate numbers are not allowed — the next free number is suggested automatically.`
+            });
         }
 
         // ✅✅ STRICT DATABASE DUPLICATE CHECK with FALLBACK SCAN
@@ -20677,7 +20843,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
                 <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
                     <div className="flex items-center gap-3">
-                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> FILLING JUMBO BAG ALLOCATION AREA</h2>
+                        <h2 className="font-bold text-lg flex items-center gap-2"><Box size={20} /> FILLING {packageLabelSingular.toUpperCase()} ALLOCATION AREA</h2>
                         <span className="px-2 py-1 rounded bg-blue-500/20 border border-blue-300/30 text-[10px] font-black uppercase tracking-wider text-blue-100">
                             Ref No: {voucherRefNo?.trim() || 'N/A'}
                         </span>
@@ -20690,7 +20856,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                     <div className="flex gap-2 items-end">
                         <div className="w-32">
                             <div className="flex items-center justify-between mb-1">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase">Bag Number</label>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">{packageLabelSingular} Number</label>
                                 <button
                                     type="button"
                                     title="Use reusable bag"
@@ -20717,7 +20883,19 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                                     ))}
                                 </select>
                             ) : (
-                                <input type="text" className="w-full p-2 border rounded font-mono font-bold text-center" value={nextBagNo} onChange={e => setNextBagNo(e.target.value)} />
+                                <div>
+                                    <input
+                                        type="text"
+                                        className={`w-full p-2 border rounded font-mono font-bold text-center ${usedBagMap[normalizeFinishedPackageNo(nextBagNo)] ? 'border-red-400 bg-red-50 text-red-700' : ''}`}
+                                        value={nextBagNo}
+                                        onChange={e => setNextBagNo(e.target.value)}
+                                    />
+                                    {usedBagMap[normalizeFinishedPackageNo(nextBagNo)] && (
+                                        <div className="text-[9px] font-black text-red-600 uppercase mt-0.5 text-center">
+                                            Already used — {usedBagMap[normalizeFinishedPackageNo(nextBagNo)].ref}
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
                         <div className="flex-1">
@@ -20751,7 +20929,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                         <thead className="bg-slate-100 text-slate-500 sticky top-0">
                             <tr>
                                 <th className="p-2 w-10">#</th>
-                                <th className="p-2">Real Bag No</th>
+                                <th className="p-2">Real {packageLabelSingular} No</th>
                                 <th className="p-2">Item</th>
                                 <th className="p-2 text-right">Qty</th>
                                 <th className="p-2 w-10"></th>
@@ -20770,7 +20948,7 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
                                     <td className="p-2 text-center text-red-400 cursor-pointer" onClick={() => handleRemoveBag(b.id)}><X size={16} /></td>
                                 </tr>
                             ))}
-                            {bags.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400">No bags allocated yet.</td></tr>}
+                            {bags.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400">No {packageLabel.toLowerCase()} allocated yet.</td></tr>}
                         </tbody>
                     </table>
                 </div>
@@ -20793,6 +20971,8 @@ const JumboBagAllocationModal = ({ isOpen, onClose, producedItems, onSave, produ
 // --- JUMBO BAG SELECTION MODAL (For Sales) ---
 // --- JUMBO BAG SELECTION MODAL (Unified) ---
 const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, items, products, initialSelectedIds, targetProductId }) => {
+    const packageLabel = usePackageLabel();
+    const packageLabelSingular = getPackageLabelSingular();
     const [selectedIds, setSelectedIds] = useState(new Set(initialSelectedIds || []));
     const [searchTerm, setSearchTerm] = useState('');
 
@@ -20864,10 +21044,10 @@ const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, i
                 </button>
                 <div className="min-w-0">
                     <div className="text-sm font-black uppercase tracking-wide leading-none truncate">
-                        Select Bags{targetProductId ? ` — ${targetName}` : ''}
+                        Select {packageLabel}{targetProductId ? ` — ${targetName}` : ''}
                     </div>
                     <div className="text-[10px] text-white/50 font-bold uppercase tracking-widest mt-0.5">
-                        Only 'In Stock' bags · {filtered.length} available · {countSelected} selected
+                        Only 'In Stock' {String(packageLabel).toLowerCase()} · {filtered.length} available · {countSelected} selected
                     </div>
                 </div>
 
@@ -20877,7 +21057,7 @@ const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, i
                     <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-white/40" size={13} />
                     <input
                         type="text"
-                        placeholder="Search bag no / product…"
+                        placeholder={`Search ${String(packageLabelSingular).toLowerCase()} no / product…`}
                         className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-white/10 border border-white/15 text-[11px] font-semibold text-white placeholder:text-white/40 focus:outline-none focus:border-emerald-400/60"
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
@@ -20925,14 +21105,14 @@ const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, i
                     <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
                     <input
                         type="text"
-                        placeholder="Search bag no / product…"
+                        placeholder={`Search ${String(packageLabelSingular).toLowerCase()} no / product…`}
                         className="w-full pl-6 pr-2 py-1 rounded-md border border-slate-200 text-[10px] font-semibold text-slate-700 focus:outline-none focus:border-[#005994]"
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
                     />
                 </div>
                 <span className="text-[10px] font-bold text-slate-400 ml-auto">
-                    Showing <b className="text-slate-700">{filtered.length}</b> of {availableBags.length} bag(s)
+                    Showing <b className="text-slate-700">{filtered.length}</b> of {availableBags.length} {String(packageLabelSingular).toLowerCase()}(s)
                 </span>
             </div>
 
@@ -20941,7 +21121,7 @@ const JumboBagSelectionModalInner = ({ isOpen, onClose, availableBags, onSave, i
                 {filtered.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-center">
                         <Package size={44} className="text-slate-300 mb-2" />
-                        <p className="text-slate-500 font-bold text-sm">No matching bags found</p>
+                        <p className="text-slate-500 font-bold text-sm">No matching {String(packageLabel).toLowerCase()} found</p>
                         <p className="text-[11px] text-slate-400 mt-1">Try a different search or clear the filter.</p>
                     </div>
                 ) : (
@@ -21028,6 +21208,8 @@ function GlobalBagManagerModal({
     allRemainingBagsMemo,
     round3
 }) {
+    const packageLabel = usePackageLabel();
+    const packageLabelSingular = getPackageLabelSingular();
     const [showAddView, setShowAddView] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
 
@@ -21102,10 +21284,10 @@ function GlobalBagManagerModal({
                     <div>
                         <h2 className="text-lg font-black uppercase tracking-wider flex items-center gap-2">
                             <Box size={20} className="text-amber-400" />
-                            <span>Jumbo Bag Manager</span>
+                            <span>{packageLabel} Manager</span>
                         </h2>
                         <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
-                            {showAddView ? 'Add Remaining Available Bags' : `Currently Selected: ${selectedBags.length} Bags`}
+                            {showAddView ? `Add Remaining Available ${packageLabel}` : `Currently Selected: ${selectedBags.length} ${packageLabel}`}
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
@@ -21129,7 +21311,7 @@ function GlobalBagManagerModal({
                             ) : (
                                 <>
                                     <Plus size={12} strokeWidth={3} />
-                                    <span>Add Bags</span>
+                                    <span>Add {packageLabel}</span>
                                 </>
                             )}
                         </button>
@@ -21144,7 +21326,7 @@ function GlobalBagManagerModal({
                             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                             <input
                                 type="text"
-                                placeholder="Search remaining bags by number or product..."
+                                placeholder={`Search remaining ${String(packageLabel).toLowerCase()} by number or product...`}
                                 className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-xl shadow-inner font-bold text-slate-700 bg-white focus:outline-none focus:border-blue-400 transition-all text-xs"
                                 value={searchTerm}
                                 onChange={e => setSearchTerm(e.target.value)}
@@ -21194,8 +21376,8 @@ function GlobalBagManagerModal({
                             {remainingBags.length === 0 && (
                                 <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 p-8 shadow-sm">
                                     <Package size={40} className="mx-auto text-slate-300 mb-2" />
-                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No remaining available bags found</p>
-                                    <p className="text-slate-400 text-[10px] mt-1">Only bags for items currently added in the voucher are listed.</p>
+                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No remaining available {String(packageLabel).toLowerCase()} found</p>
+                                    <p className="text-slate-400 text-[10px] mt-1">Only {String(packageLabel).toLowerCase()} for items currently added in the voucher are listed.</p>
                                 </div>
                             )}
                         </div>
@@ -21235,8 +21417,8 @@ function GlobalBagManagerModal({
                             {selectedBags.length === 0 && (
                                 <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 p-8 shadow-sm">
                                     <Box size={40} className="mx-auto text-slate-300 mb-2" />
-                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No bags linked to this voucher yet</p>
-                                    <p className="text-slate-400 text-[10px] mt-1">Click the + Add Bags button at the top right to link available bags.</p>
+                                    <p className="text-slate-500 font-black text-xs uppercase tracking-wider">No {String(packageLabel).toLowerCase()} linked to this voucher yet</p>
+                                    <p className="text-slate-400 text-[10px] mt-1">Click the + Add {packageLabel} button at the top right to link available {String(packageLabel).toLowerCase()}.</p>
                                 </div>
                             )}
                         </div>
@@ -21247,12 +21429,12 @@ function GlobalBagManagerModal({
                 {!showAddView && selectedBags.length > 0 && (
                     <div className="px-6 py-4 bg-slate-100 border-t flex justify-between items-center shrink-0">
                         <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
-                            Total Bags Summary
+                            Total {packageLabel} Summary
                         </span>
                         <div className="flex items-center gap-6">
                             <div className="text-right">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">Bag Count</span>
-                                <span className="text-sm font-black text-slate-800">{selectedBags.length} Bags</span>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">{packageLabelSingular} Count</span>
+                                <span className="text-sm font-black text-slate-800">{selectedBags.length} {packageLabel}</span>
                             </div>
                             <div className="text-right">
                                 <span className="text-[9px] font-bold text-slate-400 uppercase block leading-none">Total Net Weight</span>
@@ -21271,6 +21453,8 @@ function GlobalBagManagerModal({
 const StockJournalModal = (props) => {
     const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
+    const packageLabel = usePackageLabel();
+    const packageLabelSingular = getPackageLabelSingular();
     const [date, setDate] = useState(lastDate || new Date().toISOString().split('T')[0]);
     const targetUid = dataOwnerId || user.uid; // ✅ Define targetUid for queries
     const [refNo, setRefNo] = useState('');
@@ -21298,6 +21482,11 @@ const StockJournalModal = (props) => {
     const [autoCalcSaving, setAutoCalcSaving] = useState(false);
     const [autoCalcCalcInput, setAutoCalcCalcInput] = useState({ mainProductId: '', recordId: '', quantityNeeded: '' });
     const [autoCalcCalcResult, setAutoCalcCalcResult] = useState(null);
+    // PC Wise BOM Calc helpers
+    const [showPcWiseTypePicker, setShowPcWiseTypePicker] = useState(false);
+    const [pcWiseModal, setPcWiseModal] = useState(null); // 'hdpe100' | { comingSoon: '<label>' }
+    const [pcWiseDraft, setPcWiseDraft] = useState(createPcWiseForm());
+    const [pcWisePieces, setPcWisePieces] = useState('');
     const refNoRef = useRef(null);
     const dateRef = useRef(null);
 
@@ -21414,6 +21603,9 @@ const StockJournalModal = (props) => {
     const openAutoCalcNewRecord = () => {
         resetAutoCalcForm();
         setAutoCalcCalcResult(null);
+        setPcWiseDraft(createPcWiseForm());
+        setPcWiseModal(null);
+        setShowPcWiseTypePicker(false);
         setAutoCalcView('form');
         setShowAutoCalcPanel(true);
     };
@@ -21428,8 +21620,14 @@ const StockJournalModal = (props) => {
                 : [createAutoCalcBomMaterial()],
             expenses: (record.expenseItems || []).map(item => ({ expenseId: item.expenseId || '', ratePerTon: String(item.ratePerTon ?? '') })),
             byProducts: (record.byProducts || []).map(item => ({ productId: item.productId || '', percent: String(item.percent ?? '') })),
-            lockedProduct: true
+            lockedProduct: true,
+            pcWise: record.pcWise && record.pcWise.enabled
+                ? { ...createPcWiseForm(), ...record.pcWise, enabled: true }
+                : createPcWiseForm()
         });
+        setPcWiseDraft(record.pcWise && record.pcWise.enabled ? { ...createPcWiseForm(), ...record.pcWise, enabled: true } : createPcWiseForm());
+        setPcWiseModal(null);
+        setShowPcWiseTypePicker(false);
         setAutoCalcCalcResult(null);
         setAutoCalcView('form');
         setShowAutoCalcPanel(true);
@@ -21458,6 +21656,57 @@ const StockJournalModal = (props) => {
                 [field]: nextRows.length > 0 ? nextRows : (fallbackFactory ? [fallbackFactory()] : [])
             };
         });
+    };
+
+    // ── PC WISE BOM CALC ────────────────────────────────────────────────────
+    const toggleAutoCalcPcWise = (on) => {
+        setAutoCalcForm(prev => ({ ...prev, pcWise: { ...(prev.pcWise || createPcWiseForm()), enabled: !!on } }));
+        if (!on) {
+            setShowPcWiseTypePicker(false);
+            setPcWiseModal(null);
+            return;
+        }
+        setShowPcWiseTypePicker(true);
+    };
+
+    const selectAutoCalcPcType = (typeDef) => {
+        if (!typeDef) return;
+        setShowPcWiseTypePicker(false);
+        if (!typeDef.ready) {
+            setPcWiseModal({ comingSoon: typeDef.label });
+            return;
+        }
+        const current = autoCalcForm.pcWise || createPcWiseForm();
+        setPcWiseDraft({ ...createPcWiseForm(), ...current, type: typeDef.id });
+        setPcWiseModal(typeDef.id);
+    };
+
+    const updatePcWiseDraft = (field, value) => {
+        setPcWiseDraft(prev => {
+            const next = { ...prev, [field]: value };
+            if (field === 'sdr') {
+                const opt = PC_WISE_SDR_OPTIONS.find(o => o.sdr === String(value));
+                if (opt) next.pn = opt.pn;
+            }
+            // SDR = D / t  →  wall thickness follows the diameter automatically
+            if (field === 'sdr' || field === 'diameterMm') {
+                const d = Number(next.diameterMm) || 0;
+                const s = Number(next.sdr) || 0;
+                if (d > 0 && s > 0) next.wallThicknessMm = String(Math.round((d / s) * 100) / 100);
+            }
+            return next;
+        });
+    };
+
+    const savePcWiseDetails = () => {
+        const unitWeightKg = computeHdpe100UnitWeight(pcWiseDraft.diameterMm, pcWiseDraft.wallThicknessMm, pcWiseDraft.lengthM);
+        if (!unitWeightKg) {
+            showToast({ type: 'error', title: 'PC Wise BOM Calc', message: 'Enter diameter, wall thickness and length to calculate the weight.' });
+            return;
+        }
+        setAutoCalcForm(prev => ({ ...prev, pcWise: { ...pcWiseDraft, enabled: true, unitWeightKg } }));
+        setPcWiseModal(null);
+        showToast({ type: 'success', title: 'PC Wise BOM Calc', message: `HDPE 100 pipe weight: ${unitWeightKg.toFixed(3)} kg per piece.` });
     };
 
     const validateAutoCalcForm = () => {
@@ -21543,6 +21792,18 @@ const StockJournalModal = (props) => {
                     productId: item.productId,
                     percent: round3(item.percent)
                 })),
+                pcWise: autoCalcForm.pcWise && autoCalcForm.pcWise.enabled
+                    ? {
+                        enabled: true,
+                        type: autoCalcForm.pcWise.type || '',
+                        sdr: autoCalcForm.pcWise.sdr || '',
+                        pn: autoCalcForm.pcWise.pn || '',
+                        diameterMm: autoCalcForm.pcWise.diameterMm || '',
+                        wallThicknessMm: autoCalcForm.pcWise.wallThicknessMm || '',
+                        lengthM: autoCalcForm.pcWise.lengthM || '',
+                        unitWeightKg: round3(autoCalcForm.pcWise.unitWeightKg || 0)
+                    }
+                    : null,
                 createdAt: autoCalcForm.recordId
                     ? (existingRecords.find(record => record.id === autoCalcForm.recordId)?.createdAt || now)
                     : now,
@@ -21967,6 +22228,27 @@ const StockJournalModal = (props) => {
 
     const handleFinalSave = async (finalJumboBags = [], freshUniSeed = 0) => {
         if (saving) return;
+        // 🛑 HARD RULE — a Manufacturing / Stock Journal voucher can NEVER be written without a
+        // Reference No, and a duplicate Ref No is never allowed (any save path: plain save,
+        // bag-allocation confirm, auto-calc, keyboard shortcut).
+        const finalRef = String(refNo || '').trim();
+        if (!finalRef) {
+            if (typeof showToast === 'function') {
+                showToast({ type: 'error', title: 'Reference No. required', message: 'A Manufacturing voucher cannot be saved without a Reference No.' });
+            } else {
+                alert('Reference Number is Mandatory!');
+            }
+            return;
+        }
+        const dupOwner = await checkGlobalDuplicate(db, finalRef, dataOwnerId || user.uid, initialData?.id);
+        if (dupOwner) {
+            if (typeof showToast === 'function') {
+                showToast({ type: 'error', title: 'Duplicate Reference No.', message: `Ref No "${finalRef}" already exists (${dupOwner}). Manufacturing vouchers must have a unique reference.` });
+            } else {
+                alert(`Duplicate Reference Number! This Ref No exists in another transaction (${dupOwner}).`);
+            }
+            return;
+        }
         setSaving(true);
         try {
             const cleanConsumed = consumed.filter(i => i.productId && Number(i.quantity) > 0).map(i => ({
@@ -22071,6 +22353,41 @@ const StockJournalModal = (props) => {
                         alert(`âŒ DUPLICATE BAG: Bag #${bNo} is already used in another voucher.\n\nReuse is NOT allowed for this bag number.`);
                         setSaving(false);
                         return;
+                    }
+                }
+
+                // 🔒 ALSO scan numbers EMBEDDED in other vouchers (stock journals / invoices).
+                // Those never appear in `jumbo_bags`, which is how a duplicate used to slip through.
+                if (bagNumbersToCheckInDb.length > 0) {
+                    try {
+                        const [sjSnap, invSnap] = await Promise.all([
+                            getDocs(query(collection(db, 'stock_journals'), where('userId', '==', targetUid), limit(5000))).catch(() => null),
+                            getDocs(query(collection(db, 'invoices'), where('userId', '==', targetUid), limit(5000))).catch(() => null)
+                        ]);
+                        const embeddedUse = new Map();
+                        sjSnap?.forEach(d => {
+                            const x = d.data() || {};
+                            if (initialData?.id && d.id === initialData.id) return;
+                            collectEmbeddedFinishedPackageNos(x).forEach(raw => {
+                                const no = normalizeBagNo(raw);
+                                if (no && !embeddedUse.has(no)) embeddedUse.set(no, x.refNo || 'MFG');
+                            });
+                        });
+                        invSnap?.forEach(d => {
+                            const x = d.data() || {};
+                            collectEmbeddedFinishedPackageNos(x).forEach(raw => {
+                                const no = normalizeBagNo(raw);
+                                if (no && !embeddedUse.has(no)) embeddedUse.set(no, x.refNo || 'invoice');
+                            });
+                        });
+                        const clash = bagNumbersToCheckInDb.find(bNo => embeddedUse.has(bNo));
+                        if (clash) {
+                            alert(`DUPLICATE ${String(getPackageLabelSingular()).toUpperCase()}: #${clash} is already assigned in voucher ${embeddedUse.get(clash)}.\n\nThe same ${String(getPackageLabelSingular()).toLowerCase()} number can never be used twice.`);
+                            setSaving(false);
+                            return;
+                        }
+                    } catch (e) {
+                        console.warn('Embedded package-number duplicate scan failed', e);
                     }
                 }
             }
@@ -22649,14 +22966,15 @@ const StockJournalModal = (props) => {
                             <span className="text-white font-black text-[16px] uppercase leading-none">Stock Journal</span>
                         </div>
 
-                        {/* REF NUMBER TAB */}
-                        <div className="bg-black/20 h-full flex items-center px-3 rounded border border-white/10 shrink-0">
+                        {/* REF NUMBER TAB — mandatory & unique */}
+                        <div className={`h-full flex items-center px-3 rounded border shrink-0 ${String(refNo || '').trim() ? 'bg-black/20 border-white/10' : 'bg-red-500/20 border-red-400/60'}`}>
                             <input 
                                 ref={refNoRef}
                                 className="text-[16px] font-black text-white bg-transparent border-none focus:ring-0 p-0 w-32 outline-none placeholder-white/30"
                                 value={refNo}
                                 onChange={e => setRefNo(e.target.value)}
-                                placeholder="Reference"
+                                placeholder="Reference *"
+                                title="Reference No. is mandatory and must be unique"
                                 onKeyDown={e => { if (e.key === 'Enter') dateRef.current?.focus(); }}
                             />
                         </div>
@@ -22718,7 +23036,7 @@ const StockJournalModal = (props) => {
                                             if (e.target.checked) setShowJumboEntry(true);
                                         }}
                                     />
-                                    <span className="text-[11px] font-black text-white uppercase tracking-tighter">Effect Jumbo Wise Stocks?</span>
+                                    <span className="text-[11px] font-black text-white uppercase tracking-tighter">Effect {packageLabel} Wise Stocks?</span>
                                     <button
                                         type="button"
                                         onClick={(e) => {
@@ -22832,11 +23150,7 @@ const StockJournalModal = (props) => {
                     </div>
 
                     {showAutoCalcPanel && (
-                        <div className={`absolute z-20 flex flex-col overflow-hidden bg-white transition-all duration-300 ${
-                            isAutoCalcFullView 
-                            ? "inset-0 h-full w-full rounded-2xl animate-in zoom-in-95 duration-200" 
-                            : "right-0 top-14 h-[calc(100%-56px)] w-full md:w-[470px] max-w-full rounded-2xl border border-slate-200 shadow-2xl animate-in slide-in-from-right duration-250"
-                        }`}>
+                        <div className="fixed inset-0 z-[9998] flex h-screen w-screen flex-col overflow-hidden bg-white animate-in zoom-in-95 duration-200">
                             <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-900 px-4 py-3 text-white">
                                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/20 text-blue-300">
                                     <Zap size={16} />
@@ -22845,10 +23159,7 @@ const StockJournalModal = (props) => {
                                     <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Auto Calc BOM</div>
                                     <div className="text-sm font-black">Batch Rule Workspace</div>
                                 </div>
-                                <button type="button" onClick={() => setIsAutoCalcFullView(!isAutoCalcFullView)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white" title={isAutoCalcFullView ? "Exit Fullscreen" : "Fullscreen"}>
-                                    {isAutoCalcFullView ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                                </button>
-                                <button type="button" onClick={() => setShowAutoCalcPanel(false)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white">
+                                <button type="button" onClick={() => setShowAutoCalcPanel(false)} className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white" title="Close">
                                     <X size={16} />
                                 </button>
                             </div>
@@ -22892,6 +23203,121 @@ const StockJournalModal = (props) => {
                                             </div>
                                         </div>
 
+                                        {/* ── PC WISE BOM CALC ─────────────────────────────── */}
+                                        <div className="rounded-2xl border border-slate-200 p-3">
+                                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                                <div>
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">PC Wise BOM Calc?</div>
+                                                    <div className="text-[11px] font-semibold text-slate-400">Yes → the produced item weight is also calculated here and inserted as a help.</div>
+                                                </div>
+                                                <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1">
+                                                    <button type="button" onClick={() => toggleAutoCalcPcWise(true)} className={`rounded-lg px-3 py-1 text-[10px] font-black uppercase tracking-widest transition-colors ${autoCalcForm.pcWise?.enabled ? 'bg-emerald-600 text-white shadow' : 'text-slate-500 hover:text-emerald-700'}`}>Yes</button>
+                                                    <button type="button" onClick={() => toggleAutoCalcPcWise(false)} className={`rounded-lg px-3 py-1 text-[10px] font-black uppercase tracking-widest transition-colors ${!autoCalcForm.pcWise?.enabled ? 'bg-slate-800 text-white shadow' : 'text-slate-500 hover:text-slate-800'}`}>No</button>
+                                                </div>
+                                            </div>
+
+                                            {autoCalcForm.pcWise?.enabled && (
+                                                <div className="mt-3 space-y-2">
+                                                    <button type="button" onClick={() => setShowPcWiseTypePicker(v => !v)} className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-widest text-blue-700 transition-colors hover:bg-blue-100">
+                                                        <Plus size={11} /> {autoCalcForm.pcWise?.type ? 'Change Item Type' : 'Add Item Type'}
+                                                    </button>
+
+                                                    {showPcWiseTypePicker && (
+                                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                                            {AUTO_CALC_PC_TYPES.map((typeDef, index) => {
+                                                                const active = autoCalcForm.pcWise?.type === typeDef.id;
+                                                                return (
+                                                                    <button
+                                                                        key={typeDef.id}
+                                                                        type="button"
+                                                                        onClick={() => selectAutoCalcPcType(typeDef)}
+                                                                        className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-black uppercase tracking-wide transition-colors ${active ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700'}`}
+                                                                    >
+                                                                        <span>{index + 1}. {typeDef.label}</span>
+                                                                        {!typeDef.ready && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[8px] font-black text-slate-400">SOON</span>}
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+
+                                                    {autoCalcForm.pcWise?.type === 'hdpe100' && Number(autoCalcForm.pcWise?.unitWeightKg) > 0 && (
+                                                        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                                                            <div className="text-[11px] font-black uppercase tracking-wide text-emerald-800">HDPE 100 PIPE</div>
+                                                            <div className="text-[11px] font-semibold text-emerald-700">
+                                                                SDR {autoCalcForm.pcWise.sdr || '—'} · PN {autoCalcForm.pcWise.pn || '—'} · {autoCalcForm.pcWise.diameterMm || '—'} mm · {autoCalcForm.pcWise.wallThicknessMm || '—'} mm · {autoCalcForm.pcWise.lengthM || '—'} m
+                                                            </div>
+                                                            <div className="rounded-lg bg-white px-2 py-1 text-[12px] font-black text-emerald-700">{format3(autoCalcForm.pcWise.unitWeightKg)} kg / pc</div>
+                                                            <button type="button" onClick={() => { setPcWiseDraft({ ...createPcWiseForm(), ...autoCalcForm.pcWise }); setPcWiseModal('hdpe100'); }} className="rounded-lg border border-emerald-300 bg-white px-2 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">Edit</button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* HDPE 100 PIPE — PC WISE DETAILS WINDOW */}
+                                        {pcWiseModal === 'hdpe100' && (
+                                            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 p-4">
+                                                <div className="w-full max-w-lg rounded-3xl bg-white p-5 shadow-2xl">
+                                                    <div className="mb-4 flex items-center justify-between">
+                                                        <div>
+                                                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">PC Wise BOM Calc</div>
+                                                            <div className="text-base font-black uppercase tracking-tight text-[#1e3264]">HDPE 100 Pipes</div>
+                                                        </div>
+                                                        <button type="button" onClick={() => setPcWiseModal(null)} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"><X size={16} /></button>
+                                                    </div>
+
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <div>
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">SDR?</label>
+                                                            <select value={pcWiseDraft.sdr} onChange={e => updatePcWiseDraft('sdr', e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-700 outline-none focus:border-blue-400">
+                                                                <option value="">Select SDR</option>
+                                                                {PC_WISE_SDR_OPTIONS.map(opt => <option key={opt.sdr} value={opt.sdr}>SDR {opt.sdr}</option>)}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">PN?</label>
+                                                            <input type="text" value={pcWiseDraft.pn} onChange={e => updatePcWiseDraft('pn', e.target.value)} placeholder="Auto from SDR" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Diameter (mm)</label>
+                                                            <input type="number" step="0.01" value={pcWiseDraft.diameterMm} onChange={e => updatePcWiseDraft('diameterMm', e.target.value)} placeholder="e.g. 110" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Wall Thickness (mm)</label>
+                                                            <input type="number" step="0.01" value={pcWiseDraft.wallThicknessMm} onChange={e => updatePcWiseDraft('wallThicknessMm', e.target.value)} placeholder="Auto from SDR" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
+                                                        </div>
+                                                        <div className="col-span-2">
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Length (m)</label>
+                                                            <input type="number" step="0.001" value={pcWiseDraft.lengthM} onChange={e => updatePcWiseDraft('lengthM', e.target.value)} placeholder="e.g. 6" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-4 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                                                        <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Calculated Weight</div>
+                                                        <div className="text-sm font-black text-emerald-800">{format3(computeHdpe100UnitWeight(pcWiseDraft.diameterMm, pcWiseDraft.wallThicknessMm, pcWiseDraft.lengthM))} kg / pc</div>
+                                                    </div>
+                                                    <div className="mt-1 text-[10px] font-semibold text-slate-400">Weight = π × (D − t) × t × 0.960 ÷ 1000 × length — PE100 density 0.96 g/cm³.</div>
+
+                                                    <div className="mt-4 flex justify-end gap-2">
+                                                        <button type="button" onClick={() => setPcWiseModal(null)} className="rounded-xl border border-slate-200 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-slate-600">Cancel</button>
+                                                        <button type="button" onClick={savePcWiseDetails} className="rounded-xl bg-emerald-600 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-emerald-200 transition-colors hover:bg-emerald-700">Save &amp; Use Weight</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* OTHER ITEM TYPES — COMING SOON */}
+                                        {pcWiseModal && pcWiseModal.comingSoon && (
+                                            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 p-4">
+                                                <div className="w-full max-w-sm rounded-3xl bg-white p-6 text-center shadow-2xl">
+                                                    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-600"><Info size={22} /></div>
+                                                    <div className="text-base font-black uppercase tracking-tight text-[#1e3264]">{pcWiseModal.comingSoon}</div>
+                                                    <div className="mt-1 text-[11px] font-bold uppercase tracking-widest text-slate-400">Coming Soon</div>
+                                                    <button type="button" onClick={() => setPcWiseModal(null)} className="mt-4 w-full rounded-xl bg-slate-900 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white">OK</button>
+                                                </div>
+                                            </div>
+                                        )}
                                         <div className="space-y-2 rounded-2xl border border-slate-200 p-3">
                                             <div className="flex items-center justify-between">
                                                 <div>
@@ -23046,7 +23472,12 @@ const StockJournalModal = (props) => {
                                                     {autoCalcRecords.map(record => (
                                                         <div key={record.id} className="grid grid-cols-[58px_1.2fr_70px_1.4fr_90px_1fr_90px_1.2fr_90px_70px] gap-2 border-b border-slate-100 px-3 py-3 text-[11px] font-semibold text-slate-700 last:border-b-0">
                                                             <div className="font-black text-slate-400">{record.serialNo}</div>
-                                                            <div>{record.mainProductName}</div>
+                                                            <div>
+                                                                {record.mainProductName}
+                                                                {record.pcWise?.enabled && Number(record.pcWise?.unitWeightKg) > 0 && (
+                                                                    <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-700">PC · {format3(record.pcWise.unitWeightKg)} kg</span>
+                                                                )}
+                                                            </div>
                                                             <div className="text-right font-black">{format3(record.mainPercent)}%</div>
                                                             <div>{(record.consumedItems || []).map(item => productNameMap[item.productId]).filter(Boolean).join(', ') || '—'}</div>
                                                             <div className="text-right text-slate-500">{(record.consumedItems || []).map(item => `${format3(item.percent)}%`).join(', ') || '—'}</div>
@@ -23126,6 +23557,44 @@ const StockJournalModal = (props) => {
                                                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
                                             />
                                         </div>
+
+                                        {/* PC WISE HELPER — inserts the produced weight calculated in the rule */}
+                                        {(() => {
+                                            const pcRule = autoCalcRecords.find(record => record.id === autoCalcCalcInput.recordId && record.mainProductId === autoCalcCalcInput.mainProductId);
+                                            const unitWeight = Number(pcRule?.pcWise?.unitWeightKg || 0);
+                                            if (!unitWeight) return null;
+                                            const pieces = Number(pcWisePieces) || 0;
+                                            const totalWeight = round3(pieces * unitWeight);
+                                            return (
+                                                <div className="space-y-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800">PC Wise BOM Calc</div>
+                                                        <div className="rounded-lg bg-white px-2 py-1 text-[11px] font-black text-emerald-700">{format3(unitWeight)} kg / pc</div>
+                                                    </div>
+                                                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                                                        <input
+                                                            type="number"
+                                                            step="1"
+                                                            value={pcWisePieces}
+                                                            onChange={e => setPcWisePieces(e.target.value)}
+                                                            placeholder="No. of pcs"
+                                                            className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-right text-sm font-black text-emerald-800 outline-none focus:border-emerald-400"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setAutoCalcCalcInput(prev => ({ ...prev, quantityNeeded: String(totalWeight) }));
+                                                                setAutoCalcCalcResult(null);
+                                                            }}
+                                                            className="rounded-xl bg-emerald-600 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-white transition-colors hover:bg-emerald-700"
+                                                        >
+                                                            Insert Weight
+                                                        </button>
+                                                    </div>
+                                                    <div className="text-right text-[11px] font-black text-emerald-700">Total: {format3(totalWeight)} kg</div>
+                                                </div>
+                                            );
+                                        })()}
 
                                         <div className="flex justify-end">
                                             <button type="button" onClick={handleRunAutoCalc} className="rounded-xl bg-slate-900 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white transition-colors hover:bg-slate-800">Calculate</button>
