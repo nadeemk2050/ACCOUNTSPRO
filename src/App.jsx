@@ -131,8 +131,7 @@ const BagWiseInventoryModal = lazy(() => import('./BagWiseInventoryModal.jsx'));
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
-import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';
-import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync } from './liveSync.js';
+import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync } from './liveSync.js';
 import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
@@ -156,6 +155,7 @@ import EditToolsModal from './EditToolsModal.jsx';
 
 import { resolveStoredImages } from './storageAsset';
 import { usePackageLabel, setPackageLabel, packageLabelFromProfile, getPackageLabelSingular, syncPackageLabelForCompany } from './packageLabel';
+import { HDPE100_PE_PIPE_GROUPS, getHdpe100Rows, hdpe100RowKey, hdpe100RowLabel, findHdpe100Row, defaultHdpe100Length, hdpe100PieceWeight } from './hdpe100PipeData';
 
 // Helper for Column Names (A, B, ... AA, AB) without needing jspreadsheet lib
 const getColumnName = (index) => {
@@ -209,40 +209,23 @@ const AUTO_CALC_PC_TYPES = [
     { id: 'more', label: 'COMING MORE SOON …', ready: false }
 ];
 
-// PE100 SDR → nominal pressure (PN) for water service at 20 °C.
-const PC_WISE_SDR_OPTIONS = [
-    { sdr: '41', pn: '4' },
-    { sdr: '33', pn: '5' },
-    { sdr: '26', pn: '6' },
-    { sdr: '21', pn: '8' },
-    { sdr: '17', pn: '10' },
-    { sdr: '13.6', pn: '12.5' },
-    { sdr: '11', pn: '16' },
-    { sdr: '9', pn: '20' },
-    { sdr: '7.4', pn: '25' }
-];
-
-// Mass of one PE100 pipe:  m = π × (D − t) × t × ρ ÷ 1000 × length
-// D and t in millimetres, ρ = 0.960 g/cm³ (PE100 compound) → kilograms.
-const HDPE100_DENSITY_G_CM3 = 0.96;
-const computeHdpe100UnitWeight = (diameterMm, wallThicknessMm, lengthM) => {
-    const d = Number(diameterMm) || 0;
-    const t = Number(wallThicknessMm) || 0;
-    const len = Number(lengthM) || 0;
-    if (d <= 0 || t <= 0 || len <= 0 || t >= d) return 0;
-    const kgPerMetre = (Math.PI * (d - t) * t * HDPE100_DENSITY_G_CM3) / 1000;
-    return Math.round(kgPerMetre * len * 1000000) / 1000000;
-};
+// PE100 pipe data comes from the manufacturer sheet (6 pressure classes only).
+// SDR and PN are shown together as one choice; the wall-thickness list follows,
+// and the standard weight (kg/m) is read straight from the saved table.
+const PC_WISE_SDR_OPTIONS = HDPE100_PE_PIPE_GROUPS;
 
 const createPcWiseForm = () => ({
     enabled: false,
     type: '',
-    sdr: '',
-    pn: '',
-    diameterMm: '',
-    wallThicknessMm: '',
-    lengthM: '',
-    unitWeightKg: 0
+    sdrGroup: '',
+    wallKey: '',
+    nominalMm: '',
+    wMin: '',
+    wMax: '',
+    kgPerM: 0,
+    stdLengthM: '',
+    unitWeightKg: 0,
+    insertWeight: true
 });
 
 const createAutoCalcBomForm = () => ({
@@ -853,7 +836,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.9 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.10 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -908,7 +891,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.9</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.10</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -932,7 +915,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.9</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.10</div>
                 </div>
             </div>
         </Modal>
@@ -6080,7 +6063,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.9";
+    const SYSTEM_VERSION = "2.8.10";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -11597,7 +11580,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.9</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.10</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14618,7 +14601,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.9</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.10</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -21487,6 +21470,9 @@ const StockJournalModal = (props) => {
     const [pcWiseModal, setPcWiseModal] = useState(null); // 'hdpe100' | { comingSoon: '<label>' }
     const [pcWiseDraft, setPcWiseDraft] = useState(createPcWiseForm());
     const [pcWisePieces, setPcWisePieces] = useState('');
+    const [pcWiseLengthMode, setPcWiseLengthMode] = useState('standard');
+    const [pcWiseLength, setPcWiseLength] = useState('');
+    const [pendingPcWiseSave, setPendingPcWiseSave] = useState(false);
     const refNoRef = useRef(null);
     const dateRef = useRef(null);
 
@@ -21589,9 +21575,30 @@ const StockJournalModal = (props) => {
         return round3(autoCalcForm.consumed.reduce((sum, item) => sum + (Number(item.percent) || 0), 0));
     }, [autoCalcForm.consumed]);
 
-    const autoCalcProducedPercentTotal = useMemo(() => {
-        return round3((Number(autoCalcForm.mainPercent) || 0) + autoCalcForm.byProducts.reduce((sum, item) => sum + (Number(item.percent) || 0), 0));
-    }, [autoCalcForm.mainPercent, autoCalcForm.byProducts]);
+    // Produced % breakdown.
+    // The main item is often listed AGAIN under "Items To Be Produced" (e.g. 99% pipe
+    // + 1% wastage). That row already carries the main item's share, so it must not be
+    // counted on top of the main % — otherwise 99 + 1 shows up as 200%.
+    const autoCalcProducedBreakdown = useMemo(() => {
+        const mainPercent = round3(Number(autoCalcForm.mainPercent) || 0);
+        const extrasTotal = round3(autoCalcForm.byProducts.reduce((sum, item) => sum + (Number(item.percent) || 0), 0));
+        const mainDuplicatePercent = round3(autoCalcForm.byProducts
+            .filter(item => item.productId && item.productId === autoCalcForm.mainProductId)
+            .reduce((sum, item) => sum + (Number(item.percent) || 0), 0));
+        const hasMainDuplicate = mainDuplicatePercent > 0;
+        const effectiveMainPercent = hasMainDuplicate ? mainDuplicatePercent : mainPercent;
+        const effectiveExtrasPercent = hasMainDuplicate ? round3(extrasTotal - mainDuplicatePercent) : extrasTotal;
+        return {
+            mainPercent,
+            extrasTotal,
+            hasMainDuplicate,
+            effectiveMainPercent,
+            effectiveExtrasPercent,
+            total: round3(effectiveMainPercent + effectiveExtrasPercent)
+        };
+    }, [autoCalcForm.mainPercent, autoCalcForm.byProducts, autoCalcForm.mainProductId]);
+
+    const autoCalcProducedPercentTotal = autoCalcProducedBreakdown.total;
 
     // Helper for 3-digit display
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -21606,6 +21613,9 @@ const StockJournalModal = (props) => {
         setPcWiseDraft(createPcWiseForm());
         setPcWiseModal(null);
         setShowPcWiseTypePicker(false);
+        setPcWisePieces('');
+        setPcWiseLength('');
+        setPcWiseLengthMode('standard');
         setAutoCalcView('form');
         setShowAutoCalcPanel(true);
     };
@@ -21683,30 +21693,76 @@ const StockJournalModal = (props) => {
 
     const updatePcWiseDraft = (field, value) => {
         setPcWiseDraft(prev => {
-            const next = { ...prev, [field]: value };
-            if (field === 'sdr') {
-                const opt = PC_WISE_SDR_OPTIONS.find(o => o.sdr === String(value));
-                if (opt) next.pn = opt.pn;
+            if (field === 'sdrGroup') {
+                // Changing the pressure class clears the wall-thickness choice
+                return { ...createPcWiseForm(), enabled: prev.enabled, type: prev.type, sdrGroup: value };
             }
-            // SDR = D / t  →  wall thickness follows the diameter automatically
-            if (field === 'sdr' || field === 'diameterMm') {
-                const d = Number(next.diameterMm) || 0;
-                const s = Number(next.sdr) || 0;
-                if (d > 0 && s > 0) next.wallThicknessMm = String(Math.round((d / s) * 100) / 100);
+            if (field === 'wallKey') {
+                const row = findHdpe100Row(prev.sdrGroup, value);
+                if (!row) return { ...prev, wallKey: value };
+                const lengthM = defaultHdpe100Length(row);
+                return {
+                    ...prev,
+                    wallKey: value,
+                    nominalMm: row.size,
+                    wMin: row.wMin,
+                    wMax: row.wMax,
+                    kgPerM: row.kgPerM,
+                    stdLengthM: lengthM,
+                    unitWeightKg: hdpe100PieceWeight(row, lengthM)
+                };
             }
-            return next;
+            if (field === 'stdLengthM') {
+                const row = findHdpe100Row(prev.sdrGroup, prev.wallKey);
+                return { ...prev, stdLengthM: value, unitWeightKg: hdpe100PieceWeight(row, value) };
+            }
+            return { ...prev, [field]: value };
         });
     };
 
-    const savePcWiseDetails = () => {
-        const unitWeightKg = computeHdpe100UnitWeight(pcWiseDraft.diameterMm, pcWiseDraft.wallThicknessMm, pcWiseDraft.lengthM);
-        if (!unitWeightKg) {
-            showToast({ type: 'error', title: 'PC Wise BOM Calc', message: 'Enter diameter, wall thickness and length to calculate the weight.' });
+    // shouldInsert = YES on the "insert this weight also?" question
+    const savePcWiseDetails = (shouldInsert = true) => {
+        if (!pcWiseDraft.sdrGroup || !pcWiseDraft.wallKey) {
+            showToast({ type: 'error', title: 'PC Wise BOM Calc', message: 'Select the SDR / PN class and the wall thickness first.' });
             return;
         }
-        setAutoCalcForm(prev => ({ ...prev, pcWise: { ...pcWiseDraft, enabled: true, unitWeightKg } }));
+        const row = findHdpe100Row(pcWiseDraft.sdrGroup, pcWiseDraft.wallKey);
+        const lengthM = pcWiseDraft.stdLengthM || defaultHdpe100Length(row);
+        const unitWeightKg = hdpe100PieceWeight(row, lengthM);
+        if (!row || !unitWeightKg) {
+            showToast({ type: 'error', title: 'PC Wise BOM Calc', message: 'This pipe size has no standard weight in the specification table.' });
+            return;
+        }
+
+        if (!shouldInsert) {
+            setAutoCalcForm(prev => ({ ...prev, pcWise: createPcWiseForm() }));
+            setPcWiseModal(null);
+            showToast({ type: 'info', title: 'PC Wise BOM Calc', message: 'Not inserted — the rule will be saved without the PC wise weight.' });
+            return;
+        }
+
+        setAutoCalcForm(prev => ({
+            ...prev,
+            pcWise: {
+                ...pcWiseDraft,
+                enabled: true,
+                type: 'hdpe100',
+                nominalMm: row.size,
+                wMin: row.wMin,
+                wMax: row.wMax,
+                kgPerM: row.kgPerM,
+                stdLengthM: lengthM,
+                unitWeightKg,
+                insertWeight: true
+            }
+        }));
         setPcWiseModal(null);
-        showToast({ type: 'success', title: 'PC Wise BOM Calc', message: `HDPE 100 pipe weight: ${unitWeightKg.toFixed(3)} kg per piece.` });
+        showToast({
+            type: 'success',
+            title: 'PC Wise BOM Calc',
+            message: `${row.wMin} / ${row.wMax} mm → ${row.kgPerM} kg/m × ${lengthM} m = ${unitWeightKg.toFixed(3)} kg per piece. Saving the rule with this weight.`
+        });
+        setPendingPcWiseSave(true);
     };
 
     const validateAutoCalcForm = () => {
@@ -21742,23 +21798,38 @@ const StockJournalModal = (props) => {
         }
 
         const consumedPercentTotal = round3(cleanConsumed.reduce((sum, item) => sum + Number(item.percent || 0), 0));
-        const producedPercentTotal = round3(mainPercent + cleanByProducts.reduce((sum, item) => sum + Number(item.percent || 0), 0));
 
         if (Math.abs(consumedPercentTotal - 100) > 0.001) {
             showToast({ type: 'error', title: 'Auto Calc BOM', message: `Consumed percentages must total 100%. Current total: ${consumedPercentTotal.toFixed(3)}%.` });
             return false;
         }
 
+        // The main item may also sit inside "Items To Be Produced" (99% product + 1% wastage).
+        // In that case that row IS the main share — drop it from the extras so it is not
+        // counted twice (100 + 99 + 1 used to read as 200% and blocked saving).
+        const mainDuplicatePercent = round3(cleanByProducts
+            .filter(item => item.productId === autoCalcForm.mainProductId)
+            .reduce((sum, item) => sum + Number(item.percent || 0), 0));
+        const effectiveMainPercent = mainDuplicatePercent > 0 ? mainDuplicatePercent : round3(mainPercent);
+        const effectiveByProducts = mainDuplicatePercent > 0
+            ? cleanByProducts.filter(item => item.productId !== autoCalcForm.mainProductId)
+            : cleanByProducts;
+        const producedPercentTotal = round3(effectiveMainPercent + effectiveByProducts.reduce((sum, item) => sum + Number(item.percent || 0), 0));
+
         if (Math.abs(producedPercentTotal - 100) > 0.001) {
-            showToast({ type: 'error', title: 'Auto Calc BOM', message: `Produced percentages must total 100%. Current total: ${producedPercentTotal.toFixed(3)}%.` });
+            showToast({
+                type: 'error',
+                title: 'Auto Calc BOM',
+                message: `Produced percentages must total 100%. Current total: ${producedPercentTotal.toFixed(3)}% (main ${effectiveMainPercent.toFixed(3)}% + extras ${round3(producedPercentTotal - effectiveMainPercent).toFixed(3)}%).`
+            });
             return false;
         }
 
         return {
-            mainPercent,
+            mainPercent: effectiveMainPercent,
             cleanConsumed,
             cleanExpenses,
-            cleanByProducts
+            cleanByProducts: effectiveByProducts
         };
     };
 
@@ -21792,16 +21863,19 @@ const StockJournalModal = (props) => {
                     productId: item.productId,
                     percent: round3(item.percent)
                 })),
-                pcWise: autoCalcForm.pcWise && autoCalcForm.pcWise.enabled
+                pcWise: autoCalcForm.pcWise && autoCalcForm.pcWise.enabled && autoCalcForm.pcWise.insertWeight !== false
                     ? {
                         enabled: true,
                         type: autoCalcForm.pcWise.type || '',
-                        sdr: autoCalcForm.pcWise.sdr || '',
-                        pn: autoCalcForm.pcWise.pn || '',
-                        diameterMm: autoCalcForm.pcWise.diameterMm || '',
-                        wallThicknessMm: autoCalcForm.pcWise.wallThicknessMm || '',
-                        lengthM: autoCalcForm.pcWise.lengthM || '',
-                        unitWeightKg: round3(autoCalcForm.pcWise.unitWeightKg || 0)
+                        sdrGroup: autoCalcForm.pcWise.sdrGroup || '',
+                        wallKey: autoCalcForm.pcWise.wallKey || '',
+                        nominalMm: autoCalcForm.pcWise.nominalMm || '',
+                        wMin: autoCalcForm.pcWise.wMin || '',
+                        wMax: autoCalcForm.pcWise.wMax || '',
+                        kgPerM: autoCalcForm.pcWise.kgPerM || 0,
+                        stdLengthM: autoCalcForm.pcWise.stdLengthM || '',
+                        unitWeightKg: round3(autoCalcForm.pcWise.unitWeightKg || 0),
+                        insertWeight: true
                     }
                     : null,
                 createdAt: autoCalcForm.recordId
@@ -21833,6 +21907,14 @@ const StockJournalModal = (props) => {
             setAutoCalcSaving(false);
         }
     };
+
+    // PC wise weight was attached from the pipe window → store the rule right away
+    React.useEffect(() => {
+        if (!pendingPcWiseSave) return;
+        setPendingPcWiseSave(false);
+        handleSaveAutoCalcRecord();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pendingPcWiseSave]);
 
     const handleDeleteAutoCalcRecord = async (record) => {
         const targetProduct = products.find(product => product.id === record.mainProductId);
@@ -23245,7 +23327,7 @@ const StockJournalModal = (props) => {
                                                         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
                                                             <div className="text-[11px] font-black uppercase tracking-wide text-emerald-800">HDPE 100 PIPE</div>
                                                             <div className="text-[11px] font-semibold text-emerald-700">
-                                                                SDR {autoCalcForm.pcWise.sdr || '—'} · PN {autoCalcForm.pcWise.pn || '—'} · {autoCalcForm.pcWise.diameterMm || '—'} mm · {autoCalcForm.pcWise.wallThicknessMm || '—'} mm · {autoCalcForm.pcWise.lengthM || '—'} m
+                                                                {autoCalcForm.pcWise.sdrGroup} · {autoCalcForm.pcWise.wMin} / {autoCalcForm.pcWise.wMax} mm · Ø {autoCalcForm.pcWise.nominalMm} mm · {autoCalcForm.pcWise.kgPerM} kg/m × {autoCalcForm.pcWise.stdLengthM} m
                                                             </div>
                                                             <div className="rounded-lg bg-white px-2 py-1 text-[12px] font-black text-emerald-700">{format3(autoCalcForm.pcWise.unitWeightKg)} kg / pc</div>
                                                             <button type="button" onClick={() => { setPcWiseDraft({ ...createPcWiseForm(), ...autoCalcForm.pcWise }); setPcWiseModal('hdpe100'); }} className="rounded-lg border border-emerald-300 bg-white px-2 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">Edit</button>
@@ -23267,41 +23349,69 @@ const StockJournalModal = (props) => {
                                                         <button type="button" onClick={() => setPcWiseModal(null)} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"><X size={16} /></button>
                                                     </div>
 
-                                                    <div className="grid grid-cols-2 gap-3">
+                                                    <div className="grid grid-cols-1 gap-3">
                                                         <div>
-                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">SDR?</label>
-                                                            <select value={pcWiseDraft.sdr} onChange={e => updatePcWiseDraft('sdr', e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-700 outline-none focus:border-blue-400">
-                                                                <option value="">Select SDR</option>
-                                                                {PC_WISE_SDR_OPTIONS.map(opt => <option key={opt.sdr} value={opt.sdr}>SDR {opt.sdr}</option>)}
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">SDR / PN</label>
+                                                            <select value={pcWiseDraft.sdrGroup} onChange={e => updatePcWiseDraft('sdrGroup', e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-700 outline-none focus:border-blue-400">
+                                                                <option value="">Select SDR / PN</option>
+                                                                {PC_WISE_SDR_OPTIONS.map(label => <option key={label} value={label}>{label}</option>)}
                                                             </select>
                                                         </div>
                                                         <div>
-                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">PN?</label>
-                                                            <input type="text" value={pcWiseDraft.pn} onChange={e => updatePcWiseDraft('pn', e.target.value)} placeholder="Auto from SDR" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
+                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Wall Thickness (Min / Max)</label>
+                                                            <select
+                                                                value={pcWiseDraft.wallKey}
+                                                                onChange={e => updatePcWiseDraft('wallKey', e.target.value)}
+                                                                disabled={!pcWiseDraft.sdrGroup}
+                                                                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-700 outline-none focus:border-blue-400 disabled:bg-slate-100 disabled:text-slate-400"
+                                                            >
+                                                                <option value="">{pcWiseDraft.sdrGroup ? 'Select wall thickness' : 'Select SDR / PN first'}</option>
+                                                                {getHdpe100Rows(pcWiseDraft.sdrGroup).map(row => (
+                                                                    <option key={hdpe100RowKey(row)} value={hdpe100RowKey(row)}>{hdpe100RowLabel(row)}</option>
+                                                                ))}
+                                                            </select>
                                                         </div>
-                                                        <div>
-                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Diameter (mm)</label>
-                                                            <input type="number" step="0.01" value={pcWiseDraft.diameterMm} onChange={e => updatePcWiseDraft('diameterMm', e.target.value)} placeholder="e.g. 110" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
-                                                        </div>
-                                                        <div>
-                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Wall Thickness (mm)</label>
-                                                            <input type="number" step="0.01" value={pcWiseDraft.wallThicknessMm} onChange={e => updatePcWiseDraft('wallThicknessMm', e.target.value)} placeholder="Auto from SDR" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
-                                                        </div>
-                                                        <div className="col-span-2">
-                                                            <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Length (m)</label>
-                                                            <input type="number" step="0.001" value={pcWiseDraft.lengthM} onChange={e => updatePcWiseDraft('lengthM', e.target.value)} placeholder="e.g. 6" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400" />
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div>
+                                                                <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Std. Weight (kg/m)</label>
+                                                                <input type="text" readOnly value={pcWiseDraft.kgPerM ? `${pcWiseDraft.kgPerM}` : ''} placeholder="—" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">Standard Length (m)</label>
+                                                                <select
+                                                                    value={pcWiseDraft.stdLengthM}
+                                                                    onChange={e => updatePcWiseDraft('stdLengthM', e.target.value)}
+                                                                    disabled={!pcWiseDraft.wallKey}
+                                                                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400 disabled:bg-slate-100 disabled:text-slate-400"
+                                                                >
+                                                                    <option value="">{pcWiseDraft.wallKey ? 'Select length' : '—'}</option>
+                                                                    {(findHdpe100Row(pcWiseDraft.sdrGroup, pcWiseDraft.wallKey)?.lengths || []).map(length => (
+                                                                        <option key={length} value={length}>{length} m</option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
                                                         </div>
                                                     </div>
 
                                                     <div className="mt-4 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
-                                                        <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Calculated Weight</div>
-                                                        <div className="text-sm font-black text-emerald-800">{format3(computeHdpe100UnitWeight(pcWiseDraft.diameterMm, pcWiseDraft.wallThicknessMm, pcWiseDraft.lengthM))} kg / pc</div>
+                                                        <div>
+                                                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Calculated Weight</div>
+                                                            <div className="text-[10px] font-bold text-emerald-600">
+                                                                {pcWiseDraft.kgPerM ? `${pcWiseDraft.kgPerM} kg/m × ${pcWiseDraft.stdLengthM || 0} m` : 'Select a pipe size to calculate'}
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-sm font-black text-emerald-800">{format3(hdpe100PieceWeight(findHdpe100Row(pcWiseDraft.sdrGroup, pcWiseDraft.wallKey), pcWiseDraft.stdLengthM))} kg</div>
                                                     </div>
-                                                    <div className="mt-1 text-[10px] font-semibold text-slate-400">Weight = π × (D − t) × t × 0.960 ÷ 1000 × length — PE100 density 0.96 g/cm³.</div>
 
-                                                    <div className="mt-4 flex justify-end gap-2">
+                                                    <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2">
+                                                        <div className="text-[10px] font-black uppercase tracking-widest text-blue-800">Insert this weight also when making Auto Calc BOM?</div>
+                                                        <div className="mt-0.5 text-[10px] font-semibold text-blue-600">Yes saves this rule with the pipe weight attached, so Calculate only needs the number of pieces.</div>
+                                                    </div>
+
+                                                    <div className="mt-4 flex flex-wrap justify-end gap-2">
                                                         <button type="button" onClick={() => setPcWiseModal(null)} className="rounded-xl border border-slate-200 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-slate-600">Cancel</button>
-                                                        <button type="button" onClick={savePcWiseDetails} className="rounded-xl bg-emerald-600 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-emerald-200 transition-colors hover:bg-emerald-700">Save &amp; Use Weight</button>
+                                                        <button type="button" onClick={() => savePcWiseDetails(false)} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-rose-600">No, Save Without</button>
+                                                        <button type="button" onClick={() => savePcWiseDetails(true)} className="rounded-xl bg-emerald-600 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-emerald-200 transition-colors hover:bg-emerald-700">Yes, Insert &amp; Save Rule</button>
                                                     </div>
                                                 </div>
                                             </div>
@@ -23561,25 +23671,80 @@ const StockJournalModal = (props) => {
                                         {/* PC WISE HELPER — inserts the produced weight calculated in the rule */}
                                         {(() => {
                                             const pcRule = autoCalcRecords.find(record => record.id === autoCalcCalcInput.recordId && record.mainProductId === autoCalcCalcInput.mainProductId);
-                                            const unitWeight = Number(pcRule?.pcWise?.unitWeightKg || 0);
-                                            if (!unitWeight) return null;
+                                            const pc = pcRule?.pcWise;
+                                            const kgPerM = Number(pc?.kgPerM || 0);
+                                            if (!pc || !kgPerM) return null;
+
+                                            const stdLength = String(pc.stdLengthM || '');
+                                            const lengths = findHdpe100Row(pc.sdrGroup, pc.wallKey)?.lengths || (stdLength ? [stdLength] : []);
+                                            const effectiveStandard = pcWiseLength || stdLength;
+                                            const lengthM = pcWiseLengthMode === 'manual'
+                                                ? (Number(pcWiseLength) || 0)
+                                                : (Number(effectiveStandard) || 0);
                                             const pieces = Number(pcWisePieces) || 0;
-                                            const totalWeight = round3(pieces * unitWeight);
+                                            const totalWeight = round3(pieces * lengthM * kgPerM);
+                                            // The produced weight is written into Quantity Needed as soon as the user types
+                                            const pushWeight = (nextPieces, nextLengthM) => {
+                                                const computed = round3((Number(nextPieces) || 0) * (Number(nextLengthM) || 0) * kgPerM);
+                                                setAutoCalcCalcInput(prev => ({ ...prev, quantityNeeded: String(computed) }));
+                                                setAutoCalcCalcResult(null);
+                                            };
+
                                             return (
                                                 <div className="space-y-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
                                                     <div className="flex flex-wrap items-center justify-between gap-2">
-                                                        <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800">PC Wise BOM Calc</div>
-                                                        <div className="rounded-lg bg-white px-2 py-1 text-[11px] font-black text-emerald-700">{format3(unitWeight)} kg / pc</div>
+                                                        <div>
+                                                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800">PC Wise BOM Calc</div>
+                                                            <div className="text-[10px] font-bold text-emerald-600">{pc.sdrGroup} · {pc.wMin} / {pc.wMax} mm · Ø {pc.nominalMm} mm</div>
+                                                        </div>
+                                                        <div className="rounded-lg bg-white px-2 py-1 text-[11px] font-black text-emerald-700">{kgPerM} kg / m</div>
                                                     </div>
-                                                    <div className="grid grid-cols-[1fr_auto] gap-2">
-                                                        <input
-                                                            type="number"
-                                                            step="1"
-                                                            value={pcWisePieces}
-                                                            onChange={e => setPcWisePieces(e.target.value)}
-                                                            placeholder="No. of pcs"
-                                                            className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-right text-sm font-black text-emerald-800 outline-none focus:border-emerald-400"
-                                                        />
+
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <div>
+                                                            <label className="mb-1 block text-[9px] font-black uppercase tracking-widest text-emerald-700">Pieces (PCS)</label>
+                                                            <input
+                                                                type="number"
+                                                                step="1"
+                                                                value={pcWisePieces}
+                                                                onChange={e => { setPcWisePieces(e.target.value); pushWeight(e.target.value, lengthM); }}
+                                                                placeholder="No. of pcs"
+                                                                className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-right text-sm font-black text-emerald-800 outline-none focus:border-emerald-400"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-[9px] font-black uppercase tracking-widest text-emerald-700">Length (m)</label>
+                                                            <div className="flex items-center gap-1">
+                                                                <div className="flex shrink-0 overflow-hidden rounded-lg border border-emerald-200 bg-white">
+                                                                    <button type="button" onClick={() => { setPcWiseLengthMode('standard'); setPcWiseLength(''); }} className={`px-2 py-1.5 text-[9px] font-black uppercase tracking-wide ${pcWiseLengthMode === 'standard' ? 'bg-emerald-600 text-white' : 'text-emerald-700'}`}>Std</button>
+                                                                    <button type="button" onClick={() => { setPcWiseLengthMode('manual'); setPcWiseLength(''); }} className={`px-2 py-1.5 text-[9px] font-black uppercase tracking-wide ${pcWiseLengthMode === 'manual' ? 'bg-emerald-600 text-white' : 'text-emerald-700'}`}>Manual</button>
+                                                                </div>
+                                                                {pcWiseLengthMode === 'manual' ? (
+                                                                    <input
+                                                                        type="number"
+                                                                        step="0.001"
+                                                                        value={pcWiseLength}
+                                                                        onChange={e => { setPcWiseLength(e.target.value); pushWeight(pieces, e.target.value); }}
+                                                                        placeholder="e.g. 6"
+                                                                        className="w-full rounded-xl border border-emerald-200 bg-white px-2 py-2 text-right text-sm font-black text-emerald-800 outline-none focus:border-emerald-400"
+                                                                    />
+                                                                ) : (
+                                                                    <select
+                                                                        value={effectiveStandard}
+                                                                        onChange={e => { setPcWiseLength(e.target.value); pushWeight(pieces, e.target.value); }}
+                                                                        className="w-full rounded-xl border border-emerald-200 bg-white px-2 py-2 text-right text-sm font-black text-emerald-800 outline-none focus:border-emerald-400"
+                                                                    >
+                                                                        {lengths.map(length => <option key={length} value={length}>{length} m</option>)}
+                                                                    </select>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <div className="text-[11px] font-black text-emerald-800">
+                                                            {pieces || 0} pcs × {lengthM || 0} m × {kgPerM} kg/m = {format3(totalWeight)} kg
+                                                        </div>
                                                         <button
                                                             type="button"
                                                             onClick={() => {
@@ -23591,7 +23756,6 @@ const StockJournalModal = (props) => {
                                                             Insert Weight
                                                         </button>
                                                     </div>
-                                                    <div className="text-right text-[11px] font-black text-emerald-700">Total: {format3(totalWeight)} kg</div>
                                                 </div>
                                             );
                                         })()}
