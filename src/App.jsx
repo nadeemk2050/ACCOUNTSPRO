@@ -836,7 +836,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.10 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.11 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -891,7 +891,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.10</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.11</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -915,7 +915,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.10</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.11</div>
                 </div>
             </div>
         </Modal>
@@ -6063,7 +6063,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.10";
+    const SYSTEM_VERSION = "2.8.11";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -9041,6 +9041,19 @@ export default function App() {
                 const update = {};
                 if (j.drId === id && j.drType === srcType) update.drType = targetType;
                 if (j.crId === id && j.crType === srcType) update.crType = targetType;
+                // Multi-line journals keep the ledger nature on each row — repoint it too,
+                // otherwise the voucher loses the ledger name after a type move.
+                if (Array.isArray(j.rows)) {
+                    let rowsChanged = false;
+                    const nextRows = j.rows.map(r => {
+                        if (r && r.id === id && r.category !== targetType) {
+                            rowsChanged = true;
+                            return { ...r, category: targetType };
+                        }
+                        return r;
+                    });
+                    if (rowsChanged) update.rows = nextRows;
+                }
                 if (Object.keys(update).length > 0) batch.update(d.ref, update);
             });
 
@@ -10386,12 +10399,23 @@ export default function App() {
         // But we will keep variables if we want to return a consistent object structure
 
         const findEntityNameLocal = (id, cat) => {
-            if (cat === 'party') return parties.find(x => x.id === id)?.name;
-            if (cat === 'account') return accounts.find(x => x.id === id)?.name;
-            if (cat === 'expense') return expenses.find(x => x.id === id)?.name || directExpenseAccounts.find(x => x.id === id)?.name;
-            if (cat === 'income') return incomeAccounts.find(x => x.id === id)?.name;
-            if (cat === 'capital') return capitalAccounts.find(x => x.id === id)?.name;
-            if (cat === 'asset') return assetAccounts.find(x => x.id === id)?.name;
+            if (!id) return null;
+            const bucket = cat === 'party' ? parties
+                : cat === 'account' ? accounts
+                    : cat === 'expense' ? [...expenses, ...directExpenseAccounts]
+                        : cat === 'income' ? incomeAccounts
+                            : cat === 'capital' ? capitalAccounts
+                                : cat === 'asset' ? assetAccounts
+                                    : cat === 'tax' ? taxRates
+                                        : null;
+            const direct = bucket?.find(x => x.id === id)?.name;
+            if (direct) return direct;
+            // Fallback: the ledger may have been moved to another master group later on
+            const pools = [parties, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts, taxRates];
+            for (const pool of pools) {
+                const hit = (pool || []).find(x => x.id === id);
+                if (hit) return hit.name;
+            }
             return null;
         };
 
@@ -11580,7 +11604,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.10</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.11</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14601,7 +14625,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.10</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.11</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -24545,7 +24569,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 if (rCat === filter.type) return true;
                                 // Manufacturing JV DR rows are saved with category 'expense' even for direct expenses
                                 if (filter.type === 'direct_expense' && rCat === 'expense') return true;
-                                return false;
+                                // Ledger ids are unique — if the id matches, the row belongs to this ledger
+                                // even when its master group was changed later (Party → Expenses …).
+                                return true;
                             };
                             if (d.rows && d.rows.length > 0) {
                                 d.rows.forEach(r => {
@@ -29849,6 +29875,25 @@ const PaymentModal = (props) => {
 };
 
 // --- UPDATED JOURNAL VOUCHER MODAL (Saves 'createdBy') ---
+// ── JOURNAL LEDGER NATURE (auto-detected, never hand-picked) ───────────────
+// A ledger can be moved to another master group later (Party → Expenses …).
+// These helpers find where an account REALLY lives today, so an old voucher
+// never loses its ledger name just because the master group was changed.
+const JOURNAL_CATEGORY_SOURCES = [
+    { category: 'party', collection: 'parties', label: 'Party' },
+    { category: 'account', collection: 'accounts', label: 'Cash/Bank' },
+    { category: 'expense', collection: 'expenses', label: 'Ind. Expense' },
+    { category: 'direct_expense', collection: 'direct_expenses', label: 'Direct Exp (COGS)' },
+    { category: 'income', collection: 'income_accounts', label: 'Income' },
+    { category: 'capital', collection: 'capital_accounts', label: 'Capital' },
+    { category: 'asset', collection: 'asset_accounts', label: 'Asset' },
+    { category: 'tax', collection: 'tax_rates', label: 'Tax' }
+];
+const JOURNAL_CATEGORY_LABEL = JOURNAL_CATEGORY_SOURCES.reduce((acc, item) => {
+    acc[item.category] = item.label;
+    return acc;
+}, {});
+
 const JournalVoucherModal = (props) => {
     const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onDeleteTransaction, companyProfile, onSwitchVoucher, onUpdateProfile, confirmPassword } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
@@ -29964,14 +30009,96 @@ const JournalVoucherModal = (props) => {
         }
     }, [isOpen]); // Only run on modal open/close to prevent state resets during edit
 
-    // Live balances logic (Single Mode)
-    const getBalanceProps = (type, id) => ({ type: type === 'tax' ? 'tax' : (type === 'party' ? 'party' : (type === 'account' ? 'account' : type)), id, date, user, parties, accounts });
-    const { balance: drBalance, loading: drLoading } = useLedgerBalance(getBalanceProps(drType, drId));
-    const { balance: crBalance, loading: crLoading } = useLedgerBalance(getBalanceProps(crType, crId));
+    // Live balances logic removed — the journal rows only need names, and the two
+    // extra balance subscriptions made the voucher open slowly.
 
     // Multi Mode Helpers
     const addRow = () => setRows([...rows, { id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
     const removeRow = (id) => setRows(rows.filter(r => r.id !== id));
+
+    // ── SMART LEDGER LOOKUP ─────────────────────────────────────────────────
+    // Every ledger is searched across ALL master groups, and the "nature"
+    // (Party / Cash-Bank / Expense / Income / …) is read from the master itself.
+    const ledgerIndex = useMemo(() => {
+        const map = new Map();
+        const push = (list, category) => (Array.isArray(list) ? list : []).forEach(item => {
+            if (item && item.id && !map.has(item.id)) map.set(item.id, { category, name: item.name || '' });
+        });
+        push(parties, 'party');
+        push(accounts, 'account');
+        push(expenses, 'expense');
+        push(directExpenseAccounts, 'direct_expense');
+        push(incomeAccounts, 'income');
+        push(capitalAccounts, 'capital');
+        push(assetAccounts, 'asset');
+        push(taxRates, 'tax');
+        return map;
+    }, [parties, accounts, expenses, directExpenseAccounts, incomeAccounts, capitalAccounts, assetAccounts, taxRates]);
+
+    const ledgerOptions = useMemo(() => {
+        const out = [];
+        Array.from(ledgerIndex.keys()).forEach(id => {
+            out.push({ value: id, text: ledgerIndex.get(id).name });
+        });
+        return out.sort((a, b) => String(a.text || '').localeCompare(String(b.text || '')));
+    }, [ledgerIndex]);
+
+    // A row's true nature = where its ledger lives in the masters right now.
+    const resolveCategoryOf = (aid, preferred) => {
+        const found = aid ? ledgerIndex.get(aid) : null;
+        return found ? found.category : (preferred || 'party');
+    };
+    const resolveRowCategory = (row) => resolveCategoryOf(row?.aid, row?.category);
+
+    const selectLedgerForRow = (rowId, aid) => {
+        setRows(prev => prev.map(r => {
+            if (r.id !== rowId) return r;
+            return { ...r, aid, category: resolveCategoryOf(aid, r.category) };
+        }));
+    };
+
+    // One-off self-heal: vouchers written before a master group change still point
+    // at the old collection. Rewrite their stored category so names + balances line up.
+    const jvRepairRan = useRef(false);
+    useEffect(() => {
+        if (!isOpen || jvRepairRan.current || ledgerIndex.size === 0) return;
+        jvRepairRan.current = true;
+        (async () => {
+            try {
+                const targetUid = dataOwnerId || user?.uid;
+                if (!targetUid) return;
+                const snap = await getDocs(query(collection(db, 'journal_vouchers'), where('userId', '==', targetUid)));
+                const fixes = [];
+                snap.docs.forEach(d => {
+                    const data = d.data() || {};
+                    if (!Array.isArray(data.rows)) return;
+                    let changed = false;
+                    const fixedRows = data.rows.map(r => {
+                        const real = r && r.id ? ledgerIndex.get(r.id) : null;
+                        if (real && real.category !== r.category) {
+                            changed = true;
+                            return { ...r, category: real.category };
+                        }
+                        return r;
+                    });
+                    if (changed) fixes.push({ ref: d.ref, rows: fixedRows });
+                });
+                for (const fix of fixes) {
+                    await updateDoc(fix.ref, { rows: fix.rows });
+                }
+                if (fixes.length > 0) {
+                    showToast({
+                        type: 'success',
+                        title: 'Journal Ledger Types Fixed',
+                        message: `${fixes.length} journal voucher(s) re-linked to their current master group.`
+                    });
+                }
+            } catch (e) {
+                console.warn('JV ledger-type repair skipped:', e);
+            }
+        })();
+    }, [isOpen, ledgerIndex]);
+
     const updateRow = (id, field, val) => {
         let value = val;
         // 🔒 Enforce Max 3 Decimals
@@ -29998,29 +30125,8 @@ const JournalVoucherModal = (props) => {
         return 'accounts';
     };
 
-    const getOptions = (t) => {
-        if (t === 'party') return parties;
-        if (t === 'expense') return expenses;
-        if (t === 'direct_expense') return directExpenseAccounts; // <--- NEW
-        if (t === 'capital') return capitalAccounts;
-        if (t === 'asset') return assetAccounts; // ✅ Added Asset
-        if (t === 'income') return incomeAccounts; // <--- NEW INCOME
-        if (t === 'tax') return taxRates;
-        return accounts;
-    };
-
     const handleGeneratePDF = async (action = 'preview') => {
-        const getDispName = (type, aid) => {
-            if (type === 'party') return parties.find(p => p.id === aid)?.name || '---';
-            if (type === 'expense') return expenses.find(e => e.id === aid)?.name || '---';
-            if (type === 'direct_expense') return directExpenseAccounts.find(d => d.id === aid)?.name || '---'; // <--- NEW
-            if (type === 'income') return incomeAccounts.find(i => i.id === aid)?.name || '---';
-            if (type === 'account') return accounts.find(a => a.id === aid)?.name || '---';
-            if (type === 'capital') return capitalAccounts.find(c => c.id === aid)?.name || '---';
-            if (type === 'asset') return assetAccounts.find(a => a.id === aid)?.name || '---';
-            if (type === 'tax') return taxRates.find(t => t.id === aid)?.name || '---';
-            return aid || '---';
-        };
+        const getDispName = (type, aid) => ledgerIndex.get(aid)?.name || '---';
 
         const rawData = {
             refNo,
@@ -30146,7 +30252,8 @@ const JournalVoucherModal = (props) => {
                         if (currentDocData.isMulti && currentDocData.rows) {
                             currentDocData.rows.forEach(r => {
                                 const oldAmtBase = Number(r.amount || 0) * oldRate;
-                                trackChange(doc(db, getColName(r.category), r.id), oldAmtBase, r.type === 'cr', r.category); // Note: swapped isDebit for revert
+                                const oldCat = resolveCategoryOf(r.id, r.category);
+                                trackChange(doc(db, getColName(oldCat), r.id), oldAmtBase, r.type === 'cr', oldCat); // Note: swapped isDebit for revert
                             });
                         } else if (currentDocData.drId && currentDocData.crId) {
                             const oldAmtBase = Number(currentDocData.amount || 0) * oldRate;
@@ -30165,7 +30272,8 @@ const JournalVoucherModal = (props) => {
                 } else {
                     rows.forEach(r => {
                         const amtBase = Number(r.amount || 0) * currentRate;
-                        trackChange(doc(db, getColName(r.category), r.aid), amtBase, r.type === 'dr', r.category);
+                        const rowCat = resolveRowCategory(r);
+                        trackChange(doc(db, getColName(rowCat), r.aid), amtBase, r.type === 'dr', rowCat);
                     });
                 }
 
@@ -30214,7 +30322,7 @@ const JournalVoucherModal = (props) => {
                     payload.amount = totalDr * currentRate;
                     payload.foreignAmount = totalDr;
                     payload.rows = rows.map(r => ({
-                        type: r.type, category: r.category, id: r.aid, amount: Number(r.amount), description: r.description
+                        type: r.type, category: resolveRowCategory(r), id: r.aid, amount: Number(r.amount), description: r.description
                     }));
                 }
 
@@ -30542,7 +30650,7 @@ const JournalVoucherModal = (props) => {
                             <thead className="bg-[#1e3a8a] text-white uppercase font-bold">
                                 <tr>
                                     <th className="p-2 w-12 text-center">Dr/Cr</th>
-                                    <th className="p-2 w-24">Type</th>
+                                    <th className="p-2 w-24">Nature</th>
                                     <th className="p-2">Account Name</th>
                                     <th className="p-2 w-48">Description</th>
                                     <th className="p-2 w-32 text-right">Debit</th>
@@ -30565,24 +30673,15 @@ const JournalVoucherModal = (props) => {
                                             </select>
                                         </td>
                                         <td className="p-1">
-                                            <select style={{height:'22px',fontSize:'11px',padding:'0 2px'}} className="w-full border rounded" value={row.category} onChange={e => updateRow(row.id, 'category', e.target.value)}>
-                                                <option value="party">Party</option>
-                                                <option value="expense">Ind. Expense</option>
-                                                <option value="direct_expense">Direct Exp (COGS)</option>
-                                                <option value="income">Income</option>
-                                                <option value="capital">Capital</option>
-                                                <option value="asset">Asset</option>
-                                                {(companyProfile?.rules?.includeCashBankInVouchers !== false) && <option value="account">Cash/Bank</option>}
-                                                <option value="tax">Tax</option>
-                                            </select>
+                                            <div
+                                                title="Nature is detected automatically from the account master"
+                                                className="flex h-[22px] items-center justify-center rounded border border-slate-200 bg-slate-50 px-1 text-[10px] font-bold uppercase tracking-tight text-slate-600"
+                                            >
+                                                {row.aid ? (JOURNAL_CATEGORY_LABEL[resolveRowCategory(row)] || '—') : '—'}
+                                            </div>
                                         </td>
                                         <td className="p-1">
-                                            <SearchableSelect triggerClassName="h-[22px] !text-[11px] !py-0 !px-1.5" options={getOptions(row.category).map(x => ({
-                                                value: x.id,
-                                                text: x.name,
-                                                balance: row.category === 'account' ? `${currencySymbol} ${format3(x.balance)}` : null,
-                                                balanceClass: (x.balance || 0) < 0 ? 'text-red-600' : 'text-blue-600'
-                                            }))} value={row.aid} onChange={v => updateRow(row.id, 'aid', v)} placeholder="Select..." onCreateNew={() => onQuickCreate(getColName(row.category))} />
+                                            <SearchableSelect triggerClassName="h-[22px] !text-[11px] !py-0 !px-1.5" options={ledgerOptions} value={row.aid} onChange={v => selectLedgerForRow(row.id, v)} placeholder="Select account..." onCreateNew={() => onQuickCreate(getColName(resolveRowCategory(row)))} />
                                         </td>
                                         <td className="p-1">
                                             <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="text" className="w-full border rounded outline-none focus:border-blue-400" placeholder="Remark..." value={row.description} onChange={e => updateRow(row.id, 'description', e.target.value)} />
