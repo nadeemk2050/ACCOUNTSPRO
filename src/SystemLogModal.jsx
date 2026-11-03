@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { FileText, RefreshCcw, Search, X, ChevronLeft, ChevronRight, Calendar, Filter, ArrowUpDown, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { FileText, RefreshCcw, Search, X, ChevronLeft, ChevronRight, Calendar, Filter, ArrowUpDown, Trash2, Loader2, AlertTriangle } from 'lucide-react';
 import { collection, getDocs, query, where, limit } from 'firebase/firestore';
 import { db } from './firebase';
 import { Modal } from './components/Modal';
+import { fetchSoftDeletedRecords } from './softDeletedPurge';
 
 const parseDate = (d) => {
   if (!d) return 0;
@@ -25,6 +26,12 @@ const SystemLogModal = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState(null);
   const [selectedLog, setSelectedLog] = useState(null);
+
+  // ---- Pending purge counter (soft-deleted vouchers/invoices still waiting) ----
+  const [purgeSummary, setPurgeSummary] = useState(null);
+  const [purgeScanLoading, setPurgeScanLoading] = useState(false);
+  const [purgeScanError, setPurgeScanError] = useState(null);
+  const [purgeRunning, setPurgeRunning] = useState(false);
 
   const restorableSnapshot = useMemo(() => {
     if (!selectedLog) return null;
@@ -131,6 +138,60 @@ const SystemLogModal = ({
       loadAllLogs();
     }
   };
+
+  // ---- Pending purge counter ----
+  // Reads the SAME collection list the purge action uses, so "remaining" is exact.
+  const refreshPurgeCount = useCallback(async () => {
+    if (!uid) return;
+    setPurgeScanLoading(true);
+    setPurgeScanError(null);
+    try {
+      const summary = await fetchSoftDeletedRecords(db, uid);
+      setPurgeSummary(summary);
+      if (summary.errors?.length) {
+        setPurgeScanError(`${summary.errors.length} source(s) could not be read`);
+      }
+    } catch (e) {
+      console.error('Pending purge count failed', e);
+      setPurgeSummary(null);
+      setPurgeScanError(e?.message || 'Count failed');
+    } finally {
+      setPurgeScanLoading(false);
+    }
+  }, [uid]);
+
+  useEffect(() => {
+    if (!isOpen || !uid) return;
+    refreshPurgeCount();
+  }, [isOpen, uid, refreshPurgeCount]);
+
+  const handlePurgeClick = async () => {
+    if (!onPurgeSoftDeleted || purgeRunning) return;
+    setPurgeRunning(true);
+    try {
+      await onPurgeSoftDeleted();
+    } finally {
+      setPurgeRunning(false);
+      await refreshPurgeCount();
+      if (typeof loadAllLogs === 'function') loadAllLogs();
+    }
+  };
+
+  const purgeVoucherCount = purgeSummary?.voucherTotal ?? 0;
+  const purgeBagCount = purgeSummary?.bagRecordTotal ?? 0;
+  const purgeTotalCount = purgeSummary?.total ?? 0;
+  const purgeBreakdown = useMemo(() => {
+    const rows = purgeSummary?.buckets || [];
+    return rows
+      .filter(b => b.rows.length > 0)
+      .map(b => `${b.label}: ${b.rows.length}`);
+  }, [purgeSummary]);
+  const purgeBreakdownTitle = purgeBreakdown.length
+    ? `Still to purge:\n${purgeBreakdown.join('\n')}`
+    : 'Nothing soft-deleted is waiting to be purged';
+  const purgeScannedLabel = purgeSummary?.scannedAt
+    ? new Date(purgeSummary.scannedAt).toLocaleTimeString()
+    : '—';
 
   // Pure Local Filtering & Sorting & Global Search
   const filteredAndSorted = useMemo(() => {
@@ -288,14 +349,64 @@ const SystemLogModal = ({
             )}
           </div>
 
-          <div className="flex gap-2 ml-auto">
+          <div className="flex gap-2 ml-auto items-center" >
+            {/* Pending purge counter — how many soft-deleted records are still waiting */}
+            <div
+              className={`px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-2 border shadow-sm ${purgeTotalCount > 0
+                ? 'bg-red-50 text-red-700 border-red-200'
+                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                }`}
+              title={purgeScanError ? `Pending purge count (partial): ${purgeScanError}\n${purgeBreakdownTitle}` : purgeBreakdownTitle}
+            >
+              {purgeScanLoading
+                ? <Loader2 size={12} className="animate-spin" />
+                : purgeScanError
+                  ? <AlertTriangle size={12} className="text-amber-500" />
+                  : <Trash2 size={12} />}
+              <span className="uppercase tracking-widest text-[9px] opacity-80">To Purge</span>
+              <span className="flex items-center gap-1">
+                Vouchers:
+                <span className={`px-1.5 py-0.5 rounded min-w-[26px] text-center ${purgeVoucherCount > 0 ? 'bg-red-700 text-white' : 'bg-emerald-600 text-white'}`}>
+                  {purgeScanLoading && !purgeSummary ? '…' : purgeVoucherCount}
+                </span>
+              </span>
+              <span className="opacity-30">|</span>
+              <span className="flex items-center gap-1">
+                Bag recs:
+                <span className={`px-1.5 py-0.5 rounded min-w-[26px] text-center ${purgeBagCount > 0 ? 'bg-red-700 text-white' : 'bg-emerald-600 text-white'}`}>
+                  {purgeScanLoading && !purgeSummary ? '…' : purgeBagCount}
+                </span>
+              </span>
+              <span className="opacity-30">|</span>
+              <span className="flex items-center gap-1">
+                Total:
+                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-white min-w-[26px] text-center">
+                  {purgeScanLoading && !purgeSummary ? '…' : purgeTotalCount}
+                </span>
+              </span>
+            </div>
+
+            {/* Manual recount */}
+            <button
+              onClick={refreshPurgeCount}
+              disabled={purgeScanLoading || purgeRunning}
+              className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 shadow-sm"
+              title={`Recount pending purge (last scan ${purgeScannedLabel})`}
+            >
+              <RefreshCcw size={12} className={purgeScanLoading ? 'animate-spin' : ''} />
+            </button>
+
             {onPurgeSoftDeleted && (
               <button
-                onClick={onPurgeSoftDeleted}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-black text-[10px] uppercase tracking-widest shadow-sm"
-                title="Permanently remove soft-deleted vouchers and cleanup linked records"
+                onClick={handlePurgeClick}
+                disabled={purgeRunning || purgeScanLoading}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 font-black text-[10px] uppercase tracking-widest shadow-sm"
+                title={purgeTotalCount > 0
+                  ? `Permanently remove the ${purgeTotalCount} soft-deleted record(s) counted above.\n${purgeBreakdownTitle}`
+                  : 'Nothing to purge — no soft-deleted records found'}
               >
-                <Trash2 size={12} /> Purge Soft Deleted
+                {purgeRunning ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                {purgeRunning ? 'Purging…' : `Purge Soft Deleted${purgeTotalCount > 0 ? ` (${purgeTotalCount})` : ''}`}
               </button>
             )}
             <div className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-3 border border-blue-200 shadow-sm mr-2">
@@ -305,6 +416,39 @@ const SystemLogModal = ({
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Pending purge breakdown strip */}
+        <div className="px-5 py-2 border-b bg-white flex flex-wrap items-center gap-2 text-[10px]">
+          <span className="font-black uppercase tracking-widest text-slate-400 flex items-center gap-1">
+            <Trash2 size={11} className="text-red-500" /> Remaining to be purged
+          </span>
+          {purgeScanLoading && !purgeSummary && (
+            <span className="text-slate-400 font-bold flex items-center gap-1">
+              <Loader2 size={11} className="animate-spin" /> counting…
+            </span>
+          )}
+          {purgeSummary && purgeBreakdown.length === 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-black">
+              0 — nothing soft-deleted is waiting
+            </span>
+          )}
+          {purgeSummary && purgeBreakdown.map((line) => {
+            const [label, count] = line.split(': ');
+            return (
+              <span key={label} className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200 font-black">
+                {label}: {count}
+              </span>
+            );
+          })}
+          {purgeScanError && (
+            <span className="ml-auto text-amber-600 font-bold flex items-center gap-1" title={purgeScanError}>
+              <AlertTriangle size={11} /> partial count
+            </span>
+          )}
+          {!purgeScanError && purgeSummary && (
+            <span className="ml-auto text-slate-400 font-bold">last count {purgeScannedLabel}</span>
+          )}
         </div>
 
         {/* Content */}

@@ -105,6 +105,7 @@ import { db, auth, functions, rtdb, cloudRtdb, cloudDb } from './firebase';
 // Real Firebase RTDB functions — imported via @firebase/* to bypass the firebase/database → rxrtdb.js stub alias
 import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
+import { SOFT_DELETED_PURGE_COLLECTIONS, fetchSoftDeletedRecords, isSoftDeletedRecord } from './softDeletedPurge';
 // Perf: heavy screens are code-split (lazy) so they are fetched only when first opened.
 const ManagementDashboard = lazy(() => import('./ManagementDashboard'));
 import TaxVoucherViewer from './TaxVoucherViewer';
@@ -836,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.11 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.12 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -891,7 +892,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.11</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.12</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -915,7 +916,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.11</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.12</div>
                 </div>
             </div>
         </Modal>
@@ -6063,7 +6064,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.11";
+    const SYSTEM_VERSION = "2.8.12";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -10027,25 +10028,9 @@ export default function App() {
 
         setToast({ type: 'loading', title: 'Purging...', message: 'Scanning for soft-deleted vouchers and cleanup records...' });
 
-        const voucherCollections = [
-            { name: 'invoices', fields: ['userId', 'ownerId'] },
-            { name: 'payments', fields: ['userId', 'ownerId'] },
-            { name: 'journal_vouchers', fields: ['userId', 'ownerId'] },
-            { name: 'stock_journals', fields: ['userId', 'ownerId'] },
-            { name: 'order_vouchers', fields: ['userId', 'ownerId'] },
-            { name: 'jumbo_bags', fields: ['userId', 'ownerId', 'companyId'] }
-        ];
+        const voucherCollections = SOFT_DELETED_PURGE_COLLECTIONS.map(({ name, fields }) => ({ name, fields }));
 
-        const isSoftDeleted = (docData = {}) => {
-            const status = String(docData.status || '').trim().toLowerCase();
-            return (
-                docData.isDeleted === true ||
-                docData.deleted === true ||
-                docData.is_deleted === true ||
-                status === 'deleted' ||
-                status === 'bulk_deleted'
-            );
-        };
+        const isSoftDeleted = isSoftDeletedRecord;
 
         const fetchDocsForCollection = async (colName, fields) => {
             const snapMap = new Map();
@@ -10130,6 +10115,7 @@ export default function App() {
                 }))
             );
 
+            const countedTotal = targetsByCollection.reduce((sum, b) => sum + b.rows.length, 0);
             let deletedCount = 0;
             let bagCleanupCount = 0;
 
@@ -10161,11 +10147,15 @@ export default function App() {
             setToast({
                 type: 'success',
                 title: 'Purge Complete',
-                message: `Removed ${deletedCount} soft-deleted voucher record(s)${bagCleanupCount ? ` and cleaned ${bagCleanupCount} linked bag record(s)` : ''}.`
+                message: countedTotal === 0
+                    ? 'Nothing to purge — no soft-deleted records were found.'
+                    : `Removed ${deletedCount} of ${countedTotal} soft-deleted voucher record(s)${bagCleanupCount ? ` and cleaned ${bagCleanupCount} linked bag record(s)` : ''}.`
             });
+            return { countedTotal, deletedCount, bagCleanupCount };
         } catch (error) {
             console.error('Soft-deleted purge failed:', error);
             setToast({ type: 'error', title: 'Purge Failed', message: error.message });
+            return { countedTotal: 0, deletedCount: 0, bagCleanupCount: 0, error };
         }
     };
 
@@ -11604,7 +11594,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.11</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.12</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14625,7 +14615,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.11</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.12</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
