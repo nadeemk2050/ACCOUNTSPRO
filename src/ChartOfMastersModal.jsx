@@ -18,6 +18,23 @@ const withPrimary = (groups) => {
     return out;
 };
 
+// Opening Qty / Opening Value come from different fields per master type.
+// Anything absent or blank is treated as "not set" so the list can show a dash
+// instead of a misleading 0.
+const toNumOrNull = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+};
+
+const formatOpening = (v, maxDigits = 3) => {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: maxDigits
+    });
+};
+
 const ChartOfMastersModal = ({
     isOpen,
     onClose,
@@ -53,7 +70,8 @@ const ChartOfMastersModal = ({
     autoEditCollection,
     autoEditId,
     onAutoEditHandled,
-    onAutoEditRequest
+    onAutoEditRequest,
+    onVerifyAdminPassword
 }) => {
     const [activeTab, setActiveTab] = useState('ITEMS');
     const [searchTerm, setSearchTerm] = useState('');
@@ -68,6 +86,13 @@ const ChartOfMastersModal = ({
     const [allMastersSearch, setAllMastersSearch] = useState('');
     const [allMastersSort, setAllMastersSort] = useState('asc'); // 'asc' | 'desc'
     const [allMastersType, setAllMastersType] = useState('ALL'); // type filter chip
+
+    // Row editor for the flat list. Opened by clicking a row, but only after the
+    // admin password (abcd) has been verified - the fields stay locked otherwise.
+    const [allEditKey, setAllEditKey] = useState(null);   // `${typeId}::${id}` currently unlocked
+    const [allEditForm, setAllEditForm] = useState({});
+    const [allEditSaving, setAllEditSaving] = useState(false);
+    const [allEditMsg, setAllEditMsg] = useState(null);
 
     useEffect(() => {
         setExpandedGroups(new Set());
@@ -375,6 +400,92 @@ const ChartOfMastersModal = ({
     const handleEditorKey = (e, item) => {
         if (e.key === 'Enter') { e.preventDefault(); saveRow(item); }
         else if (e.key === 'Escape') { e.preventDefault(); cancelRowEdit(); }
+    };
+
+    // ─── FLAT LIST ("LIST OF ALL MASTERS") ROW EDITOR ────────────────────────
+    // Clicking a row asks for the admin password (abcd) first. Only after it is
+    // accepted do the fields become editable - otherwise nothing unlocks.
+
+    const cancelAllMasterEdit = () => {
+        setAllEditKey(null);
+        setAllEditForm({});
+        setAllEditMsg(null);
+    };
+
+    const openAllMasterEditor = async (row) => {
+        if (!row?.collectionName) return;
+
+        // Clicking the already-open row closes it.
+        if (allEditKey === row.key) {
+            cancelAllMasterEdit();
+            return;
+        }
+
+        setAllEditMsg(null);
+
+        const verified = onVerifyAdminPassword
+            ? await onVerifyAdminPassword(`Edit ${row.name}`)
+            : false;
+        if (!verified) return; // dismissed or wrong password - stay locked
+
+        const fields = editFields[row.typeId] || [];
+        const next = {};
+        fields.forEach(field => {
+            const v = row.item?.[field.key];
+            next[field.key] = (v === undefined || v === null) ? '' : v;
+        });
+        if (row.typeId === 'CUSTOMERS') {
+            next.banks = Array.isArray(row.item?.banks) ? row.item.banks.map(b => ({ ...b })) : [];
+        }
+        setAllEditForm(next);
+        setAllEditKey(row.key);
+    };
+
+    // Opening Qty x Rate = Value, mirroring the Manage Items form.
+    const setAllEditFieldSmart = (key, value, typeId) => {
+        setAllEditForm(prev => {
+            const next = { ...prev, [key]: value };
+            if (typeId === 'ITEMS') {
+                const qty = Number(key === 'openingStock' ? value : prev.openingStock) || 0;
+                const rate = Number(key === 'openingRate' ? value : prev.openingRate) || 0;
+                if (key === 'openingStock' || key === 'openingRate') {
+                    if (qty && rate) next.openingBalance = String(Number((qty * rate).toFixed(2)));
+                } else if (key === 'openingBalance') {
+                    const val = Number(value) || 0;
+                    if (qty) next.openingRate = String(Number((val / qty).toFixed(4)));
+                }
+            }
+            return next;
+        });
+    };
+
+    const saveAllMasterRow = async (row) => {
+        const fields = editFields[row.typeId] || [];
+        const missing = fields.find(f => f.required && !String(allEditForm[f.key] ?? '').trim());
+        if (missing) { setAllEditMsg({ type: 'error', text: `${missing.label} is required.` }); return; }
+
+        setAllEditSaving(true);
+        setAllEditMsg(null);
+        try {
+            // Password was already verified when the row was unlocked.
+            const res = await onChartUpdate?.(row.collectionName, row.id, allEditForm, { skipPassword: true });
+            if (res?.ok) {
+                const who = user?.displayName || user?.email || 'Admin';
+                setAuditLogs(prev => {
+                    const next = { ...prev };
+                    next[row.id] = [...(next[row.id] || []), { id: `local-${Date.now()}`, userName: who, date: new Date(), action: 'UPDATED' }];
+                    return next;
+                });
+                cancelAllMasterEdit();
+                setRowMsg({ type: 'success', text: `Saved: "${allEditForm.name || row.name}"` });
+            } else if (!res?.cancelled) {
+                setAllEditMsg({ type: 'error', text: res?.error || 'Update failed.' });
+            }
+        } catch (e) {
+            setAllEditMsg({ type: 'error', text: e.message });
+        } finally {
+            setAllEditSaving(false);
+        }
     };
 
     // Instant metadata refresh for just the touched row - no extra cloud reads.
@@ -731,7 +842,11 @@ const ChartOfMastersModal = ({
                     name: item.name || '(Unnamed)',
                     typeId: tab.id,
                     typeLabel: tab.label,
-                    groupName
+                    collectionName: tab.collectionName,
+                    groupName,
+                    item,
+                    openingQty: toNumOrNull(item.openingStock),
+                    openingValue: toNumOrNull(item.openingBalance)
                 });
             }
         }
@@ -1217,22 +1332,129 @@ const ChartOfMastersModal = ({
                                             </th>
                                             <th className="py-2.5 px-6 font-semibold text-slate-700 w-56">Type</th>
                                             <th className="py-2.5 px-6 font-semibold text-slate-700 w-56">Group Name</th>
+                                            <th className="py-2.5 px-4 font-semibold text-slate-700 text-right w-32 whitespace-nowrap">Opening Qty</th>
+                                            <th className="py-2.5 px-4 font-semibold text-slate-700 text-right w-36 whitespace-nowrap">Opening Value</th>
+                                            <th className="py-2.5 px-6 font-semibold text-slate-700 w-28" title="Click a row to edit (admin password required)">Edit</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {filteredAllMasters.length === 0 ? (
                                             <tr>
-                                                <td colSpan={4} className="py-16 text-center text-slate-400 text-sm font-medium">
+                                                <td colSpan={7} className="py-16 text-center text-slate-400 text-sm font-medium">
                                                     No master records match this filter.
                                                 </td>
                                             </tr>
                                         ) : filteredAllMasters.map((r, idx) => (
-                                            <tr key={r.key} className="border-b border-slate-100 hover:bg-[#005994]/5 transition-colors">
-                                                <td className="py-2 px-4 text-slate-400 font-bold">{idx + 1}</td>
-                                                <td className="py-2 px-6 font-bold text-slate-800 uppercase">{r.name}</td>
-                                                <td className="py-2 px-6 text-slate-600 font-semibold">{r.typeLabel}</td>
-                                                <td className="py-2 px-6 text-slate-600 font-semibold">{r.groupName}</td>
-                                            </tr>
+                                            <React.Fragment key={r.key}>
+                                                <tr
+                                                    onClick={() => openAllMasterEditor(r)}
+                                                    className={`border-b border-slate-100 cursor-pointer transition-colors ${allEditKey === r.key ? 'bg-amber-50' : 'hover:bg-[#005994]/5'}`}
+                                                    title={`Click to edit "${r.name}" (admin password required)`}
+                                                >
+                                                    <td className="py-2 px-4 text-slate-400 font-bold">{idx + 1}</td>
+                                                    <td className="py-2 px-6 font-bold text-slate-800 uppercase">
+                                                        <span className="inline-flex items-center gap-1.5">
+                                                            {allEditKey === r.key ? <ChevronDown size={13} className="text-amber-600" /> : <ChevronRight size={13} className="text-slate-300" />}
+                                                            {r.name}
+                                                        </span>
+                                                    </td>
+                                                    <td className="py-2 px-6 text-slate-600 font-semibold">{r.typeLabel}</td>
+                                                    <td className="py-2 px-6 text-slate-600 font-semibold">{r.groupName}</td>
+                                                    <td className={`py-2 px-4 text-right font-mono font-bold ${r.openingQty === null ? 'text-slate-300' : 'text-slate-700'}`}>
+                                                        {formatOpening(r.openingQty)}
+                                                    </td>
+                                                    <td className={`py-2 px-4 text-right font-mono font-bold ${r.openingValue === null ? 'text-slate-300' : (r.openingValue < 0 ? 'text-red-600' : 'text-emerald-700')}`}>
+                                                        {r.openingValue === null ? '—' : formatOpening(r.openingValue, 2)}
+                                                    </td>
+                                                    <td className="py-2 px-6">
+                                                        <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide ${allEditKey === r.key ? 'text-amber-700' : 'text-[#005994]'}`}>
+                                                            <Pencil size={12} />
+                                                            {allEditKey === r.key ? 'Editing' : 'Edit'}
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                                {allEditKey === r.key && (
+                                                    <tr className="bg-amber-50/60 border-b-2 border-amber-200">
+                                                        <td colSpan={7} className="p-4">
+                                                            <div className="rounded-xl border border-amber-200 bg-white p-3 shadow-sm">
+                                                                <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                                                                    <span className="text-[11px] font-black uppercase tracking-wider text-amber-700">
+                                                                        Editing {r.typeLabel} — {r.name}
+                                                                    </span>
+                                                                    <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">Unlocked with admin password &middot; Esc = cancel</span>
+                                                                </div>
+
+                                                                {allEditMsg && (
+                                                                    <div className={`mb-2 px-3 py-1.5 rounded-lg text-xs font-bold border ${allEditMsg.type === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                                                                        {allEditMsg.text}
+                                                                    </div>
+                                                                )}
+
+                                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                                                                    {(editFields[r.typeId] || []).map(field => (
+                                                                        <label key={field.key} className="block">
+                                                                            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                                                                                {field.label}{field.required ? ' *' : ''}
+                                                                            </span>
+                                                                            {field.type === 'select' ? (
+                                                                                <select
+                                                                                    value={allEditForm[field.key] ?? ''}
+                                                                                    onChange={(e) => setAllEditFieldSmart(field.key, e.target.value, r.typeId)}
+                                                                                    onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); cancelAllMasterEdit(); } }}
+                                                                                    className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-medium focus:border-[#005994] outline-none bg-white"
+                                                                                >
+                                                                                    <option value="">Select...</option>
+                                                                                    {(field.options || []).map(opt => (
+                                                                                        <option key={opt} value={opt}>{opt}</option>
+                                                                                    ))}
+                                                                                </select>
+                                                                            ) : (
+                                                                                <input
+                                                                                    type={field.type}
+                                                                                    value={allEditForm[field.key] ?? ''}
+                                                                                    onChange={(e) => setAllEditFieldSmart(field.key, e.target.value, r.typeId)}
+                                                                                    onKeyDown={(e) => {
+                                                                                        if (e.key === 'Enter') { e.preventDefault(); saveAllMasterRow(r); }
+                                                                                        else if (e.key === 'Escape') { e.preventDefault(); cancelAllMasterEdit(); }
+                                                                                    }}
+                                                                                    className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none"
+                                                                                />
+                                                                            )}
+                                                                        </label>
+                                                                    ))}
+                                                                </div>
+
+                                                                {r.typeId === 'CUSTOMERS' && (
+                                                                    <div className="mt-3 border-t border-slate-100 pt-3">
+                                                                        <BankDetailsEditor
+                                                                            value={allEditForm.banks || []}
+                                                                            onChange={(rows) => setAllEditForm(prev => ({ ...prev, banks: rows }))}
+                                                                        />
+                                                                    </div>
+                                                                )}
+
+                                                                <div className="flex flex-wrap items-center gap-2 mt-3">
+                                                                    <button
+                                                                        onClick={() => saveAllMasterRow(r)}
+                                                                        disabled={allEditSaving}
+                                                                        className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                    >
+                                                                        {allEditSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                                                                        Save
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={cancelAllMasterEdit}
+                                                                        className="flex items-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold"
+                                                                    >
+                                                                        <X size={13} />
+                                                                        Cancel
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </React.Fragment>
                                         ))}
                                     </tbody>
                                 </table>
@@ -1656,6 +1878,7 @@ const ChartOfMastersModal = ({
                         <span><b className="text-[#005994]">Pencil</b> = edit inline (item, group, opening balance, HS code, TRN, email, address, mobile, lot status...)</span>
                         <span><b className="text-[#005994]">Trash</b> = delete</span>
                         <span><b className="text-orange-600">Move</b> = change ledger type</span>
+                        <span><b className="text-[#005994]">Click a row</b> in List of All Masters = edit its fields</span>
                         <span className="text-amber-700 font-bold">Admin password required for every save</span>
                     </div>
                     <button
