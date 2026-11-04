@@ -370,15 +370,37 @@ const computeLedgerBalances = ({ invDocs = [], payDocs = [], jvDocs = [], accoun
             else accBal[v.accountId] -= amtBase;
         }
 
-        const leg = (tid, tval) => apply(tid, undefined, (v.type === 'in') ? -tval : tval);
-
+        // Split totals per target — a legacy split may only carry partyId/accountId.
+        const splitTotals = new Map();
         if (v.isMulti && Array.isArray(v.splits)) {
             v.splits.forEach(s => {
                 if (!s) return;
-                // `targetId || partyId || accountId` — legacy splits only stored the latter.
-                leg(s.targetId || s.partyId || s.accountId, Number(s.amount || 0) * rate);
+                const sid = s.targetId || s.partyId || s.accountId;
+                if (!sid) return;
+                splitTotals.set(sid, (splitTotals.get(sid) || 0) + (Number(s.amount || 0) * rate));
             });
-        } else {
+        }
+
+        // ✅ PARTY LEG — mirrors LedgerModal exactly.
+        // The ledger always moves the party stored in `partyId` when that id is the
+        // one being viewed, whatever the stored category says. For a split payment
+        // it uses the party's split amount; for a plain payment the full amount.
+        // Previously this leg was skipped whenever the category pointed elsewhere
+        // (or the party was missing from a multi-split), which made the register
+        // disagree with the ledger.
+        if (v.partyId && hasParty(v.partyId)) {
+            const partyVal = splitTotals.has(v.partyId) ? splitTotals.get(v.partyId) : amtBase;
+            partyBal[v.partyId] += (v.type === 'in') ? -partyVal : partyVal;
+            splitTotals.delete(v.partyId);
+        }
+
+        // Remaining split targets (other parties / accounts).
+        splitTotals.forEach((val, sid) => {
+            if (hasParty(sid)) partyBal[sid] += (v.type === 'in') ? -val : val;
+            else if (hasAcc(sid)) accBal[sid] += (v.type === 'in') ? -val : val;
+        });
+
+        if (!v.isMulti || !Array.isArray(v.splits)) {
             let cat = v.transactionCategory;
             let tid = null;
             if (cat === 'party') tid = v.partyId;
@@ -398,7 +420,10 @@ const computeLedgerBalances = ({ invDocs = [], payDocs = [], jvDocs = [], accoun
                 else if (v.incomeId) { cat = 'income'; tid = v.incomeId; }
             }
             // `cat` only ever decides a fallback; the ID decides which map is touched.
-            if (tid) apply(tid, cat, (v.type === 'in') ? -amtBase : amtBase);
+            // The party stored on the voucher was already applied above — don't add it twice.
+            if (tid && !(hasParty(tid) && tid === v.partyId)) {
+                apply(tid, cat, (v.type === 'in') ? -amtBase : amtBase);
+            }
         }
     });
 
@@ -837,7 +862,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.14 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.15 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -892,7 +917,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.14</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.15</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -916,7 +941,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.14</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.15</div>
                 </div>
             </div>
         </Modal>
@@ -6064,7 +6089,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.14";
+    const SYSTEM_VERSION = "2.8.15";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -10618,7 +10643,8 @@ export default function App() {
                     }
                 });
 
-                if (total !== 0) {
+                // Zero-total ledgers are kept so the register's SHOW ZERO toggle can reveal them.
+                {
                     // For Expenses: Debit is the Total Amount, Credit is 0
                     list.push({ id: exp.id, label: exp.name, group: exp.group || 'Primary', rawValue: total, value: `${currencySymbol} ${formatCurrency(total)}`, debit: total, credit: 0 });
                 }
@@ -10674,7 +10700,8 @@ export default function App() {
                     }
                 });
 
-                if (total !== 0) {
+                // Zero-total ledgers are kept so the register's SHOW ZERO toggle can reveal them.
+                {
                     // For Direct Expenses: Debit is the Total Amount, Credit is 0
                     list.push({ id: exp.id, label: exp.name, group: exp.group || 'Primary', rawValue: total, value: `${currencySymbol} ${formatCurrency(total)}`, debit: total, credit: 0 });
                 }
@@ -10705,7 +10732,8 @@ export default function App() {
                     }
                 });
 
-                if (total !== 0) {
+                // Zero-total ledgers are kept so the register's SHOW ZERO toggle can reveal them.
+                {
                     list.push({ id: inc.id, label: inc.name, group: inc.group || 'Primary', rawValue: total, value: `${currencySymbol} ${formatCurrency(total)}`, debit: 0, credit: total });
                 }
             });
@@ -11596,7 +11624,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.14</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.15</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -13754,6 +13782,7 @@ export default function App() {
                 {...getRegisterData('expense')}
                 onAddToFavorites={handleAddToFavorites}
                 modalId="expense_register"
+                ledgerGroups={true}
                 onItemClick={(item) => {
                     // FIX: open the ledger DIRECTLY (no intermediate gateway render, no 100ms delay)
                     setLedgerInitialState({
@@ -14618,7 +14647,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.14</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.15</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -32363,9 +32392,14 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
 // --- UPDATED SIMPLE LIST MODAL (With PDF & Excel) ---
 // --- UPDATED SIMPLE LIST MODAL (Compact & Clean Summary) ---
-const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, summary, dateRange, onDateChange, showDateFilter = true, currencySymbol, registerType = 'default', ledgerSource, user, dataOwnerId, defaultFilter = 'all', invoices, parties, products, onAddToFavorites, modalId, hideF1Detl = false, hideDateTabs = false }) => {
+const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, summary, dateRange, onDateChange, showDateFilter = true, currencySymbol, registerType = 'default', ledgerSource, ledgerGroups = false, user, dataOwnerId, defaultFilter = 'all', invoices, parties, products, onAddToFavorites, modalId, hideF1Detl = false, hideDateTabs = false }) => {
     const [filter, setFilter] = useState(defaultFilter);
     const [showZero, setShowZero] = useState(false);
+    // false = summarised (only group headers), true = detailed (every group expanded).
+    // Drives both the DETL button and what EXCEL / PDF export.
+    const [ledgerDetailMode, setLedgerDetailMode] = useState(false);
+    // Pseudo-group key for the ungrouped ledgers shown under "Other Accounts".
+    const OTHER_ACCOUNTS_KEY = '__OTHER_ACCOUNTS__';
     const [searchTerm, setSearchTerm] = useState('');
     const [asyncData, setAsyncData] = useState(null);
     const [detailView, setDetailView] = useState(false);
@@ -32411,6 +32445,9 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
     const isInvRegister = ['sales', 'purchase'].includes(registerType);
     const isQtyAmountRegister = ['sales', 'purchase'].includes(registerType);
+    // Registers that list ledgers with balances: either computed from the ledger
+    // engine (ledgerSource) or supplied as grouped rows (ledgerGroups).
+    const hasLedgerTools = !!ledgerSource || !!ledgerGroups;
 
     useEffect(() => {
         const handleKey = (e) => {
@@ -32476,6 +32513,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
         if (isOpen) {
             setFilter(defaultFilter);
             setShowZero(false);
+            setLedgerDetailMode(false);
             setSearchTerm('');
             // Set defaults based on type
             const isRegister = ['payment', 'receipt', 'contra', 'manufacturing'].includes(registerType);
@@ -32816,6 +32854,11 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             if (filter === 'positive') matchesType = showZero ? val >= 0 : val > 0;
             if (filter === 'negative') matchesType = showZero ? val <= 0 : val < 0;
 
+            // LEDGER REGISTERS (Customers / Expenses / Cash-Bank / Capital ...):
+            // a ledger is listed while it actually carries a Dr or Cr balance.
+            // The SHOW ZERO toggle brings the zero-balance ledgers back.
+            if (hasLedgerTools && !showZero && Math.abs(val) < 0.005) matchesType = false;
+
             const searchLower = searchTerm.toLowerCase();
             // Check Label (Name/Item)
             const labelMatch = (item.label || '').toLowerCase().includes(searchLower);
@@ -32879,30 +32922,25 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             return 0;
         });
 
-    }, [baseData, filter, searchTerm, sortBy, sortOrder, registerType]);
+    }, [baseData, filter, searchTerm, sortBy, sortOrder, registerType, showZero, hasLedgerTools]);
 
     // Reset page when filter/search/mode changes
     useEffect(() => {
         setCurrentPage(1);
     }, [filter, searchTerm, summaryMode, dateRange?.from, dateRange?.to]);
 
-    const paginatedData = useMemo(() => {
-        const start = (currentPage - 1) * itemsPerPage;
-        return filteredData.slice(start, start + itemsPerPage);
-    }, [filteredData, currentPage, itemsPerPage]);
-
-    const totalPages = Math.ceil(filteredData.length / itemsPerPage);
-
-    // Grouping Logic
+    // ── GROUPING (built from the FULL filtered list) ─────────────────────────
+    // A group's ledgers must never be split across pages, so grouping happens
+    // before pagination. The page then slices the flattened display rows.
     const groupedData = useMemo(() => {
         if (['manufacturing', 'payment', 'receipt', 'contra'].includes(registerType)) return null;
-        const shouldGroup = paginatedData.some(i => i.group && i.group !== 'Primary');
+        const shouldGroup = filteredData.some(i => i.group && i.group !== 'Primary');
         if (!shouldGroup) return null;
 
         const groups = {};
         const primaryItems = [];
 
-        paginatedData.forEach(item => {
+        filteredData.forEach(item => {
             const gName = (item.group && item.group !== 'Primary') ? item.group : null;
             if (gName) {
                 if (!groups[gName]) groups[gName] = { name: gName, items: [], debit: 0, credit: 0, balance: 0 };
@@ -32917,22 +32955,58 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
         const sortedGroups = Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
         return { groups: sortedGroups, primary: primaryItems };
-    }, [paginatedData, registerType]);
+    }, [filteredData, registerType]);
 
-    const navigableRows = useMemo(() => {
-        if (groupedData) {
-            const rows = [];
-            groupedData.groups.forEach(group => {
-                rows.push({ ...group, _navType: 'group' });
-                if (expandedGroups.has(group.name)) {
-                    group.items.forEach(item => rows.push({ ...item, _navType: 'item' }));
-                }
+    // Flattened rows: every group header, then (when expanded) all of its ledgers,
+    // then a separator and the ungrouped "Other Accounts".
+    const displayRows = useMemo(() => {
+        if (!groupedData) return filteredData.map(item => ({ ...item, _rowType: 'item' }));
+
+        const rows = [];
+        groupedData.groups.forEach(group => {
+            rows.push({ ...group, _rowType: 'group', _navType: 'group' });
+            if (expandedGroups.has(group.name)) {
+                group.items.forEach(item => rows.push({ ...item, _rowType: 'item', _navType: 'item', _groupName: group.name }));
+            }
+        });
+        if (groupedData.primary.length > 0) {
+            const otherDebit = groupedData.primary.reduce((s, i) => s + (i.debit || 0), 0);
+            const otherCredit = groupedData.primary.reduce((s, i) => s + (i.credit || 0), 0);
+            const otherBalance = groupedData.primary.reduce((s, i) => s + (i.rawValue || 0), 0);
+            rows.push({
+                id: OTHER_ACCOUNTS_KEY,
+                name: OTHER_ACCOUNTS_KEY,
+                label: 'Other Accounts',
+                items: groupedData.primary,
+                debit: otherDebit,
+                credit: otherCredit,
+                balance: otherBalance,
+                _rowType: 'section',
+                _navType: 'group'
             });
-            groupedData.primary.forEach(item => rows.push({ ...item, _navType: 'item' }));
-            return rows;
+            if (expandedGroups.has(OTHER_ACCOUNTS_KEY)) {
+                groupedData.primary.forEach(item => rows.push({ ...item, _rowType: 'item', _navType: 'item', _groupName: OTHER_ACCOUNTS_KEY }));
+            }
         }
-        return paginatedData.map(item => ({ ...item, _navType: 'item' }));
-    }, [groupedData, paginatedData, expandedGroups]);
+        return rows;
+    }, [groupedData, filteredData, expandedGroups, OTHER_ACCOUNTS_KEY]);
+
+    const totalPages = Math.max(1, Math.ceil(displayRows.length / itemsPerPage));
+
+    const paginatedData = useMemo(() => {
+        const start = (currentPage - 1) * itemsPerPage;
+        return displayRows.slice(start, start + itemsPerPage);
+    }, [displayRows, currentPage, itemsPerPage]);
+
+    const navigableRows = useMemo(
+        () => paginatedData.map(item => ({ ...item, _navType: item._navType || 'item' })),
+        [paginatedData]
+    );
+
+    // Expanding / collapsing a group changes the row count, so keep the page in range.
+    useEffect(() => {
+        if (currentPage > totalPages) setCurrentPage(totalPages);
+    }, [currentPage, totalPages]);
 
     useEffect(() => { setFocusedRowIdx(-1); }, [currentPage, searchTerm, filter, summaryMode]);
 
@@ -32980,6 +33054,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                 const row = navigableRows[focusedRowIdx];
                 if (!row) return;
                 if (row._navType === 'group') toggleGroup(row.name);
+                else if (row._navType === 'section') return;
                 else if (row.isSummary) handleSummaryClick(row);
                 else if (onItemClick) onItemClick(row);
             } else if (e.key === 'ArrowLeft') {
@@ -33122,6 +33197,9 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     Rate: item.rate || 0,
                     Amount: item.totalAmt || 0
                 }));
+            } else if (hasLedgerTools && groupedData && !ledgerDetailMode) {
+                // Summarised ledger view: one row per group (with its balance)
+                dataToExport = ledgerGroupSummaryRows();
             } else {
                 dataToExport = filteredData.map(item => ({
                     Name: item.label,
@@ -33287,6 +33365,16 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                         Number(item.totalAmt).toLocaleString(undefined, { minimumFractionDigits: 2 })
                     ]);
                 });
+            } else if (hasLedgerTools && groupedData && !ledgerDetailMode) {
+                // Summarised ledger view: one row per group (with its balance)
+                ledgerGroupSummaryRows().forEach(r => {
+                    tableBody.push([
+                        r.Name,
+                        Number(r.Period_Debit).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                        Number(r.Period_Credit).toLocaleString(undefined, { minimumFractionDigits: 2 }),
+                        `${currencySymbol || ''} ${Number(r.Balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                    ]);
+                });
             } else {
                 filteredData.forEach(item => {
                     tableBody.push([
@@ -33345,6 +33433,113 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
             console.error("PDF download failed", e);
             alert("Failed to load PDF generator.");
         }
+    };
+
+    // ── PER-GROUP EXPORT (icons on every group header) ───────────────────────
+    const exportGroup = async (groupRow, format) => {
+        const gLabel = groupRow?.label || groupRow?.name || 'Group';
+        const items = groupRow?.items || [];
+        const n2 = (v) => Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
+        const asOf = dateRange?.to || new Date().toISOString().split('T')[0];
+
+        try {
+            if (format === 'excel') {
+                const XLSX = await import("xlsx");
+                const data = items.map(i => ({
+                    Name: i.label,
+                    Debit: Number(i.debit || 0),
+                    Credit: Number(i.credit || 0),
+                    Balance: Number(i.rawValue || 0)
+                }));
+                data.push({
+                    Name: 'TOTAL',
+                    Debit: Number(groupRow.debit || 0),
+                    Credit: Number(groupRow.credit || 0),
+                    Balance: Number(groupRow.balance || 0)
+                });
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Group');
+                XLSX.writeFile(wb, `${title}_${gLabel}_${asOf}.xlsx`);
+            } else {
+                const { jsPDF } = await import("jspdf");
+                const { default: autoTable } = await import("jspdf-autotable");
+                const doc = new jsPDF();
+                doc.setFontSize(15);
+                doc.text(`${title} — ${gLabel}`, 14, 20);
+                doc.setFontSize(9);
+                doc.setTextColor(100);
+                doc.text(`As of ${asOf}   |   ${items.length} ledger(s)`, 14, 26);
+                autoTable(doc, {
+                    head: [['Name (Account)', 'Debit', 'Credit', 'Balance']],
+                    body: [
+                        ...items.map(i => [i.label, n2(i.debit), n2(i.credit), n2(i.rawValue)]),
+                        ['TOTAL', n2(groupRow.debit), n2(groupRow.credit), n2(groupRow.balance)]
+                    ],
+                    startY: 32,
+                    theme: 'grid',
+                    headStyles: { fillColor: [30, 50, 100] },
+                    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } }
+                });
+                doc.save(`${title}_${gLabel}_${asOf}.pdf`);
+            }
+        } catch (e) {
+            console.error('Group export failed', e);
+            alert('Failed to export this group.');
+        }
+    };
+
+    // Small XLSX / PDF pair rendered on every group header row.
+    const groupExportIcons = (groupRow, tone = 'dark') => (
+        <span className="inline-flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+            <button
+                onClick={(e) => { e.stopPropagation(); exportGroup(groupRow, 'excel'); }}
+                className={`px-1 py-0.5 rounded border text-[8px] font-black tracking-tight ${tone === 'dark' ? 'border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100' : 'border-emerald-200 text-emerald-600 bg-white hover:bg-emerald-50'}`}
+                title={`Download ${groupRow.label || groupRow.name} as Excel (with balances)`}
+            >
+                XLSX
+            </button>
+            <button
+                onClick={(e) => { e.stopPropagation(); exportGroup(groupRow, 'pdf'); }}
+                className={`px-1 py-0.5 rounded border text-[8px] font-black tracking-tight ${tone === 'dark' ? 'border-rose-300 text-rose-700 bg-rose-50 hover:bg-rose-100' : 'border-rose-200 text-rose-600 bg-white hover:bg-rose-50'}`}
+                title={`Download ${groupRow.label || groupRow.name} as PDF (with balances)`}
+            >
+                PDF
+            </button>
+        </span>
+    );
+
+    // DETL / SUMM — open every group at once, or collapse back to headers only.
+    const toggleLedgerDetailMode = () => {
+        const next = !ledgerDetailMode;
+        setLedgerDetailMode(next);
+        if (next) {
+            const names = new Set([...(groupedData?.groups || []).map(g => g.name), OTHER_ACCOUNTS_KEY]);
+            setExpandedGroups(names);
+        } else {
+            setExpandedGroups(new Set());
+        }
+        setCurrentPage(1);
+    };
+
+    // Group-level rows used by the top-bar EXCEL / PDF when in summarised mode.
+    const ledgerGroupSummaryRows = () => {
+        if (!groupedData) return [];
+        const rows = groupedData.groups.map(g => ({
+            Name: g.name,
+            Period_Debit: g.debit || 0,
+            Period_Credit: g.credit || 0,
+            Balance: g.balance || 0
+        }));
+        if (groupedData.primary.length) {
+            rows.push({
+                Name: 'Other Accounts',
+                Period_Debit: groupedData.primary.reduce((s, i) => s + (i.debit || 0), 0),
+                Period_Credit: groupedData.primary.reduce((s, i) => s + (i.credit || 0), 0),
+                Balance: groupedData.primary.reduce((s, i) => s + (i.rawValue || 0), 0)
+            });
+        }
+        return rows;
     };
 
     const HeaderTitle = (
@@ -33506,13 +33701,25 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
 
                 <div className="h-4 w-px bg-slate-200 mx-1 hidden lg:block"></div>
 
-                {ledgerSource && (
+                {hasLedgerTools && (
                     <button
                         onClick={() => setShowZero(prev => !prev)}
                         className={`flex items-center gap-1.5 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border transition-all ${showZero ? 'bg-indigo-600 text-white border-indigo-700 shadow-md' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
                         title="Show zero balanced accounts in list"
                     >
                         <span>{showZero ? '✓ ZERO INCLUDED' : '+ SHOW ZERO'}</span>
+                    </button>
+                )}
+                {hasLedgerTools && (
+                    <button
+                        onClick={toggleLedgerDetailMode}
+                        className={`flex items-center gap-2 px-3 py-1 lg:py-1.5 rounded-md text-[10px] font-black border transition-all ${ledgerDetailMode ? 'bg-amber-500 text-white border-amber-600 shadow-inner' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}
+                        title={ledgerDetailMode
+                            ? 'Detailed view: every group is open and EXCEL / PDF export all ledgers. Click for the summarised view.'
+                            : 'Summarised view: only group headers are shown and EXCEL / PDF export group totals. Click to open every group.'}
+                    >
+                        <span className="opacity-60">DETL:</span>
+                        {ledgerDetailMode ? 'SUMM' : 'DETL'}
                     </button>
                 )}
                 <button
@@ -33912,71 +34119,78 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                                 </React.Fragment>
                                 ); })
                         ) : (
-                            groupedData ? (
-                                <>
-                                    {groupedData.groups.map((group, grpNavIdx) => {
-                                        const isExpanded = expandedGroups.has(group.name);
-                                        const focusedNav = navigableRows[focusedRowIdx];
-                                        const isGrpFocused = focusedNav?._navType === 'group' && focusedNav?.name === group.name;
-                                        return (
-                                            <React.Fragment key={group.name}>
-                                                <tr
-                                                    ref={isGrpFocused ? focusedRowRef : null}
-                                                    className={`border-b border-t border-slate-200 cursor-pointer transition-all group shadow-sm ${isGrpFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'bg-slate-100/80 hover:bg-blue-50'}`}
-                                                    onClick={() => { const idx = navigableRows.findIndex(r => r._navType === 'group' && r.name === group.name); if (idx >= 0) setFocusedRowIdx(idx); toggleGroup(group.name); }}
-                                                    title={isExpanded ? "Click to Collapse Group" : "Click to Expand Group"}
-                                                >
-                                                    <td className="p-3 font-black text-slate-700 uppercase text-[10px] tracking-widest flex items-center gap-3">
-                                                        <div className={`p-1 rounded bg-white shadow-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
-                                                            <ChevronRight size={12} className={isExpanded ? "text-blue-600" : "text-slate-400"} />
-                                                        </div>
-                                                        <span className="group-hover:text-blue-700 transition-colors">{group.name}</span>
-                                                        <span className="text-slate-400 font-bold ml-1 px-1.5 py-0.5 bg-slate-200/50 rounded-full text-[9px] leading-none">{group.items.length}</span>
-                                                    </td>
-                                                    <td className={`p-3 text-right font-black font-mono text-xs group-hover:scale-105 transition-transform ${group.balance < 0 ? 'text-rose-700' : 'text-blue-700'}`}>
-                                                        {currencySymbol} {Number(group.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                                    </td>
-                                                </tr>
-                                                {isExpanded && group.items.map(item => {
-                                                    const fIdx = navigableRows.findIndex(r => r._navType === 'item' && r.id === item.id);
-                                                    const isItemFocused = focusedRowIdx === fIdx && fIdx >= 0;
-                                                    return (
-                                                        <tr ref={isItemFocused ? focusedRowRef : null} key={item.id} onClick={() => { if (fIdx >= 0) setFocusedRowIdx(fIdx); onItemClick(item); }} className={`cursor-pointer transition-colors ${isItemFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'hover:bg-blue-50 bg-white'}`}>
-                                                            <td className="p-3 pl-8 font-medium text-slate-600 text-xs border-l-4 border-transparent hover:border-blue-200">
-                                                                {item.label}
-                                                            </td>
-                                                            <td className={`p-3 text-right font-bold font-mono text-xs ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>
-                                                                {item.value}
-                                                            </td>
-                                                        </tr>
-                                                    );
-                                                })}
-                                            </React.Fragment>
-                                        );
-                                    })}
-                                    {groupedData.primary.length > 0 && groupedData.groups.length > 0 && <tr className="bg-slate-50"><td colSpan="2" className="p-2 text-xs font-bold text-slate-400 uppercase text-center tracking-widest">Other Accounts</td></tr>}
-                                    {groupedData.primary.map(item => {
-                                        const fIdx = navigableRows.findIndex(r => r._navType === 'item' && r.id === item.id);
-                                        const isItemFocused = focusedRowIdx === fIdx && fIdx >= 0;
-                                        return (
-                                            <tr ref={isItemFocused ? focusedRowRef : null} key={item.id} onClick={() => { if (fIdx >= 0) setFocusedRowIdx(fIdx); onItemClick(item); }} className={`cursor-pointer transition-colors ${isItemFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'hover:bg-blue-50'}`}>
-                                                <td className="p-3 font-medium text-slate-700">{item.label}</td>
-                                                <td className={`p-3 text-right font-bold font-mono ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>{item.value}</td>
-                                            </tr>
-                                        );
-                                    })}
-                                </>
-                            ) : (
-                                paginatedData.map((item, rowIdx) => {
-                                    const isFocused = focusedRowIdx === rowIdx;
+                            paginatedData.map((row, rowIdx) => {
+                                if (row._rowType === 'group') {
+                                    const isExpanded = expandedGroups.has(row.name);
+                                    const isGrpFocused = focusedRowIdx === rowIdx;
                                     return (
-                                        <tr ref={isFocused ? focusedRowRef : null} key={item.id} onClick={() => { setFocusedRowIdx(rowIdx); item.isSummary ? handleSummaryClick(item) : (onItemClick && onItemClick(item)); }} className={`transition-colors border-b last:border-0 ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : item.isSummary ? 'bg-indigo-50/30 hover:bg-indigo-50 font-bold' : 'hover:bg-blue-50'} cursor-pointer`}>
-                                            <td className="p-3 font-medium text-slate-700">{item.label}</td>
-                                            <td className={`p-3 text-right font-bold font-mono ${(item.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>{item.value}</td>
+                                        <tr
+                                            ref={isGrpFocused ? focusedRowRef : null}
+                                            key={`GRP_${row.name}`}
+                                            className={`border-b border-t border-slate-200 cursor-pointer transition-all group shadow-sm ${isGrpFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'bg-slate-100/80 hover:bg-blue-50'}`}
+                                            onClick={() => { setFocusedRowIdx(rowIdx); toggleGroup(row.name); }}
+                                            title={isExpanded ? "Click to Collapse Group" : "Click to Expand Group"}
+                                        >
+                                            <td className="p-3 font-black text-slate-700 uppercase text-[10px] tracking-widest flex items-center gap-3">
+                                                <div className={`p-1 rounded bg-white shadow-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
+                                                    <ChevronRight size={12} className={isExpanded ? "text-blue-600" : "text-slate-400"} />
+                                                </div>
+                                                <span className="group-hover:text-blue-700 transition-colors">{row.name}</span>
+                                                <span className="text-slate-400 font-bold ml-1 px-1.5 py-0.5 bg-slate-200/50 rounded-full text-[9px] leading-none">{row.items.length}</span>
+                                            </td>
+                                            <td className={`p-3 text-right font-black font-mono text-xs group-hover:scale-105 transition-transform ${row.balance < 0 ? 'text-rose-700' : 'text-blue-700'}`}>
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    {groupExportIcons(row, 'dark')}
+                                                    <span>{currencySymbol} {Number(row.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                                </div>
+                                            </td>
                                         </tr>
                                     );
-                                })
-                            )
+                                }
+                                if (row._rowType === 'section') {
+                                    const isExpanded = expandedGroups.has(OTHER_ACCOUNTS_KEY);
+                                    const isSecFocused = focusedRowIdx === rowIdx;
+                                    return (
+                                        <tr
+                                            ref={isSecFocused ? focusedRowRef : null}
+                                            key="SECTION_OTHER"
+                                            onClick={() => { setFocusedRowIdx(rowIdx); toggleGroup(OTHER_ACCOUNTS_KEY); }}
+                                            className={`border-b border-t border-slate-200 cursor-pointer transition-all group shadow-sm ${isSecFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : 'bg-slate-50 hover:bg-blue-50'}`}
+                                            title={isExpanded ? 'Click to collapse Other Accounts' : 'Click to expand Other Accounts'}
+                                        >
+                                            <td className="p-2.5 font-black text-slate-500 uppercase text-[10px] tracking-widest flex items-center gap-3">
+                                                <div className={`p-1 rounded bg-white shadow-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
+                                                    <ChevronRight size={12} className={isExpanded ? "text-blue-600" : "text-slate-400"} />
+                                                </div>
+                                                <span className="group-hover:text-blue-700 transition-colors">Other Accounts</span>
+                                                <span className="text-slate-400 font-bold ml-1 px-1.5 py-0.5 bg-slate-200/50 rounded-full text-[9px] leading-none">{row.items.length}</span>
+                                            </td>
+                                            <td className={`p-2.5 text-right font-black font-mono text-xs ${row.balance < 0 ? 'text-rose-700' : 'text-blue-700'}`}>
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    {groupExportIcons(row, 'dark')}
+                                                    <span>{currencySymbol} {Number(row.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+                                const isFocused = focusedRowIdx === rowIdx;
+                                return (
+                                    <tr
+                                        ref={isFocused ? focusedRowRef : null}
+                                        key={row.id}
+                                        onClick={() => {
+                                            setFocusedRowIdx(rowIdx);
+                                            if (row.isSummary) handleSummaryClick(row);
+                                            else if (onItemClick) onItemClick(row);
+                                        }}
+                                        className={`cursor-pointer transition-colors ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : (row._groupName ? 'hover:bg-blue-50 bg-white' : 'hover:bg-blue-50')} ${row.isSummary ? 'bg-indigo-50/30 font-bold' : ''}`}
+                                    >
+                                        <td className={`p-3 font-medium ${row._groupName ? 'pl-8 text-slate-600 text-xs' : 'text-slate-700'}`}>{row.label}</td>
+                                        <td className={`p-3 text-right font-bold font-mono text-xs ${(row.rawValue || 0) < 0 ? 'text-red-600' : 'text-blue-800'}`}>{row.value}</td>
+                                    </tr>
+                                );
+                            })
                         )}
                     </tbody>
                 </table>
@@ -34007,7 +34221,7 @@ const SimpleListModal = ({ isOpen, onClose, onBack, title, data, onItemClick, su
                     <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
                         <div>
                             <p className="text-xs text-gray-700">
-                                Showing <span className="font-bold">{(currentPage - 1) * itemsPerPage + 1}</span> to <span className="font-bold">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> of <span className="font-bold">{filteredData.length}</span> results
+                                Showing <span className="font-bold">{(currentPage - 1) * itemsPerPage + 1}</span> to <span className="font-bold">{Math.min(currentPage * itemsPerPage, displayRows.length)}</span> of <span className="font-bold">{displayRows.length}</span> results
                             </p>
                         </div>
                         <div>
