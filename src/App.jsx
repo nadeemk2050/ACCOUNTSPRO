@@ -837,7 +837,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.13 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.14 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -892,7 +892,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.13</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.14</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -916,7 +916,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.13</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.14</div>
                 </div>
             </div>
         </Modal>
@@ -6064,7 +6064,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.13";
+    const SYSTEM_VERSION = "2.8.14";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -11596,7 +11596,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.13</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.14</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -14618,7 +14618,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.13</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.14</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -24085,6 +24085,12 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [summaryMode, setSummaryMode] = useState('detailed'); // 'detailed', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'
     const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
 
+    // ITEM LEDGER closing-stock valuation basis. The running closing stock column is
+    // valued as  closingQty x average rate, where the average rate is the PERIOD's
+    // total purchase (or sales) value divided by its total quantity. No Dr/Cr and no
+    // FIFO here - only these two averages.
+    const [itemClsBasis, setItemClsBasis] = useState('purchase'); // 'purchase' | 'sales'
+
     // SUMMARIZE view ('' | 'party' | 'item' | 'inward' | 'outward'). Deliberately SEPARATE from summaryMode:
     // summaryMode drives the breakup headers/rows and MUST stay 'detailed' while a
     // summary is shown, otherwise the breakup branch would replace the rows it reads.
@@ -25451,6 +25457,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         let qtyOutTotal = 0;
         let totalBags = 0;
         let runningQty = openingQty;
+        // Period value accumulators for the closing-stock valuation averages
+        let periodInValue = 0;
+        let periodOutValue = 0;
 
         detailedList = detailedList.map(t => {
             let dr = 0, cr = 0;
@@ -25517,6 +25526,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 runningTotal += (dr - cr);
                 runningQty += (dQtyIn - dQtyOut);
                 totalBags += safeNum(t.bagCount || 0);
+                periodInValue += dr;
+                periodOutValue += cr;
             }
 
             const clsRate = (runningQty !== 0) ? Math.abs(runningTotal / runningQty) : 0;
@@ -25531,6 +25542,20 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 clsRate: clsRate
             };
         });
+
+        // ── ITEM LEDGER: average price used to value the running closing stock ──
+        // Average Purchase Price = period purchase value / period purchase qty
+        // Average Sales Price    = period sales value    / period sales qty
+        const avgPurchasePrice = qtyInTotal > 0 ? Math.abs(periodInValue / qtyInTotal) : 0;
+        const avgSalesPrice = qtyOutTotal > 0 ? Math.abs(periodOutValue / qtyOutTotal) : 0;
+        const clsValuationPrice = itemClsBasis === 'sales' ? avgSalesPrice : avgPurchasePrice;
+
+        // Closing stock value = closing qty x the chosen average price (no Dr/Cr, no FIFO)
+        detailedList = detailedList.map(r => ({
+            ...r,
+            closingStockValue: safeNum(r.displayBalanceQty) * clsValuationPrice,
+            clsValuationPrice
+        }));
 
         // ✅ COMPREHENSIVE SUMMARY BREAKUP SYSTEM (Daily, Weekly, Monthly, Quarterly, Annually)
         let displayList = detailedList;
@@ -25610,6 +25635,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     qtyOut: g.qtyOut,
                     qtyInOut: g.qtyIn - g.qtyOut,
                     displayBalanceQty: g._qtyBal,
+                    closingStockValue: safeNum(g._qtyBal) * clsValuationPrice,
+                    clsValuationPrice,
                     isSummary: true 
                 };
             });
@@ -25639,6 +25666,15 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         // ✅ NEW: Avg Rate = Total Debit (Purchase Value) / Total Qty In
         if (filter.type === 'item' && sum.totalQtyIn > 0) {
             sum.avgRate = sum.debit / sum.totalQtyIn;
+        }
+
+        // Item ledger closing-stock valuation (average price basis, user selectable)
+        if (filter.type === 'item') {
+            sum.avgPurchasePrice = avgPurchasePrice;
+            sum.avgSalesPrice = avgSalesPrice;
+            sum.clsValuationPrice = clsValuationPrice;
+            sum.clsBasis = itemClsBasis;
+            sum.closingStockValue = safeNum(runningQty) * clsValuationPrice;
         }
 
         // Only sort Detailed list (Daily/Monthly already sorted during grouping)
@@ -25736,7 +25772,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             detailedRows: detailedList,
             displayCurrency: sym
         };
-    }, [transactions, deferredSearchTerm, powerSearch, searchScope, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode]);
+    }, [transactions, deferredSearchTerm, powerSearch, searchScope, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode, itemClsBasis]);
 
     // ── STAGE 2: "matched in" badges — ONE pass over the VISIBLE page only ────
     // Returns null while idle, so an ordinary render does zero extra work.
@@ -27294,6 +27330,37 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                     onRowClick={summarizeBy === 'party' ? handleSummaryRowClick : null}
                                 />
                             ) : (
+                            <>
+                            {isTallyItemLedger && !isBreakupMode && (
+                                <div className="flex flex-wrap items-center justify-end gap-2 px-2 py-1 bg-[#eaf2fd] border-b border-slate-300">
+                                    <span className="text-[9px] font-black uppercase tracking-widest text-[#1e3264]/70 mr-auto">
+                                        Running closing stock valued at
+                                    </span>
+                                    <div className="flex items-center bg-white border border-[#2b5797]/40 rounded overflow-hidden">
+                                        <button
+                                            onClick={() => setItemClsBasis('purchase')}
+                                            className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wide transition-colors ${itemClsBasis === 'purchase' ? 'bg-[#2b5797] text-white' : 'text-[#2b5797] hover:bg-blue-50'}`}
+                                            title={`Average purchase price of the period = total purchase value / total purchase qty = ${formatCurrency(summary.avgPurchasePrice || 0)}`}
+                                        >
+                                            Avg Purchase
+                                        </button>
+                                        <button
+                                            onClick={() => setItemClsBasis('sales')}
+                                            className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wide border-l border-[#2b5797]/30 transition-colors ${itemClsBasis === 'sales' ? 'bg-[#2b5797] text-white' : 'text-[#2b5797] hover:bg-blue-50'}`}
+                                            title={`Average sales price of the period = total sales value / total sales qty = ${formatCurrency(summary.avgSalesPrice || 0)}`}
+                                        >
+                                            Avg Sales
+                                        </button>
+                                    </div>
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-50 border border-amber-300 text-[10px] font-black text-amber-800" title="Closing qty x this rate = closing stock value">
+                                        <span className="text-[8px] uppercase tracking-widest opacity-70">Rate</span>
+                                        {formatCurrency(summary.clsValuationPrice || 0)}
+                                    </span>
+                                    <span className="text-[9px] font-bold text-[#1e3264]/60">
+                                        PUR {format3(summary.totalQtyIn || 0)} &middot; SAL {format3(summary.totalQtyOut || 0)}
+                                    </span>
+                                </div>
+                            )}
                             <table className="w-full border-collapse font-sans text-[11px] md:text-[12px]">
                                 <thead className="sticky top-0 z-10">
                                     {isBreakupMode && isSalesPurchaseRegister ? (
@@ -27410,7 +27477,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {isTallyItemLedger && !hiddenCols.has('qty_bal') && (
                                                     <th className="p-1.5 border-r border-slate-300 text-right font-black">{format3(summary.balanceQty)}</th>
                                                 )}
-                                                {!hiddenCols.has('bal') && <th className="p-1.5 text-right font-black">{formatCurrency(Math.abs(summary.balance))} {summary.balance >= 0 ? 'Dr' : 'Cr'}</th>}
+                                                {!hiddenCols.has('bal') && (
+                                                    <th className="p-1.5 text-right font-black">{isTallyItemLedger ? formatCurrency(summary.closingStockValue || 0) : <>{formatCurrency(Math.abs(summary.balance))} {summary.balance >= 0 ? 'Dr' : 'Cr'}</>}</th>
+                                                )}
                                             </tr>
                                             <tr className="bg-[#f0f5fc] text-slate-700 border-y border-slate-300">
                                                 {!hiddenCols.has('check') && <th className="p-1.5 border-r border-slate-300 text-left w-6"><input type="checkbox" onChange={() => toggleSelectAll(processedData)} checked={processedData.length > 0 && selectedIds.size === processedData.length} /></th>}
@@ -27426,7 +27495,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                 {isTallyItemLedger && !hiddenCols.has('item_qty_out') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY OUT" id="item_qty_out" onHide={toggleColumn} /></th>}
                                                 {!hiddenCols.has('credit') && <th className="p-1.5 border-r border-slate-300 text-right w-32 cursor-pointer select-none" onClick={() => toggleSortOrder('credit_asc', 'credit_desc')}><HideCol name={`CREDIT (${displayCurrency})`} id="credit" onHide={toggleColumn} /></th>}
                                                 {isTallyItemLedger && !hiddenCols.has('qty_bal') && <th className="p-1.5 border-r border-slate-300 text-right w-24"><HideCol name="QTY BALANCE" id="qty_bal" onHide={toggleColumn} /></th>}
-                                                {!hiddenCols.has('bal') && <th className="p-1.5 text-right w-32"><HideCol name="VALUE" id="bal" onHide={toggleColumn} /></th>}
+                                                {!hiddenCols.has('bal') && <th className="p-1.5 text-right w-32"><HideCol name={isTallyItemLedger ? 'CLOSING STOCK' : 'VALUE'} id="bal" onHide={toggleColumn} /></th>}
                                             </tr>
                                         </>
                                     )}
@@ -27509,7 +27578,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                                 {!hiddenCols.has('item_qty_out') && <td className={`p-2 border-r border-indigo-100 text-right font-black ${safeNum(row.qtyOut) > 0 ? 'text-red-700' : 'text-slate-300'}`}>{safeNum(row.qtyOut) > 0 ? format3(safeNum(row.qtyOut)) : '-'}</td>}
                                                                 {!hiddenCols.has('credit') && <td className={`p-2 border-r border-indigo-100 text-right font-black ${row.displayOut > 0 ? 'text-red-700' : 'text-slate-300'}`}>{row.displayOut > 0 ? formatCurrency(row.displayOut) : '-'}</td>}
                                                                 {!hiddenCols.has('qty_bal') && <td className="p-2 border-r border-indigo-100 text-right font-black text-slate-800 bg-blue-50/10">{format3(row.displayBalanceQty)}</td>}
-                                                                {!hiddenCols.has('bal') && <td className="p-2 text-right font-black text-slate-900">{formatCurrency(Math.abs(row.displayBalance))} <span className="text-[9px] text-slate-500">{row.displayBalance >= 0 ? 'Dr' : 'Cr'}</span></td>}
+                                                                {!hiddenCols.has('bal') && <td className="p-2 text-right font-black text-slate-900">{row.closingStockValue !== undefined ? formatCurrency(row.closingStockValue) : <>{formatCurrency(Math.abs(row.displayBalance))} <span className="text-[9px] text-slate-500">{row.displayBalance >= 0 ? 'Dr' : 'Cr'}</span></>}</td>}
                                                             </tr>
                                                         );
                                                     }
@@ -27660,8 +27729,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                             </td>
                                                         )}
                                                         {!hiddenCols.has('bal') && (
-                                                            <td className="p-1.5 text-right font-black text-slate-900 tracking-tight">
-                                                                {formatCurrency(Math.abs(row.displayBalance))} {row.displayBalance >= 0 ? 'Dr' : 'Cr'}
+                                                            <td className="p-1.5 text-right font-black text-slate-900 tracking-tight" title={isTallyItemLedger && row.closingStockValue !== undefined ? `${format3(row.displayBalanceQty)} qty x ${formatCurrency(row.clsValuationPrice || 0)} avg ${itemClsBasis === 'sales' ? 'sales' : 'purchase'} price` : undefined}>
+                                                                {isTallyItemLedger && row.closingStockValue !== undefined
+                                                                    ? formatCurrency(row.closingStockValue)
+                                                                    : <>{formatCurrency(Math.abs(row.displayBalance))} {row.displayBalance >= 0 ? 'Dr' : 'Cr'}</>}
                                                             </td>
                                                         )}
                                                     </>
@@ -27673,6 +27744,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                 </tbody>
 
                             </table>
+                            </>
                             )}
                         </div>
 
