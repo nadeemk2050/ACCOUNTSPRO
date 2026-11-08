@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Search, FileText, User, RefreshCw, Plus, ArrowLeft, ChevronDown, ChevronRight, Pencil, Trash2, Check, ArrowRightLeft, Loader2, ArrowUpAZ, ArrowDownZA } from 'lucide-react';
 import BankDetailsEditor from './BankDetailsEditor';
+import { GROUP_TAB_COLOR_OPTIONS, STOCK_GROUP_COLOR_KEYS, FLAG_TO_COLOR_KEY, getGroupTabColorConfig, ColorSwatchBox, GroupColorSelect } from './groupColorOptions';
 import { db } from './firebase';
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -195,20 +196,82 @@ const ChartOfMastersModal = ({
     }), [stockGroups, partyGroups, expenseGroups, parties]);
 
     // Group record fields - mirrors the old Create / Alter Masters group form,
-    // including every quantity/value accumulation flag.
-    const groupEditFields = useMemo(() => ({
-        stock_groups: [
+    // including every quantity/value accumulation flag, with dynamic labels for
+    // PARENT ITSELF (Grand Total) vs SUB-GROUP (Parent Group Total).
+    const STOCK_GROUP_FLAG_KEYS = [
+        'shouldQuantities', 'shouldValues',
+        'addInwardQty', 'addInwardValue',
+        'addOutwardQty', 'addOutwardValue',
+        'addClosingQty', 'addClosingValue'
+    ];
+
+    const getStockGroupFields = (parentVal) => {
+        const pStr = String(parentVal ?? '').trim().toLowerCase();
+        const isSubGroup = Boolean(pStr && pStr !== 'primary');
+        return [
             { key: 'name', label: 'Group Name', type: 'text', required: true },
             { key: 'parent', label: 'Parent Group', type: 'select', options: withPrimary((stockGroups || []).map(g => g.name)) },
-            { key: 'shouldQuantities', label: 'Add Quantities?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'shouldValues', label: 'Add Values?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'addInwardQty', label: 'Add Inward Qty to Totals?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'addInwardValue', label: 'Add Inward Value to Totals?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'addOutwardQty', label: 'Add Outward Qty to Totals?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'addOutwardValue', label: 'Add Outward Value to Totals?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'addClosingQty', label: 'Add Closing Qty to Totals?', type: 'select', options: ['Yes', 'No'] },
-            { key: 'addClosingValue', label: 'Add Closing Value to Totals?', type: 'select', options: ['Yes', 'No'] }
-        ],
+            {
+                key: 'shouldQuantities',
+                colorKey: 'colorOpeningQty',
+                label: isSubGroup ? 'Add the Opening Quantity in Parent Group Total Opening Quantity?' : 'Add Opening Quantities in Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'shouldValues',
+                colorKey: 'colorOpeningValue',
+                label: isSubGroup ? 'Add the Opening Values in Parent Group Total Opening Values?' : 'Add Opening Values in Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'addInwardQty',
+                colorKey: 'colorInwardQty',
+                label: isSubGroup ? 'Add the Inward Quantity in Parent Group Total Inward Quantity?' : 'Add Inward Qty to Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'addInwardValue',
+                colorKey: 'colorInwardValue',
+                label: isSubGroup ? 'Add the Inward Values in Parent Group Total Inward Values?' : 'Add Inward Values to Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'addOutwardQty',
+                colorKey: 'colorOutwardQty',
+                label: isSubGroup ? 'Add the Outward Quantity in Parent Group Total Outward Quantity?' : 'Add Outward Qty to Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'addOutwardValue',
+                colorKey: 'colorOutwardValue',
+                label: isSubGroup ? 'Add the Outward Values in Parent Group Total Outward Values?' : 'Add Outward Values to Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'addClosingQty',
+                colorKey: 'colorClosingQty',
+                label: isSubGroup ? 'Add the Closing Quantity in Parent Group Total Closing Quantity?' : 'Add Closing Qty to Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            },
+            {
+                key: 'addClosingValue',
+                colorKey: 'colorClosingValue',
+                label: isSubGroup ? 'Add the Closing Values in Parent Group Total Closing Values?' : 'Add Closing Values to Grand Total?',
+                type: 'select',
+                options: ['Yes', 'No']
+            }
+        ];
+    };
+
+    const groupEditFields = useMemo(() => ({
+        stock_groups: getStockGroupFields('Primary'),
         party_groups: [
             { key: 'name', label: 'Group Name', type: 'text', required: true },
             { key: 'addValues', label: 'Add Values?', type: 'select', options: ['Yes', 'No'] }
@@ -265,7 +328,9 @@ const ChartOfMastersModal = ({
                     : []
     );
 
-    const groupFieldsFor = (collection) => groupEditFields[collection] || [];
+    const groupFieldsFor = (collection, parentVal = 'Primary') => (
+        collection === 'stock_groups' ? getStockGroupFields(parentVal) : (groupEditFields[collection] || [])
+    );
 
     // Groups that only exist as a `group` string on member ledgers (Fixed Assets,
     // Capital, Income, Cash/Bank, Direct Expenses...) still get a name editor.
@@ -279,16 +344,114 @@ const ChartOfMastersModal = ({
         return groupArrayFor(coll).find(g => (g.name || '') === gName) || null;
     };
 
+    // ─── STOCK GROUP HIERARCHY CLASSIFICATION ────────────────────────────────
+    // Solid rule:
+    //  • Under Nothing ("") or "Primary" -> PARENT ITSELF
+    //  • Under a root group "P"          -> SUB GROUP WITH PARENT "P"
+    //  • Under a sub-group "S" (root "P")-> SUB TO SUB-GROUP ("S") WITH PARENT ("P")
+    const getStockGroupHierarchyInfo = (gName, explicitParent = undefined) => {
+        const isPrimaryOrNothing = (val) => {
+            const s = String(val ?? '').trim().toLowerCase();
+            return !s || s === 'primary';
+        };
+
+        if (isPrimaryOrNothing(gName) && explicitParent === undefined) {
+            return {
+                depth: 0,
+                type: 'primary_root',
+                parentName: 'Primary',
+                rootParentName: null,
+                label: 'PRIMARY (DEFAULT ROOT)',
+                badgeClass: 'bg-slate-100 text-slate-700 border-slate-300'
+            };
+        }
+
+        const findStockGroup = (name) => {
+            const target = String(name ?? '').trim().toLowerCase();
+            if (!target) return null;
+            return (stockGroups || []).find(g => String(g.name ?? '').trim().toLowerCase() === target) || null;
+        };
+
+        const selfRec = findStockGroup(gName);
+        const directParentRaw = explicitParent !== undefined ? explicitParent : selfRec?.parent;
+
+        if (isPrimaryOrNothing(directParentRaw)) {
+            return {
+                depth: 0,
+                type: 'parent',
+                parentName: 'Primary',
+                rootParentName: null,
+                label: 'PARENT ITSELF',
+                badgeClass: 'bg-blue-100 text-blue-800 border-blue-300'
+            };
+        }
+
+        const directParentRec = findStockGroup(directParentRaw);
+        const directParentName = directParentRec?.name || String(directParentRaw).trim();
+
+        // Walk up ancestors to check if directParent is itself a root Parent or a Sub-Group
+        if (!directParentRec || isPrimaryOrNothing(directParentRec.parent)) {
+            return {
+                depth: 1,
+                type: 'subgroup',
+                parentName: directParentName,
+                rootParentName: directParentName,
+                label: `SUB GROUP WITH PARENT "${directParentName}"`,
+                badgeClass: 'bg-purple-100 text-purple-800 border-purple-300'
+            };
+        }
+
+        // directParent has a non-Primary parent -> walk up to find top-most root parent
+        const visited = new Set([
+            String(gName ?? '').trim().toLowerCase(),
+            String(directParentName).toLowerCase()
+        ]);
+        let curr = directParentRec;
+        let rootParentName = directParentName;
+        let depth = 1;
+
+        while (curr && !isPrimaryOrNothing(curr.parent)) {
+            const nextParentRaw = String(curr.parent).trim();
+            const nextKey = nextParentRaw.toLowerCase();
+            if (visited.has(nextKey)) break;
+            visited.add(nextKey);
+            const nextRec = findStockGroup(nextParentRaw);
+            rootParentName = nextRec?.name || nextParentRaw;
+            depth++;
+            if (!nextRec) break;
+            curr = nextRec;
+        }
+
+        return {
+            depth,
+            type: 'sub_to_subgroup',
+            parentName: directParentName,
+            rootParentName,
+            label: `SUB TO SUB-GROUP ("${directParentName}") WITH PARENT ("${rootParentName}")`,
+            badgeClass: 'bg-amber-100 text-amber-900 border-amber-300'
+        };
+    };
+
     const isVirtualGroup = (gName) => !currentTab?.groupCollection || !groupRecordFor(gName);
 
     const startGroupEdit = (gName) => {
         const rec = groupRecordFor(gName);
         const coll = currentTab?.groupCollection;
-        const fields = rec ? groupFieldsFor(coll) : virtualGroupFieldsFor(activeTab);
+        const fields = rec ? groupFieldsFor(coll, rec?.parent) : virtualGroupFieldsFor(activeTab);
         const next = {};
         fields.forEach(f => {
             const v = rec ? rec[f.key] : (f.key === 'name' ? gName : '');
-            next[f.key] = (v === undefined || v === null) ? '' : v;
+            if (coll === 'stock_groups' && f.key === 'parent') {
+                const rawP = String(v ?? '').trim();
+                next[f.key] = (!rawP || rawP.toLowerCase() === 'primary') ? 'Primary' : rawP;
+            } else if (coll === 'stock_groups' && STOCK_GROUP_FLAG_KEYS.includes(f.key)) {
+                next[f.key] = v === 'No' ? 'No' : 'Yes';
+                if (f.colorKey) {
+                    next[f.colorKey] = (rec && rec[f.colorKey]) ? rec[f.colorKey] : 'original';
+                }
+            } else {
+                next[f.key] = (v === undefined || v === null) ? '' : v;
+            }
         });
         setGroupEditForm(next);
         setGroupMoveType('');
@@ -318,11 +481,16 @@ const ChartOfMastersModal = ({
         setRowMsg(null);
         try {
             if (rec && coll) {
-                const res = await onChartUpdate?.(coll, rec.id, groupEditForm);
+                const normalizedForm = { ...groupEditForm };
+                if (coll === 'stock_groups') {
+                    const rawP = String(normalizedForm.parent ?? '').trim();
+                    normalizedForm.parent = (!rawP || rawP.toLowerCase() === 'primary') ? 'Primary' : rawP;
+                }
+                const res = await onChartUpdate?.(coll, rec.id, normalizedForm);
                 if (res?.ok) {
                     touchRowMeta(rec.id, 'UPDATED');
                     cancelGroupEdit();
-                    setRowMsg({ type: 'success', text: `Group saved: "${groupEditForm.name}". Member records were re-grouped automatically.` });
+                    setRowMsg({ type: 'success', text: `Group saved: "${normalizedForm.name}". Member records were re-grouped automatically.` });
                 } else if (!res?.cancelled) {
                     setRowMsg({ type: 'error', text: res?.error || 'Group update failed.' });
                 }
@@ -884,15 +1052,15 @@ const ChartOfMastersModal = ({
     }, [allMastersList, allMastersSearch, allMastersType, allMastersSort]);
 
     const renderFieldGrid = (fields, values, onChange, cols = 'grid-cols-1 sm:grid-cols-2') => (
-        <div className={`grid ${cols} gap-2`}>
+        <div className={`grid ${cols} gap-2.5`}>
             {fields.map(field => (
-                <label key={field.key} className="block">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <div key={field.key} className={`block ${field.colorKey ? 'p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2' : ''}`}>
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-600 block leading-snug">
                         {field.label}{field.required ? ' *' : ''}
                     </span>
                     {field.type === 'select' ? (
                         <select
-                            value={values[field.key] ?? ''}
+                            value={values[field.key] ?? (field.colorKey ? 'Yes' : '')}
                             onChange={(e) => onChange(field.key, e.target.value)}
                             className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-medium focus:border-[#005994] outline-none bg-white"
                         >
@@ -906,10 +1074,22 @@ const ChartOfMastersModal = ({
                             type={field.type}
                             value={values[field.key] ?? ''}
                             onChange={(e) => onChange(field.key, e.target.value)}
-                            className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none"
+                            className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none bg-white"
                         />
                     )}
-                </label>
+                    {field.colorKey && (
+                        <div className="pt-1 border-t border-slate-200/70">
+                            <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                                Box Background Colour:
+                            </span>
+                            <GroupColorSelect
+                                compact
+                                value={values[field.colorKey] || 'original'}
+                                onChange={(v) => onChange(field.colorKey, v)}
+                            />
+                        </div>
+                    )}
+                </div>
             ))}
         </div>
     );
@@ -936,21 +1116,38 @@ const ChartOfMastersModal = ({
     }, [quickAddType, activeTab, currentTab, stockGroups]);
 
     const createDetailFields = useMemo(() => {
+        const selectedParentVal = quickAddForm?.parent ?? quickAddTargetGroup ?? 'Primary';
         const base = quickAddType === 'group'
-            ? groupFieldsFor(currentTab?.groupCollection)
+            ? groupFieldsFor(currentTab?.groupCollection, selectedParentVal)
             : (editFields[activeTab] || []);
         const skip = ['name', createTypeField?.key].filter(Boolean);
         return base.filter(f => !skip.includes(f.key));
-    }, [quickAddType, activeTab, currentTab, editFields, groupEditFields, createTypeField]);
+    }, [quickAddType, activeTab, currentTab, editFields, groupEditFields, createTypeField, quickAddForm?.parent, quickAddTargetGroup, stockGroups]);
 
     const toggleFullDetails = () => {
         const next = !quickAddShowAll;
         if (next) {
-            setQuickAddForm(prev => ({
-                ...prev,
-                name: quickAddName,
-                ...(createTypeField ? { [createTypeField.key]: prev[createTypeField.key] ?? quickAddTargetGroup ?? '' } : {})
-            }));
+            setQuickAddForm(prev => {
+                const isStockGroup = quickAddType === 'group' && currentTab?.groupCollection === 'stock_groups';
+                const stockDefaults = isStockGroup
+                    ? {
+                        ...STOCK_GROUP_FLAG_KEYS.reduce((acc, k) => {
+                            acc[k] = prev[k] === 'No' ? 'No' : 'Yes';
+                            return acc;
+                        }, {}),
+                        ...STOCK_GROUP_COLOR_KEYS.reduce((acc, ck) => {
+                            acc[ck] = prev[ck] || 'original';
+                            return acc;
+                        }, {})
+                    }
+                    : {};
+                return {
+                    ...prev,
+                    ...stockDefaults,
+                    name: quickAddName,
+                    ...(createTypeField ? { [createTypeField.key]: prev[createTypeField.key] ?? quickAddTargetGroup ?? (isStockGroup ? 'Primary' : '') } : {})
+                };
+            });
         }
         setQuickAddShowAll(next);
     };
@@ -970,7 +1167,16 @@ const ChartOfMastersModal = ({
         if (!coll) { setRowMsg({ type: 'error', text: 'This list cannot take new records.' }); return; }
 
         const payload = { ...quickAddForm, name };
-        if (isGroup && coll === 'stock_groups' && !payload.shouldQuantities) payload.shouldQuantities = 'Yes';
+        if (isGroup && coll === 'stock_groups') {
+            const rawParent = String(payload.parent ?? quickAddTargetGroup ?? '').trim();
+            payload.parent = (!rawParent || rawParent.toLowerCase() === 'primary') ? 'Primary' : rawParent;
+            STOCK_GROUP_FLAG_KEYS.forEach(k => {
+                payload[k] = payload[k] === 'No' ? 'No' : 'Yes';
+            });
+            STOCK_GROUP_COLOR_KEYS.forEach(ck => {
+                payload[ck] = payload[ck] || 'original';
+            });
+        }
         if (isGroup && coll !== 'stock_groups' && !payload.addValues) payload.addValues = 'No';
         if (!isGroup && currentTab?.groupCollection && !payload.group) payload.group = quickAddTargetGroup || 'Primary';
 
@@ -1010,11 +1216,32 @@ const ChartOfMastersModal = ({
                 const coll = currentTab.groupCollection;
                 if (!coll) return;
 
+                const rawChosenParent = String(quickAddForm.parent ?? quickAddTargetGroup ?? '').trim();
+                const normalizedParent = (!rawChosenParent || rawChosenParent.toLowerCase() === 'primary') ? 'Primary' : rawChosenParent;
+
                 const payload = {
                     name: quickAddName.trim(),
                     name_lowercase: quickAddName.trim().toLowerCase(),
                     userId: dataOwnerId,
-                    ...(coll === 'stock_groups' ? { parent: 'Primary', shouldQuantities: 'Yes' } : { addValues: 'No' })
+                    ...(coll === 'stock_groups' ? {
+                        parent: normalizedParent,
+                        shouldQuantities: 'Yes',
+                        shouldValues: 'Yes',
+                        addInwardQty: 'Yes',
+                        addInwardValue: 'Yes',
+                        addOutwardQty: 'Yes',
+                        addOutwardValue: 'Yes',
+                        addClosingQty: 'Yes',
+                        addClosingValue: 'Yes',
+                        colorOpeningQty: 'original',
+                        colorOpeningValue: 'original',
+                        colorInwardQty: 'original',
+                        colorInwardValue: 'original',
+                        colorOutwardQty: 'original',
+                        colorOutwardValue: 'original',
+                        colorClosingQty: 'original',
+                        colorClosingValue: 'original'
+                    } : { addValues: 'No' })
                 };
 
                 const docRef = await addDoc(collection(db, coll), payload);
@@ -1557,6 +1784,17 @@ const ChartOfMastersModal = ({
                                                                     )}
                                                                     <span className="text-xs uppercase tracking-wider text-slate-400">Group:</span>
                                                                     <span className="text-[#005994]">{gName}</span>
+                                                                    {currentTab?.groupCollection === 'stock_groups' && (() => {
+                                                                        const hInfo = getStockGroupHierarchyInfo(gName);
+                                                                        return (
+                                                                            <span
+                                                                                className={`text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full border whitespace-nowrap ${hInfo.badgeClass}`}
+                                                                                title={hInfo.label}
+                                                                            >
+                                                                                {hInfo.label}
+                                                                            </span>
+                                                                        );
+                                                                    })()}
                                                                     <button
                                                                         onClick={(e) => {
                                                                             e.stopPropagation();
@@ -1608,6 +1846,14 @@ const ChartOfMastersModal = ({
                                                                             <span className="text-[10px] font-black uppercase tracking-wide bg-[#005994]/10 text-[#005994] border border-[#005994]/20 px-2 py-0.5 rounded-full whitespace-nowrap">
                                                                                 Current Type: {currentTab?.label || '-'}
                                                                             </span>
+                                                                            {currentTab?.groupCollection === 'stock_groups' && (() => {
+                                                                                const liveHInfo = getStockGroupHierarchyInfo(gName, groupEditForm.parent);
+                                                                                return (
+                                                                                    <span className={`text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full border whitespace-nowrap ${liveHInfo.badgeClass}`}>
+                                                                                        {liveHInfo.label}
+                                                                                    </span>
+                                                                                );
+                                                                            })()}
                                                                             {isVirtualGroup(gName) && (
                                                                                 <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">{items.length} ledger(s) in this group</span>
                                                                             )}
@@ -1615,7 +1861,7 @@ const ChartOfMastersModal = ({
                                                                         <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">Renaming re-groups all member records - password required</span>
                                                                     </div>
                                                                     {renderFieldGrid(
-                                                                        groupRecordFor(gName) ? groupFieldsFor(currentTab?.groupCollection) : virtualGroupFieldsFor(activeTab),
+                                                                        groupRecordFor(gName) ? groupFieldsFor(currentTab?.groupCollection, groupEditForm.parent) : virtualGroupFieldsFor(activeTab),
                                                                         groupEditForm,
                                                                         (k, v) => setGroupEditForm(prev => ({ ...prev, [k]: v })),
                                                                         'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
@@ -1948,11 +2194,23 @@ const ChartOfMastersModal = ({
                                         }}
                                         className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#005994]/20 focus:border-[#005994] transition-all bg-white"
                                     >
-                                        <option value="">Select...</option>
+                                        <option value="">Select... (None / Parent Itself)</option>
                                         {(createTypeField.options || []).map(opt => (
                                             <option key={opt} value={opt}>{opt}</option>
                                         ))}
                                     </select>
+                                    {quickAddType === 'group' && currentTab?.groupCollection === 'stock_groups' && (() => {
+                                        const selectedParentVal = quickAddForm[createTypeField.key] ?? quickAddTargetGroup ?? '';
+                                        const liveHInfo = getStockGroupHierarchyInfo(quickAddForm.name || quickAddName || '', selectedParentVal);
+                                        return (
+                                            <div className="mt-2 flex items-center gap-2">
+                                                <span className="text-[10px] font-bold uppercase text-slate-400">Group Classification:</span>
+                                                <span className={`text-[10px] font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full border ${liveHInfo.badgeClass}`}>
+                                                    {liveHInfo.label}
+                                                </span>
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
                             )}
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Check, Loader2 } from 'lucide-react';
 import BankDetailsEditor from './BankDetailsEditor';
+import { GroupColorSelect } from './groupColorOptions';
 
 /**
  * QuickMasterModal — lightweight "add new" dialog used by the dropdown lists in
@@ -93,14 +94,14 @@ const quickMasterFields = {
     stock_groups: [
         { key: 'name', label: 'Group Name', type: 'text', required: true },
         { key: 'parent', label: 'Parent Group', type: 'select', isType: true },
-        { key: 'shouldQuantities', label: 'Add Quantities?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'shouldValues', label: 'Add Values?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'addInwardQty', label: 'Add Inward Qty to Totals?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'addInwardValue', label: 'Add Inward Value to Totals?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'addOutwardQty', label: 'Add Outward Qty to Totals?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'addOutwardValue', label: 'Add Outward Value to Totals?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'addClosingQty', label: 'Add Closing Qty to Totals?', type: 'select', staticOptions: ['Yes', 'No'] },
-        { key: 'addClosingValue', label: 'Add Closing Value to Totals?', type: 'select', staticOptions: ['Yes', 'No'] }
+        { key: 'shouldQuantities', colorKey: 'colorOpeningQty', label: 'Add Opening Quantities in Grand Total?', subGroupLabel: 'Add the Opening Quantity in Parent Group Total Opening Quantity?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'shouldValues', colorKey: 'colorOpeningValue', label: 'Add Opening Values in Grand Total?', subGroupLabel: 'Add the Opening Values in Parent Group Total Opening Values?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'addInwardQty', colorKey: 'colorInwardQty', label: 'Add Inward Qty to Grand Total?', subGroupLabel: 'Add the Inward Quantity in Parent Group Total Inward Quantity?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'addInwardValue', colorKey: 'colorInwardValue', label: 'Add Inward Values to Grand Total?', subGroupLabel: 'Add the Inward Values in Parent Group Total Inward Values?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'addOutwardQty', colorKey: 'colorOutwardQty', label: 'Add Outward Qty to Grand Total?', subGroupLabel: 'Add the Outward Quantity in Parent Group Total Outward Quantity?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'addOutwardValue', colorKey: 'colorOutwardValue', label: 'Add Outward Values to Grand Total?', subGroupLabel: 'Add the Outward Values in Parent Group Total Outward Values?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'addClosingQty', colorKey: 'colorClosingQty', label: 'Add Closing Qty to Grand Total?', subGroupLabel: 'Add the Closing Quantity in Parent Group Total Closing Quantity?', type: 'select', staticOptions: ['Yes', 'No'] },
+        { key: 'addClosingValue', colorKey: 'colorClosingValue', label: 'Add Closing Values to Grand Total?', subGroupLabel: 'Add the Closing Values in Parent Group Total Closing Values?', type: 'select', staticOptions: ['Yes', 'No'] }
     ]
 };
 
@@ -129,7 +130,29 @@ const QuickMasterModal = ({ isOpen, onClose, collectionName, groupOptions = [], 
     // Reset whenever it opens (or the target collection changes)
     useEffect(() => {
         if (isOpen) {
-            setForm({});
+            if (collectionName === 'stock_groups') {
+                setForm({
+                    parent: 'Primary',
+                    shouldQuantities: 'Yes',
+                    shouldValues: 'Yes',
+                    addInwardQty: 'Yes',
+                    addInwardValue: 'Yes',
+                    addOutwardQty: 'Yes',
+                    addOutwardValue: 'Yes',
+                    addClosingQty: 'Yes',
+                    addClosingValue: 'Yes',
+                    colorOpeningQty: 'original',
+                    colorOpeningValue: 'original',
+                    colorInwardQty: 'original',
+                    colorInwardValue: 'original',
+                    colorOutwardQty: 'original',
+                    colorOutwardValue: 'original',
+                    colorClosingQty: 'original',
+                    colorClosingValue: 'original'
+                });
+            } else {
+                setForm({});
+            }
             setShowAll(false);
             setError(null);
         }
@@ -170,32 +193,49 @@ const QuickMasterModal = ({ isOpen, onClose, collectionName, groupOptions = [], 
         }
     };
 
-    const renderField = (field) => (
-        <label key={field.key} className="block">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                {field.label}{field.required ? ' *' : ''}
-            </span>
-            {field.type === 'select' ? (
-                <select
-                    value={form[field.key] ?? ''}
-                    onChange={(e) => setField(field.key, e.target.value)}
-                    className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-medium focus:border-[#005994] outline-none bg-white"
-                >
-                    <option value="">Select...</option>
-                    {optionsFor(field).map(opt => (
-                        <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                </select>
-            ) : (
-                <input
-                    type={field.type}
-                    value={form[field.key] ?? ''}
-                    onChange={(e) => setField(field.key, e.target.value)}
-                    className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none"
-                />
-            )}
-        </label>
-    );
+    const isStockSubGroup = collectionName === 'stock_groups' && Boolean(String(form.parent ?? '').trim() && String(form.parent ?? '').trim().toLowerCase() !== 'primary');
+
+    const renderField = (field) => {
+        const displayLabel = (isStockSubGroup && field.subGroupLabel) ? field.subGroupLabel : field.label;
+        return (
+            <div key={field.key} className={`block ${field.colorKey ? 'p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2' : ''}`}>
+                <span className="text-[10px] font-bold uppercase tracking-wide text-slate-600 block leading-snug">
+                    {displayLabel}{field.required ? ' *' : ''}
+                </span>
+                {field.type === 'select' ? (
+                    <select
+                        value={form[field.key] ?? (field.colorKey ? 'Yes' : '')}
+                        onChange={(e) => setField(field.key, e.target.value)}
+                        className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-medium focus:border-[#005994] outline-none bg-white"
+                    >
+                        <option value="">Select...</option>
+                        {optionsFor(field).map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                    </select>
+                ) : (
+                    <input
+                        type={field.type}
+                        value={form[field.key] ?? ''}
+                        onChange={(e) => setField(field.key, e.target.value)}
+                        className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-semibold focus:border-[#005994] outline-none bg-white"
+                    />
+                )}
+                {field.colorKey && (
+                    <div className="pt-1 border-t border-slate-200/70">
+                        <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                            Box Background Colour:
+                        </span>
+                        <GroupColorSelect
+                            compact
+                            value={form[field.colorKey] || 'original'}
+                            onChange={(v) => setField(field.colorKey, v)}
+                        />
+                    </div>
+                )}
+            </div>
+        );
+    };
 
     return (
         <div className="fixed inset-0 z-[900000] flex items-start justify-center bg-slate-900/40 backdrop-blur-[2px] p-4 pt-[8vh]">

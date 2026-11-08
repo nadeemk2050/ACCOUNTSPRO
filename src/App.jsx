@@ -28,6 +28,7 @@ import { getFunctions, httpsCallable as fHttpsCallable } from "firebase/function
 import DateInput from './DateInput';
 import ChartOfMastersModal from './ChartOfMastersModal';
 import QuickMasterModal from './QuickMasterModal';
+import { GROUP_TAB_COLOR_OPTIONS, STOCK_GROUP_COLOR_KEYS, FLAG_TO_COLOR_KEY, getGroupTabColorConfig, ColorSwatchBox, GroupColorSelect } from './groupColorOptions';
 import { moveRowHighlight, activateHighlightedRow, clearRowHighlight, gatewayNavStep, gatewayActivate, isTypingTarget } from './keyboardNav';
 import StockValuationBadge from './StockValuationBadge';
 import { computeStockClosing, getStoredValuation, setStoredValuation, STOCK_MOVEMENT_TYPES } from './stockValuation';
@@ -8939,7 +8940,8 @@ export default function App() {
             const cleanData = { ...formData, userId: uid };
             cleanData.name_lowercase = String(formData.name).toLowerCase();
             if (collectionName === 'stock_groups') {
-                if (!cleanData.parent) cleanData.parent = 'Primary';
+                const rawP = String(cleanData.parent ?? '').trim();
+                cleanData.parent = (!rawP || rawP.toLowerCase() === 'primary') ? 'Primary' : rawP;
                 if (!cleanData.shouldQuantities) cleanData.shouldQuantities = 'Yes';
             } else if (!cleanData.addValues) {
                 cleanData.addValues = 'No';
@@ -12553,49 +12555,65 @@ export default function App() {
                     },
                     {
                         name: 'shouldQuantities',
-                        label: 'Add Quantities?',
+                        colorKey: 'colorOpeningQty',
+                        label: 'Add Opening Quantities in Grand Total?',
+                        subGroupLabel: 'Add Opening Quantity in Parent Group Total Opening Quantity?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'shouldValues',
-                        label: 'Add Values?',
+                        colorKey: 'colorOpeningValue',
+                        label: 'Add Opening Values in Grand Total?',
+                        subGroupLabel: 'Add Opening Values in Parent Group Total Opening Values?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'addInwardQty',
-                        label: 'Add Inward Qty to Totals?',
+                        colorKey: 'colorInwardQty',
+                        label: 'Add Inward Qty to Grand Total?',
+                        subGroupLabel: 'Add Inward Quantity in Parent Group Total Inward Quantity?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'addInwardValue',
-                        label: 'Add Inward Value to Totals?',
+                        colorKey: 'colorInwardValue',
+                        label: 'Add Inward Values to Grand Total?',
+                        subGroupLabel: 'Add Inward Values in Parent Group Total Inward Values?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'addOutwardQty',
-                        label: 'Add Outward Qty to Totals?',
+                        colorKey: 'colorOutwardQty',
+                        label: 'Add Outward Qty to Grand Total?',
+                        subGroupLabel: 'Add Outward Quantity in Parent Group Total Outward Quantity?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'addOutwardValue',
-                        label: 'Add Outward Value to Totals?',
+                        colorKey: 'colorOutwardValue',
+                        label: 'Add Outward Values to Grand Total?',
+                        subGroupLabel: 'Add Outward Values in Parent Group Total Outward Values?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'addClosingQty',
-                        label: 'Add Closing Qty to Totals?',
+                        colorKey: 'colorClosingQty',
+                        label: 'Add Closing Qty to Grand Total?',
+                        subGroupLabel: 'Add Closing Quantity in Parent Group Total Closing Quantity?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     },
                     {
                         name: 'addClosingValue',
-                        label: 'Add Closing Value to Totals?',
+                        colorKey: 'colorClosingValue',
+                        label: 'Add Closing Values to Grand Total?',
+                        subGroupLabel: 'Add Closing Values in Parent Group Total Closing Values?',
                         type: 'select',
                         options: [{ value: 'Yes', text: 'Yes' }, { value: 'No', text: 'No' }]
                     }
@@ -13161,6 +13179,7 @@ export default function App() {
                 stockGroups={stockGroups} // <--- PASS STOCK GROUPS
                 locations={locations}
                 onItemClick={handleStockItemClick}
+                onUpdateStockGroup={(id, updatedFields) => handleMasterUpdate('stock_groups', id, updatedFields)}
                 userRole={currentRole}
                 currencySymbol={currencySymbol}
                 globalDateCmd={globalDateCmd} // Pass Command
@@ -15953,7 +15972,17 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
         if (!item) return;
         setEditingId(item.id);
         const newForm = {};
-        fields.forEach(f => { newForm[f.name] = item[f.name] !== undefined ? item[f.name] : ''; });
+        const stockGroupFlagNames = ['shouldQuantities', 'shouldValues', 'addInwardQty', 'addInwardValue', 'addOutwardQty', 'addOutwardValue', 'addClosingQty', 'addClosingValue'];
+        fields.forEach(f => {
+            if (collectionName === 'stock_groups' && stockGroupFlagNames.includes(f.name)) {
+                newForm[f.name] = item[f.name] === 'No' ? 'No' : 'Yes';
+                if (f.colorKey) {
+                    newForm[f.colorKey] = item[f.colorKey] || 'original';
+                }
+            } else {
+                newForm[f.name] = item[f.name] !== undefined ? item[f.name] : '';
+            }
+        });
         if (item.banks && item.banks.length > 0) {
             newForm.banks = item.banks;
             setShowBankDetails(true);
@@ -16071,6 +16100,10 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
         const cleanData = { ...formData, userId };
         if (formData.name) cleanData.name_lowercase = formData.name.toLowerCase();
+        if (collectionName === 'stock_groups') {
+            const rawP = String(cleanData.parent ?? '').trim();
+            cleanData.parent = (!rawP || rawP.toLowerCase() === 'primary') ? 'Primary' : rawP;
+        }
 
         if (formData.openingStock !== undefined && formData.openingStock !== "") cleanData.openingStock = Number(formData.openingStock);
         else delete cleanData.openingStock;
@@ -16206,19 +16239,33 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                             {editingId && <button type="button" onClick={handleCancelEdit} className="text-xs text-red-500 underline">Cancel Edit</button>}
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {fields.map(field => (
-                                <div key={field.name} className={field.name === 'name' ? 'md:col-span-2' : ''}>
-                                    <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase">{field.label}</label>
-                                    {field.type === 'select' ? (
-                                        <select className="w-full p-2 text-sm border border-gray-300 rounded" value={formData[field.name] || ''} onChange={e => handleFieldChange(field.name, e.target.value)}>
-                                            <option value="">Select...</option>
-                                            {field.options.map(opt => <option key={opt.value} value={opt.value}>{opt.text}</option>)}
-                                        </select>
-                                    ) : (
-                                        <input type={field.type} required={field.required} className="w-full p-2 text-sm border border-gray-300 rounded focus:border-blue-500 outline-none" value={formData[field.name] || ''} onChange={e => handleFieldChange(field.name, e.target.value)} />
-                                    )}
-                                </div>
-                            ))}
+                            {fields.map(field => {
+                                const isSubGroupParent = collectionName === 'stock_groups' && formData.parent && String(formData.parent).trim() !== '' && String(formData.parent).trim().toLowerCase() !== 'primary';
+                                const effectiveLabel = (isSubGroupParent && field.subGroupLabel) ? field.subGroupLabel : field.label;
+                                return (
+                                    <div key={field.name} className={`${field.name === 'name' ? 'md:col-span-2' : ''} ${field.colorKey ? 'p-2.5 bg-white rounded-lg border border-slate-200 space-y-2' : ''}`}>
+                                        <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase">{effectiveLabel}</label>
+                                        {field.type === 'select' ? (
+                                            <select className="w-full p-2 text-sm border border-gray-300 rounded" value={formData[field.name] || (field.colorKey ? 'Yes' : '')} onChange={e => handleFieldChange(field.name, e.target.value)}>
+                                                <option value="">Select...</option>
+                                                {field.options.map(opt => <option key={opt.value} value={opt.value}>{opt.text}</option>)}
+                                            </select>
+                                        ) : (
+                                            <input type={field.type} required={field.required} className="w-full p-2 text-sm border border-gray-300 rounded focus:border-blue-500 outline-none" value={formData[field.name] || ''} onChange={e => handleFieldChange(field.name, e.target.value)} />
+                                        )}
+                                        {field.colorKey && (
+                                            <div>
+                                                <span className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Box Background Colour</span>
+                                                <GroupColorSelect
+                                                    compact
+                                                    value={formData[field.colorKey] || 'original'}
+                                                    onChange={val => handleFieldChange(field.colorKey, val)}
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
                         </div>
 
                         {/* BANK DETAILS SECTION [NEW] */}
@@ -16544,11 +16591,50 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
                                             {item.openingStock > 0 && <span className="text-xs text-gray-400 block">Op Stock: {item.openingStock}</span>}
                                             {item.openingBalance !== undefined && <span className="text-xs text-gray-400 block">Op Bal: {item.openingBalance}</span>}
                                         </td>
-                                        {listColumns.map(c => (
-                                            <td key={c.key} className="p-3 text-sm text-slate-600">
-                                                {item[c.key] || '-'}
-                                            </td>
-                                        ))}
+                                        {listColumns.map(c => {
+                                            if (collectionName === 'stock_groups' && c.key === 'parent') {
+                                                const isPrim = (v) => !v || String(v).trim() === '' || String(v).trim().toLowerCase() === 'primary';
+                                                const findG = (nm) => (data || []).find(g => String(g.name ?? '').trim().toLowerCase() === String(nm ?? '').trim().toLowerCase());
+                                                const pRaw = item.parent;
+                                                let badgeLabel = 'PARENT ITSELF';
+                                                let badgeCls = 'bg-blue-100 text-blue-800 border-blue-300';
+                                                if (!isPrim(pRaw)) {
+                                                    const pRec = findG(pRaw);
+                                                    const pName = pRec?.name || String(pRaw).trim();
+                                                    if (!pRec || isPrim(pRec.parent)) {
+                                                        badgeLabel = `SUB GROUP WITH PARENT "${pName}"`;
+                                                        badgeCls = 'bg-purple-100 text-purple-800 border-purple-300';
+                                                    } else {
+                                                        let curr = pRec;
+                                                        let rootName = pName;
+                                                        const seen = new Set([String(item.name || '').toLowerCase(), pName.toLowerCase()]);
+                                                        while (curr && !isPrim(curr.parent)) {
+                                                            const nextRaw = String(curr.parent).trim();
+                                                            if (seen.has(nextRaw.toLowerCase())) break;
+                                                            seen.add(nextRaw.toLowerCase());
+                                                            const nextRec = findG(nextRaw);
+                                                            rootName = nextRec?.name || nextRaw;
+                                                            if (!nextRec) break;
+                                                            curr = nextRec;
+                                                        }
+                                                        badgeLabel = `SUB TO SUB-GROUP ("${pName}") WITH PARENT ("${rootName}")`;
+                                                        badgeCls = 'bg-amber-100 text-amber-900 border-amber-300';
+                                                    }
+                                                }
+                                                return (
+                                                    <td key={c.key} className="p-3 text-sm text-slate-600">
+                                                        <span className={`inline-block text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full border ${badgeCls}`}>
+                                                            {badgeLabel}
+                                                        </span>
+                                                    </td>
+                                                );
+                                            }
+                                            return (
+                                                <td key={c.key} className="p-3 text-sm text-slate-600">
+                                                    {item[c.key] || '-'}
+                                                </td>
+                                            );
+                                        })}
                                         <td className="p-3 text-right">
                                             {verifyingEditId === item.id ? (
                                                 <div className="flex items-center justify-end gap-1 animate-in slide-in-from-right-2 duration-200">
@@ -30902,7 +30988,7 @@ const JournalVoucherModal = (props) => {
 };
 
 // --- UPDATED STOCK INVENTORY MODAL (With Valuation Methods: Last Purchase / Last Sale) ---
-const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, products, stockGroups, locations, onItemClick, userRole, currencySymbol, globalDateCmd, onDateCmdProcessed, onTriggerDateModal, onTriggerPeriodModal }) => {
+const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, products, stockGroups, locations, onItemClick, onUpdateStockGroup, userRole, currencySymbol, globalDateCmd, onDateCmdProcessed, onTriggerDateModal, onTriggerPeriodModal }) => {
     // State
     const today = new Date().toISOString().split('T')[0];
     const [dateRange, setDateRange] = useState({
@@ -31000,6 +31086,201 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
 
     // ✅ NEW: DTL / COND View Toggle (Detailed = all ledgers expanded, Condensed = groups only)
     const [detailView, setDetailView] = useState(false);
+
+    // ✅ NEW: Long-Press Stock Group / Sub-Group Roll-up Options Editor
+    const [editingStockGroup, setEditingStockGroup] = useState(null);
+    const [groupForm, setGroupForm] = useState({});
+    const [savingGroupSettings, setSavingGroupSettings] = useState(false);
+    const [pressingGroupName, setPressingGroupName] = useState(null);
+    const longPressTimerRef = useRef(null);
+    const longPressTriggeredRef = useRef(false);
+    const pressStartCoordRef = useRef({ x: 0, y: 0 });
+
+    const clearGroupLongPressTimer = () => {
+        if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+        }
+        setPressingGroupName(null);
+    };
+
+    // ✅ SOLID HIERARCHY CLASSIFICATION RULE:
+    //  • Under Nothing ("") or "Primary" -> PARENT ITSELF
+    //  • Under a root group "P"          -> SUB GROUP WITH PARENT "P"
+    //  • Under a sub-group "S" (root "P")-> SUB TO SUB-GROUP ("S") WITH PARENT ("P")
+    const getStockGroupHierarchyInfo = (gName, explicitParent = undefined) => {
+        const isPrimaryOrNothing = (val) => {
+            const s = String(val ?? '').trim().toLowerCase();
+            return !s || s === 'primary';
+        };
+        const findStockGroup = (name) => {
+            const target = String(name ?? '').trim().toLowerCase();
+            if (!target) return null;
+            return (stockGroups || []).find(g => String(g.name ?? '').trim().toLowerCase() === target) || null;
+        };
+
+        const selfRec = findStockGroup(gName);
+        const directParentRaw = explicitParent !== undefined ? explicitParent : selfRec?.parent;
+
+        if (isPrimaryOrNothing(directParentRaw)) {
+            return {
+                depth: 0,
+                type: 'parent',
+                parentName: 'Primary',
+                rootParentName: null,
+                label: 'PARENT ITSELF',
+                shortBadge: 'PARENT',
+                badgeClass: 'bg-blue-100 text-blue-800 border-blue-300'
+            };
+        }
+
+        const directParentRec = findStockGroup(directParentRaw);
+        const directParentName = directParentRec?.name || String(directParentRaw).trim();
+
+        if (!directParentRec || isPrimaryOrNothing(directParentRec.parent)) {
+            return {
+                depth: 1,
+                type: 'subgroup',
+                parentName: directParentName,
+                rootParentName: directParentName,
+                label: `SUB GROUP WITH PARENT "${directParentName}"`,
+                shortBadge: `SUB → ${directParentName}`,
+                badgeClass: 'bg-purple-100 text-purple-800 border-purple-300'
+            };
+        }
+
+        const visited = new Set([
+            String(gName ?? '').trim().toLowerCase(),
+            String(directParentName).toLowerCase()
+        ]);
+        let curr = directParentRec;
+        let rootParentName = directParentName;
+        let depth = 1;
+
+        while (curr && !isPrimaryOrNothing(curr.parent)) {
+            const nextParentRaw = String(curr.parent).trim();
+            const nextKey = nextParentRaw.toLowerCase();
+            if (visited.has(nextKey)) break;
+            visited.add(nextKey);
+            const nextRec = findStockGroup(nextParentRaw);
+            rootParentName = nextRec?.name || nextParentRaw;
+            depth++;
+            if (!nextRec) break;
+            curr = nextRec;
+        }
+
+        return {
+            depth,
+            type: 'sub_to_subgroup',
+            parentName: directParentName,
+            rootParentName,
+            label: `SUB TO SUB-GROUP ("${directParentName}") WITH PARENT ("${rootParentName}")`,
+            shortBadge: `SUB-SUB (${directParentName})`,
+            badgeClass: 'bg-amber-100 text-amber-900 border-amber-300'
+        };
+    };
+
+    const openGroupSettingsModal = (groupName) => {
+        const g = (stockGroups || []).find(
+            x => x.name === groupName || (x.name || '').toLowerCase() === (groupName || '').toLowerCase()
+        );
+        if (!g) return;
+        setEditingStockGroup(g);
+        setGroupForm({
+            name: g.name || '',
+            parent: g.parent || 'Primary',
+            shouldQuantities: g.shouldQuantities === 'No' ? 'No' : 'Yes',
+            shouldValues: g.shouldValues === 'No' ? 'No' : 'Yes',
+            addInwardQty: g.addInwardQty === 'No' ? 'No' : 'Yes',
+            addInwardValue: g.addInwardValue === 'No' ? 'No' : 'Yes',
+            addOutwardQty: g.addOutwardQty === 'No' ? 'No' : 'Yes',
+            addOutwardValue: g.addOutwardValue === 'No' ? 'No' : 'Yes',
+            addClosingQty: g.addClosingQty === 'No' ? 'No' : 'Yes',
+            addClosingValue: g.addClosingValue === 'No' ? 'No' : 'Yes',
+            colorOpeningQty: g.colorOpeningQty || 'original',
+            colorOpeningValue: g.colorOpeningValue || 'original',
+            colorInwardQty: g.colorInwardQty || 'original',
+            colorInwardValue: g.colorInwardValue || 'original',
+            colorOutwardQty: g.colorOutwardQty || 'original',
+            colorOutwardValue: g.colorOutwardValue || 'original',
+            colorClosingQty: g.colorClosingQty || 'original',
+            colorClosingValue: g.colorClosingValue || 'original'
+        });
+    };
+
+    const startGroupLongPress = (e, groupName) => {
+        if (e.type === 'mousedown' && e.button !== 0) return;
+        const point = e.touches && e.touches[0] ? e.touches[0] : e;
+        pressStartCoordRef.current = { x: point.clientX || 0, y: point.clientY || 0 };
+        longPressTriggeredRef.current = false;
+        clearGroupLongPressTimer();
+        setPressingGroupName(groupName);
+        longPressTimerRef.current = setTimeout(() => {
+            longPressTriggeredRef.current = true;
+            setPressingGroupName(null);
+            if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                try { navigator.vibrate(25); } catch {}
+            }
+            openGroupSettingsModal(groupName);
+        }, 480);
+    };
+
+    const handleGroupPressMove = (e) => {
+        if (!longPressTimerRef.current) return;
+        const point = e.touches && e.touches[0] ? e.touches[0] : e;
+        const dx = Math.abs((point.clientX || 0) - pressStartCoordRef.current.x);
+        const dy = Math.abs((point.clientY || 0) - pressStartCoordRef.current.y);
+        if (dx > 10 || dy > 10) {
+            clearGroupLongPressTimer();
+        }
+    };
+
+    const endGroupLongPress = () => {
+        clearGroupLongPressTimer();
+    };
+
+    const handleSaveGroupSettings = async (e) => {
+        if (e) e.preventDefault();
+        if (!editingStockGroup || !onUpdateStockGroup) return;
+        const cleanName = String(groupForm.name || '').trim();
+        if (!cleanName) return;
+        const rawParent = String(groupForm.parent ?? '').trim();
+        const normalizedParent = (!rawParent || rawParent.toLowerCase() === 'primary') ? 'Primary' : rawParent;
+        setSavingGroupSettings(true);
+        try {
+            await onUpdateStockGroup(editingStockGroup.id, {
+                name: cleanName,
+                name_lowercase: cleanName.toLowerCase(),
+                parent: normalizedParent,
+                shouldQuantities: groupForm.shouldQuantities || 'Yes',
+                shouldValues: groupForm.shouldValues || 'Yes',
+                addInwardQty: groupForm.addInwardQty || 'Yes',
+                addInwardValue: groupForm.addInwardValue || 'Yes',
+                addOutwardQty: groupForm.addOutwardQty || 'Yes',
+                addOutwardValue: groupForm.addOutwardValue || 'Yes',
+                addClosingQty: groupForm.addClosingQty || 'Yes',
+                addClosingValue: groupForm.addClosingValue || 'Yes',
+                colorOpeningQty: groupForm.colorOpeningQty || 'original',
+                colorOpeningValue: groupForm.colorOpeningValue || 'original',
+                colorInwardQty: groupForm.colorInwardQty || 'original',
+                colorInwardValue: groupForm.colorInwardValue || 'original',
+                colorOutwardQty: groupForm.colorOutwardQty || 'original',
+                colorOutwardValue: groupForm.colorOutwardValue || 'original',
+                colorClosingQty: groupForm.colorClosingQty || 'original',
+                colorClosingValue: groupForm.colorClosingValue || 'original'
+            });
+            setEditingStockGroup(null);
+        } finally {
+            setSavingGroupSettings(false);
+        }
+    };
+
+    useEffect(() => {
+        if (!isOpen) {
+            clearGroupLongPressTimer();
+            setEditingStockGroup(null);
+        }
+    }, [isOpen]);
 
     const toggleGroup = (groupName) => {
         setExpandedGroups(prev => {
@@ -31339,20 +31620,20 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     }, [isOpen, dataOwnerId, user?.uid]);
 
 
-    // ✅ NEW: CALCULATE EFFECTIVE ADDITIVE SETTINGS (Ancestors override)
+    // ✅ CALCULATE EFFECTIVE ADDITIVE SETTINGS (8 independent column flags)
     const effectiveAdditiveMap = useMemo(() => {
         const map = {};
         const getEffective = (name, visited = new Set()) => {
             if (map[name]) return map[name];
             if (visited.has(name)) {
-                return { qty: true, val: true, inQty: true, inVal: true, outQty: true, outVal: true, closingQty: true, closingVal: true };
+                return { openQty: true, openVal: true, inQty: true, inVal: true, outQty: true, outVal: true, closingQty: true, closingVal: true };
             }
             visited.add(name);
             const g = stockGroups.find(x => x.name === name);
-            if (!g || !g.parent || g.parent === 'Primary') {
+            if (!g || !g.parent || g.parent.toLowerCase() === 'primary') {
                 const res = {
-                    qty: g ? g.shouldQuantities !== 'No' : true,
-                    val: g ? g.shouldValues !== 'No' : true,
+                    openQty: g ? g.shouldQuantities !== 'No' : true,
+                    openVal: g ? g.shouldValues !== 'No' : true,
                     inQty: g ? g.addInwardQty !== 'No' : true,
                     inVal: g ? g.addInwardValue !== 'No' : true,
                     outQty: g ? g.addOutwardQty !== 'No' : true,
@@ -31365,8 +31646,8 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             }
             const parentEff = getEffective(g.parent, visited);
             const res = {
-                qty: parentEff.qty && (g.shouldQuantities !== 'No'),
-                val: parentEff.val && (g.shouldValues !== 'No'),
+                openQty: parentEff.openQty && (g.shouldQuantities !== 'No'),
+                openVal: parentEff.openVal && (g.shouldValues !== 'No'),
                 inQty: parentEff.inQty && (g.addInwardQty !== 'No'),
                 inVal: parentEff.inVal && (g.addInwardValue !== 'No'),
                 outQty: parentEff.outQty && (g.addOutwardQty !== 'No'),
@@ -31402,6 +31683,20 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 parent: g.parent || 'Primary',
                 shouldQuantities: g.shouldQuantities !== 'No',
                 shouldValues: g.shouldValues !== 'No',
+                addInwardQty: g.addInwardQty !== 'No',
+                addInwardValue: g.addInwardValue !== 'No',
+                addOutwardQty: g.addOutwardQty !== 'No',
+                addOutwardValue: g.addOutwardValue !== 'No',
+                addClosingQty: g.addClosingQty !== 'No',
+                addClosingValue: g.addClosingValue !== 'No',
+                colorOpeningQty: g.colorOpeningQty || 'original',
+                colorOpeningValue: g.colorOpeningValue || 'original',
+                colorInwardQty: g.colorInwardQty || 'original',
+                colorInwardValue: g.colorInwardValue || 'original',
+                colorOutwardQty: g.colorOutwardQty || 'original',
+                colorOutwardValue: g.colorOutwardValue || 'original',
+                colorClosingQty: g.colorClosingQty || 'original',
+                colorClosingValue: g.colorClosingValue || 'original',
                 openingQty: 0, openingVal: 0,
                 inQty: 0, inVal: 0,
                 outQty: 0, outVal: 0,
@@ -31412,24 +31707,17 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             };
         });
 
-        // Add Direct Items to Groups
+        // Add Direct Items to their own Group (always show full item totals on the group's own row)
         activeItems.forEach(item => {
             const gName = item.group || 'Primary';
             if (groupsMap[gName]) {
                 const g = groupsMap[gName];
                 g.openingQty += (item.openingQty || 0);
                 g.openingVal += (item.openingVal || 0);
-
-                // ✅ RESPECT ADDITIVE FLAGS FOR IN/OUT
-                if (g.shouldQuantities) {
-                    g.inQty += (item.inQty || 0);
-                    g.outQty += (item.outQty || 0);
-                }
-                if (g.shouldValues) {
-                    g.inVal += (item.inVal || 0);
-                    g.outVal += (item.outVal || 0);
-                }
-
+                g.inQty += (item.inQty || 0);
+                g.inVal += (item.inVal || 0);
+                g.outQty += (item.outQty || 0);
+                g.outVal += (item.outVal || 0);
                 g.closingQty += (item.closingQty || 0);
                 g.closingVal += (item.closingVal || 0);
                 g.bagCount += (item.bagCount || 0);
@@ -31437,7 +31725,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             }
         });
 
-        // Recursive Aggregation (Bubble Up)
+        // Recursive Aggregation: Sub-Group flags control what rolls up into its Parent Group totals
         const consolidate = (gName) => {
             const g = groupsMap[gName];
             if (!g || g.hasConsolidated) return;
@@ -31447,9 +31735,8 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 consolidate(sg.name);
                 const sub = groupsMap[sg.name];
                 if (sub) {
-                    const sq = sg.shouldQuantities !== 'No';
-                    const sv = sg.shouldValues !== 'No';
-
+                    const addOpenQ = sg.shouldQuantities !== 'No';
+                    const addOpenV = sg.shouldValues !== 'No';
                     const addInQ = sg.addInwardQty !== 'No';
                     const addInV = sg.addInwardValue !== 'No';
                     const addOutQ = sg.addOutwardQty !== 'No';
@@ -31457,24 +31744,14 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                     const addClsQ = sg.addClosingQty !== 'No';
                     const addClsV = sg.addClosingValue !== 'No';
 
-                    if (sq) {
-                        g.openingQty += sub.openingQty;
-                        if (addClsQ) g.closingQty += sub.closingQty;
-                    }
-                    if (sv) {
-                        g.openingVal += sub.openingVal;
-                        if (addClsV) g.closingVal += sub.closingVal;
-                    }
-
-                    // ✅ RESPECT ADDITIVE FLAGS FOR IN/OUT PROPAGATION
-                    if (g.shouldQuantities && sq) {
-                        if (addInQ) g.inQty += sub.inQty;
-                        if (addOutQ) g.outQty += sub.outQty;
-                    }
-                    if (g.shouldValues && sv) {
-                        if (addInV) g.inVal += sub.inVal;
-                        if (addOutV) g.outVal += sub.outVal;
-                    }
+                    if (addOpenQ) g.openingQty += sub.openingQty;
+                    if (addOpenV) g.openingVal += sub.openingVal;
+                    if (addInQ) g.inQty += sub.inQty;
+                    if (addInV) g.inVal += sub.inVal;
+                    if (addOutQ) g.outQty += sub.outQty;
+                    if (addOutV) g.outVal += sub.outVal;
+                    if (addClsQ) g.closingQty += sub.closingQty;
+                    if (addClsV) g.closingVal += sub.closingVal;
 
                     g.bagCount += sub.bagCount;
                     g.itemCount += sub.itemCount;
@@ -31602,6 +31879,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     useEffect(() => {
         if (!isOpen) { setFocusedRowIdx(-1); return; }
         const handler = (e) => {
+            if (editingStockGroup) return;
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -31623,7 +31901,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, focusedRowIdx, finalFilteredData, expandedGroups, onItemClick, toggleGroup, dateRange]);
+    }, [isOpen, focusedRowIdx, finalFilteredData, expandedGroups, onItemClick, toggleGroup, dateRange, editingStockGroup]);
 
     useEffect(() => {
         if (focusedRowRef.current) focusedRowRef.current.scrollIntoView({ block: 'nearest' });
@@ -31637,43 +31915,62 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
     }, [reportData]);
 
     const totals = useMemo(() => {
-        // ✅ Calculate totals from all active items directly to avoid double counting groups vs items in the visible list
-        const activeItemsForTotals = reportData.filter(i =>
-            showZeroBalance || (Math.abs(i.closingQty) > 0.0001 || Math.abs(i.closingVal) > 0.01)
-        );
+        const { groupsMap, activeItems, rootGroupNames } = calculatedStockData;
 
-        // If we are drill-down, only sum those items
-        // ✅ IMPROVED: Properly sum sub-group items in drill-down!
-        const targetItems = currentGroupFilter
-            ? activeItemsForTotals.filter(i => {
-                if (i.group === currentGroupFilter) return true;
-                // Check if any ancestor is currentGroupFilter
-                let p = i.group;
-                while (p && p !== 'Primary') {
-                    const g = stockGroups.find(x => x.name === p);
-                    if (!g) break;
-                    if (g.parent === currentGroupFilter) return true;
-                    p = g.parent;
-                }
-                return false;
-            })
-            : activeItemsForTotals;
-
-        return targetItems.reduce((acc, curr) => {
-            const eff = effectiveAdditiveMap[curr.group] || { qty: true, val: true, inQty: true, inVal: true, outQty: true, outVal: true, closingQty: true, closingVal: true };
+        // If drill-down on a specific group, use that group's consolidated totals directly
+        if (currentGroupFilter && groupsMap[currentGroupFilter]) {
+            const g = groupsMap[currentGroupFilter];
             return {
-                openingQty: acc.openingQty + (curr.openingQty || 0),
-                openingVal: acc.openingVal + (curr.openingVal || 0),
-                // ✅ RESPECT EFFECTIVE ADDITIVE SETTINGS FOR GRAND TOTAL
-                inQty: acc.inQty + (eff.qty && eff.inQty ? (curr.inQty || 0) : 0),
-                inVal: acc.inVal + (eff.val && eff.inVal ? (curr.inVal || 0) : 0),
-                outQty: acc.outQty + (eff.qty && eff.outQty ? (curr.outQty || 0) : 0),
-                outVal: acc.outVal + (eff.val && eff.outVal ? (curr.outVal || 0) : 0),
-                closingQty: acc.closingQty + (eff.qty && eff.closingQty ? (curr.closingQty || 0) : 0),
-                closingVal: acc.closingVal + (eff.val && eff.closingVal ? (curr.closingVal || 0) : 0)
+                openingQty: g.openingQty || 0,
+                openingVal: g.openingVal || 0,
+                inQty: g.inQty || 0,
+                inVal: g.inVal || 0,
+                outQty: g.outQty || 0,
+                outVal: g.outVal || 0,
+                closingQty: g.closingQty || 0,
+                closingVal: g.closingVal || 0
             };
-        }, { openingQty: 0, openingVal: 0, inQty: 0, inVal: 0, outQty: 0, outVal: 0, closingQty: 0, closingVal: 0 });
-    }, [reportData, showZeroBalance, currentGroupFilter, effectiveAdditiveMap, stockGroups]);
+        }
+
+        // Main Stock Summary Grand Total:
+        // Sum root (Parent Itself) groups respecting each Parent Group's 8 Grand Total roll-up flags,
+        // plus any ungrouped / Primary items at root level.
+        const grand = {
+            openingQty: 0, openingVal: 0,
+            inQty: 0, inVal: 0,
+            outQty: 0, outVal: 0,
+            closingQty: 0, closingVal: 0
+        };
+
+        rootGroupNames.forEach(rName => {
+            const rg = groupsMap[rName];
+            if (!rg) return;
+            if (rg.shouldQuantities) grand.openingQty += (rg.openingQty || 0);
+            if (rg.shouldValues) grand.openingVal += (rg.openingVal || 0);
+            if (rg.addInwardQty) grand.inQty += (rg.inQty || 0);
+            if (rg.addInwardValue) grand.inVal += (rg.inVal || 0);
+            if (rg.addOutwardQty) grand.outQty += (rg.outQty || 0);
+            if (rg.addOutwardValue) grand.outVal += (rg.outVal || 0);
+            if (rg.addClosingQty) grand.closingQty += (rg.closingQty || 0);
+            if (rg.addClosingValue) grand.closingVal += (rg.closingVal || 0);
+        });
+
+        // Also include any ungrouped / Primary items at root level
+        activeItems
+            .filter(i => !i.group || (i.group || '').toLowerCase() === 'primary' || !groupsMap[i.group])
+            .forEach(curr => {
+                grand.openingQty += (curr.openingQty || 0);
+                grand.openingVal += (curr.openingVal || 0);
+                grand.inQty += (curr.inQty || 0);
+                grand.inVal += (curr.inVal || 0);
+                grand.outQty += (curr.outQty || 0);
+                grand.outVal += (curr.outVal || 0);
+                grand.closingQty += (curr.closingQty || 0);
+                grand.closingVal += (curr.closingVal || 0);
+            });
+
+        return grand;
+    }, [calculatedStockData, currentGroupFilter]);
 
 
 
@@ -31946,6 +32243,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 className="space-y-0 h-full min-h-0 flex flex-col bg-[#fcf6ea]"
                 onKeyDown={(e) => {
                     if (e.key !== 'Escape') return;
+                    if (editingStockGroup) { e.preventDefault(); e.stopPropagation(); setEditingStockGroup(null); return; }
                     if (showSearch) { e.preventDefault(); e.stopPropagation(); setShowSearch(false); return; }
                     if (showDateMenu) { e.preventDefault(); e.stopPropagation(); setShowDateMenu(false); return; }
                     if (showDate) { e.preventDefault(); e.stopPropagation(); setShowDate(false); return; }
@@ -32216,8 +32514,9 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                 <tbody>
                                     {finalFilteredData.map((row, rowIdx) => {
                                         const isFocused = focusedRowIdx === rowIdx;
-                                        const showQty = row.type === 'item' || row.shouldQuantities !== false;
-                                        const showVal = row.type === 'item' || row.shouldValues !== false;
+                                        // Always show the group's / sub-group's own quantities and values on its row (never hide when flag is No)
+                                        const showQty = true;
+                                        const showVal = true;
                                         const unit = row.unit || '';
                                         const renderCell = (qty, val, colorClass, isClosing = false, keyPrefix) => {
                                             const rate = qty !== 0 ? val / qty : 0;
@@ -32237,35 +32536,103 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                         };
                                         if (row.type === 'group') {
                                             const isExpanded = expandedGroups.has(row.name);
-                                            const renderGroupCell = (qty, val, colorClass, keyPrefix) => {
+                                            const level = row.level || 0;
+                                            const groupDoc = (stockGroups || []).find(g => g.name === row.name);
+                                            const bgShade = level === 0 ? 'bg-[#f4ece1]' : level === 1 ? 'bg-[#f7f0e6]' : 'bg-[#faf6ef]';
+                                            const isPressingThis = pressingGroupName === row.name;
+                                            const hInfo = getStockGroupHierarchyInfo(row.name);
+                                            const hasExcludedFlag = groupDoc && (
+                                                [
+                                                    groupDoc.shouldQuantities,
+                                                    groupDoc.shouldValues,
+                                                    groupDoc.addInwardQty,
+                                                    groupDoc.addInwardValue,
+                                                    groupDoc.addOutwardQty,
+                                                    groupDoc.addOutwardValue,
+                                                    groupDoc.addClosingQty,
+                                                    groupDoc.addClosingValue
+                                                ].some(v => v === 'No') ||
+                                                STOCK_GROUP_COLOR_KEYS.some(ck => groupDoc[ck] && groupDoc[ck] !== 'original')
+                                            );
+                                            const renderGroupCell = (qty, val, colorClass, keyPrefix, qtyColorVal, valColorVal) => {
                                                 const rate = qty !== 0 ? val / qty : 0;
+                                                const qtyColorCfg = getGroupTabColorConfig(qtyColorVal);
+                                                const valColorCfg = getGroupTabColorConfig(valColorVal);
                                                 return (
                                                     <React.Fragment key={`${row.id}-group-${colorClass}`}>
-                                                        <td className={`p-1.5 pr-2 text-right border border-slate-500 font-black ${colorClass} whitespace-nowrap`}>{showQty ? formatQty(qty) : '-'}</td>
+                                                        <td className={`p-1.5 pr-2 text-right border border-slate-500 font-black ${colorClass} ${qtyColorCfg.cellBgClass || ''} whitespace-nowrap`}>
+                                                            {qtyColorCfg.isBlank ? '' : (showQty ? formatQty(qty) : '-')}
+                                                        </td>
                                                         {!isRestricted && (
                                                             <React.Fragment>
-                                                                {!hiddenCols.has(`${keyPrefix}_rate`) && <td className="p-1 pr-2 text-right border border-slate-500 font-bold text-slate-600 text-[9px] italic whitespace-nowrap">{(showQty && showVal && qty !== 0) ? formatCurrency(rate) : ''}</td>}
-                                                                {!hiddenCols.has(`${keyPrefix}_val`) && <td className={`p-1.5 pr-2 text-right border border-slate-500 font-black text-slate-900 whitespace-nowrap`}>{showVal ? formatCurrency(val) : '-'}</td>}
+                                                                {!hiddenCols.has(`${keyPrefix}_rate`) && (
+                                                                    <td className={`p-1 pr-2 text-right border border-slate-500 font-bold text-slate-600 text-[9px] italic ${(qtyColorCfg.isBlank && valColorCfg.isBlank) ? 'bg-white' : ''} whitespace-nowrap`}>
+                                                                        {(!qtyColorCfg.isBlank && !valColorCfg.isBlank && showQty && showVal && qty !== 0) ? formatCurrency(rate) : ''}
+                                                                    </td>
+                                                                )}
+                                                                {!hiddenCols.has(`${keyPrefix}_val`) && (
+                                                                    <td className={`p-1.5 pr-2 text-right border border-slate-500 font-black text-slate-900 ${valColorCfg.cellBgClass || ''} whitespace-nowrap`}>
+                                                                        {valColorCfg.isBlank ? '' : (showVal ? formatCurrency(val) : '-')}
+                                                                    </td>
+                                                                )}
                                                             </React.Fragment>
                                                         )}
                                                     </React.Fragment>
                                                 );
                                             };
-                                            const level = row.level || 0;
-                                            const bgShade = level === 0 ? 'bg-[#f4ece1]' : level === 1 ? 'bg-[#f7f0e6]' : 'bg-[#faf6ef]';
                                             return (
-                                                <tr ref={isFocused ? focusedRowRef : null} key={`${row.id}-${level}`} className={`text-slate-900 font-black text-sm cursor-pointer transition-colors ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : `hover:bg-[#e0d2bc]/30 ${bgShade}`}`} onClick={() => { setFocusedRowIdx(rowIdx); toggleGroup(row.name); }}>
-                                                    <td className={`p-2 border border-slate-500 text-left sticky left-0 z-10 ${bgShade} w-44 sm:w-64`}>
+                                                <tr
+                                                    ref={isFocused ? focusedRowRef : null}
+                                                    key={`${row.id}-${level}`}
+                                                    className={`text-slate-900 font-black text-sm cursor-pointer transition-colors ${isFocused ? 'bg-blue-200/60 outline outline-2 outline-blue-400' : `hover:bg-[#e0d2bc]/30 ${bgShade}`}`}
+                                                    onClick={(e) => {
+                                                        if (longPressTriggeredRef.current) {
+                                                            longPressTriggeredRef.current = false;
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            return;
+                                                        }
+                                                        setFocusedRowIdx(rowIdx);
+                                                        toggleGroup(row.name);
+                                                    }}
+                                                >
+                                                    <td
+                                                        className={`p-2 border border-slate-500 text-left sticky left-0 z-10 w-44 sm:w-64 select-none transition-all ${isPressingThis ? 'bg-blue-100 ring-2 ring-inset ring-[#005994]' : bgShade}`}
+                                                        title={`${row.name} — ${hInfo.label} | Short click: Expand/Collapse | Long press: Edit Group Options`}
+                                                        onMouseDown={(e) => startGroupLongPress(e, row.name)}
+                                                        onMouseMove={handleGroupPressMove}
+                                                        onMouseUp={endGroupLongPress}
+                                                        onMouseLeave={endGroupLongPress}
+                                                        onTouchStart={(e) => startGroupLongPress(e, row.name)}
+                                                        onTouchMove={handleGroupPressMove}
+                                                        onTouchEnd={endGroupLongPress}
+                                                        onTouchCancel={endGroupLongPress}
+                                                        onContextMenu={(e) => {
+                                                            if (longPressTriggeredRef.current || isPressingThis) {
+                                                                e.preventDefault();
+                                                            }
+                                                        }}
+                                                    >
                                                         <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: `${level * 16}px` }}>
                                                             <span className="shrink-0">{isExpanded ? <ChevronDown size={14} className="text-blue-800" /> : <ChevronRight size={14} className="text-slate-600" />}</span>
                                                             <span className="uppercase tracking-widest flex-1 min-w-0" style={getTallyShrinkStyle(row.name, true)}>{row.name}</span>
+                                                            {hInfo.depth > 0 && (
+                                                                <span className={`text-[7px] px-1 py-0.5 rounded border font-black uppercase tracking-tighter shrink-0 ${hInfo.badgeClass}`} title={hInfo.label}>
+                                                                    {hInfo.depth === 1 ? 'SUB' : 'SUB-SUB'}
+                                                                </span>
+                                                            )}
+                                                            {hasExcludedFlag && (
+                                                                <span className="text-[7px] px-1 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-black uppercase tracking-tighter shrink-0" title="Custom totals roll-up or box colours applied (Long press to edit)">
+                                                                    CUSTOM
+                                                                </span>
+                                                            )}
                                                             <span className="text-[8px] text-slate-500 ml-auto shrink-0 font-normal">({row.itemCount})</span>
                                                         </div>
                                                     </td>
-                                                    {showOpn && !hiddenCols.has('opn') && renderGroupCell(row.openingQty, row.openingVal, 'text-slate-600', 'opn')}
-                                                    {showIn && !hiddenCols.has('in') && renderGroupCell(row.inQty, row.inVal, 'text-green-800', 'in')}
-                                                    {showOut && !hiddenCols.has('out') && renderGroupCell(row.outQty, row.outVal, 'text-red-800', 'out')}
-                                                    {showCls && !hiddenCols.has('cls') && renderGroupCell(row.closingQty, row.closingVal, 'text-blue-800', 'cls')}
+                                                    {showOpn && !hiddenCols.has('opn') && renderGroupCell(row.openingQty, row.openingVal, 'text-slate-600', 'opn', groupDoc?.colorOpeningQty || row.colorOpeningQty, groupDoc?.colorOpeningValue || row.colorOpeningValue)}
+                                                    {showIn && !hiddenCols.has('in') && renderGroupCell(row.inQty, row.inVal, 'text-green-800', 'in', groupDoc?.colorInwardQty || row.colorInwardQty, groupDoc?.colorInwardValue || row.colorInwardValue)}
+                                                    {showOut && !hiddenCols.has('out') && renderGroupCell(row.outQty, row.outVal, 'text-red-800', 'out', groupDoc?.colorOutwardQty || row.colorOutwardQty, groupDoc?.colorOutwardValue || row.colorOutwardValue)}
+                                                    {showCls && !hiddenCols.has('cls') && renderGroupCell(row.closingQty, row.closingVal, 'text-blue-800', 'cls', groupDoc?.colorClosingQty || row.colorClosingQty, groupDoc?.colorClosingValue || row.colorClosingValue)}
                                                     {showGP && !hiddenCols.has('gp') && (() => {
                                                         const rowGp = (row.outVal + row.closingVal) - (row.inVal + row.openingVal);
                                                         const perTon = calcPerTonGP(rowGp, row.outQty, row.closingQty);
@@ -32385,6 +32752,323 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                         </div>
                     </div>
                 </div>
+
+                {/* ✅ SMART GROUP / SUB-GROUP TOTALS & ROLL-UP OPTIONS MODAL (Triggered by Long Press) */}
+                {editingStockGroup && (() => {
+                    const modalHInfo = getStockGroupHierarchyInfo(groupForm.name || editingStockGroup.name, groupForm.parent);
+                    const isSubGroupModal = modalHInfo.depth > 0;
+
+                    const flagPairs = isSubGroupModal ? [
+                        {
+                            sectionTitle: `1. Opening Roll-up into Parent Group (${modalHInfo.parentName})`,
+                            qtyKey: 'shouldQuantities',
+                            qtyLabel: 'Add the Opening Quantity in Parent Group Total Opening Quantity?',
+                            valKey: 'shouldValues',
+                            valLabel: 'Add the Opening Values in Parent Group Total Opening Values?'
+                        },
+                        {
+                            sectionTitle: `2. Inward Roll-up into Parent Group (${modalHInfo.parentName})`,
+                            qtyKey: 'addInwardQty',
+                            qtyLabel: 'Add the Inward Quantity in Parent Group Total Inward Quantity?',
+                            valKey: 'addInwardValue',
+                            valLabel: 'Add the Inward Values in Parent Group Total Inward Values?'
+                        },
+                        {
+                            sectionTitle: `3. Outward Roll-up into Parent Group (${modalHInfo.parentName})`,
+                            qtyKey: 'addOutwardQty',
+                            qtyLabel: 'Add the Outward Quantity in Parent Group Total Outward Quantity?',
+                            valKey: 'addOutwardValue',
+                            valLabel: 'Add the Outward Values in Parent Group Total Outward Values?'
+                        },
+                        {
+                            sectionTitle: `4. Closing Roll-up into Parent Group (${modalHInfo.parentName})`,
+                            qtyKey: 'addClosingQty',
+                            qtyLabel: 'Add the Closing Quantity in Parent Group Total Closing Quantity?',
+                            valKey: 'addClosingValue',
+                            valLabel: 'Add the Closing Values in Parent Group Total Closing Values?'
+                        }
+                    ] : [
+                        {
+                            sectionTitle: '1. Opening Roll-up into Grand Total',
+                            qtyKey: 'shouldQuantities',
+                            qtyLabel: 'Add Opening Quantities in Grand Total?',
+                            valKey: 'shouldValues',
+                            valLabel: 'Add Opening Values in Grand Total?'
+                        },
+                        {
+                            sectionTitle: '2. Inward Roll-up into Grand Total',
+                            qtyKey: 'addInwardQty',
+                            qtyLabel: 'Add Inward Qty to Grand Total?',
+                            valKey: 'addInwardValue',
+                            valLabel: 'Add Inward Values to Grand Total?'
+                        },
+                        {
+                            sectionTitle: '3. Outward Roll-up into Grand Total',
+                            qtyKey: 'addOutwardQty',
+                            qtyLabel: 'Add Outward Qty to Grand Total?',
+                            valKey: 'addOutwardValue',
+                            valLabel: 'Add Outward Values to Grand Total?'
+                        },
+                        {
+                            sectionTitle: '4. Closing Roll-up into Grand Total',
+                            qtyKey: 'addClosingQty',
+                            qtyLabel: 'Add Closing Qty to Grand Total?',
+                            valKey: 'addClosingValue',
+                            valLabel: 'Add Closing Values to Grand Total?'
+                        }
+                    ];
+
+                    const allFlagKeys = [
+                        'shouldQuantities', 'shouldValues',
+                        'addInwardQty', 'addInwardValue',
+                        'addOutwardQty', 'addOutwardValue',
+                        'addClosingQty', 'addClosingValue'
+                    ];
+                    const activeYesCount = allFlagKeys.filter(k => (groupForm[k] || 'Yes') !== 'No').length;
+                    const parentOptions = [
+                        'Primary',
+                        ...(stockGroups || [])
+                            .map(g => g.name)
+                            .filter(name => name && name !== editingStockGroup.name && name.toLowerCase() !== 'primary')
+                    ];
+
+                    const setAllFlags = (val) => {
+                        setGroupForm(prev => {
+                            const next = { ...prev };
+                            allFlagKeys.forEach(k => { next[k] = val; });
+                            return next;
+                        });
+                    };
+
+                    const renderSmartToggleCard = (fieldKey, label, isQty) => {
+                        const isYes = (groupForm[fieldKey] || 'Yes') !== 'No';
+                        const colorKey = FLAG_TO_COLOR_KEY[fieldKey];
+                        const colorVal = groupForm[colorKey] || 'original';
+                        const colorCfg = getGroupTabColorConfig(colorVal);
+                        const targetLabel = isSubGroupModal ? `Parent Group (${modalHInfo.parentName}) Total` : 'Grand Total';
+                        return (
+                            <div
+                                key={fieldKey}
+                                onClick={() => setGroupForm(prev => ({ ...prev, [fieldKey]: isYes ? 'No' : 'Yes' }))}
+                                className={`group cursor-pointer select-none rounded-xl border p-2.5 transition-all flex flex-col gap-2 ${
+                                    isYes
+                                        ? 'bg-emerald-50/60 border-emerald-200 hover:border-emerald-400 shadow-sm'
+                                        : 'bg-rose-50/60 border-rose-200 hover:border-rose-400 shadow-sm'
+                                } ${colorCfg.cardAccentClass || ''}`}
+                            >
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-start gap-1.5">
+                                            <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-1 ${isYes ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                                            <span className="text-[10px] font-black uppercase tracking-wide text-slate-700 leading-snug block" title={label}>
+                                                {label}
+                                            </span>
+                                        </div>
+                                        <span className={`text-[9px] font-bold pl-3 block mt-0.5 ${isYes ? 'text-emerald-700' : 'text-rose-600'}`}>
+                                            {isYes
+                                                ? `Added to ${targetLabel}`
+                                                : `Not added to ${targetLabel} (still shown on row)`}
+                                        </span>
+                                    </div>
+
+                                    <div
+                                        className="inline-flex rounded-lg p-0.5 bg-white border border-slate-200 shadow-inner shrink-0"
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        <button
+                                            type="button"
+                                            onClick={() => setGroupForm(prev => ({ ...prev, [fieldKey]: 'Yes' }))}
+                                            className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase transition-all ${
+                                                isYes
+                                                    ? 'bg-emerald-600 text-white shadow-sm'
+                                                    : 'text-slate-400 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            Yes
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setGroupForm(prev => ({ ...prev, [fieldKey]: 'No' }))}
+                                            className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase transition-all ${
+                                                !isYes
+                                                    ? 'bg-rose-600 text-white shadow-sm'
+                                                    : 'text-slate-400 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            No
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Per-Box Colour Selection Droplist */}
+                                {colorKey && (
+                                    <div
+                                        className="pt-1.5 border-t border-slate-200/70 flex items-center justify-between gap-2"
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 shrink-0">
+                                            Box Colour:
+                                        </span>
+                                        <GroupColorSelect
+                                            compact
+                                            className="flex-1 min-w-0"
+                                            value={colorVal}
+                                            onChange={(val) => setGroupForm(prev => ({ ...prev, [colorKey]: val }))}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    };
+
+                    return (
+                        <div
+                            className="fixed inset-0 z-[99999] flex items-center justify-center bg-slate-900/50 backdrop-blur-[2px] p-3 sm:p-4 animate-in fade-in duration-150"
+                            onClick={() => setEditingStockGroup(null)}
+                        >
+                            <form
+                                onSubmit={handleSaveGroupSettings}
+                                onClick={(e) => e.stopPropagation()}
+                                className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]"
+                            >
+                                {/* Top Header */}
+                                <div className="bg-gradient-to-r from-[#005994] to-[#004270] px-5 py-3.5 text-white flex items-center justify-between shrink-0">
+                                    <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest bg-white/15 text-blue-100 border border-white/20">
+                                                {modalHInfo.label}
+                                            </span>
+                                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
+                                                activeYesCount === 8
+                                                    ? 'bg-emerald-400/20 text-emerald-100 border border-emerald-300/30'
+                                                    : 'bg-amber-400/25 text-amber-100 border border-amber-300/40'
+                                            }`}>
+                                                {activeYesCount}/8 Active in {isSubGroupModal ? 'Parent Group Total' : 'Grand Total'}
+                                            </span>
+                                        </div>
+                                        <h3 className="font-black text-base uppercase tracking-wide mt-1 truncate">
+                                            {editingStockGroup.name}
+                                        </h3>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setEditingStockGroup(null)}
+                                        className="p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors shrink-0"
+                                        title="Close (Esc)"
+                                    >
+                                        <X size={16} />
+                                    </button>
+                                </div>
+
+                                {/* Scrollable Content */}
+                                <div className="p-4 sm:p-5 space-y-4 overflow-y-auto">
+                                    {/* Group Name & Parent Group */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/80">
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
+                                                Group Name
+                                            </label>
+                                            <input
+                                                type="text"
+                                                required
+                                                value={groupForm.name || ''}
+                                                onChange={(e) => setGroupForm(prev => ({ ...prev, name: e.target.value }))}
+                                                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#005994]/20 focus:border-[#005994] bg-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
+                                                Parent Group
+                                            </label>
+                                            <select
+                                                value={groupForm.parent ?? 'Primary'}
+                                                onChange={(e) => setGroupForm(prev => ({ ...prev, parent: e.target.value }))}
+                                                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#005994]/20 focus:border-[#005994] bg-white"
+                                            >
+                                                <option value="">None (Parent Itself)</option>
+                                                {parentOptions.map(opt => (
+                                                    <option key={opt} value={opt}>{opt === 'Primary' ? 'Primary (Parent Itself)' : opt}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="sm:col-span-2 flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/60">
+                                            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                                                Group Type:
+                                            </span>
+                                            <span className={`text-[10px] font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full border ${modalHInfo.badgeClass}`}>
+                                                {modalHInfo.label}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    {/* Smart Quick Presets Bar */}
+                                    <div className="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-slate-100">
+                                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                                            {isSubGroupModal
+                                                ? `Sub-Group → Parent Group ("${modalHInfo.parentName}") Roll-Up Options`
+                                                : 'Parent Group → Grand Total Roll-Up Options'}
+                                        </span>
+                                        <div className="flex items-center gap-1.5">
+                                            <button
+                                                type="button"
+                                                onClick={() => setAllFlags('Yes')}
+                                                className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors"
+                                            >
+                                                ✓ Set All Yes
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setAllFlags('No')}
+                                                className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition-colors"
+                                            >
+                                                ✕ Set All No
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* 2-Column Smart Toggle Matrix */}
+                                    <div className="space-y-3">
+                                        {flagPairs.map((pair) => (
+                                            <div key={pair.sectionTitle} className="space-y-1.5">
+                                                <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 px-0.5">
+                                                    {pair.sectionTitle}
+                                                </div>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                                    {renderSmartToggleCard(pair.qtyKey, pair.qtyLabel, true)}
+                                                    {renderSmartToggleCard(pair.valKey, pair.valLabel, false)}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <p className="text-[10px] text-slate-500 font-semibold leading-relaxed">
+                                        {isSubGroupModal
+                                            ? `Sub-Group Rule: Setting any option to "No" keeps this sub-group's own quantities and values visible on its row in Stock Summary, and only excludes them from being added into Parent Group "${modalHInfo.parentName}" totals.`
+                                            : 'Parent Group Rule: Setting any option to "No" keeps this group\'s own quantities and values visible on its row in Stock Summary, and only excludes them from being added into the Stock Summary Grand Total.'}
+                                    </p>
+                                </div>
+
+                                {/* Footer Actions */}
+                                <div className="flex items-center justify-end gap-2.5 px-5 py-3 bg-slate-50 border-t border-slate-200 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setEditingStockGroup(null)}
+                                        className="px-4 py-2 border border-slate-300 bg-white text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-100 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={savingGroupSettings}
+                                        className="px-5 py-2 bg-[#005994] hover:bg-[#004878] disabled:opacity-60 text-white rounded-xl text-xs font-black uppercase tracking-wide shadow-sm transition-colors flex items-center gap-1.5"
+                                    >
+                                        {savingGroupSettings ? 'Saving...' : 'Save Record'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    );
+                })()}
             </div>
         </Modal>
     );
