@@ -13165,6 +13165,8 @@ export default function App() {
                 defaultMaximized={true}
                 companyProfile={companyProfile}
                 liveStockBalances={liveStockBalances}
+                invoices={invoices}
+                stockJournals={stockJournals}
             />
 
             <StockInventoryModal
@@ -21566,7 +21568,7 @@ function GlobalBagManagerModal({
 }
 
 const StockJournalModal = (props) => {
-    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances } = props;
+    const { isOpen, onClose, zIndex, user, subUser, dataOwnerId, products, expenses, directExpenseAccounts = [], accounts, parties, lots, staff = [], attendanceRecords = [], lastDate, onUpdateDate, onQuickCreate, currencySymbol, initialData, showToast, onDeleteTransaction, companyProfile, liveStockBalances, invoices = [], stockJournals = [] } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     const packageLabel = usePackageLabel();
     const packageLabelSingular = getPackageLabelSingular();
@@ -21734,6 +21736,179 @@ const StockJournalModal = (props) => {
 
     // Helper for 3-digit display
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+    // ── FIFO IDEA RATE AS OF VOUCHER DATE (FOR RAW MATERIALS & AUTO CALC BOM) ──
+    const fifoIdeaRateMap = useMemo(() => {
+        const map = {};
+        const targetDateStr = String(date || '').trim();
+        const editingJournalId = initialData?.id ? String(initialData.id) : null;
+
+        const normalizeDateStr = (val) => {
+            if (!val) return '';
+            if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0, 10);
+            const d = toDateObject(val);
+            if (!d || isNaN(d.getTime())) return '';
+            return d.toISOString().split('T')[0];
+        };
+
+        // Collect all item movements up to targetDateStr grouped by productId
+        const movementsByProduct = new Map();
+        const pushMovement = (productId, txDate, isInward, qty, rate, orderIdx) => {
+            if (!productId || !(qty > 0)) return;
+            if (!movementsByProduct.has(productId)) movementsByProduct.set(productId, []);
+            movementsByProduct.get(productId).push({
+                dateStr: txDate || '',
+                isInward,
+                qty: Number(qty) || 0,
+                rate: Number(rate) || 0,
+                orderIdx
+            });
+        };
+
+        let orderCounter = 0;
+
+        // 1. Invoices (Purchases / Sales / Returns)
+        (invoices || []).forEach(inv => {
+            if (!inv || isVoucherDeleted(inv)) return;
+            const txDate = normalizeDateStr(inv.date);
+            if (targetDateStr && txDate && txDate > targetDateStr) return;
+
+            const isInward = ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(inv.type);
+            const isOutward = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(inv.type);
+            if (!isInward && !isOutward) return;
+
+            (inv.items || []).forEach(item => {
+                const pid = item.productId;
+                const q = Math.abs(Number(item.quantity || item.qty || 0) || 0);
+                const r = Math.abs(Number(item.rate || 0) || 0);
+                if (pid && q > 0) {
+                    pushMovement(pid, txDate, isInward, q, r, orderCounter++);
+                }
+            });
+        });
+
+        // 2. Stock Journals (Produced = Inward, Consumed = Outward)
+        (stockJournals || []).forEach(sj => {
+            if (!sj || isVoucherDeleted(sj)) return;
+            if (editingJournalId && String(sj.id) === editingJournalId) return;
+            const txDate = normalizeDateStr(sj.date);
+            if (targetDateStr && txDate && txDate > targetDateStr) return;
+
+            (sj.produced || []).forEach(item => {
+                const pid = item.productId;
+                const q = Math.abs(Number(item.quantity || 0) || 0);
+                const r = Math.abs(Number(item.rate || 0) || 0);
+                if (pid && q > 0) {
+                    pushMovement(pid, txDate, true, q, r, orderCounter++);
+                }
+            });
+
+            (sj.consumed || []).forEach(item => {
+                const pid = item.productId;
+                const q = Math.abs(Number(item.quantity || 0) || 0);
+                const r = Math.abs(Number(item.rate || 0) || 0);
+                if (pid && q > 0) {
+                    pushMovement(pid, txDate, false, q, r, orderCounter++);
+                }
+            });
+        });
+
+        // 3. Run chronological FIFO queue per product
+        (products || []).forEach(prod => {
+            const pid = prod.id;
+            if (!pid) return;
+
+            const opQty = Number(prod.openingStock ?? prod.openingQty ?? 0) || 0;
+            const opBal = Number(prod.openingBalance ?? prod.openingValue ?? 0) || 0;
+            const opRate = Number(prod.openingRate || 0) > 0
+                ? Number(prod.openingRate)
+                : (opQty !== 0 && opBal !== 0 ? Math.abs(opBal / opQty) : (Number(prod.purchasePrice || 0) || 0));
+
+            const fifoQueue = [];
+            let fifoShortQty = 0;
+            let lastInwardRate = opRate > 0 ? opRate : (Number(prod.purchasePrice || 0) || 0);
+            let totalInQty = opQty > 0 ? opQty : 0;
+            let totalInVal = opQty > 0 ? (opQty * opRate) : 0;
+
+            if (opQty > 0) {
+                fifoQueue.push({ qty: opQty, rate: opRate });
+            } else if (opQty < 0) {
+                fifoShortQty = Math.abs(opQty);
+            }
+
+            const moves = movementsByProduct.get(pid) || [];
+            moves.sort((a, b) => {
+                if (a.dateStr !== b.dateStr) return a.dateStr.localeCompare(b.dateStr);
+                if (a.isInward !== b.isInward) return a.isInward ? -1 : 1;
+                return a.orderIdx - b.orderIdx;
+            });
+
+            moves.forEach(m => {
+                if (m.isInward) {
+                    const effRate = m.rate > 0 ? m.rate : lastInwardRate;
+                    if (effRate > 0) lastInwardRate = effRate;
+                    totalInQty += m.qty;
+                    totalInVal += (m.qty * effRate);
+
+                    let remIn = m.qty;
+                    if (fifoShortQty > 0) {
+                        const cover = Math.min(fifoShortQty, remIn);
+                        fifoShortQty -= cover;
+                        remIn -= cover;
+                    }
+                    if (remIn > 1e-9) {
+                        fifoQueue.push({ qty: remIn, rate: effRate });
+                    }
+                } else {
+                    let need = m.qty;
+                    while (need > 1e-9 && fifoQueue.length > 0) {
+                        const head = fifoQueue[0];
+                        if (head.qty <= need + 1e-9) {
+                            need -= head.qty;
+                            fifoQueue.shift();
+                        } else {
+                            head.qty -= need;
+                            need = 0;
+                        }
+                    }
+                    if (need > 1e-9) {
+                        fifoShortQty += need;
+                    }
+                }
+            });
+
+            const remainingQty = fifoQueue.reduce((acc, layer) => acc + layer.qty, 0);
+            const remainingVal = fifoQueue.reduce((acc, layer) => acc + (layer.qty * layer.rate), 0);
+
+            let ideaRate = 0;
+            if (remainingQty > 1e-9 && remainingVal > 0) {
+                ideaRate = remainingVal / remainingQty;
+            } else if (totalInQty > 1e-9 && totalInVal > 0) {
+                ideaRate = totalInVal / totalInQty;
+            } else if (lastInwardRate > 0) {
+                ideaRate = lastInwardRate;
+            } else {
+                ideaRate = Number(liveStockBalances?.lastRateMap?.[pid]?.rate ?? prod.purchasePrice ?? 0) || 0;
+            }
+
+            map[pid] = {
+                rate: round3(ideaRate),
+                closingQty: round3(remainingQty - fifoShortQty),
+                closingValue: round3(remainingVal),
+                layersCount: fifoQueue.length
+            };
+        });
+
+        return map;
+    }, [products, invoices, stockJournals, date, initialData?.id, liveStockBalances]);
+
+    const getFifoIdeaRate = (productId) => {
+        if (!productId) return 0;
+        const entry = fifoIdeaRateMap[productId];
+        if (entry && Number(entry.rate) > 0) return round3(entry.rate);
+        const fallback = liveStockBalances?.lastRateMap?.[productId]?.rate ?? products.find(p => p.id === productId)?.purchasePrice ?? 0;
+        return round3(fallback);
+    };
 
     const resetAutoCalcForm = () => {
         setAutoCalcForm(createAutoCalcBomForm());
@@ -22097,12 +22272,12 @@ const StockJournalModal = (props) => {
 
         const consumedRows = (selectedRecord.consumedItems || []).map(item => {
             const quantity = round3(batchBaseQty * (Number(item.percent || 0) / 100));
-            const fallbackRate = round3(liveStockBalances?.lastRateMap?.[item.productId]?.rate ?? products.find(product => product.id === item.productId)?.purchasePrice ?? 0);
+            const fifoRate = getFifoIdeaRate(item.productId);
             return {
                 productId: item.productId,
                 quantity,
-                rate: fallbackRate,
-                total: round3(quantity * fallbackRate),
+                rate: fifoRate,
+                total: round3(quantity * fifoRate),
                 lotId: '',
                 pcs: ''
             };
@@ -22306,19 +22481,24 @@ const StockJournalModal = (props) => {
 
         newRows[index][field] = val;
         if (field === 'productId') {
-            const prod = products.find(p => p.id === value);
-            if (prod) newRows[index].rate = prod.purchasePrice || '';
+            if (rows === consumed) {
+                const fifoRate = getFifoIdeaRate(value);
+                newRows[index].rate = fifoRate > 0 ? fifoRate : '';
+            } else {
+                const prod = products.find(p => p.id === value);
+                if (prod) newRows[index].rate = prod.purchasePrice || '';
+            }
         }
         const qty = Number(newRows[index].quantity) || 0;
 
         if (field === 'total') {
             const total = Number(val) || 0;
             if (qty !== 0) newRows[index].rate = round3(total / qty);
-        } else if (['quantity', 'rate'].includes(field)) {
+        } else if (['quantity', 'rate', 'productId'].includes(field)) {
             // Calculate Total
             const rate = Number(newRows[index].rate) || 0;
             const t = qty * rate;
-            newRows[index].total = round3(t);
+            newRows[index].total = qty > 0 && rate > 0 ? round3(t) : (field === 'productId' && qty === 0 ? '' : round3(t));
         }
         setRows(newRows);
     };
@@ -22938,6 +23118,20 @@ const StockJournalModal = (props) => {
 
     if (!isOpen) return null;
 
+    const applyAllConsumedFifoRates = () => {
+        setConsumed(prev => prev.map(row => {
+            if (!row.productId) return row;
+            const fifoRate = getFifoIdeaRate(row.productId);
+            if (!(fifoRate > 0)) return row;
+            const qty = Number(row.quantity) || 0;
+            return {
+                ...row,
+                rate: fifoRate,
+                total: qty > 0 ? round3(qty * fifoRate) : row.total
+            };
+        }));
+    };
+
     const renderTable = (rows, setRows, title, color) => (
         <div className={`flex flex-col bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden h-full min-h-[350px]`}>
             <div className={`p-2 bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest flex justify-between items-center shrink-0`}>
@@ -22945,29 +23139,49 @@ const StockJournalModal = (props) => {
                     <span className="bg-white/10 px-2 py-0.5 rounded">{title}</span>
                     <span className="text-white/40">Total Items: {rows.filter(r => r.productId).length}</span>
                 </div>
-                <button 
-                    type="button" 
-                    onClick={() => setRows([...rows, { productId: '', quantity: '', rate: '', total: '', lotId: '', pcs: '' }])} 
-                    className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg transition-all text-white font-bold text-[9px] active:scale-95"
-                >
-                    <Plus size={12} /> ADD ROW
-                </button>
+                <div className="flex items-center gap-2">
+                    {color === 'red' && rows.some(r => r.productId) && (
+                        <button
+                            type="button"
+                            onClick={applyAllConsumedFifoRates}
+                            title={`Apply FIFO Idea Rates as of ${date} to all consumed items`}
+                            className="flex items-center gap-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 px-2.5 py-1 rounded-lg transition-all text-amber-300 font-black text-[9px] active:scale-95"
+                        >
+                            FIFO IDEA RATE
+                        </button>
+                    )}
+                    <button 
+                        type="button" 
+                        onClick={() => setRows([...rows, { productId: '', quantity: '', rate: '', total: '', lotId: '', pcs: '' }])} 
+                        className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg transition-all text-white font-bold text-[9px] active:scale-95"
+                    >
+                        <Plus size={12} /> ADD ROW
+                    </button>
+                </div>
             </div>
             <div className="flex-1 overflow-auto border-b border-slate-100">
-                <table className="w-full text-left border-collapse table-fixed min-w-[700px]">
+                <table className="w-full text-left border-collapse table-fixed min-w-[760px]">
                     <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
                         <tr className="text-[9px] font-black uppercase text-slate-500 tracking-wider">
-                            <th className="p-2 w-auto min-w-[200px]">Item Name / Product</th>
-                            <th className="p-2 w-16 text-center">Pcs</th>
+                            <th className="p-2 w-auto min-w-[190px]">Item Name / Product</th>
+                            <th className="p-2 w-14 text-center">Pcs</th>
                             {color === 'green' && <th className="p-2 w-16 text-center">%</th>}
                             <th className="p-2 w-24 text-right">Quantity</th>
+                            {color === 'red' && (
+                                <th className="p-2 w-28 text-right text-amber-700 bg-amber-50/60" title="FIFO Idea Rate as of Voucher Date (Click badge in row to apply to Rate)">
+                                    Idea Rate (FIFO)
+                                </th>
+                            )}
                             <th className="p-2 w-24 text-right">Rate</th>
                             <th className="p-2 w-28 text-right">Total ({currencySymbol})</th>
-                            <th className="p-2 w-12 text-center"></th>
+                            <th className="p-2 w-10 text-center"></th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {rows.map((item, index) => (
+                        {rows.map((item, index) => {
+                            const fifoIdeaInfo = color === 'red' && item.productId ? fifoIdeaRateMap[item.productId] : null;
+                            const fifoIdeaRate = color === 'red' && item.productId ? getFifoIdeaRate(item.productId) : 0;
+                            return (
                             <tr key={index} className="hover:bg-slate-50/50 transition-colors group">
                                 <td className="p-1">
                                     <SearchableSelect
@@ -23003,6 +23217,24 @@ const StockJournalModal = (props) => {
                                         onChange={e => updateRow(rows, setRows, index, 'quantity', e.target.value)} 
                                     />
                                 </td>
+                                {color === 'red' && (
+                                    <td className="p-1 text-right bg-amber-50/20">
+                                        {item.productId ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => updateRow(rows, setRows, index, 'rate', fifoIdeaRate)}
+                                                title={`FIFO Idea Rate on ${date}: ${format3(fifoIdeaRate)} (Closing Stock: ${format3(fifoIdeaInfo?.closingQty || 0)} | Value: ${format3(fifoIdeaInfo?.closingValue || 0)}) — Click to apply`}
+                                                className="w-full px-2 py-1.5 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-right font-mono text-[11px] font-black text-amber-800 transition-colors"
+                                            >
+                                                {format3(fifoIdeaRate)}
+                                            </button>
+                                        ) : (
+                                            <div className="w-full px-2 py-1.5 rounded-lg border border-dashed border-slate-200 text-right font-mono text-[11px] font-bold text-slate-300">
+                                                0.000
+                                            </div>
+                                        )}
+                                    </td>
+                                )}
                                 <td className="p-1">
                                     <input 
                                         type="number" 
@@ -23034,7 +23266,8 @@ const StockJournalModal = (props) => {
                                     </button>
                                 </td>
                             </tr>
-                        ))}
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
@@ -23564,12 +23797,14 @@ const StockJournalModal = (props) => {
                                             <div className="flex items-center justify-between">
                                                 <div>
                                                     <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Items To Be Consumed</div>
-                                                    <div className="text-[11px] font-semibold text-slate-400">Percentages must total 100%</div>
+                                                    <div className="text-[11px] font-semibold text-slate-400">Percentages must total 100% · Rates use FIFO as of {date}</div>
                                                 </div>
                                                 <button type="button" onClick={() => addAutoCalcListRow('consumed', createAutoCalcBomMaterial)} className="rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-blue-700">Add More</button>
                                             </div>
-                                            {autoCalcForm.consumed.map((row, index) => (
-                                                <div key={`consumed-${index}`} className="grid grid-cols-[1fr_96px_36px] gap-2">
+                                            {autoCalcForm.consumed.map((row, index) => {
+                                                const rowFifoRate = row.productId ? getFifoIdeaRate(row.productId) : 0;
+                                                return (
+                                                <div key={`consumed-${index}`} className="grid grid-cols-[1fr_110px_96px_36px] gap-2 items-center">
                                                     <SearchableSelect
                                                         options={autoCalcProductOptions}
                                                         value={row.productId}
@@ -23577,6 +23812,13 @@ const StockJournalModal = (props) => {
                                                         placeholder={products.length > 0 ? 'Select consumed item' : 'No items found'}
                                                         compact={true}
                                                     />
+                                                    <div
+                                                        className="rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-2 text-right font-mono text-[11px] font-black text-amber-800"
+                                                        title={row.productId ? `FIFO Idea Rate as of ${date}: ${currencySymbol} ${format3(rowFifoRate)}` : 'Select an item to view FIFO Idea Rate'}
+                                                    >
+                                                        <span className="mr-1 text-[8px] uppercase tracking-wider text-amber-600">FIFO</span>
+                                                        {row.productId ? format3(rowFifoRate) : '0.000'}
+                                                    </div>
                                                     <input
                                                         type="number"
                                                         step="0.001"
@@ -23585,11 +23827,12 @@ const StockJournalModal = (props) => {
                                                         placeholder="0.000"
                                                         className="rounded-xl border border-slate-200 px-3 py-2 text-right text-sm font-black text-slate-700 outline-none focus:border-blue-400"
                                                     />
-                                                    <button type="button" onClick={() => removeAutoCalcListRow('consumed', index, createAutoCalcBomMaterial)} className="rounded-xl border border-slate-200 text-slate-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-500">
+                                                    <button type="button" onClick={() => removeAutoCalcListRow('consumed', index, createAutoCalcBomMaterial)} className="h-full rounded-xl border border-slate-200 text-slate-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-500">
                                                         <Trash2 size={14} className="mx-auto" />
                                                     </button>
                                                 </div>
-                                            ))}
+                                                );
+                                            })}
                                             <div className={`text-right text-[11px] font-black ${Math.abs(autoCalcConsumedPercentTotal - 100) <= 0.001 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                                 Consumed Total: {format3(autoCalcConsumedPercentTotal)}%
                                             </div>
@@ -23910,13 +24153,23 @@ const StockJournalModal = (props) => {
                                                 </div>
 
                                                 <div className="rounded-xl border border-slate-200">
-                                                    <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">Items To Be Consumed</div>
+                                                    <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+                                                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Items To Be Consumed</span>
+                                                        <span className="rounded bg-amber-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-amber-800">FIFO Rate ({date})</span>
+                                                    </div>
+                                                    <div className="grid grid-cols-[1fr_90px_110px_110px] gap-2 border-b border-slate-100 bg-slate-50/50 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">
+                                                        <div>Item Name</div>
+                                                        <div className="text-right">Quantity</div>
+                                                        <div className="text-right text-amber-700">FIFO Rate</div>
+                                                        <div className="text-right">Total</div>
+                                                    </div>
                                                     <div className="divide-y divide-slate-100">
                                                         {autoCalcCalcResult.consumedRows.map((row, index) => (
-                                                            <div key={`calc-consumed-${index}`} className="grid grid-cols-[1fr_92px_92px] gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                                                            <div key={`calc-consumed-${index}`} className="grid grid-cols-[1fr_90px_110px_110px] items-center gap-2 px-3 py-2 text-[11px] font-semibold text-slate-700">
                                                                 <div>{productNameMap[row.productId] || 'Unknown Item'}</div>
-                                                                <div className="text-right">{format3(row.quantity)}</div>
-                                                                <div className="text-right">{currencySymbol} {format3(row.total)}</div>
+                                                                <div className="text-right font-bold">{format3(row.quantity)}</div>
+                                                                <div className="text-right font-mono font-black text-amber-700">@ {format3(row.rate)}</div>
+                                                                <div className="text-right font-black text-slate-900">{currencySymbol} {format3(row.total)}</div>
                                                             </div>
                                                         ))}
                                                     </div>
@@ -24201,10 +24454,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [savedBreakupState, setSavedBreakupState] = useState(null); // { summaryMode, startDate, endDate } — saved when drilling into a breakup period
 
     // ITEM LEDGER closing-stock valuation basis. The running closing stock column is
-    // valued as  closingQty x average rate, where the average rate is the PERIOD's
-    // total purchase (or sales) value divided by its total quantity. No Dr/Cr and no
-    // FIFO here - only these two averages.
-    const [itemClsBasis, setItemClsBasis] = useState('purchase'); // 'purchase' | 'sales'
+    // valued using Avg Purchase, Avg Sales, or FIFO (First-In, First-Out).
+    const [itemClsBasis, setItemClsBasis] = useState('purchase'); // 'purchase' | 'sales' | 'fifo'
 
     // SUMMARIZE view ('' | 'party' | 'item' | 'inward' | 'outward'). Deliberately SEPARATE from summaryMode:
     // summaryMode drives the breakup headers/rows and MUST stay 'detailed' while a
@@ -25539,7 +25790,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             showOpening = Math.abs(safeNum(openingBal)) > 0 || (filter.type === 'item' && Math.abs(safeNum(openingQty)) > 0) || !!filter.startDate;
         }
 
-        let detailedList = [...filtered].sort((a, b) => new Date(a.date) - new Date(b.date));
+        let detailedList = [...filtered].sort((a, b) => {
+            const diff = new Date(a.date) - new Date(b.date);
+            if (diff !== 0) return diff;
+            if (filter.type === 'item') {
+                const aIsIn = safeNum(a.amountIn) > 0 || safeNum(a.qtyIn) > 0 || ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(a.type);
+                const bIsIn = safeNum(b.amountIn) > 0 || safeNum(b.qtyIn) > 0 || ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(b.type);
+                if (aIsIn !== bIsIn) return aIsIn ? -1 : 1;
+            }
+            return 0;
+        });
 
         // Add Opening Row at the start (oldest)
         const openingRow = {
@@ -25658,19 +25918,102 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             };
         });
 
-        // ── ITEM LEDGER: average price used to value the running closing stock ──
+        // ── ITEM LEDGER: average price or FIFO used to value the running closing stock ──
         // Average Purchase Price = period purchase value / period purchase qty
         // Average Sales Price    = period sales value    / period sales qty
+        // FIFO                   = First-In, First-Out queue of inward purchase batches
         const avgPurchasePrice = qtyInTotal > 0 ? Math.abs(periodInValue / qtyInTotal) : 0;
         const avgSalesPrice = qtyOutTotal > 0 ? Math.abs(periodOutValue / qtyOutTotal) : 0;
-        const clsValuationPrice = itemClsBasis === 'sales' ? avgSalesPrice : avgPurchasePrice;
 
-        // Closing stock value = closing qty x the chosen average price (no Dr/Cr, no FIFO)
-        detailedList = detailedList.map(r => ({
-            ...r,
-            closingStockValue: safeNum(r.displayBalanceQty) * clsValuationPrice,
-            clsValuationPrice
-        }));
+        // Build running FIFO queue across chronological detailedList
+        const fifoQueue = [];
+        let fifoShortQty = 0;
+        if (filter.type === 'item' && !showOpening && safeNum(openingQty) !== 0) {
+            const opQ = safeNum(openingQty);
+            const opR = safeNum(openingRate) > 0
+                ? safeNum(openingRate)
+                : (opQ !== 0 ? Math.abs(safeNum(openingBal) / opQ) : 0);
+            if (opQ > 0) fifoQueue.push({ qty: opQ, rate: opR });
+            else if (opQ < 0) fifoShortQty = Math.abs(opQ);
+        }
+
+        let finalFifoClosingValue = 0;
+        let finalFifoValuationPrice = 0;
+
+        detailedList = detailedList.map(r => {
+            let fifoClosingValue = 0;
+            let fifoValuationPrice = 0;
+
+            if (filter.type === 'item') {
+                const inQty = safeNum(r.qtyIn);
+                const outQty = safeNum(r.qtyOut);
+                if (inQty > 0) {
+                    const inVal = safeNum(r.displayIn);
+                    const inRate = inVal > 0
+                        ? (inVal / inQty)
+                        : (safeNum(r.rateIn) > 0 ? safeNum(r.rateIn) : avgPurchasePrice);
+                    let remIn = inQty;
+                    if (fifoShortQty > 0) {
+                        const cover = Math.min(fifoShortQty, remIn);
+                        fifoShortQty -= cover;
+                        remIn -= cover;
+                    }
+                    if (remIn > 1e-9) {
+                        fifoQueue.push({ qty: remIn, rate: inRate });
+                    }
+                }
+                if (outQty > 0) {
+                    let need = outQty;
+                    while (need > 1e-9 && fifoQueue.length > 0) {
+                        const head = fifoQueue[0];
+                        if (head.qty <= need + 1e-9) {
+                            need -= head.qty;
+                            fifoQueue.shift();
+                        } else {
+                            head.qty -= need;
+                            need = 0;
+                        }
+                    }
+                    if (need > 1e-9) {
+                        fifoShortQty += need;
+                    }
+                }
+
+                const balQty = safeNum(r.displayBalanceQty);
+                if (balQty > 1e-9 && fifoQueue.length > 0) {
+                    fifoClosingValue = fifoQueue.reduce((acc, layer) => acc + (layer.qty * layer.rate), 0);
+                    fifoValuationPrice = fifoClosingValue / balQty;
+                } else if (balQty < -1e-9) {
+                    fifoValuationPrice = avgPurchasePrice;
+                    fifoClosingValue = balQty * avgPurchasePrice;
+                } else {
+                    fifoClosingValue = 0;
+                    fifoValuationPrice = 0;
+                }
+
+                finalFifoClosingValue = fifoClosingValue;
+                finalFifoValuationPrice = fifoValuationPrice;
+            }
+
+            const rowValuationPrice = itemClsBasis === 'fifo'
+                ? fifoValuationPrice
+                : (itemClsBasis === 'sales' ? avgSalesPrice : avgPurchasePrice);
+            const rowClosingStockValue = itemClsBasis === 'fifo'
+                ? fifoClosingValue
+                : (safeNum(r.displayBalanceQty) * rowValuationPrice);
+
+            return {
+                ...r,
+                fifoClosingValue,
+                fifoValuationPrice,
+                closingStockValue: rowClosingStockValue,
+                clsValuationPrice: rowValuationPrice
+            };
+        });
+
+        const clsValuationPrice = itemClsBasis === 'fifo'
+            ? finalFifoValuationPrice
+            : (itemClsBasis === 'sales' ? avgSalesPrice : avgPurchasePrice);
 
         // ✅ COMPREHENSIVE SUMMARY BREAKUP SYSTEM (Daily, Weekly, Monthly, Quarterly, Annually)
         let displayList = detailedList;
@@ -25715,11 +26058,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     label = `Year ${key}`;
                 }
 
-                if (!groups[key]) groups[key] = { key, label, dr: 0, cr: 0, count: 0, qtyIn: 0, qtyOut: 0, balance: 0 };
+                if (!groups[key]) groups[key] = { key, label, dr: 0, cr: 0, count: 0, qtyIn: 0, qtyOut: 0, balance: 0, fifoClosingValue: 0, fifoValuationPrice: 0 };
                 groups[key].dr += t.displayIn;
                 groups[key].cr += t.displayOut;
                 groups[key].qtyIn += safeNum(t.qtyIn);
                 groups[key].qtyOut += safeNum(t.qtyOut);
+                groups[key].fifoClosingValue = safeNum(t.fifoClosingValue);
+                groups[key].fifoValuationPrice = safeNum(t.fifoValuationPrice);
                 groups[key].count++;
             });
 
@@ -25734,6 +26079,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 g._qtyBal = qtyBal;
             });
             displayList = sortedGroupEntries.slice().reverse().map(g => {
+                const grpValuationPrice = itemClsBasis === 'fifo' ? safeNum(g.fifoValuationPrice) : clsValuationPrice;
+                const grpClosingStockValue = itemClsBasis === 'fifo' ? safeNum(g.fifoClosingValue) : (safeNum(g._qtyBal) * clsValuationPrice);
                 return { 
                     id: `SUM_${summaryMode}_${g.key}`,
                     summaryKey: g.key,
@@ -25750,13 +26097,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                     qtyOut: g.qtyOut,
                     qtyInOut: g.qtyIn - g.qtyOut,
                     displayBalanceQty: g._qtyBal,
-                    closingStockValue: safeNum(g._qtyBal) * clsValuationPrice,
-                    clsValuationPrice,
+                    closingStockValue: grpClosingStockValue,
+                    clsValuationPrice: grpValuationPrice,
                     isSummary: true 
                 };
             });
 
-            if (showOpening) displayList.unshift({ ...openingRow, particulates: 'Opening Balance', displayIn: openingRow.amountIn, displayOut: openingRow.amountOut, displayBalance: openingBal, displayBalanceQty: openingQty });
+            if (showOpening) displayList.unshift({ ...openingRow, particulates: 'Opening Balance', displayIn: openingRow.amountIn, displayOut: openingRow.amountOut, displayBalance: openingBal, displayBalanceQty: openingQty, closingStockValue: detailedList[0]?.closingStockValue ?? (safeNum(openingQty) * clsValuationPrice), clsValuationPrice: detailedList[0]?.clsValuationPrice ?? clsValuationPrice });
         }
 
         const sum = {
@@ -25783,13 +26130,17 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             sum.avgRate = sum.debit / sum.totalQtyIn;
         }
 
-        // Item ledger closing-stock valuation (average price basis, user selectable)
+        // Item ledger closing-stock valuation (average price or FIFO basis, user selectable)
         if (filter.type === 'item') {
             sum.avgPurchasePrice = avgPurchasePrice;
             sum.avgSalesPrice = avgSalesPrice;
+            sum.fifoValuationPrice = finalFifoValuationPrice;
+            sum.fifoClosingValue = finalFifoClosingValue;
             sum.clsValuationPrice = clsValuationPrice;
             sum.clsBasis = itemClsBasis;
-            sum.closingStockValue = safeNum(runningQty) * clsValuationPrice;
+            sum.closingStockValue = itemClsBasis === 'fifo'
+                ? finalFifoClosingValue
+                : (safeNum(runningQty) * clsValuationPrice);
         }
 
         // Only sort Detailed list (Daily/Monthly already sorted during grouping)
@@ -27466,9 +27817,16 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                         >
                                             Avg Sales
                                         </button>
+                                        <button
+                                            onClick={() => setItemClsBasis('fifo')}
+                                            className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-wide border-l border-[#2b5797]/30 transition-colors ${itemClsBasis === 'fifo' ? 'bg-[#2b5797] text-white' : 'text-[#2b5797] hover:bg-blue-50'}`}
+                                            title={`FIFO (First-In, First-Out): sales qty consumes oldest purchase batches first; remaining closing stock valued at ${formatCurrency(summary.fifoClosingValue || 0)} (effective FIFO rate ${formatCurrency(summary.fifoValuationPrice || 0)})`}
+                                        >
+                                            FIFO
+                                        </button>
                                     </div>
-                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-50 border border-amber-300 text-[10px] font-black text-amber-800" title="Closing qty x this rate = closing stock value">
-                                        <span className="text-[8px] uppercase tracking-widest opacity-70">Rate</span>
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-50 border border-amber-300 text-[10px] font-black text-amber-800" title={itemClsBasis === 'fifo' ? 'Effective FIFO rate of remaining unsold purchase batches (FIFO Closing Stock Value / Closing Qty)' : 'Closing qty x this rate = closing stock value'}>
+                                        <span className="text-[8px] uppercase tracking-widest opacity-70">{itemClsBasis === 'fifo' ? 'FIFO Rate' : 'Rate'}</span>
                                         {formatCurrency(summary.clsValuationPrice || 0)}
                                     </span>
                                     <span className="text-[9px] font-bold text-[#1e3264]/60">
@@ -27844,7 +28202,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                                                             </td>
                                                         )}
                                                         {!hiddenCols.has('bal') && (
-                                                            <td className="p-1.5 text-right font-black text-slate-900 tracking-tight" title={isTallyItemLedger && row.closingStockValue !== undefined ? `${format3(row.displayBalanceQty)} qty x ${formatCurrency(row.clsValuationPrice || 0)} avg ${itemClsBasis === 'sales' ? 'sales' : 'purchase'} price` : undefined}>
+                                                            <td className="p-1.5 text-right font-black text-slate-900 tracking-tight" title={isTallyItemLedger && row.closingStockValue !== undefined ? (itemClsBasis === 'fifo' ? `FIFO Value: ${formatCurrency(row.closingStockValue || 0)} (${format3(row.displayBalanceQty)} qty @ ${formatCurrency(row.clsValuationPrice || 0)} FIFO rate)` : `${format3(row.displayBalanceQty)} qty x ${formatCurrency(row.clsValuationPrice || 0)} avg ${itemClsBasis === 'sales' ? 'sales' : 'purchase'} price`) : undefined}>
                                                                 {isTallyItemLedger && row.closingStockValue !== undefined
                                                                     ? formatCurrency(row.closingStockValue)
                                                                     : <>{formatCurrency(Math.abs(row.displayBalance))} {row.displayBalance >= 0 ? 'Dr' : 'Cr'}</>}
