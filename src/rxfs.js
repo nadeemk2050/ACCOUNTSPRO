@@ -376,9 +376,21 @@ export const onSnapshot = (q, callback) => {
                     }).catch(() => { /* non-fatal */ });
                 } catch (e) { /* ignore */ }
             }
+            let lastSig = null;
             const rxQuery = db.offline_records.find({ selector: { collectionName: queryPath } });
             subscription = rxQuery.$.subscribe(rxDocs => {
                 const rxArr = rxDocs || [];
+                // Fast signature check using RxDB document id + timestamp BEFORE calling .toJSON() on all docs.
+                // When background sync only patches `lastSync`, `timestamp` does not change, so we skip
+                // cloning thousands of docs and skip triggering redundant React re-renders.
+                let sig = `${rxArr.length}:`;
+                for (let i = 0; i < rxArr.length; i++) {
+                    const d = rxArr[i];
+                    sig += `${d.id}@${d.timestamp || 0}|`;
+                }
+                if (sig === lastSig) return;
+                lastSig = sig;
+
                 const mapped = rxArr.map(d => d.toJSON())
                     .filter(d => matches(d.id, d.data, q.constraints));
 

@@ -123,8 +123,7 @@ import {
     UploadCloud, DownloadCloud, Maximize, Maximize2, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
     Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
-    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle
-
+    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle, RotateCcw, Clock
 } from 'lucide-react';
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
 import { createSheetInDB, updateSheetInDB } from "./sheetService";
@@ -133,7 +132,7 @@ const BagWiseInventoryModal = lazy(() => import('./BagWiseInventoryModal.jsx'));
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
-import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData } from './localDB';import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync } from './liveSync.js';
+import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData, exportCompanyFullBackup } from './localDB';import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync, exportCloudCompanyFullBackup, moveCompanyToCloudRecycleBin, restoreCompanyFromCloudRecycleBin, purgeExpiredRecycleBinCompanies, abortCompanySync } from './liveSync.js';
 import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
@@ -979,6 +978,10 @@ const mergeLiveCompanyLists = (localCompanies = [], remoteLiveCompanies = []) =>
             lastUpdated: liveCompany.lastUpdated,
             ownerEmail: liveCompany.ownerEmail,
             licenseKey: liveCompany.licenseKey,
+            inRecycleBin: !!liveCompany.inRecycleBin,
+            deletedAt: liveCompany.deletedAt || null,
+            autoDeleteAt: liveCompany.autoDeleteAt || null,
+            deletedBy: liveCompany.deletedBy || null,
             cloudVisible: true,
             localOnly: false // Corrected: If it's in cloud, it's NOT local only
         });
@@ -3977,6 +3980,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     const [downloadingId, setDownloadingId] = useState(null);
     const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
     const [makingLiveId, setMakingLiveId] = useState(null);
+    const [syncStopping, setSyncStopping] = useState(false);
     const [makeLiveProgress, setMakeLiveProgress] = useState({ 
         current: 0, 
         total: 0,
@@ -3994,16 +3998,30 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     const [removeDialog, setRemoveDialog] = useState({
         open: false,
         company: null,
-        removePc: true,
-        removeFirebase: false,
+        step: 'backup_prompt', // 'backup_prompt' | 'continue_prompt' | 'password'
+        backupDone: false,
+        backupInfo: null,
         password: '',
         busy: false
     });
     const [showAllCloud, setShowAllCloud] = useState(false);
     const [cloudRenameDialog, setCloudRenameDialog] = useState({ open: false, co: null, value: '', busy: false });
-    const [cloudDeleteDialog, setCloudDeleteDialog] = useState({ open: false, co: null, password: '', busy: false });
+    const [cloudDeleteDialog, setCloudDeleteDialog] = useState({
+        open: false,
+        co: null,
+        step: 'backup_prompt', // 'backup_prompt' | 'continue_prompt' | 'password'
+        backupDone: false,
+        backupInfo: null,
+        password: '',
+        busy: false
+    });
+    const [permDeleteDialog, setPermDeleteDialog] = useState({
+        open: false,
+        target: null, // single co OR { isEmptyAll: true, count: N }
+        password: '',
+        busy: false
+    });
 
-    
     const license = window.accproLicense;
     const myEmail = license?.email;
     const mySerial = license?.serialKey;
@@ -4015,8 +4033,18 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
     const filteredLive = useMemo(() => {
         return (Array.isArray(visibleLiveCompanies) ? visibleLiveCompanies : []).filter(co => {
+            if (co.inRecycleBin) return false;
             if (showAllCloud) return true;
             if (!myEmail && !mySerial) return true; // Show all if not logged in
+            return co.ownerEmail === myEmail || co.licenseKey === mySerial;
+        });
+    }, [visibleLiveCompanies, showAllCloud, myEmail, mySerial]);
+
+    const recycledLiveCompanies = useMemo(() => {
+        return (Array.isArray(visibleLiveCompanies) ? visibleLiveCompanies : []).filter(co => {
+            if (!co.inRecycleBin) return false;
+            if (showAllCloud) return true;
+            if (!myEmail && !mySerial) return true;
             return co.ownerEmail === myEmail || co.licenseKey === mySerial;
         });
     }, [visibleLiveCompanies, showAllCloud, myEmail, mySerial]);
@@ -4032,8 +4060,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     const fetchCompanies = async ({ forceRefresh = false } = {}) => {
         try {
             const list = await listCompanies();
-            const withStats = [];
-            for (const co of list) {
+            const withStats = await Promise.all(list.map(async (co) => {
                 try {
                     // For force refresh: clear cache so getCompanyStats does a live RxDB scan
                     if (forceRefresh) localStorage.removeItem(`accpro_stats_${co.id}`);
@@ -4041,13 +4068,12 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                     const stats = (currentCompanyId && co.id === currentCompanyId && currentStats)
                         ? currentStats
                         : await getCompanyStats(co.id);
-                    // Save fresh stats back to cache so all views stay in sync
                     if (stats) saveCachedCompanyStats(co.id, stats);
-                    withStats.push({ ...co, stats });
+                    return { ...co, stats };
                 } catch (e) {
-                    withStats.push(co);
+                    return co;
                 }
-            }
+            }));
             setCompanies(withStats);
             if (ipcRenderer) {
                 const p = await ipcRenderer.invoke('get-data-path');
@@ -4079,6 +4105,12 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
             unsub = subscribeLiveRegistry((liveCos) => {
                 const safeLiveCos = Array.isArray(liveCos) ? liveCos : [];
                 setLiveCompanies(safeLiveCos);
+
+                // Auto-purge any recycle bin companies older than 30 days (1 month)
+                const expired = safeLiveCos.filter(c => c?.inRecycleBin && c?.autoDeleteAt && Date.now() >= c.autoDeleteAt);
+                if (expired.length > 0) {
+                    purgeExpiredRecycleBinCompanies(expired);
+                }
 
                 // Keep local company names/stats in sync with cloud registry updates.
                 setCompanies(prev => prev.map((co) => {
@@ -4132,6 +4164,11 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                 const cloud = cloudById.get(co.id);
                 const localName = (co.name || '').trim();
                 const cloudName = (cloud?.name || '').trim();
+
+                // If company is in cloud recycle bin, do not re-register it as live!
+                if (cloud?.inRecycleBin) {
+                    continue;
+                }
 
                 // Only write when missing in cloud or when local name is newer/different.
                 if (cloud && (!localName || localName === cloudName)) {
@@ -4227,6 +4264,35 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         }
     };
 
+    const handleStopSync = async () => {
+        if (!makingLiveId || syncStopping) return;
+        if (!window.confirm("STOP and REVERT this sync procedure?\n\nThis will immediately halt uploading and reverse/remove any records uploaded to the cloud for this company.")) {
+            return;
+        }
+        setSyncStopping(true);
+        try {
+            await abortCompanySync(makingLiveId);
+            try {
+                await setCompanyLiveStatus(makingLiveId, false);
+                const master = await getMasterDB();
+                const existing = await master.companies.findOne({ selector: { id: makingLiveId } }).exec();
+                if (existing) {
+                    const existingSettings = existing.toJSON().settings || {};
+                    await existing.incrementalPatch({ settings: { ...existingSettings, isLive: false } });
+                }
+            } catch (e) {}
+
+            const freshList = await listCompanies();
+            setCompanies(freshList);
+            alert("🛑 Cloud sync stopped and reverted successfully!");
+        } catch (err) {
+            alert("Error stopping sync: " + err.message);
+        } finally {
+            setMakingLiveId(null);
+            setSyncStopping(false);
+        }
+    };
+
     const handleForceFullResync = async (coId, coName, e) => {
         e.stopPropagation();
         const localStats = companies.find(c => c.id === coId)?.stats;
@@ -4252,13 +4318,13 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     };
 
     const openRemoveDialog = (co, e) => {
-
         e.stopPropagation();
         setRemoveDialog({
             open: true,
             company: co,
-            removePc: true,
-            removeFirebase: !!co.settings?.isLive,
+            step: 'backup_prompt',
+            backupDone: false,
+            backupInfo: null,
             password: '',
             busy: false
         });
@@ -4266,17 +4332,45 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
     const closeRemoveDialog = () => {
         if (removeDialog.busy) return;
-        setRemoveDialog({ open: false, company: null, removePc: true, removeFirebase: false, password: '', busy: false });
+        setRemoveDialog({
+            open: false,
+            company: null,
+            step: 'backup_prompt',
+            backupDone: false,
+            backupInfo: null,
+            password: '',
+            busy: false
+        });
+    };
+
+    const handleBackupBeforeRemove = async () => {
+        const { company } = removeDialog;
+        if (!company || removeDialog.busy) return;
+
+        setRemoveDialog(prev => ({ ...prev, busy: true }));
+        try {
+            const result = await exportCompanyFullBackup(company.id, company.name, myEmail || 'admin');
+            if (!result?.success) {
+                alert('Backup failed: ' + (result?.error || 'Unknown error'));
+                setRemoveDialog(prev => ({ ...prev, busy: false }));
+                return;
+            }
+            setRemoveDialog(prev => ({
+                ...prev,
+                busy: false,
+                backupDone: true,
+                backupInfo: { fileName: result.fileName, count: result.count },
+                step: 'continue_prompt'
+            }));
+        } catch (err) {
+            alert('Error creating backup: ' + err.message);
+            setRemoveDialog(prev => ({ ...prev, busy: false }));
+        }
     };
 
     const handleConfirmRemove = async () => {
-        const { company, removePc, removeFirebase } = removeDialog;
+        const { company } = removeDialog;
         if (!company) return;
-
-        if (!removePc && !removeFirebase) {
-            alert('Please select at least one option: Delete from this PC and/or Delete from Firebase.');
-            return;
-        }
 
         if (removeDialog.password !== 'abcd') {
             alert('Incorrect password. Deletion cancelled.');
@@ -4285,57 +4379,32 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
         setRemoveDialog(prev => ({ ...prev, busy: true }));
 
-        let pcOk = true;
-        let fbOk = true;
-        let fbErr = '';
-
         try {
-            if (removeFirebase) {
-                const fbResult = await removeCompanyFromFirebase(company.id);
-                fbOk = !!fbResult?.success;
-                fbErr = fbResult?.error || '';
-
-                if (fbOk && !removePc) {
-                    await setCompanyLiveStatus(company.id, false);
-                }
+            try {
+                stopLiveSync(company.id);
+                stopCompanySyncScheduler(company.id);
+            } catch (syncStopErr) {
+                console.warn('Warning stopping local sync before company removal:', syncStopErr);
             }
 
-            if (removePc) {
-                pcOk = await removeCompanyData(company.id);
-            }
-
-            if (removePc && pcOk) {
-                setCompanies(prev => prev.filter(c => c.id !== company.id));
-            } else if (!removePc && removeFirebase && fbOk) {
-                const refreshed = await listCompanies();
-                const withStats = await Promise.all(refreshed.map(async (co) => {
-                    try {
-                        const stats = await getCompanyStats(co.id);
-                        return { ...co, stats };
-                    } catch {
-                        return co;
-                    }
-                }));
-                setCompanies(withStats);
-            }
-
-            if (!pcOk && !fbOk) {
-                alert(`Failed to delete from both targets. Firebase: ${fbErr || 'unknown error'}`);
-                return;
-            }
+            const pcOk = await removeCompanyData(company.id);
 
             if (!pcOk) {
-                alert('Deleted from Firebase, but failed to delete from this PC.');
+                alert('Failed to delete company data from this PC.');
                 return;
             }
 
-            if (!fbOk) {
-                alert(`Deleted from this PC, but failed to delete from Firebase: ${fbErr || 'unknown error'}`);
-                return;
-            }
-
-            alert('Deletion completed successfully.');
-            closeRemoveDialog();
+            setCompanies(prev => prev.filter(c => c.id !== company.id));
+            alert('Company removed from this PC successfully.');
+            setRemoveDialog({
+                open: false,
+                company: null,
+                step: 'backup_prompt',
+                backupDone: false,
+                backupInfo: null,
+                password: '',
+                busy: false
+            });
         } catch (err) {
             alert('Error while deleting: ' + err.message);
         } finally {
@@ -4425,25 +4494,75 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         }
     };
 
-    // --- Cloud Delete ---
-    const handleCloudDelete = async () => {
-        const { co, password } = cloudDeleteDialog;
-        if (!co) return;
-        if (password !== 'abcd') { alert('Incorrect password. Deletion cancelled.'); return; }
+    // --- Cloud Delete (3-Step Backup-First Guided Sequence into Cloud Recycle Bin) ---
+    const openCloudDeleteDialog = (co, e) => {
+        if (e) e.stopPropagation();
+        setCloudDeleteDialog({
+            open: true,
+            co,
+            step: 'backup_prompt',
+            backupDone: false,
+            backupInfo: null,
+            password: '',
+            busy: false
+        });
+    };
+
+    const closeCloudDeleteDialog = () => {
+        if (cloudDeleteDialog.busy) return;
+        setCloudDeleteDialog({
+            open: false,
+            co: null,
+            step: 'backup_prompt',
+            backupDone: false,
+            backupInfo: null,
+            password: '',
+            busy: false
+        });
+    };
+
+    const handleCloudBackupBeforeDelete = async () => {
+        const { co } = cloudDeleteDialog;
+        if (!co || cloudDeleteDialog.busy) return;
         setCloudDeleteDialog(prev => ({ ...prev, busy: true }));
         try {
-            // 1. Stop live sync first to prevent auto re-registration after delete
-            stopLiveSync(co.id);
-            stopCompanySyncScheduler(co.id);
+            const result = await exportCloudCompanyFullBackup(co.id, co.name, myEmail || 'admin');
+            if (!result?.success) {
+                alert('Backup failed: ' + (result?.error || 'Unknown error'));
+                setCloudDeleteDialog(prev => ({ ...prev, busy: false }));
+                return;
+            }
+            setCloudDeleteDialog(prev => ({
+                ...prev,
+                busy: false,
+                backupDone: true,
+                backupInfo: { fileName: result.fileName, count: result.count },
+                step: 'continue_prompt'
+            }));
+        } catch (err) {
+            alert('Error creating cloud backup: ' + err.message);
+            setCloudDeleteDialog(prev => ({ ...prev, busy: false }));
+        }
+    };
 
-            // 2. Delete all Firebase records + registry entry
-            const result = await removeCompanyFromFirebase(co.id);
-            if (!result.success) throw new Error(result.error || 'Unknown error');
-            
-            // 3. Remove from local cloud state
-            setLiveCompanies(prev => prev.filter(c => c.id !== co.id));
-            
-            // 4. Mark local company as NOT live (use incrementalPatch to avoid DataCloneError)
+    const handleConfirmMoveToRecycleBin = async () => {
+        const { co, password } = cloudDeleteDialog;
+        if (!co) return;
+        if (password !== 'abcd') {
+            alert('Incorrect password. Deletion cancelled.');
+            return;
+        }
+        setCloudDeleteDialog(prev => ({ ...prev, busy: true }));
+        try {
+            // 1. Stop local live sync for this company to prevent auto re-sync
+            try {
+                stopLiveSync(co.id);
+                stopCompanySyncScheduler(co.id);
+            } catch (syncErr) {
+                console.warn('[CLOUD DELETE] Warning stopping local sync:', syncErr);
+            }
+
+            // 2. Mark local company as NOT live
             try {
                 const master = await getMasterDB();
                 const existing = await master.companies.findOne({ selector: { id: co.id } }).exec();
@@ -4452,20 +4571,88 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                     await existing.incrementalPatch({ settings: { ...existingSettings, isLive: false } });
                 }
             } catch (le) {
-                // BroadcastChannel error is non-fatal — just use setCompanyLiveStatus as fallback
                 try { await setCompanyLiveStatus(co.id, false); } catch {}
-                console.warn('[CLOUD DELETE] Local settings update used fallback:', le.message);
             }
+
+            // 3. Move company in Firebase registry to Recycle Bin (30-day auto-purge)
+            const result = await moveCompanyToCloudRecycleBin(co.id, myEmail || 'admin');
+            if (!result.success) throw new Error(result.error || 'Unknown error');
+
+            // 4. Update local cloud state
+            setLiveCompanies(prev => prev.map(c => c.id === co.id ? {
+                ...c,
+                inRecycleBin: true,
+                deletedAt: Date.now(),
+                autoDeleteAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+                deletedBy: myEmail || 'admin'
+            } : c));
 
             // 5. Refresh local list
             const freshList = await listCompanies();
             setCompanies(freshList);
-            
-            setCloudDeleteDialog({ open: false, co: null, password: '', busy: false });
-            alert(`✅ "${co.name}" has been permanently deleted from Firebase.`);
+
+            closeCloudDeleteDialog();
+            alert(`🗑️ "${co.name}" has been moved to Cloud Recycle Bin.\nIt will be safely retained for 30 days before automatic cleanup.`);
         } catch (err) {
-            alert('Delete failed: ' + err.message);
+            alert('Move to Recycle Bin failed: ' + err.message);
             setCloudDeleteDialog(prev => ({ ...prev, busy: false }));
+        }
+    };
+
+    // --- Cloud Recycle Bin Actions (Restore, Single Permanent Delete, Empty Bin) ---
+    const handleRestoreFromRecycleBin = async (co, e) => {
+        if (e) e.stopPropagation();
+        if (!window.confirm(`Restore "${co.name}" back to active Live Cloud Data?`)) return;
+        try {
+            const res = await restoreCompanyFromCloudRecycleBin(co.id);
+            if (!res.success) throw new Error(res.error || 'Restore failed');
+            setLiveCompanies(prev => prev.map(c => c.id === co.id ? { ...c, inRecycleBin: false, deletedAt: null, autoDeleteAt: null } : c));
+            alert(`✅ "${co.name}" has been restored to Live Cloud Data!`);
+        } catch (err) {
+            alert('Restore failed: ' + err.message);
+        }
+    };
+
+    const openPermanentDeleteDialog = (target, e) => {
+        if (e) e.stopPropagation();
+        setPermDeleteDialog({
+            open: true,
+            target, // single co OR { isEmptyAll: true, count: recycledLiveCompanies.length }
+            password: '',
+            busy: false
+        });
+    };
+
+    const handleConfirmPermanentDelete = async () => {
+        const { target, password } = permDeleteDialog;
+        if (!target) return;
+        if (password !== 'abcd') {
+            alert('Incorrect password. Permanent deletion cancelled.');
+            return;
+        }
+        setPermDeleteDialog(prev => ({ ...prev, busy: true }));
+        try {
+            if (target.isEmptyAll) {
+                // Permanently delete all companies in recycle bin
+                const toDelete = [...recycledLiveCompanies];
+                for (const co of toDelete) {
+                    await removeCompanyFromFirebase(co.id);
+                }
+                const delIds = new Set(toDelete.map(c => c.id));
+                setLiveCompanies(prev => prev.filter(c => !delIds.has(c.id)));
+                setPermDeleteDialog({ open: false, target: null, password: '', busy: false });
+                alert(`✅ Cloud Recycle Bin emptied successfully (${toDelete.length} companies permanently deleted).`);
+            } else {
+                // Permanently delete single company
+                const res = await removeCompanyFromFirebase(target.id);
+                if (!res.success) throw new Error(res.error || 'Permanent delete failed');
+                setLiveCompanies(prev => prev.filter(c => c.id !== target.id));
+                setPermDeleteDialog({ open: false, target: null, password: '', busy: false });
+                alert(`✅ "${target.name}" has been permanently deleted from Firebase.`);
+            }
+        } catch (err) {
+            alert('Permanent deletion failed: ' + err.message);
+            setPermDeleteDialog(prev => ({ ...prev, busy: false }));
         }
     };
 
@@ -4670,12 +4857,20 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                     label="Create Company"
                                     onClick={() => setView('create')}
                                 />
+                                <MenuButton
+                                    fill
+                                    icon={Recycle}
+                                    shortcut="R"
+                                    hint={`${recycledLiveCompanies.length} Compan${recycledLiveCompanies.length === 1 ? 'y' : 'ies'} In Recycle Bin · 30-Day Auto Purge`}
+                                    label="Cloud Recycle Bin"
+                                    onClick={() => setView('recycle_bin')}
+                                />
                             </div>
 
                             {/* Status bar */}
                             <div className="shrink-0 flex items-center justify-between bg-[#0b1220] border-t border-white/10 px-4 md:px-8 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
                                 <span>Data Centre Ready</span>
-                                <span>{companies.length} Local · {filteredLive.length} Cloud</span>
+                                <span>{companies.length} Local · {filteredLive.length} Cloud · {recycledLiveCompanies.length} In Bin</span>
                             </div>
                         </div>
                     )}
@@ -4736,7 +4931,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                 </div>
                                             )}
                                         </div>
-                                        <div className="text-right">
+                                        <div className="text-right shrink-0">
                                             <div className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">Total Processing</div>
                                             <div className="text-lg font-mono text-white tracking-widest leading-none">
                                                 {makeLiveProgress.current} / {makeLiveProgress.total}
@@ -4745,6 +4940,17 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                 {makeLiveProgress.total - makeLiveProgress.current} Remaining
                                             </div>
                                         </div>
+                                        {/* STOP & REVERT SYNC BUTTON */}
+                                        <button
+                                            type="button"
+                                            onClick={handleStopSync}
+                                            disabled={syncStopping}
+                                            className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-[0_4px_12px_rgba(220,38,38,0.3)] flex items-center gap-2 shrink-0 disabled:opacity-50 ml-2"
+                                            title="Stop syncing and revert cloud upload"
+                                        >
+                                            {syncStopping ? <Loader2 size={15} className="animate-spin" /> : <X size={15} />}
+                                            <span>{syncStopping ? 'Stopping...' : 'Stop Sync'}</span>
+                                        </button>
                                     </div>
                                 )}
                                 {/* Sync History toggle link */}
@@ -4952,6 +5158,19 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <button 
+                                            onClick={() => setView('recycle_bin')}
+                                            className="flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-amber-500/10 border border-white/10 hover:border-amber-500/20 text-slate-300 hover:text-amber-400 rounded-xl transition-all text-xs font-bold"
+                                            title="Open Cloud Recycle Bin"
+                                        >
+                                            <Recycle size={16} />
+                                            <span className="hidden sm:inline">Recycle Bin</span>
+                                            {recycledLiveCompanies.length > 0 && (
+                                                <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded-full text-[10px] font-black">
+                                                    {recycledLiveCompanies.length}
+                                                </span>
+                                            )}
+                                        </button>
+                                        <button 
                                             onClick={handleRefreshLiveCompanies}
                                             disabled={isRefreshingHub}
                                             className={`p-3 hover:bg-white/5 rounded-2xl text-slate-400 hover:text-white transition-colors ${isRefreshingHub ? 'bg-white/10' : ''}`}
@@ -5045,8 +5264,8 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                                                                                 <Edit2 size={13} />
                                                                             </button>
                                                                             <button
-                                                                                onClick={(e) => { e.stopPropagation(); setCloudDeleteDialog({ open: true, co: liveCo, password: '', busy: false }); }}
-                                                                                title="Delete from Cloud"
+                                                                                onClick={(e) => openCloudDeleteDialog(liveCo, e)}
+                                                                                title="Move to Cloud Recycle Bin"
                                                                                 className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white transition-all"
                                                                             >
                                                                                 <Trash2 size={13} />
@@ -5104,6 +5323,139 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
+                    
+                    {/* ✅ CLOUD RECYCLE BIN VIEW (WINDOWS DESKTOP RECYCLE BIN STYLE) */}
+                    {view === 'recycle_bin' && (
+                        <div className="absolute inset-0 z-20 flex flex-col overflow-hidden animated-in fade-in">
+                            <div className="w-full h-full bg-[#0f172a] overflow-hidden flex flex-col">
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-3 flex justify-between items-center border-b border-white/10 shrink-0">
+                                    <div className="flex items-center gap-3 md:gap-4">
+                                        <div className="p-2 md:p-3 bg-red-500/10 rounded-lg text-red-400">
+                                            <Recycle size={isMobileDevice ? 18 : 22} />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-white font-black text-[14px] md:text-[16px] tracking-wide uppercase">Cloud Recycle Bin</h2>
+                                            <div className="flex items-center gap-2 mt-0.5">
+                                                <span className="text-[10px] md:text-[11px] text-slate-500 font-bold uppercase tracking-widest leading-none">Cloud Staging</span>
+                                                <span className="w-0.5 h-0.5 rounded-full bg-slate-700"></span>
+                                                <span className="text-[10px] md:text-[11px] text-amber-400/90 font-bold tracking-tight">30-Day Automatic Cleanup</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            onClick={() => openPermanentDeleteDialog({ isEmptyAll: true, count: recycledLiveCompanies.length })}
+                                            disabled={recycledLiveCompanies.length === 0}
+                                            className="flex items-center gap-2 px-3 md:px-4 py-2 bg-red-600/10 hover:bg-red-600 border border-red-500/20 hover:border-red-600 text-red-400 hover:text-white rounded-xl transition-all text-xs font-black uppercase disabled:opacity-30 disabled:pointer-events-none shadow-[0_4px_12px_rgba(220,38,38,0.15)]"
+                                            title="Permanently remove all companies in recycle bin"
+                                        >
+                                            <Trash2 size={15} />
+                                            <span>Empty Recycle Bin</span>
+                                        </button>
+                                        <button
+                                            onClick={() => setView('live')}
+                                            className="p-2.5 md:p-3 hover:bg-white/5 rounded-2xl text-slate-400 hover:text-white transition-colors"
+                                            title="Back to Live Cloud Data"
+                                        >
+                                            <X size={20} />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* List / Table */}
+                                <div className="flex-1 overflow-y-auto px-0 custom-scrollbar">
+                                    <table className="w-full text-left border-collapse font-sans">
+                                        <thead className="sticky top-0 bg-[#0b1220] z-10">
+                                            <tr className="text-[10px] md:text-[11px] font-black text-slate-500 uppercase tracking-widest border-b border-white/10">
+                                                <th className="px-4 md:px-8 py-3">Recycled Company Asset</th>
+                                                <th className="px-6 py-3 text-center">Auto-Purge Expiration</th>
+                                                <th className="px-4 md:px-8 py-3 text-center w-60">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="px-4">
+                                            {recycledLiveCompanies.length === 0 ? (
+                                                <tr>
+                                                    <td colSpan="3" className="px-6 py-20 text-center">
+                                                        <div className="flex flex-col items-center gap-3 opacity-40">
+                                                            <Recycle size={56} className="text-slate-400 stroke-[1.2]" />
+                                                            <p className="text-white font-black uppercase tracking-widest text-sm">Cloud Recycle Bin is Empty</p>
+                                                            <p className="text-slate-400 text-xs normal-case max-w-md">Deleted cloud companies are safely stored here for 30 days before being automatically cleaned up.</p>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ) : (
+                                                recycledLiveCompanies.map((co) => {
+                                                    const msRemaining = Math.max(0, (co.autoDeleteAt || (co.deletedAt + 30 * 24 * 60 * 60 * 1000)) - Date.now());
+                                                    const daysRemaining = Math.ceil(msRemaining / (24 * 60 * 60 * 1000));
+                                                    const deletedDateStr = co.deletedAt ? new Date(co.deletedAt).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recently';
+
+                                                    return (
+                                                        <tr key={co.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
+                                                            <td className="px-4 md:px-8 py-3 md:py-4">
+                                                                <div className="flex flex-col gap-1">
+                                                                    <div className="flex items-center gap-3">
+                                                                        <span className="text-white font-black text-sm md:text-base tracking-wide uppercase group-hover:text-amber-400 transition-colors">
+                                                                            {co.name}
+                                                                        </span>
+                                                                        <span className="text-[9px] font-mono bg-white/5 text-slate-400 px-2 py-0.5 rounded border border-white/5">
+                                                                            {co.id}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div className="flex items-center gap-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                                                                        <span>Deleted: {deletedDateStr}</span>
+                                                                        {co.deletedBy && (
+                                                                            <>
+                                                                                <span>•</span>
+                                                                                <span className="normal-case lowercase text-slate-400">{co.deletedBy}</span>
+                                                                            </>
+                                                                        )}
+                                                                    </div>
+                                                                    <CompanyStatsSummary stats={co.stats} />
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-6 py-3 md:py-4 text-center">
+                                                                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                                                                    <Clock size={12} />
+                                                                    <span>Auto-deletes in {daysRemaining} day{daysRemaining === 1 ? '' : 's'}</span>
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 md:px-8 py-3 md:py-4 text-center">
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    <button
+                                                                        onClick={(e) => handleRestoreFromRecycleBin(co, e)}
+                                                                        className="flex items-center gap-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white text-[10px] font-black px-3 py-2 rounded-xl transition-all border border-emerald-500/20 uppercase"
+                                                                        title="Restore company to Live Cloud Data"
+                                                                    >
+                                                                        <RotateCcw size={13} />
+                                                                        <span>Restore</span>
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={(e) => openPermanentDeleteDialog(co, e)}
+                                                                        className="flex items-center gap-1.5 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white text-[10px] font-black px-3 py-2 rounded-xl transition-all border border-red-500/20 uppercase"
+                                                                        title="Permanently erase from Firebase"
+                                                                    >
+                                                                        <Trash2 size={13} />
+                                                                        <span>Delete Forever</span>
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div className="bg-[#0b1220] px-4 md:px-8 py-2 border-t border-white/10 text-slate-500 text-[10px] uppercase font-bold tracking-widest flex justify-between shrink-0">
+                                    <span>Cloud Recycle Bin Active</span>
+                                    <span>{recycledLiveCompanies.length} In Recycle Bin</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+
                     {/* ── CLOUD RENAME DIALOG ── */}
                     {cloudRenameDialog.open && (
                         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => !cloudRenameDialog.busy && setCloudRenameDialog({ open: false, co: null, value: '', busy: false })}>
@@ -5134,48 +5486,240 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
-                    {/* ── CLOUD DELETE DIALOG ── */}
+                    {/* ── CLOUD DELETE DIALOG (3-STEP GUIDED FLOW) ── */}
                     {cloudDeleteDialog.open && (
-                        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !cloudDeleteDialog.busy && setCloudDeleteDialog({ open: false, co: null, password: '', busy: false })}>
-                            <div className="bg-[#0f172a] border border-red-500/20 rounded-[28px] p-8 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-                                <div className="flex items-center gap-3 mb-1">
-                                    <div className="p-2 bg-red-500/10 rounded-xl text-red-400"><Trash2 size={20} /></div>
-                                    <h3 className="text-white font-black text-xl uppercase tracking-tight">Delete Cloud Data</h3>
-                                </div>
-                                <p className="text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-2">Permanently removes from Firebase</p>
-                                <div className="bg-red-500/5 border border-red-500/15 rounded-2xl px-4 py-3 mb-6">
-                                    <p className="text-red-300 text-xs font-bold normal-case">
-                                        âš ï¸ This will permanently delete <span className="text-red-200 font-black">"{cloudDeleteDialog.co?.name}"</span> and ALL its records from Firebase. This cannot be undone.
-                                    </p>
-                                </div>
-                                <div className="mb-6">
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 mb-1 block">Master Password</label>
-                                    <div className="relative">
-                                        <input
-                                            autoFocus
-                                            type="password"
-                                            value={cloudDeleteDialog.password}
-                                            onChange={e => setCloudDeleteDialog(prev => ({ ...prev, password: e.target.value }))}
-                                            onKeyDown={e => e.key === 'Enter' && handleCloudDelete()}
-                                            disabled={cloudDeleteDialog.busy}
-                                            placeholder="CONFIRM IDENTITY"
-                                            className="w-full bg-[#1e293b] border border-white/10 px-4 py-3 rounded-2xl font-black text-white text-sm tracking-widest outline-none focus:ring-2 ring-red-500/20 focus:border-red-500/40 transition-all placeholder:text-slate-600 uppercase"
-                                        />
-                                        <Shield size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600" />
+                        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 backdrop-blur-md p-4" onClick={closeCloudDeleteDialog}>
+                            <div className="bg-[#0f172a] border border-white/10 rounded-[28px] w-full max-w-md shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+                                {/* Header */}
+                                <div className="bg-white/5 px-6 py-5 border-b border-white/5 flex items-center justify-between shrink-0">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2.5 bg-red-500/10 rounded-xl text-red-400">
+                                            <Trash2 size={20} />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-white font-black text-base uppercase tracking-tight">Move to Cloud Recycle Bin</h3>
+                                            <p className="text-slate-500 text-[10px] font-bold uppercase tracking-widest mt-0.5">Cloud Data Retention Sequence</p>
+                                        </div>
                                     </div>
-                                </div>
-                                <div className="flex gap-3">
-                                    <button onClick={() => setCloudDeleteDialog({ open: false, co: null, password: '', busy: false })} disabled={cloudDeleteDialog.busy} className="flex-1 px-4 py-3 rounded-2xl text-slate-400 font-black text-xs uppercase hover:bg-white/5 transition-colors">Cancel</button>
-                                    <button onClick={handleCloudDelete} disabled={cloudDeleteDialog.busy || !cloudDeleteDialog.password} className="flex-[2] bg-red-600 hover:bg-red-500 text-white px-4 py-3 rounded-2xl font-black text-xs uppercase transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-[0_8px_16px_rgba(220,38,38,0.3)]">
-                                        {cloudDeleteDialog.busy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                                        Delete Forever
+                                    <button
+                                        onClick={closeCloudDeleteDialog}
+                                        disabled={cloudDeleteDialog.busy}
+                                        className="p-1.5 text-slate-500 hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+                                    >
+                                        <X size={18} />
                                     </button>
+                                </div>
+
+                                {/* Body */}
+                                <div className="p-6 space-y-4">
+                                    {/* Target Company Banner */}
+                                    <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col items-center justify-center text-center">
+                                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Target Asset</span>
+                                        <span className="text-white font-black text-lg tracking-wide uppercase text-red-400">
+                                            {cloudDeleteDialog.co?.name || 'Company'}
+                                        </span>
+                                    </div>
+
+                                    {/* STEP 1: ASK TO MAKE FULL BACKUP FIRST */}
+                                    {cloudDeleteDialog.step === 'backup_prompt' && (
+                                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-5 space-y-4 text-center">
+                                            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
+                                                <Download size={24} />
+                                            </div>
+                                            <div>
+                                                <div className="text-white font-black text-sm uppercase tracking-tight">
+                                                    Do you want to do the Full Backup first?
+                                                </div>
+                                                <div className="text-[11px] text-slate-400 font-bold mt-1 uppercase tracking-wide">
+                                                    Recommended before moving cloud records to the Recycle Bin.
+                                                </div>
+                                            </div>
+                                            <div className="space-y-2 pt-2">
+                                                <button
+                                                    type="button"
+                                                    disabled={cloudDeleteDialog.busy}
+                                                    onClick={handleCloudBackupBeforeDelete}
+                                                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-[0_8px_16px_rgba(5,150,105,0.3)] disabled:opacity-50 flex items-center justify-center gap-2"
+                                                >
+                                                    {cloudDeleteDialog.busy ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                                                    Yes, Make Full Backup First
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={cloudDeleteDialog.busy}
+                                                    onClick={() => setCloudDeleteDialog(prev => ({ ...prev, step: 'password' }))}
+                                                    className="w-full bg-white/10 hover:bg-white/15 text-amber-300 px-4 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider transition-all disabled:opacity-50"
+                                                >
+                                                    No, Continue Without Backup
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* STEP 2: AFTER BACKUP -> ASK NOW CONTINUE TO REMOVE */}
+                                    {cloudDeleteDialog.step === 'continue_prompt' && (
+                                        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 space-y-3 text-center">
+                                            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
+                                                <Check size={18} />
+                                            </div>
+                                            <div>
+                                                <div className="text-emerald-400 font-black text-xs uppercase tracking-widest">
+                                                    Full Backup Completed
+                                                </div>
+                                                {cloudDeleteDialog.backupInfo && (
+                                                    <div className="text-[11px] text-slate-400 font-bold mt-1 break-all">
+                                                        {cloudDeleteDialog.backupInfo.fileName} ({cloudDeleteDialog.backupInfo.count} records)
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="pt-2 border-t border-white/10">
+                                                <div className="text-white font-black text-xs uppercase tracking-tight mb-2.5">
+                                                    Now continue to move to Cloud Recycle Bin?
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setCloudDeleteDialog(prev => ({ ...prev, step: 'password' }))}
+                                                    className="w-full bg-red-600 hover:bg-red-500 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-[0_12px_24px_rgba(220,38,38,0.3)] flex items-center justify-center gap-2"
+                                                >
+                                                    <Trash2 size={16} />
+                                                    Yes, Continue to Remove
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* STEP 3: ENTER PASSWORD "abcd" */}
+                                    {cloudDeleteDialog.step === 'password' && (
+                                        <div className="space-y-3">
+                                            {cloudDeleteDialog.backupDone ? (
+                                                <div className="flex items-center gap-2.5 bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 rounded-xl text-emerald-400 text-[11px] font-black uppercase tracking-wider">
+                                                    <Check size={14} className="shrink-0" />
+                                                    <span>Full Backup Saved ({cloudDeleteDialog.backupInfo?.count || 0} records)</span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center gap-2.5 bg-amber-500/10 border border-amber-500/20 px-4 py-2 rounded-xl text-amber-400 text-[11px] font-black uppercase tracking-wider">
+                                                    <AlertTriangle size={14} className="shrink-0" />
+                                                    <span>Backup Skipped — Moving to Recycle Bin</span>
+                                                </div>
+                                            )}
+
+                                            <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-[11px] text-slate-400 font-medium">
+                                                Company data will be kept in the <span className="text-white font-black">Cloud Recycle Bin</span> for 30 days before automatic cleanup. You can restore it anytime.
+                                            </div>
+
+                                            <div className="flex flex-col gap-1.5">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Enter Master Password to Remove</label>
+                                                <div className="relative">
+                                                    <input
+                                                        type="password"
+                                                        autoFocus
+                                                        value={cloudDeleteDialog.password}
+                                                        onChange={(e) => setCloudDeleteDialog(prev => ({ ...prev, password: e.target.value }))}
+                                                        onKeyDown={(e) => {
+                                                            if (e.key === 'Enter' && cloudDeleteDialog.password && !cloudDeleteDialog.busy) {
+                                                                handleConfirmMoveToRecycleBin();
+                                                            }
+                                                        }}
+                                                        disabled={cloudDeleteDialog.busy}
+                                                        placeholder="CONFIRM IDENTITY"
+                                                        className="w-full bg-[#1e293b] border border-white/10 px-5 py-3.5 rounded-2xl font-black text-white text-sm tracking-widest outline-none focus:ring-4 ring-red-500/20 focus:border-red-500/40 transition-all placeholder:text-slate-600 uppercase"
+                                                    />
+                                                    <Shield size={18} className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-600" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="bg-white/5 px-6 py-4 border-t border-white/5 flex gap-3 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={closeCloudDeleteDialog}
+                                        disabled={cloudDeleteDialog.busy}
+                                        className="flex-1 px-4 py-2.5 rounded-xl text-slate-400 font-black text-xs uppercase hover:bg-white/5 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    {cloudDeleteDialog.step === 'password' && (
+                                        <button
+                                            disabled={cloudDeleteDialog.busy || !cloudDeleteDialog.password}
+                                            onClick={handleConfirmMoveToRecycleBin}
+                                            className="flex-[1.5] bg-red-600 hover:bg-red-500 text-white px-4 py-2.5 rounded-xl font-black text-xs uppercase transition-all shadow-[0_12px_24px_rgba(220,38,38,0.3)] disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
+                                        >
+                                            {cloudDeleteDialog.busy ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                                            Move to Recycle Bin
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         </div>
                     )}
 
-
+                    {/* ── PERMANENT DELETE DIALOG (Empty Bin or Single Permanent Delete) ── */}
+                    {permDeleteDialog.open && (
+                        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-md p-4" onClick={() => !permDeleteDialog.busy && setPermDeleteDialog({ open: false, target: null, password: '', busy: false })}>
+                            <div className="bg-[#0f172a] border border-red-500/30 rounded-[28px] w-full max-w-md shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+                                <div className="bg-red-500/10 px-6 py-5 border-b border-red-500/20 flex items-center gap-3">
+                                    <div className="p-2.5 bg-red-500/20 rounded-xl text-red-400">
+                                        <AlertTriangle size={22} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-white font-black text-base uppercase tracking-tight">Permanent Cloud Purge</h3>
+                                        <p className="text-red-400/80 text-[10px] font-bold uppercase tracking-widest mt-0.5">IRREVERSIBLE DELETION</p>
+                                    </div>
+                                </div>
+                                <div className="p-6 space-y-4">
+                                    <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-4 text-center">
+                                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Target</span>
+                                        <span className="text-white font-black text-base uppercase text-red-300">
+                                            {permDeleteDialog.target?.isEmptyAll ? `ALL ${permDeleteDialog.target?.count} RECYCLED COMPANIES` : (permDeleteDialog.target?.name || 'Company')}
+                                        </span>
+                                        <p className="text-red-400/90 text-xs font-bold mt-2">
+                                            ⚠️ This will permanently delete all records from Firebase Firestore. This cannot be undone.
+                                        </p>
+                                    </div>
+                                    <div className="flex flex-col gap-1.5">
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Enter Master Password to Purge Forever</label>
+                                        <div className="relative">
+                                            <input
+                                                type="password"
+                                                autoFocus
+                                                value={permDeleteDialog.password}
+                                                onChange={(e) => setPermDeleteDialog(prev => ({ ...prev, password: e.target.value }))}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter' && permDeleteDialog.password && !permDeleteDialog.busy) {
+                                                        handleConfirmPermanentDelete();
+                                                    }
+                                                }}
+                                                disabled={permDeleteDialog.busy}
+                                                placeholder="CONFIRM IDENTITY"
+                                                className="w-full bg-[#1e293b] border border-white/10 px-5 py-3.5 rounded-2xl font-black text-white text-sm tracking-widest outline-none focus:ring-4 ring-red-500/20 focus:border-red-500/40 transition-all placeholder:text-slate-600 uppercase"
+                                            />
+                                            <Shield size={18} className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-600" />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-white/5 px-6 py-4 border-t border-white/5 flex gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setPermDeleteDialog({ open: false, target: null, password: '', busy: false })}
+                                        disabled={permDeleteDialog.busy}
+                                        className="flex-1 px-4 py-2.5 rounded-xl text-slate-400 font-black text-xs uppercase hover:bg-white/5 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        disabled={permDeleteDialog.busy || !permDeleteDialog.password}
+                                        onClick={handleConfirmPermanentDelete}
+                                        className="flex-[1.5] bg-red-600 hover:bg-red-500 text-white px-4 py-2.5 rounded-xl font-black text-xs uppercase transition-all shadow-[0_12px_24px_rgba(220,38,38,0.3)] disabled:opacity-50 flex items-center justify-center gap-2"
+                                    >
+                                        {permDeleteDialog.busy ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                                        Purge Forever
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* ✅ CREATE COMPANY FORM VIEW (MODERN) */}
                     {view === 'create' && (
@@ -5269,89 +5813,160 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                         </div>
                     )}
 
-                    {/* ✅ REMOVE DIALOG (MODERN) */}
+                    {/* ✅ REMOVE DIALOG (LOCAL DEVICE ONLY + BACKUP PROMPT FLOW) */}
                     {removeDialog.open && removeDialog.company && (
-                        <div className="absolute inset-0 z-30 flex items-center justify-center p-8 bg-black/60 backdrop-blur-sm animated-in fade-in">
-                            <div className="w-full max-w-md bg-[#0f172a] border border-red-500/30 rounded-[32px] shadow-[0_32px_80px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col">
-                                <div className="bg-red-500/10 px-8 py-6 flex items-center gap-4 border-b border-white/5">
-                                    <div className="p-3 bg-red-500/20 rounded-2xl text-red-400">
-                                        <Trash2 size={24} />
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animated-in fade-in">
+                            <div className="w-full max-w-md max-h-[90vh] bg-[#0f172a] border border-red-500/30 rounded-[28px] shadow-[0_32px_80px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col">
+                                <div className="bg-red-500/10 px-6 py-4 flex items-center gap-3.5 border-b border-white/5 shrink-0">
+                                    <div className="p-2.5 bg-red-500/20 rounded-xl text-red-400">
+                                        <Trash2 size={20} />
                                     </div>
                                     <div>
-                                        <h2 className="text-white font-black text-xl tracking-tight uppercase">Remove Company</h2>
-                                        <p className="text-[10px] text-red-400/60 font-black uppercase tracking-widest mt-0.5">Termination Sequence</p>
+                                        <h2 className="text-white font-black text-lg tracking-tight uppercase">Remove Company</h2>
+                                        <p className="text-[10px] text-red-400/60 font-black uppercase tracking-widest">Local Device Removal Sequence</p>
                                     </div>
                                 </div>
 
-                                <div className="p-8 space-y-6">
+                                <div className="p-6 space-y-4 overflow-y-auto">
                                     <div className="text-center py-2 px-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest block mb-1">Target Asset</span>
-                                        <span className="text-white font-black text-lg uppercase tracking-tight">{removeDialog.company.name}</span>
+                                        <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest block mb-0.5">Target Asset</span>
+                                        <span className="text-white font-black text-base uppercase tracking-tight">{removeDialog.company.name}</span>
                                     </div>
 
-                                    <div className="space-y-3">
-                                        <label className="group flex items-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-all cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                className="w-5 h-5 rounded-lg border-white/10 bg-slate-800 text-blue-500 focus:ring-0 focus:ring-offset-0"
-                                                checked={removeDialog.removePc}
-                                                onChange={(e) => setRemoveDialog(prev => ({ ...prev, removePc: e.target.checked }))}
-                                                disabled={removeDialog.busy}
-                                            />
-                                            <div className="flex flex-col">
-                                                <span className="text-xs font-black text-white uppercase">Wipe From This PC</span>
-                                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">Delete local database records</span>
-                                            </div>
-                                        </label>
-
-                                        <label className="group flex items-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-all cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                className="w-5 h-5 rounded-lg border-white/10 bg-slate-800 text-red-500 focus:ring-0 focus:ring-offset-0"
-                                                checked={removeDialog.removeFirebase}
-                                                onChange={(e) => setRemoveDialog(prev => ({ ...prev, removeFirebase: e.target.checked }))}
-                                                disabled={removeDialog.busy}
-                                            />
-                                            <div className="flex flex-col">
-                                                <span className="text-xs font-black text-white uppercase">Purge From Cloud</span>
-                                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">Unregister from Firebase Hub</span>
-                                            </div>
-                                        </label>
-                                    </div>
-
-                                    <div className="flex flex-col gap-2">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Master Password</label>
-                                        <div className="relative">
-                                            <input
-                                                type="password"
-                                                value={removeDialog.password}
-                                                onChange={(e) => setRemoveDialog(prev => ({ ...prev, password: e.target.value }))}
-                                                disabled={removeDialog.busy}
-                                                placeholder="CONFIRM IDENTITY"
-                                                className="w-full bg-[#1e293b] border border-white/10 px-6 py-4 rounded-2xl font-black text-white text-sm tracking-widest outline-none focus:ring-4 ring-red-500/20 focus:border-red-500/40 transition-all placeholder:text-slate-600 uppercase"
-                                            />
-                                            <Shield size={18} className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-600" />
+                                    <div className="flex items-center gap-3.5 bg-white/5 p-3.5 rounded-2xl border border-white/5">
+                                        <div className="w-5 h-5 rounded-lg bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 shrink-0">
+                                            <Check size={14} />
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-xs font-black text-white uppercase">Wipe From This PC Only</span>
+                                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Delete local database records (Cloud data is untouched)</span>
                                         </div>
                                     </div>
+
+                                    {/* STEP 1: ASK FOR BACKUP FIRST */}
+                                    {removeDialog.step === 'backup_prompt' && (
+                                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-2.5 text-center">
+                                            <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
+                                                <Download size={18} />
+                                            </div>
+                                            <div className="text-white font-black text-xs uppercase tracking-tight">
+                                                Do you want to do the Full Backup first?
+                                            </div>
+                                            <p className="text-[11px] text-slate-400 font-semibold leading-snug">
+                                                Recommended before removing local database records from this device.
+                                            </p>
+                                            <div className="pt-1.5 flex flex-col gap-2">
+                                                <button
+                                                    type="button"
+                                                    disabled={removeDialog.busy}
+                                                    onClick={handleBackupBeforeRemove}
+                                                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-[0_12px_24px_rgba(16,185,129,0.25)] disabled:opacity-50 flex items-center justify-center gap-2"
+                                                >
+                                                    {removeDialog.busy ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                                                    Yes, Make Full Backup First
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={removeDialog.busy}
+                                                    onClick={() => setRemoveDialog(prev => ({ ...prev, step: 'password' }))}
+                                                    className="w-full bg-white/10 hover:bg-white/15 text-amber-300 px-4 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider transition-all disabled:opacity-50"
+                                                >
+                                                    No, Continue Without Backup
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* STEP 2: AFTER BACKUP -> ASK NOW CONTINUE TO REMOVE */}
+                                    {removeDialog.step === 'continue_prompt' && (
+                                        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 space-y-3 text-center">
+                                            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
+                                                <Check size={18} />
+                                            </div>
+                                            <div>
+                                                <div className="text-emerald-400 font-black text-xs uppercase tracking-widest">
+                                                    Full Backup Completed
+                                                </div>
+                                                {removeDialog.backupInfo && (
+                                                    <div className="text-[11px] text-slate-400 font-bold mt-1 break-all">
+                                                        {removeDialog.backupInfo.fileName} ({removeDialog.backupInfo.count} records)
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="pt-2 border-t border-white/10">
+                                                <div className="text-white font-black text-xs uppercase tracking-tight mb-2.5">
+                                                    Now continue to remove from this PC?
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setRemoveDialog(prev => ({ ...prev, step: 'password' }))}
+                                                    className="w-full bg-red-600 hover:bg-red-500 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-[0_12px_24px_rgba(220,38,38,0.3)] flex items-center justify-center gap-2"
+                                                >
+                                                    <AlertTriangle size={16} />
+                                                    Yes, Continue to Remove
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* STEP 3: ENTER PASSWORD "abcd" */}
+                                    {removeDialog.step === 'password' && (
+                                        <div className="space-y-3">
+                                            {removeDialog.backupDone ? (
+                                                <div className="flex items-center gap-2.5 bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 rounded-xl text-emerald-400 text-[11px] font-black uppercase tracking-wider">
+                                                    <Check size={14} className="shrink-0" />
+                                                    <span>Full Backup Saved ({removeDialog.backupInfo?.count || 0} records)</span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center gap-2.5 bg-amber-500/10 border border-amber-500/20 px-4 py-2 rounded-xl text-amber-400 text-[11px] font-black uppercase tracking-wider">
+                                                    <AlertTriangle size={14} className="shrink-0" />
+                                                    <span>Backup Skipped — Removing Local Data Only</span>
+                                                </div>
+                                            )}
+
+                                            <div className="flex flex-col gap-1.5">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Enter Master Password to Remove</label>
+                                                <div className="relative">
+                                                    <input
+                                                        type="password"
+                                                        autoFocus
+                                                        value={removeDialog.password}
+                                                        onChange={(e) => setRemoveDialog(prev => ({ ...prev, password: e.target.value }))}
+                                                        onKeyDown={(e) => {
+                                                            if (e.key === 'Enter' && removeDialog.password && !removeDialog.busy) {
+                                                                handleConfirmRemove();
+                                                            }
+                                                        }}
+                                                        disabled={removeDialog.busy}
+                                                        placeholder="CONFIRM IDENTITY"
+                                                        className="w-full bg-[#1e293b] border border-white/10 px-5 py-3.5 rounded-2xl font-black text-white text-sm tracking-widest outline-none focus:ring-4 ring-red-500/20 focus:border-red-500/40 transition-all placeholder:text-slate-600 uppercase"
+                                                    />
+                                                    <Shield size={18} className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-600" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
-                                <div className="bg-white/5 px-8 py-6 border-t border-white/5 flex gap-4">
+                                <div className="bg-white/5 px-6 py-4 border-t border-white/5 flex gap-3 shrink-0">
                                     <button
                                         type="button"
                                         onClick={closeRemoveDialog}
                                         disabled={removeDialog.busy}
-                                        className="flex-1 px-4 py-3 rounded-2xl text-slate-400 font-black text-xs uppercase hover:bg-white/5 transition-colors"
+                                        className="flex-1 px-4 py-2.5 rounded-xl text-slate-400 font-black text-xs uppercase hover:bg-white/5 transition-colors"
                                     >
                                         Cancel
                                     </button>
-                                    <button
-                                        disabled={removeDialog.busy || !removeDialog.password}
-                                        onClick={handleConfirmRemove}
-                                        className="flex-[1.5] bg-red-600 hover:bg-red-500 text-white px-4 py-3 rounded-2xl font-black text-xs uppercase transition-all shadow-[0_12px_24px_rgba(220,38,38,0.3)] disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
-                                    >
-                                        {removeDialog.busy ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
-                                        Initialize Purge
-                                    </button>
+                                    {removeDialog.step === 'password' && (
+                                        <button
+                                            disabled={removeDialog.busy || !removeDialog.password}
+                                            onClick={handleConfirmRemove}
+                                            className="flex-[1.5] bg-red-600 hover:bg-red-500 text-white px-4 py-2.5 rounded-xl font-black text-xs uppercase transition-all shadow-[0_12px_24px_rgba(220,38,38,0.3)] disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
+                                        >
+                                            {removeDialog.busy ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+                                            Initialize Local Wipe
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -6318,8 +6933,10 @@ export default function App() {
                 
                 if (!syncInitializedRef.current[activeCompanyId]) {
                     syncInitializedRef.current[activeCompanyId] = true;
-                    startLiveSync(activeCompanyId);
-                    triggerCompanySyncNow(activeCompanyId, 'active-company-init');
+                    // Defer initial cloud sync slightly so local vouchers & masters load into the UI first without IndexedDB contention
+                    setTimeout(() => {
+                        startLiveSync(activeCompanyId);
+                    }, 2500);
                 }
             }
 
@@ -7846,11 +8463,13 @@ export default function App() {
     const [cashSummaryGrandTotal, setCashSummaryGrandTotal] = useState(0);
     const [receivablesGrandTotal, setReceivablesGrandTotal] = useState(0);
     const [payablesGrandTotal, setPayablesGrandTotal] = useState(0);
+    const dashboardDateRef = useRef(dashboardDate);
+    const stockGroupsRef = useRef(stockGroups);
+    const financeRecalcRef = useRef(null);
 
     useEffect(() => {
-        if (!user || !dataOwnerId || (!accounts.length && !parties.length)) return;
+        if (!user || !dataOwnerId) return;
         const targetUid = dataOwnerId;
-        const targetDate = dashboardDate;
 
         const qInv = query(collection(db, 'invoices'), where('userId', '==', targetUid));
         const qPay = query(collection(db, 'payments'), where('userId', '==', targetUid));
@@ -7875,14 +8494,15 @@ export default function App() {
         // ✅ Renamed from 'recalc' to 'calculateFinanceSummary' and using REFS for fresh state
         const calculateFinanceSummary = async () => {
             if (!invDocs || !payDocs || !jvDocs || !mfgDocs) {
-                console.log("⏳ [DASHBOARD] Waiting for docs:", { invDocs: !!invDocs, payDocs: !!payDocs, jvDocs: !!jvDocs, mfgDocs: !!mfgDocs });
                 return;
             }
 
-            const currentAccounts = accountsRef.current;
-            const currentParties = partiesRef.current;
-            const currentProducts = productsRef.current || products;
-            console.log(`🧮 [DASHBOARD] calculateFinanceSummary running for ${targetUid}. Accounts: ${currentAccounts.length}, Parties: ${currentParties.length}, Products: ${currentProducts.length}`);
+            const targetDate = dashboardDateRef.current;
+            const currentAccounts = accountsRef.current || [];
+            const currentParties = partiesRef.current || [];
+            const currentProducts = productsRef.current || [];
+            const currentStockGroups = stockGroupsRef.current || [];
+            if (!currentAccounts.length && !currentParties.length && !currentProducts.length) return;
 
             const accBalMap = {};
             currentAccounts.forEach(a => { accBalMap[a.id] = Number(a.openingBalance || 0); });
@@ -8010,7 +8630,7 @@ export default function App() {
                 if (effMap[name]) return effMap[name];
                 if (visited.has(name)) return { closingQty: true, closingVal: true };
                 visited.add(name);
-                const g = stockGroups.find(x => x.name === name);
+                const g = currentStockGroups.find(x => x.name === name);
                 if (!g || !g.parent || g.parent === 'Primary') {
                     const res = {
                         closingQty: g ? g.addClosingQty !== 'No' : true,
@@ -8034,7 +8654,6 @@ export default function App() {
                 if (b > 0) recTotal += b;
                 else if (b < 0) payTotal += Math.abs(b);
             });
-            console.log("💰 [DASHBOARD] Calculated totals:", { totalCash, recTotal, payTotal });
             setCashSummaryGrandTotal(totalCash);
             setReceivablesGrandTotal(recTotal);
             setPayablesGrandTotal(payTotal);
@@ -8071,6 +8690,7 @@ export default function App() {
             stockRecomputeRef.current = computeStockTotals;
             computeStockTotals();
         };
+        financeRecalcRef.current = calculateFinanceSummary;
 
         const unsubs = {};
         let retryTimer = null;
@@ -8098,10 +8718,17 @@ export default function App() {
 
         return () => {
             disposed = true;
+            financeRecalcRef.current = null;
             if (retryTimer) clearTimeout(retryTimer);
             Object.values(unsubs).forEach(u => { try { u(); } catch (e) { /* noop */ } });
         };
-    }, [dashboardDate, user, dataOwnerId, accounts, parties, products]);
+    }, [user?.uid, dataOwnerId]);
+
+    useEffect(() => {
+        dashboardDateRef.current = dashboardDate;
+        stockGroupsRef.current = stockGroups;
+        if (financeRecalcRef.current) financeRecalcRef.current();
+    }, [dashboardDate, accounts, parties, products, stockGroups]);
 
 
     const dashboardStats = useMemo(() => {

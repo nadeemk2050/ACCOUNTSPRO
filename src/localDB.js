@@ -280,7 +280,7 @@ export const getCompanyDB = async (companyId) => {
             const db = await createRxDatabase({
                 name: dbName,
                 storage: getRxStorageDexie(),
-                multiInstance: true,
+                multiInstance: false,
                 ignoreDuplicate: true
             });
             await db.addCollections(_companyDBCollections);
@@ -585,7 +585,7 @@ export const getCompanyStats = async (companyId) => {
         const raw = localStorage.getItem(`accpro_stats_${companyId}`);
         if (raw) {
             const cached = JSON.parse(raw);
-            if (cached && cached.savedAt && (Date.now() - cached.savedAt < 300000)) {
+            if (cached && cached.savedAt && (Date.now() - cached.savedAt < 86400000)) {
                 return { ledgers: cached.ledgers || 0, vouchers: cached.vouchers || 0, logs: cached.logs || 0, companyId, fromCache: true };
             }
         }
@@ -612,27 +612,8 @@ export const getCompanyStats = async (companyId) => {
             const allDocs = await db.offline_records.find().exec();
             const counts = countDocs(allDocs);
 
-            // 3. If company DB is empty, try master DB as fallback
-            // (data may have been written there before a company was selected)
-            if (counts.ledgers === 0 && counts.vouchers === 0) {
-                try {
-                    const masterDb = await getMasterDB();
-                    const masterDocs = await masterDb.offline_records.find().exec();
-                    if (masterDocs.length > 0) {
-                        const masterCounts = countDocs(masterDocs);
-                        if (masterCounts.ledgers > 0 || masterCounts.vouchers > 0) {
-                            if (masterCounts.ledgers > 0 || masterCounts.vouchers > 0) {
-                                saveCachedCompanyStats(companyId, masterCounts);
-                            }
-                            return { ...masterCounts, companyId, fromMaster: true };
-                        }
-                    }
-                } catch (me) { /* ignore master DB fallback error */ }
-            }
-
-            if (counts.ledgers > 0 || counts.vouchers > 0) {
-                saveCachedCompanyStats(companyId, counts);
-            }
+            // Always cache the result (even 0 counts) so Company Selection doesn't re-scan every time
+            saveCachedCompanyStats(companyId, counts);
             return { ...counts, companyId };
         }, 2, 800);
         return result;
@@ -643,23 +624,160 @@ export const getCompanyStats = async (companyId) => {
 };
 
 /**
+ * Exports a full JSON backup of a specific company directly from its local RxDB store
+ * and triggers a browser file download.
+ */
+export const exportCompanyFullBackup = async (companyId, companyName = '', exportedBy = '') => {
+    if (!companyId) throw new Error('exportCompanyFullBackup: companyId is required');
+
+    const db = await getCompanyDB(companyId);
+    let allDocs = await db.offline_records.find().exec();
+
+    // Fallback to master DB if company DB is empty (legacy pre-company records)
+    if (!allDocs || allDocs.length === 0) {
+        try {
+            const masterDb = await getMasterDB();
+            const masterDocs = await masterDb.offline_records.find().exec();
+            if (masterDocs && masterDocs.length > 0) {
+                allDocs = masterDocs;
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    const dataByCollection = {};
+    let totalDocs = 0;
+
+    for (const docSnap of (allDocs || [])) {
+        const raw = typeof docSnap.toJSON === 'function' ? docSnap.toJSON() : docSnap;
+        const colName = raw?.collectionName || 'unknown';
+        if (!dataByCollection[colName]) dataByCollection[colName] = [];
+        dataByCollection[colName].push({
+            id: raw.id,
+            ...(raw.data || {})
+        });
+        totalDocs++;
+    }
+
+    const collectionCounts = Object.fromEntries(
+        Object.entries(dataByCollection).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
+    );
+
+    const backupData = {
+        meta: {
+            date: new Date().toISOString(),
+            version: '3.0',
+            exportedBy: exportedBy || 'local_backup',
+            scope: 'full_system_backup',
+            encrypted: false,
+            ownerId: companyId,
+            companyId,
+            companyName: companyName || companyId,
+            collectionCounts
+        },
+        data: dataByCollection
+    };
+
+    const safeName = String(companyName || companyId)
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || companyId;
+    const dateStr = new Date().toISOString().split('T')[0];
+    const fileName = `nadtally_Backup_${safeName}_${dateStr}.json`;
+
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute('href', url);
+    downloadAnchorNode.setAttribute('download', fileName);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+    URL.revokeObjectURL(url);
+
+    return {
+        success: true,
+        totalDocs,
+        count: totalDocs,
+        collectionsCount: Object.keys(dataByCollection).length,
+        fileName
+    };
+};
+
+/**
  * Remove a company from local storage:
  *  1. Deletes the entry from the master companies registry
- *  2. Deletes the company's IndexedDB so all voucher/ledger data is erased
+ *  2. Removes the RxDB instance and all underlying Dexie IndexedDB stores for that company
  */
 export const removeCompanyData = async (companyId) => {
     try {
+        if (companyDbCache.has(companyId)) {
+            try {
+                const cachedDb = await companyDbCache.get(companyId);
+                if (typeof cachedDb?.remove === 'function') {
+                    await cachedDb.remove();
+                } else {
+                    await cachedDb?.destroy?.();
+                }
+            } catch (e) { /* ignore */ }
+            companyDbCache.delete(companyId);
+        }
+        if (currentCompanyId === companyId && companyDbPromise) {
+            try {
+                const activeDb = await companyDbPromise;
+                if (typeof activeDb?.remove === 'function') {
+                    await activeDb.remove();
+                } else {
+                    await activeDb?.destroy?.();
+                }
+            } catch (e) { /* ignore */ }
+            companyDbPromise = null;
+        }
+
         const master = await getMasterDB();
         const co = await master.companies.findOne({ selector: { id: companyId } }).exec();
         if (co) await co.remove();
 
-        // Drop the company's IndexedDB store
-        await new Promise((resolve) => {
-            const req = indexedDB.deleteDatabase(`nadtally_company_${companyId}`);
-            req.onsuccess = resolve;
-            req.onerror = resolve;   // resolve even on error; data may not exist yet
-            req.onblocked = resolve; // proceed even if another tab has it open
-        });
+        try {
+            localStorage.removeItem(`accpro_stats_${companyId}`);
+            localStorage.removeItem(`nadtally_last_pull_${companyId}`);
+            localStorage.removeItem(`accpro_session_${companyId}`);
+            if (localStorage.getItem('activeCompanyId') === companyId) {
+                localStorage.removeItem('activeCompanyId');
+                currentCompanyId = null;
+            }
+        } catch (e) { /* ignore */ }
+
+        // Drop all IndexedDB databases associated with this company (including RxDB-Dexie stores)
+        const dbNamesToDelete = new Set([
+            `nadtally_company_${companyId}`,
+            `rxdb-dexie-nadtally_company_${companyId}--0--_rxdb_internal`,
+            `rxdb-dexie-nadtally_company_${companyId}--0--offline_records`,
+            `rxdb-dexie-nadtally_company_${companyId}--1--offline_records`,
+            `rxdb-dexie-nadtally_company_${companyId}--2--offline_records`,
+            `rxdb-dexie-nadtally_company_${companyId}--3--offline_records`,
+            `rxdb-dexie-nadtally_company_${companyId}--4--offline_records`
+        ]);
+        try {
+            if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+                const allDbs = await indexedDB.databases();
+                for (const d of (allDbs || [])) {
+                    if (d?.name && d.name.includes(`nadtally_company_${companyId}`)) {
+                        dbNamesToDelete.add(d.name);
+                    }
+                }
+            }
+        } catch (e) { /* ignore */ }
+
+        await Promise.all(Array.from(dbNamesToDelete).map((dbName) => new Promise((resolve) => {
+            try {
+                const req = indexedDB.deleteDatabase(dbName);
+                req.onsuccess = resolve;
+                req.onerror = resolve;
+                req.onblocked = resolve;
+            } catch {
+                resolve();
+            }
+        })));
 
         return true;
     } catch (e) {

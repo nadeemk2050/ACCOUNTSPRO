@@ -632,10 +632,37 @@ const readOfflineRecordsFromIndexedDB = (dbName) => new Promise((resolve) => {
     };
 });
 
+// Map of active sync AbortControllers for graceful cancellation & rollback
+const activeSyncAbortControllers = new Map();
+
+/**
+ * Abort/Cancel a sync in progress for a company and revert any uploaded records from Firebase.
+ */
+export const abortCompanySync = async (companyId) => {
+    console.log(`[LIVE] Requesting abort for company: ${companyId}`);
+    const controller = activeSyncAbortControllers.get(companyId);
+    if (controller) {
+        controller.abort();
+        activeSyncAbortControllers.delete(companyId);
+    }
+    // Revert partial uploads from Firebase so cloud doesn't have partial/corrupted data
+    try {
+        await removeCompanyFromFirebase(companyId);
+    } catch (e) {
+        console.warn('[LIVE] Error removing cloud records during revert:', e);
+    }
+    // Stop local live sync & scheduler
+    try {
+        stopLiveSync(companyId);
+        stopCompanySyncScheduler(companyId);
+    } catch (e) {}
+    return { success: true };
+};
+
 /**
  * Make a company live:
  *  1. Authenticates with Firebase
- *  2. Uploads ALL local records for the company in batches
+ *  2. Uploads ALL local records strictly for this company ONLY (no fallback to other DBs!)
  *  3. Creates / updates the nadtally_live_registry document
  *  4. Marks the company isLive:true in local master DB
  *
@@ -645,6 +672,10 @@ const readOfflineRecordsFromIndexedDB = (dbName) => new Promise((resolve) => {
  * @returns {{ success: boolean, uploaded?: number, error?: string }}
  */
 export const makeCompanyLive = async (companyId, companyName, onProgress, knownStats = null) => {
+    const abortController = new AbortController();
+    activeSyncAbortControllers.set(companyId, abortController);
+    const signal = abortController.signal;
+
     try {
         await ensureLiveFirestoreAccess();
         if (!realFirestore) throw new Error('Firebase not initialized');
@@ -653,66 +684,23 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
         const existing = await master.companies.findOne({ selector: { id: companyId } }).exec();
         if (!existing) return { success: false, error: 'Company not found in local registry' };
 
-        // --- Step 1: Get all records from local IndexedDB ---
-        // Priority order:
-        //   1. getCompanyDB(companyId) — explicitly opens the target company's DB by name
-        //      (when companyId === currentCompanyId this returns getDB(), same instance)
-        //   2. getDB() — the shared company DB instance used by rxfs.js (fallback if same company)
-        //   3. getMasterDB() — fallback for data written before a company was selected
+        // --- Step 1: Get records STRICTLY from this company's database ONLY ---
+        // NEVER fall back to another company's DB or master DB. If this company has 0 records,
+        // it is a brand new empty company and MUST stay 0!
         let allDocs = [];
-
-        // Try companyDB first — this explicitly targets the correct company regardless of
-        // what currentCompanyId happens to be at call time.
         try {
             const companyDb = await getCompanyDB(companyId);
             if (companyDb && companyDb.offline_records) {
                 const companyDocs = await companyDb.offline_records.find().exec();
-                if (companyDocs.length > 0) {
+                if (companyDocs && companyDocs.length > 0) {
                     allDocs = companyDocs;
                     console.log(`[LIVE] Using getCompanyDB(${companyId}): found ${companyDocs.length} records.`);
                 }
             }
-        } catch (e) { console.warn('[LIVE] getCompanyDB() read failed:', e); }
-
-        // If companyDB was empty (or companyId !== currentCompanyId), also try the active getDB()
-        if (allDocs.length === 0) {
-            try {
-                const activeDb = await getDB();
-                if (activeDb && activeDb.offline_records) {
-                    const activeDocs = await activeDb.offline_records.find().exec();
-                    if (activeDocs.length > 0) {
-                        allDocs = activeDocs;
-                        console.log(`[LIVE] Using active getDB() instance: found ${activeDocs.length} records.`);
-                    }
-                }
-            } catch (e) { console.warn('[LIVE] getDB() read failed:', e); }
+        } catch (e) {
+            console.warn('[LIVE] getCompanyDB() read failed:', e);
         }
 
-        // Last resort: master DB offline_records
-        if (allDocs.length === 0) {
-            console.warn(`[LIVE] Company DB empty for ${companyId}, checking master DB offline_records as fallback...`);
-            try {
-                const masterDb = await getMasterDB();
-                const masterDocs = await masterDb.offline_records.find().exec();
-                if (masterDocs.length > 0) {
-                    allDocs = masterDocs;
-                    console.log(`[LIVE] Using master DB fallback: found ${masterDocs.length} records.`);
-                }
-            } catch (me) { console.warn('[LIVE] Master DB fallback failed:', me); }
-        }
-
-        // Nuclear fallback: scan ALL IndexedDB databases directly, bypassing RxDB entirely.
-        // This recovers data that RxDB's query layer cannot find due to schema/migration issues.
-        if (allDocs.length === 0) {
-            console.warn('[LIVE] All RxDB reads returned 0. Attempting raw IndexedDB scan...');
-            try {
-                const rawDocs = await scanAllIndexedDBForOfflineRecords(companyId);
-                if (rawDocs.length > 0) {
-                    allDocs = rawDocs; // these are plain objects, not RxDB docs
-                    console.log(`[LIVE] Raw IndexedDB scan found ${rawDocs.length} records.`);
-                }
-            } catch (re) { console.warn('[LIVE] Raw IndexedDB scan failed:', re); }
-        }
         const totalCount = allDocs.length;
         console.log(`[LIVE] Found ${totalCount} records in local RxDB for companyId: ${companyId}`);
 
@@ -720,7 +708,7 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
         const ledgerCols = ['parties', 'accounts', 'expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'ledgers'];
         const voucherCols = ['invoices', 'payments', 'journal_vouchers', 'stock_journals', 'vouchers'];
 
-        // Calculate detailed stats from DB scan
+        // Calculate detailed stats strictly from this company's scanned records
         const scannedStats = {
             ledgers: allDocs.filter(d => ledgerCols.includes(d.collectionName)).length,
             vouchers: allDocs.filter(d => voucherCols.includes(d.collectionName)).length,
@@ -729,20 +717,39 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
             lastSyncedAt: Date.now()
         };
 
-        // Use knownStats (from in-memory React state) when provided and DB scan shows less —
-        // this ensures the Firebase registry always reflects the true data counts.
         const stats = {
-            ledgers: knownStats ? Math.max(knownStats.ledgers || 0, scannedStats.ledgers) : scannedStats.ledgers,
-            vouchers: knownStats ? Math.max(knownStats.vouchers || 0, scannedStats.vouchers) : scannedStats.vouchers,
-            logs: knownStats ? Math.max(knownStats.logs || 0, scannedStats.logs) : scannedStats.logs,
+            ledgers: scannedStats.ledgers,
+            vouchers: scannedStats.vouchers,
+            logs: scannedStats.logs,
             records: totalCount,
             lastSyncedAt: Date.now()
         };
 
-        console.log(`[LIVE] Stats for '${companyName}': scanned=${JSON.stringify(scannedStats)}, final=${JSON.stringify(stats)}`);
+        console.log(`[LIVE] Stats for '${companyName}': final=${JSON.stringify(stats)}`);
 
+        // Empty company handling (e.g. 0 meters unused new company)
         if (totalCount === 0) {
-            console.warn(`[LIVE] WARNING: No records found for company ${companyId}. Registry will be updated but no data pushed.`);
+            console.log(`[LIVE] Company ${companyId} is empty (0 records). Registering live company with 0 records.`);
+            // Register in Firestore registry with 0 stats
+            await registerCompanyAsLiveInFirestore(companyId, companyName, stats);
+
+            // Mark isLive: true in local master DB
+            try {
+                const existingSettings = existing.toJSON().settings || {};
+                await existing.incrementalPatch({
+                    settings: {
+                        ...existingSettings,
+                        isLive: true,
+                        backgroundSyncEnabled: existingSettings.backgroundSyncEnabled ?? true
+                    }
+                });
+            } catch (patchErr) {
+                try { await setCompanyLiveStatus(companyId, true); } catch (e2) {}
+            }
+
+            if (onProgress) onProgress(0, 0, { ledgers: 0, totalLedgers: 0, vouchers: 0, totalVouchers: 0 });
+            activeSyncAbortControllers.delete(companyId);
+            return { success: true, uploaded: 0 };
         }
 
         // --- Step 2: batch-upload to companies_live/{companyId}/records ---
@@ -754,7 +761,13 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
         let uploadedVouchers = 0;
 
         for (const rxdoc of allDocs) {
-            // Support both RxDB doc objects (have .toJSON()) and plain objects (from raw IDB scan)
+            if (signal.aborted) {
+                console.warn(`[LIVE] Sync aborted by user for ${companyId}, cleaning up Firebase...`);
+                await removeCompanyFromFirebase(companyId);
+                activeSyncAbortControllers.delete(companyId);
+                return { success: false, aborted: true, error: 'Sync stopped and reverted by user' };
+            }
+
             const rxJson = typeof rxdoc.toJSON === 'function' ? rxdoc.toJSON() : rxdoc;
             const safeData = JSON.parse(JSON.stringify(rxJson));
             const colName = rxJson.collectionName;
@@ -774,6 +787,12 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
 
             if (batchCount >= 200) {
                 await batch.commit();
+                if (signal.aborted) {
+                    console.warn(`[LIVE] Sync aborted by user for ${companyId}, cleaning up Firebase...`);
+                    await removeCompanyFromFirebase(companyId);
+                    activeSyncAbortControllers.delete(companyId);
+                    return { success: false, aborted: true, error: 'Sync stopped and reverted by user' };
+                }
                 // Small delay between batches to avoid Firebase "write stream exhausted" error
                 await new Promise(resolve => setTimeout(resolve, 150));
                 batch = writeBatch(realFirestore);
@@ -788,12 +807,16 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
         }
         if (batchCount > 0) {
             await batch.commit();
+            if (signal.aborted) {
+                console.warn(`[LIVE] Sync aborted by user for ${companyId}, cleaning up Firebase...`);
+                await removeCompanyFromFirebase(companyId);
+                activeSyncAbortControllers.delete(companyId);
+                return { success: false, aborted: true, error: 'Sync stopped and reverted by user' };
+            }
             await new Promise(resolve => setTimeout(resolve, 150));
         }
 
-        // ✅ Signal 100% complete IMMEDIATELY after all Firebase batches are done.
-        // Do NOT wait for the incrementalPatch loop below — it can take minutes for
-        // large datasets (12000+ records × await per patch = very long freeze).
+        // Signal 100% complete
         if (onProgress) onProgress(totalCount, totalCount, {
             ledgers: stats.ledgers,
             totalLedgers: stats.ledgers,
@@ -802,7 +825,7 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
         });
         console.log(`[LIVE] Upload complete: ${uploaded} records pushed to Firebase.`);
 
-        // --- Step 3: register in nadtally_live_registry (do this BEFORE patch loop) ---
+        // --- Step 3: register in nadtally_live_registry ---
         await registerCompanyAsLiveInFirestore(companyId, companyName, stats);
 
         // --- Step 4: mark isLive in local master DB ---
@@ -816,12 +839,10 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
                 }
             });
         } catch (patchErr) {
-            try { await setCompanyLiveStatus(companyId, true); } catch (e2) { /* best effort */ }
+            try { await setCompanyLiveStatus(companyId, true); } catch (e2) {}
         }
 
         // Fire-and-forget: update lastSync on local records in background.
-        // We intentionally do NOT await this — it is a performance hint only and
-        // should not block or delay the completion signal shown to the user.
         const now = Date.now();
         Promise.allSettled(
             allDocs
@@ -831,17 +852,15 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
             console.log(`[LIVE] Background lastSync patch complete for ${companyId}.`);
         });
 
+        activeSyncAbortControllers.delete(companyId);
         return { success: true, uploaded };
     } catch (e) {
+        activeSyncAbortControllers.delete(companyId);
         console.error('[LIVE] makeCompanyLive error:', e);
         return { success: false, error: e.message };
     }
 };
 
-/**
- * Register a company in the Firebase live registry.
- * This allows other PCs to discover this company in the "LIVE DATAS" section.
- */
 export const registerCompanyAsLiveInFirestore = async (companyId, companyName, stats) => {
     try {
         await ensureLiveFirestoreAccess();
@@ -965,6 +984,158 @@ export const removeCompanyFromFirebase = async (companyId) => {
         console.error('[LIVE] removeCompanyFromFirebase error:', e);
         return { success: false, error: e.message };
     }
+};
+
+/**
+ * Exports a full JSON backup of a company directly from its Cloud Firestore records
+ * and triggers a browser file download.
+ */
+export const exportCloudCompanyFullBackup = async (companyId, companyName = '', exportedBy = '') => {
+    if (!companyId) throw new Error('exportCloudCompanyFullBackup: companyId is required');
+    await ensureLiveFirestoreAccess();
+    if (!realFirestore) throw new Error('Firebase not initialized');
+
+    const liveCollectionPath = `companies_live/${companyId}/records`;
+    const snap = await getDocs(collection(realFirestore, liveCollectionPath));
+
+    const dataByCollection = {};
+    let totalDocs = 0;
+
+    if (!snap.empty) {
+        for (const docSnap of snap.docs) {
+            const raw = docSnap.data();
+            const colName = raw?.collectionName || 'unknown';
+            if (!dataByCollection[colName]) dataByCollection[colName] = [];
+            dataByCollection[colName].push({
+                id: raw.id || docSnap.id,
+                ...(raw.data || {})
+            });
+            totalDocs++;
+        }
+    } else {
+        // Fallback to localDB export if Firestore collection is empty or offline
+        try {
+            const { exportCompanyFullBackup } = await import('./localDB.js');
+            return await exportCompanyFullBackup(companyId, companyName, exportedBy);
+        } catch (e) {
+            console.warn('[LIVE] Local export fallback failed:', e);
+        }
+    }
+
+    const collectionCounts = Object.fromEntries(
+        Object.entries(dataByCollection).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
+    );
+
+    const backupData = {
+        meta: {
+            date: new Date().toISOString(),
+            version: '3.0',
+            exportedBy: exportedBy || 'cloud_backup',
+            scope: 'full_system_backup',
+            encrypted: false,
+            ownerId: companyId,
+            companyId,
+            companyName: companyName || companyId,
+            collectionCounts
+        },
+        data: dataByCollection
+    };
+
+    const safeName = String(companyName || companyId)
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || companyId;
+    const dateStr = new Date().toISOString().split('T')[0];
+    const fileName = `nadtally_CloudBackup_${safeName}_${dateStr}.json`;
+
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute('href', url);
+    downloadAnchorNode.setAttribute('download', fileName);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+    URL.revokeObjectURL(url);
+
+    return {
+        success: true,
+        totalDocs,
+        count: totalDocs,
+        collectionsCount: Object.keys(dataByCollection).length,
+        fileName
+    };
+};
+
+/**
+ * Move a cloud company to the Cloud Recycle Bin (Soft Delete).
+ * Data records are preserved in companies_live/{companyId}/records.
+ * Marked with autoDeleteAt for 30 days (1 month).
+ */
+export const moveCompanyToCloudRecycleBin = async (companyId, deletedBy = '') => {
+    try {
+        await ensureLiveFirestoreAccess();
+        if (!realFirestore) throw new Error('Firebase not initialized');
+        const registryRef = doc(realFirestore, 'nadtally_live_registry', companyId);
+        const now = Date.now();
+        const autoDeleteAt = now + (30 * 24 * 60 * 60 * 1000); // 30 days
+        await setDoc(registryRef, {
+            inRecycleBin: true,
+            deletedAt: now,
+            autoDeleteAt: autoDeleteAt,
+            deletedBy: deletedBy || 'Admin',
+            lastUpdated: now
+        }, { merge: true });
+
+        console.log(`[LIVE] Moved company ${companyId} to Cloud Recycle Bin (auto-deletes in 30 days).`);
+        return { success: true };
+    } catch (e) {
+        console.error('[LIVE] moveCompanyToCloudRecycleBin error:', e);
+        return { success: false, error: e.message };
+    }
+};
+
+/**
+ * Restore a company from Cloud Recycle Bin back to active Live Cloud Data.
+ */
+export const restoreCompanyFromCloudRecycleBin = async (companyId) => {
+    try {
+        await ensureLiveFirestoreAccess();
+        if (!realFirestore) throw new Error('Firebase not initialized');
+        const registryRef = doc(realFirestore, 'nadtally_live_registry', companyId);
+        const now = Date.now();
+        await setDoc(registryRef, {
+            inRecycleBin: false,
+            deletedAt: null,
+            autoDeleteAt: null,
+            lastUpdated: now
+        }, { merge: true });
+
+        console.log(`[LIVE] Restored company ${companyId} from Cloud Recycle Bin.`);
+        return { success: true };
+    } catch (e) {
+        console.error('[LIVE] restoreCompanyFromCloudRecycleBin error:', e);
+        return { success: false, error: e.message };
+    }
+};
+
+/**
+ * Purge expired companies from Cloud Recycle Bin (older than 30 days).
+ */
+export const purgeExpiredRecycleBinCompanies = async (recycledCompanies = []) => {
+    const now = Date.now();
+    const expired = (recycledCompanies || []).filter(co => co?.inRecycleBin && co?.autoDeleteAt && now >= co.autoDeleteAt);
+    const results = [];
+    for (const co of expired) {
+        try {
+            console.log(`[LIVE] Auto-purging expired recycle bin company: ${co.name || co.id}`);
+            const res = await removeCompanyFromFirebase(co.id);
+            results.push({ id: co.id, success: res.success });
+        } catch (e) {
+            console.error(`[LIVE] Failed to auto-purge company ${co.id}:`, e);
+        }
+    }
+    return results;
 };
 
 export const updateLiveCompanyStats = async (companyId, stats) => {
@@ -1167,15 +1338,28 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
 
         const now = Date.now();
         let downloadedCount = 0;
-        const BATCH_SIZE = 50;
+        const BATCH_SIZE = 250;
         const allDocs = snap.docs.map(d => d.data());
 
         for (let i = 0; i < allDocs.length; i += BATCH_SIZE) {
             const batch = allDocs.slice(i, i + BATCH_SIZE);
             const toInsert = [];
             const seenIds = new Set(); // Track IDs within this batch to avoid COL22 duplicates
-            
+
+            const candidateIds = batch
+                .filter(fsDoc => fsDoc && fsDoc.id && fsDoc.deleted !== true)
+                .map(fsDoc => fsDoc.id);
+            let existingDocsMap = new Map();
+            if (candidateIds.length > 0) {
+                try {
+                    existingDocsMap = await companyDb.offline_records.findByIds(candidateIds);
+                } catch (e) {
+                    existingDocsMap = new Map();
+                }
+            }
+
             for (const fsDoc of batch) {
+                if (!fsDoc || !fsDoc.id) continue;
                 // Skip soft-deleted records — they were deleted on the originating PC
                 if (fsDoc.deleted === true) continue;
 
@@ -1186,9 +1370,8 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
                     continue;
                 }
 
-                // Check if already exists in the DB
-                const existing = await companyDb.offline_records
-                    .findOne({ selector: { id: fsDoc.id } }).exec();
+                // Check if already exists in the DB via batch map
+                const existing = existingDocsMap?.get ? existingDocsMap.get(fsDoc.id) : existingDocsMap?.[fsDoc.id];
                 if (!existing) {
                     seenIds.add(fsDoc.id);
                     toInsert.push({
