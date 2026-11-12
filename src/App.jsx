@@ -862,7 +862,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.15 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.16 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -917,7 +917,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.15</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.16</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -941,7 +941,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.15</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.16</div>
                 </div>
             </div>
         </Modal>
@@ -6705,7 +6705,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.15";
+    const SYSTEM_VERSION = "2.8.16";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12253,7 +12253,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.15</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.16</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15295,7 +15295,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.15</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.16</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -25063,6 +25063,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
     const [openingBalance, setOpeningBalance] = useState(0);
     const [openingQty, setOpeningQty] = useState(0);
     const [openingRate, setOpeningRate] = useState(0);
+    // Real FIFO cost layers carried into the period (item ledgers only). Built from
+    // history so the ledger's FIFO closing matches the Stock Summary report's.
+    const [openingFifoQueue, setOpeningFifoQueue] = useState([]);
+    const [openingFifoShort, setOpeningFifoShort] = useState(0);
 
     // ✅ NEW: Voucher Type Filter
     const [voucherTypeFilter, setVoucherTypeFilter] = useState('ALL');
@@ -25630,6 +25634,81 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 // Opening rate for selected start date should reflect carried-forward closing
                 const calcRate = (qtyBal !== 0) ? (balance / qtyBal) : 0;
                 setOpeningRate(calcRate);
+
+                // ── FIFO OPENING LAYERS (items only) ────────────────────────────
+                // An average opening rate is not enough for FIFO: the ledger must carry the
+                // real cost layers built from history, otherwise its FIFO closing can never
+                // equal the Stock Summary's FIFO closing.
+                if (filter.type === 'item' && filter.id) {
+                    const layers = [];
+                    let shortQty = 0;
+                    const pushIn = (qty, rate) => {
+                        let rem = Math.abs(Number(qty) || 0);
+                        if (rem <= 0) return;
+                        if (shortQty > 0) {
+                            const cover = Math.min(shortQty, rem);
+                            shortQty -= cover;
+                            rem -= cover;
+                        }
+                        if (rem > 1e-9) layers.push({ qty: rem, rate: Math.abs(Number(rate) || 0) });
+                    };
+                    const takeOut = (qty) => {
+                        let need = Math.abs(Number(qty) || 0);
+                        while (need > 1e-9 && layers.length > 0) {
+                            const head = layers[0];
+                            if (head.qty <= need + 1e-9) { need -= head.qty; layers.shift(); }
+                            else { head.qty -= need; need = 0; }
+                        }
+                        if (need > 1e-9) shortQty += need;
+                    };
+
+                    if (masterOpeningQty > 0) pushIn(masterOpeningQty, masterOpeningRate);
+                    else if (masterOpeningQty < 0) shortQty += Math.abs(masterOpeningQty);
+
+                    const historic = [];
+                    invSnap.docs.forEach(doc => {
+                        const d = doc.data() || {};
+                        const isIn = ['purchase', 'purchase_apt', 'sales_return', 'credit_note'].includes(d.type);
+                        const isOut = ['sales', 'sales_reg_apt', 'sales_unreg_apt', 'purchase_return', 'debit_note'].includes(d.type);
+                        if (!isIn && !isOut) return;
+                        (d.items || []).forEach(it => {
+                            if (it.productId !== filter.id) return;
+                            const q = Number(it.quantity || 0);
+                            const r = Number(it.rate || 0);
+                            if (q === 0) return;
+                            const baseSign = isIn ? 1 : -1;
+                            let flow = q * r * baseSign;
+                            if (flow === 0) flow = q * baseSign;
+                            historic.push({ date: d.date || '', qty: Math.abs(q), rate: Math.abs(r), type: flow >= 0 ? 'in' : 'out' });
+                        });
+                    });
+                    mfgSnap.docs.forEach(doc => {
+                        const d = doc.data() || {};
+                        (d.produced || []).forEach(it => {
+                            if (it.productId !== filter.id) return;
+                            const q = Number(it.quantity || 0); const r = Number(it.rate || 0);
+                            if (q === 0) return;
+                            let flow = q * r; if (flow === 0) flow = q;
+                            historic.push({ date: d.date || '', qty: Math.abs(q), rate: Math.abs(r), type: flow >= 0 ? 'in' : 'out' });
+                        });
+                        (d.consumed || []).forEach(it => {
+                            if (it.productId !== filter.id) return;
+                            const q = Number(it.quantity || 0); const r = Number(it.rate || 0);
+                            if (q === 0) return;
+                            let flow = -(q * r); if (flow === 0) flow = -q;
+                            historic.push({ date: d.date || '', qty: Math.abs(q), rate: Math.abs(r), type: flow >= 0 ? 'in' : 'out' });
+                        });
+                    });
+
+                    historic.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+                    historic.forEach(m => (m.type === 'in' ? pushIn(m.qty, m.rate) : takeOut(m.qty)));
+
+                    setOpeningFifoQueue(layers);
+                    setOpeningFifoShort(shortQty);
+                } else {
+                    setOpeningFifoQueue([]);
+                    setOpeningFifoShort(0);
+                }
             } catch (err) {
                 console.error('âŒ Error calculating opening balance:', err);
                 // Fallback to master values instead of forcing zero
@@ -25637,6 +25716,8 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 setOpeningQty(masterOpeningQty);
                 const fallbackRate = (masterOpeningQty !== 0) ? (masterOpeningBal / masterOpeningQty) : 0;
                 setOpeningRate(masterOpeningRate || fallbackRate);
+                setOpeningFifoQueue([]);
+                setOpeningFifoShort(0);
             }
         };
 
@@ -25695,11 +25776,17 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
                 }
                 else if (d.type === 'contra') { drName = firstSplitName || accounts.find(a => a.id === d.toAccountId)?.name || 'Receiver'; crName = accounts.find(a => a.id === d.accountId)?.name || 'Giver'; typeLabel = 'CONTRA'; }
                 else if (d.type === 'journal') {
-                    if (d.isMulti && d.rows && d.rows.length > 0) {
+                    // Row ledgers can be stored under `id` (current vouchers) or `aid`
+                    // (older / manufacturing expense journals) — read BOTH, and fall back to
+                    // the names saved on the voucher before giving up with 'Unknown'.
+                    const rowLedgerId = (r) => (r && (r.id || r.aid)) || null;
+                    if (d.rows && d.rows.length > 0) {
                         const firstDr = d.rows.find(r => r.type === 'dr');
                         const firstCr = d.rows.find(r => r.type === 'cr');
-                        drName = firstDr ? findName(firstDr.id) : 'Multiple';
-                        crName = firstCr ? findName(firstCr.id) : 'Multiple';
+                        const drId = rowLedgerId(firstDr);
+                        const crId = rowLedgerId(firstCr);
+                        drName = drId ? findName(drId) : (d.drName || 'Multiple');
+                        crName = crId ? findName(crId) : (d.crName || 'Multiple');
                     } else {
                         drName = d.drName || findName(d.drId);
                         crName = d.crName || findName(d.crId);
@@ -26555,7 +26642,13 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
         // Build running FIFO queue across chronological detailedList
         const fifoQueue = [];
         let fifoShortQty = 0;
-        if (filter.type === 'item' && !showOpening && safeNum(openingQty) !== 0) {
+        // Prefer the real cost layers carried in from history (same as the Stock Summary).
+        const openingLayers = (openingFifoQueue || []).filter(l => l && Number(l.qty) > 1e-9);
+        const seededFromHistory = filter.type === 'item' && openingLayers.length > 0;
+        if (seededFromHistory) {
+            openingLayers.forEach(l => fifoQueue.push({ qty: Number(l.qty), rate: Number(l.rate) || 0 }));
+            fifoShortQty = Math.max(0, safeNum(openingFifoShort) || 0);
+        } else if (filter.type === 'item' && safeNum(openingQty) !== 0) {
             const opQ = safeNum(openingQty);
             const opR = safeNum(openingRate) > 0
                 ? safeNum(openingRate)
@@ -26574,7 +26667,9 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             if (filter.type === 'item') {
                 const inQty = safeNum(r.qtyIn);
                 const outQty = safeNum(r.qtyOut);
-                if (inQty > 0) {
+                // When the queue was seeded from real history, the opening row must not
+                // push a second layer for the same quantity.
+                if (inQty > 0 && !(seededFromHistory && r.isOpening)) {
                     const inVal = safeNum(r.displayIn);
                     const inRate = inVal > 0
                         ? (inVal / inQty)
@@ -26865,7 +26960,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
             detailedRows: detailedList,
             displayCurrency: sym
         };
-    }, [transactions, deferredSearchTerm, powerSearch, searchScope, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode, itemClsBasis]);
+    }, [transactions, deferredSearchTerm, powerSearch, searchScope, sortOrder, currentPage, viewFilter, viewCurrency, hiddenSet, filter.id, filter.type, filter.startDate, openingBalance, openingQty, openingRate, voucherTypeFilter, summaryMode, itemClsBasis, openingFifoQueue, openingFifoShort]);
 
     // ── STAGE 2: "matched in" badges — ONE pass over the VISIBLE page only ────
     // Returns null while idle, so an ordinary render does zero extra work.
@@ -32320,35 +32415,37 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             const itemMap = {};
             products.forEach(p => {
                 const basePurchaseRate = Number(p.purchasePrice || 0);
-                // Keep Stock Summary aligned with Item Ledger totals by starting with master opening stock.
-                const openingQty = Number(p.openingStock || 0);
-                const openingVal = Number(p.openingBalance || 0);
-                const openingRate = Number(p.openingRate || p.purchasePrice || 0);
+                const masterOpQty = Number(p.openingStock || 0);
+                const masterOpBal = Number(p.openingBalance || 0);
+                const masterOpRate = Number(p.openingRate || 0) > 0
+                    ? Number(p.openingRate)
+                    : (masterOpQty !== 0 && masterOpBal !== 0 ? Math.abs(masterOpBal / masterOpQty) : basePurchaseRate);
 
                 itemMap[p.id] = {
-                    id: p.id, name: p.name,
+                    id: p.id,
+                    name: p.name,
                     group: p.group || 'Primary',
                     unit: p.unit || p.uom || '',
-                    openingQty,
-                    openingVal,
-
-                    // Tracking for Valuation as of START date (to get correct Opening Value)
-                    histPurchaseRate: basePurchaseRate,
+                    basePurchaseRate,
+                    masterOpQty,
+                    masterOpRate,
+                    histPurchaseRate: masterOpRate > 0 ? masterOpRate : basePurchaseRate,
                     histPurchaseDate: '1970-01-01',
                     histSaleRate: 0,
                     histSaleDate: '1970-01-01',
-                    openingFifoVal: openingVal,
-
-                    // Tracking for Valuation as of END date (to get correct Closing Value)
-                    lastPurchaseRate: basePurchaseRate,
+                    lastPurchaseRate: masterOpRate > 0 ? masterOpRate : basePurchaseRate,
                     lastPurchaseDate: '1970-01-01',
                     lastSaleRate: 0,
                     lastSaleDate: '1970-01-01',
-
-                    fifoLayers: openingQty > 0 ? [{ qty: openingQty, rate: openingRate || 0 }] : [],
-
-                    inQty: 0, inVal: 0,
-                    outQty: 0, outVal: 0,
+                    fifoQueue: masterOpQty > 0 ? [{ qty: masterOpQty, rate: masterOpRate }] : [],
+                    fifoShortQty: masterOpQty < 0 ? Math.abs(masterOpQty) : 0,
+                    openingQty: masterOpQty,
+                    openingRate: masterOpRate,
+                    openingVal: masterOpQty * masterOpRate,
+                    inQty: 0,
+                    inVal: 0,
+                    outQty: 0,
+                    outVal: 0,
                     bagCount: 0
                 };
             });
@@ -32372,74 +32469,37 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
             });
 
             remainingBags.forEach((b) => {
-                if (itemMap[b.productId]) {
+                if (b.productId && itemMap[b.productId]) {
                     itemMap[b.productId].bagCount++;
                 }
             });
 
-            const getFifoValue = (layers) => layers.reduce((s, l) => s + (Number(l.qty || 0) * Number(l.rate || 0)), 0);
-
-            // 1. Helper to Process Transactions accurately
-            const processTx = (date, productId, qty, rate, type) => {
-                if (!itemMap[productId]) return;
-                const row = itemMap[productId];
-                const amt = qty * rate;
-
-                // A. Quantities & Values
-                if (date < startDate) {
-                    if (type === 'in') { row.openingQty += qty; row.openingVal += amt; }
-                    else { row.openingQty -= qty; row.openingVal -= amt; }
-                } else if (date <= endDate) {
-                    if (type === 'in') { row.inQty += qty; row.inVal += amt; }
-                    else { row.outQty += qty; row.outVal += amt; }
+            const pushInwardFifo = (row, qty, rate) => {
+                let remIn = qty;
+                if (row.fifoShortQty > 0) {
+                    const cover = Math.min(row.fifoShortQty, remIn);
+                    row.fifoShortQty -= cover;
+                    remIn -= cover;
                 }
+                if (remIn > 1e-9) {
+                    row.fifoQueue.push({ qty: remIn, rate: rate || 0 });
+                }
+            };
 
-                if (type === 'in' && qty > 0) {
-                    row.fifoLayers.push({ qty, rate: rate || 0 });
-                } else if (type === 'out' && qty > 0) {
-                    let remaining = qty;
-                    while (remaining > 0 && row.fifoLayers.length > 0) {
-                        const head = row.fifoLayers[0];
-                        if (head.qty <= remaining) {
-                            remaining -= head.qty;
-                            row.fifoLayers.shift();
-                        } else {
-                            head.qty -= remaining;
-                            remaining = 0;
-                        }
-                    }
-                    if (remaining > 0) {
-                        const fallbackRate = row.lastPurchaseRate || rate || 0;
-                        row.fifoLayers.unshift({ qty: -remaining, rate: fallbackRate });
+            const consumeOutwardFifo = (row, qty) => {
+                let need = qty;
+                while (need > 1e-9 && row.fifoQueue.length > 0) {
+                    const head = row.fifoQueue[0];
+                    if (head.qty <= need + 1e-9) {
+                        need -= head.qty;
+                        row.fifoQueue.shift();
+                    } else {
+                        head.qty -= need;
+                        need = 0;
                     }
                 }
-
-                if (date < startDate) {
-                    row.openingFifoVal = getFifoValue(row.fifoLayers);
-                }
-
-                // B. Historical Rates (Up to startDate)
-                if (date < startDate) {
-                    if (type === 'in' && rate > 0 && date >= row.histPurchaseDate) {
-                        row.histPurchaseDate = date;
-                        row.histPurchaseRate = rate;
-                    }
-                    if (type === 'out' && rate > 0 && date >= row.histSaleDate) {
-                        row.histSaleDate = date;
-                        row.histSaleRate = rate;
-                    }
-                }
-
-                // C. Overall Rates (Up to endDate)
-                if (date <= endDate) {
-                    if (type === 'in' && rate > 0 && date >= row.lastPurchaseDate) {
-                        row.lastPurchaseDate = date;
-                        row.lastPurchaseRate = rate;
-                    }
-                    if (type === 'out' && rate > 0 && date >= row.lastSaleDate) {
-                        row.lastSaleDate = date;
-                        row.lastSaleRate = rate;
-                    }
+                if (need > 1e-9) {
+                    row.fifoShortQty += need;
                 }
             };
 
@@ -32510,55 +32570,131 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                 });
             });
 
-            movements
+            const sortedMovements = movements
                 .filter(m => m.date && m.date <= endDate)
                 .sort((a, b) => {
                     if (a.date === b.date) return a.seq - b.seq;
                     return a.date.localeCompare(b.date);
-                })
-                .forEach(m => processTx(m.date, m.productId, m.qty, m.rate, m.type));
+                });
 
-            const finalData = Object.values(itemMap).map(i => {
-                const closingQty = i.openingQty + i.inQty - i.outQty;
-                const ledgerClosingVal = i.openingVal + i.inVal - i.outVal; // This is Average Cost
-                const fifoOpeningVal = i.openingFifoVal;
-                const fifoClosingVal = getFifoValue(i.fifoLayers);
+            // ── 1. Apply movements prior to startDate -> derives FIFO Opening Stock ──
+            sortedMovements.filter(m => m.date < startDate).forEach(m => {
+                const row = itemMap[m.productId];
+                if (!row) return;
+                if (m.type === 'in') {
+                    row.openingQty += m.qty;
+                    pushInwardFifo(row, m.qty, m.rate);
+                    if (m.rate > 0 && m.date >= row.histPurchaseDate) {
+                        row.histPurchaseDate = m.date;
+                        row.histPurchaseRate = m.rate;
+                    }
+                } else {
+                    row.openingQty -= m.qty;
+                    consumeOutwardFifo(row, m.qty);
+                    if (m.rate > 0 && m.date >= row.histSaleDate) {
+                        row.histSaleDate = m.date;
+                        row.histSaleRate = m.rate;
+                    }
+                }
+            });
 
-                // --- VALUATION LOGIC ---
-                const getRate = (meth, purRate, salRate, avgRate, fifoVal, qty) => {
-                    if (meth === 'fifo') return qty !== 0 ? Math.abs(fifoVal / qty) : 0;
-                    if (meth === 'last_sold') return salRate || purRate || avgRate || 0;
-                    return purRate || avgRate || 0;
-                };
+            // ✅ FIFO OPENING STOCK: ALWAYS evaluated using the FIFO queue at startDate
+            Object.values(itemMap).forEach(row => {
+                const opFifoVal = row.fifoQueue.reduce((acc, l) => acc + (l.qty * l.rate), 0);
+                if (row.openingQty > 1e-9) {
+                    row.openingVal = opFifoVal;
+                    row.openingRate = row.openingVal / row.openingQty;
+                } else if (row.openingQty < -1e-9) {
+                    const fallbackRate = row.histPurchaseRate || row.basePurchaseRate || 0;
+                    row.openingRate = fallbackRate;
+                    row.openingVal = row.openingQty * fallbackRate;
+                } else {
+                    row.openingQty = 0;
+                    row.openingRate = row.histPurchaseRate || row.basePurchaseRate || 0;
+                    row.openingVal = 0;
+                }
+                row.lastPurchaseRate = row.histPurchaseRate;
+                row.lastPurchaseDate = row.histPurchaseDate;
+                row.lastSaleRate = row.histSaleDate > '1970-01-01' ? row.histSaleRate : 0;
+                row.lastSaleDate = row.histSaleDate;
+            });
 
-                const startAvg = i.openingQty !== 0 ? Math.abs(i.openingVal / i.openingQty) : 0;
-                // ✅ FIXED RULE: Opening Stock ALWAYS fetches Last Purchase/Production Rate from history (up to startDate)
-                const openRate = i.histPurchaseRate || startAvg || 0;
-                const openingVal = i.openingQty * openRate;
+            // ── 2. Apply movements during period [startDate, endDate] -> Inwards & Outwards ──
+            sortedMovements.filter(m => m.date >= startDate && m.date <= endDate).forEach(m => {
+                const row = itemMap[m.productId];
+                if (!row) return;
+                if (m.type === 'in') {
+                    row.inQty += m.qty;
+                    row.inVal += m.qty * m.rate;
+                    pushInwardFifo(row, m.qty, m.rate);
+                    if (m.rate > 0 && m.date >= row.lastPurchaseDate) {
+                        row.lastPurchaseDate = m.date;
+                        row.lastPurchaseRate = m.rate;
+                    }
+                } else {
+                    row.outQty += m.qty;
+                    row.outVal += m.qty * m.rate;
+                    consumeOutwardFifo(row, m.qty);
+                    if (m.rate > 0 && m.date >= row.lastSaleDate) {
+                        row.lastSaleDate = m.date;
+                        row.lastSaleRate = m.rate;
+                    }
+                }
+            });
 
-                const avgRate = (closingQty !== 0) ? Math.abs(ledgerClosingVal / closingQty) : 0;
-                // ✅ Valuation method (FIFO, Last Purchase/Prod Rate, Last Sold Price) ONLY affects Closing Stock
-                const closingRate = getRate(activeValuation, i.lastPurchaseRate, i.lastSaleRate, avgRate, fifoClosingVal, closingQty);
+            // ── 3. Finalise rows: Closing Stock with user choice (FIFO / Last Purchase / Last Sold) ──
+            const finalData = Object.values(itemMap).map(row => {
+                const closingQty = row.openingQty + row.inQty - row.outQty;
+                const clsFifoVal = row.fifoQueue.reduce((acc, l) => acc + (l.qty * l.rate), 0);
+                let fifoClosingRate = 0;
+                let fifoClosingVal = 0;
 
-                const closingVal = (activeValuation === 'fifo')
-                    ? fifoClosingVal
-                    : (closingQty * closingRate);
+                if (closingQty > 1e-9) {
+                    fifoClosingVal = clsFifoVal;
+                    fifoClosingRate = fifoClosingVal / closingQty;
+                } else if (closingQty < -1e-9) {
+                    const fallbackRate = row.lastPurchaseRate || row.basePurchaseRate || 0;
+                    fifoClosingRate = fallbackRate;
+                    fifoClosingVal = closingQty * fallbackRate;
+                } else {
+                    fifoClosingRate = 0;
+                    fifoClosingVal = 0;
+                }
+
+                // ✅ User's valuation choice ONLY affects Closing Stock:
+                let closingRate = 0;
+                let closingVal = 0;
+
+                if (activeValuation === 'fifo') {
+                    closingVal = fifoClosingVal;
+                    closingRate = fifoClosingRate;
+                } else if (activeValuation === 'last_sold') {
+                    closingRate = row.lastSaleRate || row.lastPurchaseRate || row.basePurchaseRate || 0;
+                    closingVal = closingQty * closingRate;
+                } else {
+                    // 'last_purchase'
+                    closingRate = row.lastPurchaseRate || row.basePurchaseRate || (closingQty > 0 ? fifoClosingRate : 0);
+                    closingVal = closingQty * closingRate;
+                }
 
                 return {
-                    id: i.id, name: i.name, group: i.group, unit: i.unit,
-                    openingQty: i.openingQty,
-                    openingRate: openRate,
-                    openingVal: openingVal,
-                    inQty: i.inQty,
-                    inRate: i.inQty > 0 ? i.inVal / i.inQty : 0,
-                    inVal: i.inVal,
-                    outQty: i.outQty,
-                    outRate: i.outQty > 0 ? i.outVal / i.outQty : 0,
-                    outVal: i.outVal,
+                    id: row.id,
+                    name: row.name,
+                    group: row.group,
+                    unit: row.unit,
+                    openingQty: row.openingQty,
+                    openingRate: row.openingRate,
+                    openingVal: row.openingVal,
+                    inQty: row.inQty,
+                    inRate: row.inQty > 0 ? row.inVal / row.inQty : 0,
+                    inVal: row.inVal,
+                    outQty: row.outQty,
+                    outRate: row.outQty > 0 ? row.outVal / row.outQty : 0,
+                    outVal: row.outVal,
                     closingQty,
                     closingRate,
                     closingVal,
-                    bagCount: i.bagCount
+                    bagCount: row.bagCount
                 };
             });
 
@@ -33378,7 +33514,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     value={valuationMethod}
                                     onChange={(e) => { setValuationMethod(e.target.value); setStoredValuation(e.target.value); }}
                                 >
-                                    {!showGrossProfit && <option value="fifo">FIFO</option>}
+                                    <option value="fifo">FIFO</option>
                                     <option value="last_purchase">Last Purchase/Prod Rate</option>
                                     <option value="last_sold">Last Sold Price</option>
                                 </select>
@@ -33416,9 +33552,7 @@ const StockInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerI
                                     if (!showGrossProfit) {
                                         setShowGrossProfit(true);
                                         setViewMode('all');
-                                        if (valuationMethod === 'fifo') {
-                                            setValuationMethod('last_purchase');
-                                        }
+
                                     } else {
                                         setShowGrossProfit(false);
                                         setViewMode('closing');
@@ -36446,9 +36580,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
         try {
             const XLSX = await import("xlsx");
             const wb = XLSX.utils.book_new();
-            const rows = [["PROFIT & LOSS STATEMENT"], [`Period: ${dateRange.from} to ${dateRange.to}`], [], ["Category", "Amount"], ["Sales Account (Net)", data.sales], [], ["Cost of Goods Sold (COGS)"], ["Opening Stock", data.openingStock], ["Purchases (Net)", data.purchases]];
+            const rows = [["PROFIT & LOSS STATEMENT"], [`Period: ${dateRange.from} to ${dateRange.to}`], [], ["Category", "Amount"], ["Sales Account (Net)", data.sales], [], ["Cost of Goods Sold (COGS)"], ["Opening Stock (FIFO)", data.openingStock], ["Purchases (Net)", data.purchases]];
             data.directExpensesList.forEach(e => rows.push([e.name, e.amount]));
-            rows.push(["(-) Closing Stock", -data.closingStock], ["GROSS PROFIT", data.grossProfit], [], ["Operating Expenses (Indirect)"]);
+            rows.push([`(-) Closing Stock (${data.valLabel || "FIFO"})`, -data.closingStock], ["GROSS PROFIT", data.grossProfit], [], ["Operating Expenses (Indirect)"]);
             data.indirectExpensesGroupsList.forEach(g => {
                 rows.push([`[Group] ${g.name}`, g.total]);
                 g.items.forEach(i => rows.push([`  ${i.name}`, i.amount]));
@@ -36730,135 +36864,261 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 }
             });
 
-            // --- 4. CALCULATE FINAL STOCK VALUES ---
-            // Build movement ledger for FIFO and quantity tracking
-            invSnap.forEach(doc => {
-                const d = doc.data();
-                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
-                if (!isLocMatch || !Array.isArray(d.items)) return;
-                d.items.forEach(i => {
-                    const qty = safeNum(i.quantity || i.qty || 0);
-                    if (!qty || !d.date || d.date > range.to) return;
-                    const rate = safeNum(i.rate);
-                    if (d.type === 'purchase' || d.type === 'purchase_apt' || d.type === 'credit_note' || d.type === 'sales_return') {
-                        stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate, amount: qty * rate });
-                    }
-                    if (d.type === 'sales' || d.type === 'sales_reg_apt' || d.type === 'sales_unreg_apt' || d.type === 'debit_note' || d.type === 'purchase_return') {
-                        stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate, amount: qty * rate });
-                    }
-                });
+            // --- 4. CALCULATE FINAL STOCK VALUES (EXACT FIFO ENGINE ALIGNED WITH STOCK SUMMARY) ---
+            const allInvoices = filterActiveVouchers(invSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+            const stockJournalsFromSnap = filterActiveVouchers(mfgSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+            const stockItemMap = {};
+            products.forEach(p => {
+                const basePurchaseRate = Number(p.purchasePrice || 0);
+                const masterOpQty = Number(p.openingStock || 0);
+                const masterOpBal = Number(p.openingBalance || 0);
+                const masterOpRate = Number(p.openingRate || 0) > 0
+                    ? Number(p.openingRate)
+                    : (masterOpQty !== 0 && masterOpBal !== 0 ? Math.abs(masterOpBal / masterOpQty) : basePurchaseRate);
+
+                stockItemMap[p.id] = {
+                    id: p.id,
+                    name: p.name,
+                    basePurchaseRate,
+                    masterOpQty,
+                    masterOpRate,
+                    histPurchaseRate: masterOpRate > 0 ? masterOpRate : basePurchaseRate,
+                    histPurchaseDate: '1970-01-01',
+                    histSaleRate: 0,
+                    histSaleDate: '1970-01-01',
+                    lastPurchaseRate: masterOpRate > 0 ? masterOpRate : basePurchaseRate,
+                    lastPurchaseDate: '1970-01-01',
+                    lastSaleRate: 0,
+                    lastSaleDate: '1970-01-01',
+                    fifoQueue: masterOpQty > 0 ? [{ qty: masterOpQty, rate: masterOpRate }] : [],
+                    fifoShortQty: masterOpQty < 0 ? Math.abs(masterOpQty) : 0,
+                    openingQty: masterOpQty,
+                    openingRate: masterOpRate,
+                    openingVal: masterOpQty * masterOpRate,
+                    inQty: 0,
+                    inVal: 0,
+                    outQty: 0,
+                    outVal: 0
+                };
             });
 
-            mfgSnap.forEach(doc => {
-                const d = doc.data();
-                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
-                if (!isLocMatch || !d.date || d.date > range.to) return;
-                (d.produced || []).forEach(i => {
-                    const qty = safeNum(i.quantity);
-                    if (!qty) return;
-                    stockMovements.push({ date: d.date, productId: i.productId, type: 'in', qty, rate: safeNum(i.rate) });
-                });
-                (d.consumed || []).forEach(i => {
-                    const qty = safeNum(i.quantity);
-                    if (!qty) return;
-                    stockMovements.push({ date: d.date, productId: i.productId, type: 'out', qty, rate: safeNum(i.rate) });
-                });
-            });
-
-            const sortedMovements = stockMovements.sort((a, b) => {
-                const da = new Date(a.date).getTime();
-                const db = new Date(b.date).getTime();
-                if (da !== db) return da - db;
-                if (a.type === b.type) return 0;
-                return a.type === 'in' ? -1 : 1;
-            });
-
-            const initFifoLayers = () => {
-                const layers = {};
-                products.forEach(p => {
-                    const q = safeNum(p.openingStock || 0);
-                    if (q <= 0) return;
-                    const r = safeNum(p.purchasePrice || p.salePrice || 0);
-                    layers[p.id] = [{ qty: q, rate: r }];
-                });
-                return layers;
-            };
-
-            const applyMoveToLayers = (layers, move) => {
-                if (!move?.productId || !itemMap[move.productId]) return;
-                if (!layers[move.productId]) layers[move.productId] = [];
-
-                if (move.type === 'in') {
-                    const inRate = safeNum(move.rate || itemMap[move.productId].lastPurchaseRate || 0);
-                    layers[move.productId].push({ qty: safeNum(move.qty), rate: inRate });
-                    return;
+            const pushInwardFifo = (row, qty, rate) => {
+                let remIn = qty;
+                if (row.fifoShortQty > 0) {
+                    const cover = Math.min(row.fifoShortQty, remIn);
+                    row.fifoShortQty -= cover;
+                    remIn -= cover;
                 }
-
-                let rem = safeNum(move.qty);
-                const q = layers[move.productId];
-                while (rem > 0 && q.length > 0) {
-                    const head = q[0];
-                    const take = Math.min(rem, safeNum(head.qty));
-                    head.qty -= take;
-                    rem -= take;
-                    if (head.qty <= 0) q.shift();
+                if (remIn > 1e-9) {
+                    row.fifoQueue.push({ qty: remIn, rate: rate || 0 });
                 }
             };
 
-            const layersValue = (layers) => {
-                return Object.values(layers).reduce((sum, q) => {
-                    const itemTotal = (q || []).reduce((s, layer) => s + (safeNum(layer.qty) * safeNum(layer.rate)), 0);
-                    return sum + itemTotal;
-                }, 0);
-            };
-
-            const fifoLayersForOpening = initFifoLayers();
-            sortedMovements.forEach((m) => {
-                if (m.date < range.from) applyMoveToLayers(fifoLayersForOpening, m);
-            });
-            const fifoOpeningValue = layersValue(fifoLayersForOpening);
-
-            const fifoLayersForClosing = initFifoLayers();
-            sortedMovements.forEach((m) => {
-                if (m.date <= range.to) applyMoveToLayers(fifoLayersForClosing, m);
-            });
-            const fifoClosingValue = layersValue(fifoLayersForClosing);
-
-            // ✅ FIXED RULE: Opening Stock ALWAYS fetches historical Last Purchase/Prod rate (up to range.from)
-            let totalOpeningStockValue = 0;
-            Object.values(itemMap).forEach(i => {
-                let opRate = i.histPurchaseRate;
-                if (!opRate || opRate === 0) {
-                    const prod = products.find(p => p.id === i.id);
-                    opRate = Number(prod?.purchasePrice || prod?.openingRate || 0);
-                }
-                totalOpeningStockValue += (i.openingQty * opRate);
-            });
-
-            // Valuation method (FIFO, Last Purchase/Prod Rate, Last Sold Price) ONLY affects Closing Stock
-            let totalClosingStockValue = 0;
-            if (valuationMethod === 'fifo') {
-                totalClosingStockValue = fifoClosingValue;
-            } else {
-                Object.values(itemMap).forEach(i => {
-                    let valRate = 0;
-                    if (valuationMethod === 'last_purchase') {
-                        valRate = i.lastPurchaseRate;
+            const consumeOutwardFifo = (row, qty) => {
+                let need = qty;
+                while (need > 1e-9 && row.fifoQueue.length > 0) {
+                    const head = row.fifoQueue[0];
+                    if (head.qty <= need + 1e-9) {
+                        need -= head.qty;
+                        row.fifoQueue.shift();
                     } else {
-                        valRate = i.lastSaleRate > 0 ? i.lastSaleRate : i.lastPurchaseRate;
+                        head.qty -= need;
+                        need = 0;
                     }
+                }
+                if (need > 1e-9) {
+                    row.fifoShortQty += need;
+                }
+            };
 
-                    if (!valRate || valRate === 0) {
-                        const prod = products.find(p => p.id === i.id);
-                        valRate = Number(prod?.purchasePrice || prod?.salePrice || 0);
-                    }
+            const movements = [];
+            let movementSeq = 0;
 
-                    totalClosingStockValue += (i.closingQty * valRate);
+            allInvoices.forEach(d => {
+                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
+                if (!isLocMatch) return;
+
+                // ⚠️ These two lists MUST match the Stock Summary report's, otherwise the
+                // P&L closing stock can never equal the Stock Summary closing value.
+                const isInward = ['purchase', 'sales_return', 'credit_note'].includes(d.type);
+                const isOutward = ['sales', 'purchase_return', 'debit_note'].includes(d.type);
+                if (!isInward && !isOutward) return;
+
+                (d.items || []).forEach(item => {
+                    const qtyRaw = Number(item.quantity || item.qty || 0);
+                    const rateRaw = Number(item.rate || 0);
+                    const rate = Math.abs(rateRaw);
+                    const pid = item.productId;
+                    if (!pid || qtyRaw === 0) return;
+
+                    const baseSign = isInward ? 1 : -1;
+                    let signedFlow = qtyRaw * rateRaw * baseSign;
+                    if (signedFlow === 0) signedFlow = qtyRaw * baseSign;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: pid,
+                        qty: Math.abs(qtyRaw),
+                        rate,
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
                 });
-            }
+            });
+
+            stockJournalsFromSnap.forEach(d => {
+                const isLocMatch = selectedLocs.length === 0 || selectedLocs.includes(d.locationId);
+                if (!isLocMatch) return;
+
+                (d.produced || []).forEach(item => {
+                    const qtyRaw = Number(item.quantity || 0);
+                    if (!item.productId || qtyRaw === 0) return;
+                    const rateRaw = Number(item.rate || 0);
+                    let signedFlow = qtyRaw * rateRaw;
+                    if (signedFlow === 0) signedFlow = qtyRaw;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate: Math.abs(rateRaw),
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
+                });
+                (d.consumed || []).forEach(item => {
+                    const qtyRaw = Number(item.quantity || 0);
+                    if (!item.productId || qtyRaw === 0) return;
+                    const rateRaw = Number(item.rate || 0);
+                    let signedFlow = -(qtyRaw * rateRaw);
+                    if (signedFlow === 0) signedFlow = -qtyRaw;
+                    movements.push({
+                        seq: movementSeq++,
+                        date: d.date,
+                        productId: item.productId,
+                        qty: Math.abs(qtyRaw),
+                        rate: Math.abs(rateRaw),
+                        type: signedFlow >= 0 ? 'in' : 'out'
+                    });
+                });
+            });
+
+            const sortedMovements = movements
+                .filter(m => m.date && m.date <= range.to)
+                .sort((a, b) => {
+                    if (a.date === b.date) return a.seq - b.seq;
+                    return a.date.localeCompare(b.date);
+                });
+
+            // 1. Movements prior to range.from -> derives Opening Stock (ALWAYS FIFO)
+            sortedMovements.filter(m => m.date < range.from).forEach(m => {
+                const row = stockItemMap[m.productId];
+                if (!row) return;
+                if (m.type === 'in') {
+                    row.openingQty += m.qty;
+                    pushInwardFifo(row, m.qty, m.rate);
+                    if (m.rate > 0 && m.date >= row.histPurchaseDate) {
+                        row.histPurchaseDate = m.date;
+                        row.histPurchaseRate = m.rate;
+                    }
+                } else {
+                    row.openingQty -= m.qty;
+                    consumeOutwardFifo(row, m.qty);
+                    if (m.rate > 0 && m.date >= row.histSaleDate) {
+                        row.histSaleDate = m.date;
+                        row.histSaleRate = m.rate;
+                    }
+                }
+            });
+
+            // ✅ FIFO OPENING STOCK: ALWAYS evaluated using the FIFO queue at range.from
+            let totalOpeningStockValue = 0;
+            Object.values(stockItemMap).forEach(row => {
+                const opFifoVal = row.fifoQueue.reduce((acc, l) => acc + (l.qty * l.rate), 0);
+                if (row.openingQty > 1e-9) {
+                    row.openingVal = opFifoVal;
+                    row.openingRate = row.openingVal / row.openingQty;
+                } else if (row.openingQty < -1e-9) {
+                    const fallbackRate = row.histPurchaseRate || row.basePurchaseRate || 0;
+                    row.openingRate = fallbackRate;
+                    row.openingVal = row.openingQty * fallbackRate;
+                } else {
+                    row.openingQty = 0;
+                    row.openingRate = row.histPurchaseRate || row.basePurchaseRate || 0;
+                    row.openingVal = 0;
+                }
+                totalOpeningStockValue += row.openingVal;
+
+                row.lastPurchaseRate = row.histPurchaseRate;
+                row.lastPurchaseDate = row.histPurchaseDate;
+                row.lastSaleRate = row.histSaleDate > '1970-01-01' ? row.histSaleRate : 0;
+                row.lastSaleDate = row.histSaleDate;
+            });
+
+            // 2. Movements during period [range.from, range.to] -> Inwards & Outwards
+            sortedMovements.filter(m => m.date >= range.from && m.date <= range.to).forEach(m => {
+                const row = stockItemMap[m.productId];
+                if (!row) return;
+                if (m.type === 'in') {
+                    row.inQty += m.qty;
+                    row.inVal += m.qty * m.rate;
+                    pushInwardFifo(row, m.qty, m.rate);
+                    if (m.rate > 0 && m.date >= row.lastPurchaseDate) {
+                        row.lastPurchaseDate = m.date;
+                        row.lastPurchaseRate = m.rate;
+                    }
+                } else {
+                    row.outQty += m.qty;
+                    row.outVal += m.qty * m.rate;
+                    consumeOutwardFifo(row, m.qty);
+                    if (m.rate > 0 && m.date >= row.lastSaleDate) {
+                        row.lastSaleDate = m.date;
+                        row.lastSaleRate = m.rate;
+                    }
+                }
+            });
+
+            // 3. Closing Stock as of range.to with user choice: FIFO / Last Purchase / Last Sold
+            let totalClosingStockValue = 0;
+            Object.values(stockItemMap).forEach(row => {
+                const closingQty = row.openingQty + row.inQty - row.outQty;
+                row.closingQty = closingQty;
+                const clsFifoVal = row.fifoQueue.reduce((acc, l) => acc + (l.qty * l.rate), 0);
+                let fifoClosingRate = 0;
+                let fifoClosingVal = 0;
+
+                if (closingQty > 1e-9) {
+                    fifoClosingVal = clsFifoVal;
+                    fifoClosingRate = fifoClosingVal / closingQty;
+                } else if (closingQty < -1e-9) {
+                    const fallbackRate = row.lastPurchaseRate || row.basePurchaseRate || 0;
+                    fifoClosingRate = fallbackRate;
+                    fifoClosingVal = closingQty * fallbackRate;
+                } else {
+                    fifoClosingRate = 0;
+                    fifoClosingVal = 0;
+                }
+
+                let closingRate = 0;
+                let closingVal = 0;
+
+                if (valuationMethod === 'fifo') {
+                    closingVal = fifoClosingVal;
+                    closingRate = fifoClosingRate;
+                } else if (valuationMethod === 'last_sale' || valuationMethod === 'last_sold') {
+                    closingRate = row.lastSaleRate || row.lastPurchaseRate || row.basePurchaseRate || 0;
+                    closingVal = closingQty * closingRate;
+                } else {
+                    // 'last_purchase'
+                    closingRate = row.lastPurchaseRate || row.basePurchaseRate || (closingQty > 0 ? fifoClosingRate : 0);
+                    closingVal = closingQty * closingRate;
+                }
+
+                row.closingRate = closingRate;
+                row.closingVal = closingVal;
+                totalClosingStockValue += closingVal;
+            });
 
 
-            // E. SUMMARIZE DATA
             const directExpensesList = Object.values(directExpensesMap).map(({ id, name, amount }) => ({ id, name, amount }));
             const totalDirectExpenses = directExpensesList.reduce((sum, i) => sum + i.amount, 0);
 
@@ -37191,8 +37451,12 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                 <span className="text-[9px] font-black text-red-500 uppercase tracking-widest">Cost of Goods Sold (COGS)</span>
                                             </div>
                                             <div className="p-2 space-y-1">
-                                                <div className="flex justify-between text-sm py-1 border-b border-slate-50">
-                                                    <span className="font-bold text-slate-500 uppercase text-[10px]">Opening Stock</span>
+                                                <div 
+                                                    className="flex justify-between text-sm py-1 border-b border-slate-50 cursor-pointer hover:bg-slate-50 px-1 rounded"
+                                                    onClick={() => onDrillDown('stock')}
+                                                    title="Click to view Stock Summary"
+                                                >
+                                                    <span className="font-bold text-slate-500 uppercase text-[10px]">Opening Stock (FIFO)</span>
                                                     <span className="font-mono font-bold text-slate-600">{formatCurrency(data.openingStock)}</span>
                                                 </div>
 
@@ -37222,7 +37486,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                                                     onClick={() => onDrillDown('stock')}
                                                     title="Click to view Stock Summary"
                                                 >
-                                                    <span className="uppercase text-[10px]">(-) Closing Stock</span>
+                                                    <span className="uppercase text-[10px]">(-) Closing Stock ({data.valLabel || 'FIFO'})</span>
                                                     <span className="font-mono">({formatCurrency(data.closingStock)})</span>
                                                 </div>
 

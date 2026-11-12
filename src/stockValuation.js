@@ -90,6 +90,7 @@ export const computeStockClosing = ({
     invoices = [],
     stockJournals = [],
     asOfDate = '',
+    fromDate = '',            // optional: when set, also report the FIFO opening for this period
     valuation = 'fifo',
     locationId = ''
 }) => {
@@ -97,17 +98,21 @@ export const computeStockClosing = ({
 
     products.forEach(p => {
         const openingQty = Number(p.openingStock || 0);
-        const openingRate = Number(p.openingRate || p.purchasePrice || 0);
+        const openingBal = Number(p.openingBalance || 0);
+        const openingRate = Number(p.openingRate || 0) > 0
+            ? Number(p.openingRate)
+            : (openingQty !== 0 && openingBal !== 0 ? Math.abs(openingBal / openingQty) : Number(p.purchasePrice || 0));
         itemMap[p.id] = {
             id: p.id,
             group: p.group || 'Primary',
             openingQty,
-            openingVal: Number(p.openingBalance || 0),
+            openingVal: openingBal,
             lastPurchaseRate: Number(p.purchasePrice || 0),
             lastPurchaseDate: '1970-01-01',
             lastSaleRate: 0,
             lastSaleDate: '1970-01-01',
             fifoLayers: openingQty > 0 ? [{ qty: openingQty, rate: openingRate }] : [],
+            fifoShortQty: openingQty < 0 ? Math.abs(openingQty) : 0,
             inQty: 0, inVal: 0,
             outQty: 0, outVal: 0
         };
@@ -194,25 +199,32 @@ export const computeStockClosing = ({
             if (type === 'in') {
                 row.inQty += qty;
                 row.inVal += qty * rate;
-                row.fifoLayers.push({ qty, rate: rate || 0 });
+                let remIn = qty;
+                if (row.fifoShortQty > 0) {
+                    const cover = Math.min(row.fifoShortQty, remIn);
+                    row.fifoShortQty -= cover;
+                    remIn -= cover;
+                }
+                if (remIn > 1e-9) {
+                    row.fifoLayers.push({ qty: remIn, rate: rate || 0 });
+                }
             } else {
                 row.outQty += qty;
                 row.outVal += qty * rate;
 
-                let remaining = qty;
-                while (remaining > 0 && row.fifoLayers.length > 0) {
+                let need = qty;
+                while (need > 1e-9 && row.fifoLayers.length > 0) {
                     const head = row.fifoLayers[0];
-                    if (head.qty <= remaining) {
-                        remaining -= head.qty;
+                    if (head.qty <= need + 1e-9) {
+                        need -= head.qty;
                         row.fifoLayers.shift();
                     } else {
-                        head.qty -= remaining;
-                        remaining = 0;
+                        head.qty -= need;
+                        need = 0;
                     }
                 }
-                if (remaining > 0) {
-                    const fallbackRate = row.lastPurchaseRate || rate || 0;
-                    row.fifoLayers.unshift({ qty: -remaining, rate: fallbackRate });
+                if (need > 1e-9) {
+                    row.fifoShortQty += need;
                 }
             }
 
@@ -227,6 +239,69 @@ export const computeStockClosing = ({
         });
 
     // ── Finalise: quantity + valuation-method-dependent closing value ─────────
+    // Optional period opening (FIFO). When `fromDate` is supplied, replay only the
+    // movements BEFORE it on a fresh layer set, so "opening" means the same thing
+    // here as it does in the Stock Summary report (always FIFO).
+    let periodOpening = null;
+    if (fromDate) {
+        periodOpening = {};
+        products.forEach(p => {
+            const q0 = Number(p.openingStock || 0);
+            const b0 = Number(p.openingBalance || 0);
+            const r0 = Number(p.openingRate || 0) > 0
+                ? Number(p.openingRate)
+                : (q0 !== 0 && b0 !== 0 ? Math.abs(b0 / q0) : Number(p.purchasePrice || 0));
+            periodOpening[p.id] = {
+                qty: q0,
+                layers: q0 > 0 ? [{ qty: q0, rate: r0 }] : [],
+                short: q0 < 0 ? Math.abs(q0) : 0,
+                lastRate: Number(p.purchasePrice || 0)
+            };
+        });
+
+        const applyOpeningMovement = (row, m) => {
+            if (m.type === 'in') {
+                row.qty += m.qty;
+                let rem = m.qty;
+                if (row.short > 0) {
+                    const cover = Math.min(row.short, rem);
+                    row.short -= cover;
+                    rem -= cover;
+                }
+                if (rem > 1e-9) row.layers.push({ qty: rem, rate: m.rate || 0 });
+                if (m.rate > 0) row.lastRate = m.rate;
+            } else {
+                row.qty -= m.qty;
+                let need = m.qty;
+                while (need > 1e-9 && row.layers.length > 0) {
+                    const head = row.layers[0];
+                    if (head.qty <= need + 1e-9) { need -= head.qty; row.layers.shift(); }
+                    else { head.qty -= need; need = 0; }
+                }
+                if (need > 1e-9) row.short += need;
+            }
+        };
+
+        movements
+            .filter(m => m.date && m.date < fromDate && (!asOfDate || m.date <= asOfDate))
+            .sort((a, b) => (a.date === b.date ? a.seq - b.seq : a.date.localeCompare(b.date)))
+            .forEach(m => {
+                const row = periodOpening[m.productId];
+                if (row) applyOpeningMovement(row, m);
+            });
+
+        Object.values(periodOpening).forEach(row => {
+            if (row.qty > 1e-9) {
+                row.fifoVal = getFifoValue(row.layers);
+            } else if (row.qty < -1e-9) {
+                row.fifoVal = row.qty * (row.lastRate || 0);
+            } else {
+                row.qty = 0;
+                row.fifoVal = 0;
+            }
+        });
+    }
+
     return Object.values(itemMap).map(i => {
         const closingQty = i.openingQty + i.inQty - i.outQty;
         const ledgerClosingVal = i.openingVal + i.inVal - i.outVal; // average cost
@@ -236,11 +311,16 @@ export const computeStockClosing = ({
         const closingRate = rateFor(valuation, i.lastPurchaseRate, i.lastSaleRate, avgRate, fifoClosingVal, closingQty);
         const closingVal = valuation === 'fifo' ? fifoClosingVal : (closingQty * closingRate);
 
+        const op = periodOpening ? periodOpening[i.id] : null;
+
         return {
             id: i.id,
             group: i.group,
             openingQty: i.openingQty,
             openingVal: i.openingVal,
+            // FIFO period opening (only when `fromDate` was supplied)
+            periodOpeningQty: op ? op.qty : undefined,
+            periodOpeningVal: op ? op.fifoVal : undefined,
             inQty: i.inQty,
             inVal: i.inVal,
             outQty: i.outQty,
