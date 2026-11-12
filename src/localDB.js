@@ -2,6 +2,7 @@ import { createRxDatabase, addRxPlugin } from 'rxdb';
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie';
 import { RxDBMigrationPlugin } from 'rxdb/plugins/migration-schema';
 import { RxDBUpdatePlugin } from 'rxdb/plugins/update';
+import { safeSetItem, safeRemoveItem, safeGetItem } from './safeStorage.js';
 
 addRxPlugin(RxDBMigrationPlugin);
 addRxPlugin(RxDBUpdatePlugin);
@@ -303,7 +304,7 @@ export const clearCompanyDBCache = (companyId) => {
 export const setCurrentCompany = (id) => {
     if (currentCompanyId !== id) {
         currentCompanyId = id;
-        localStorage.setItem('activeCompanyId', id);
+        safeSetItem('activeCompanyId', id);
         companyDbPromise = null; // Reset promise to force new DB init
         window.location.reload(); // Refresh to ensure all hooks restart with new DB
     }
@@ -568,7 +569,9 @@ export const importJSONBackup = async (jsonData, isEncrypted = false, password =
 export const saveCachedCompanyStats = (companyId, stats) => {
     if (!companyId || !stats) return;
     try {
-        localStorage.setItem(`accpro_stats_${companyId}`, JSON.stringify({
+        // safeSetItem clears disposable caches if the quota is full. Without the cache
+        // every sync run has to scan the whole company DB just to count rows.
+        safeSetItem(`accpro_stats_${companyId}`, JSON.stringify({
             ledgers: stats.ledgers || 0,
             vouchers: stats.vouchers || 0,
             logs: stats.logs || 0,
@@ -582,7 +585,7 @@ export const saveCachedCompanyStats = (companyId, stats) => {
 export const getCompanyStats = async (companyId) => {
     // 1. Try the fast localStorage cache first (avoids slow RxDB full scan)
     try {
-        const raw = localStorage.getItem(`accpro_stats_${companyId}`);
+        const raw = safeGetItem(`accpro_stats_${companyId}`);
         if (raw) {
             const cached = JSON.parse(raw);
             if (cached && cached.savedAt && (Date.now() - cached.savedAt < 86400000)) {
@@ -738,11 +741,11 @@ export const removeCompanyData = async (companyId) => {
         if (co) await co.remove();
 
         try {
-            localStorage.removeItem(`accpro_stats_${companyId}`);
-            localStorage.removeItem(`nadtally_last_pull_${companyId}`);
-            localStorage.removeItem(`accpro_session_${companyId}`);
-            if (localStorage.getItem('activeCompanyId') === companyId) {
-                localStorage.removeItem('activeCompanyId');
+            safeRemoveItem(`accpro_stats_${companyId}`);
+            safeRemoveItem(`nadtally_last_pull_${companyId}`);
+            safeRemoveItem(`accpro_session_${companyId}`);
+            if (safeGetItem('activeCompanyId') === companyId) {
+                safeRemoveItem('activeCompanyId');
                 currentCompanyId = null;
             }
         } catch (e) { /* ignore */ }

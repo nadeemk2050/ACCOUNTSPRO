@@ -3,6 +3,7 @@ import {
   registerCompanyAsLiveInFirestore,
 } from './liveSync.js';
 import { getCompanyStats } from './localDB.js';
+import { safeSetItem, safeRemoveItem } from './safeStorage.js';
 
 const PERIODIC_SYNC_TAG = 'accpro-company-sync';
 const FALLBACK_SYNC_TAG = 'accpro-company-sync-once';
@@ -45,10 +46,10 @@ function acquireLock(companyId) {
     acquiredAt: now,
     expiresAt: now + LOCK_TTL_MS,
   };
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) {
-    console.warn("Storage quota exceeded, could not acquire localStorage lock:", e);
+  if (!safeSetItem(key, JSON.stringify(value))) {
+    // Quota still full after the helper freed caches: hold the lock in memory only
+    // so live sync keeps running instead of silently dying.
+    console.warn("[SYNC] localStorage full: lock held in memory only for", companyId);
     if (!window.__syncLocks) window.__syncLocks = {};
     window.__syncLocks[key] = value;
   }
@@ -65,12 +66,10 @@ function releaseLock(companyId, token) {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (parsed?.token === token) {
-      localStorage.removeItem(key);
+      safeRemoveItem(key);
     }
   } catch (_e) {
-    try {
-      localStorage.removeItem(key);
-    } catch (_) {}
+    safeRemoveItem(key);
   }
 }
 
@@ -79,11 +78,7 @@ function saveStatus(companyId, status) {
     ...status,
     updatedAt: Date.now(),
   };
-  try {
-    localStorage.setItem(statusKey(companyId), JSON.stringify(next));
-  } catch (_e) {
-    // ignore storage quota errors
-  }
+  safeSetItem(statusKey(companyId), JSON.stringify(next));
 }
 
 function canRunNow(companyId) {

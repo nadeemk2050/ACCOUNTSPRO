@@ -5,6 +5,7 @@ import { Timestamp } from '@firebase/firestore';
 import { collection, doc, setDoc, onSnapshot, getDoc, writeBatch, getDocs, deleteDoc, query, where } from '@firebase/firestore';
 import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { sqlite as sqliteBridge } from './sqliteBridge';
+import { safeSetItem } from './safeStorage.js';
 
 
 const activeSyncs = {}; // record of companyId -> unsubscribe function
@@ -113,7 +114,7 @@ export const startLiveSync = async (companyId) => {
         console.log(`[SYNC] Starting Live Sync for LIVE company: ${companyId}`);
         const tempIdHolder = localStorage.getItem('activeCompanyId');
         // Temporarily get the db for the target company
-        localStorage.setItem('activeCompanyId', companyId);
+        safeSetItem('activeCompanyId', companyId);
         const rxdb = await getDB();
         // optionally restore the current active company id immediately if getDB is instantaneous, 
         // wait getDB caches the promise for currentCompanyId, so it might be tricky.
@@ -886,6 +887,31 @@ export const makeCompanyLive = async (companyId, companyName, onProgress, knownS
 
 export const registerCompanyAsLiveInFirestore = async (companyId, companyName, stats) => {
     try {
+        // ⚠️ THROTTLE. This used to run on EVERY sync trigger (window focus, timer,
+        // manual refresh). The console showed the same company re-registered dozens of
+        // times per minute, each one a Firestore read + write on 'nadtally_live_registry'.
+        // That exhausts the project's daily read/write quota, and once the quota is gone
+        // the real work — pulling and downloading vouchers — gets throttled too (slow,
+        // partial downloads). Once every 30 minutes is more than enough.
+        const LIVE_REG_THROTTLE_MS = 30 * 60 * 1000;
+        const LIVE_REG_KEY = `accpro_live_reg_${companyId}`;
+        const nowTs = Date.now();
+        let lastReg = 0;
+        try { lastReg = Number(localStorage.getItem(LIVE_REG_KEY) || 0) || 0; } catch (_e) { lastReg = 0; }
+        if (!lastReg && typeof window !== 'undefined' && window.__accproLiveReg) {
+            lastReg = window.__accproLiveReg[companyId] || 0;
+        }
+        if (lastReg && nowTs - lastReg < LIVE_REG_THROTTLE_MS) {
+            return { skipped: true, reason: 'throttled' };
+        }
+        try {
+            safeSetItem(LIVE_REG_KEY, String(nowTs));
+        } catch (_e) {
+            if (typeof window !== 'undefined') {
+                window.__accproLiveReg = { ...(window.__accproLiveReg || {}), [companyId]: nowTs };
+            }
+        }
+
         await ensureLiveFirestoreAccess();
         if (!realFirestore) throw new Error("realFirestore not initialized");
         
@@ -1427,7 +1453,63 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
             if (onProgress) onProgress(downloadedCount, totalCount);
         }
 
-        console.log(`[DOWNLOAD] Successfully downloaded ${downloadedCount} records for '${companyName}'.`);
+        console.log(`[DOWNLOAD] Fetched ${downloadedCount} cloud records for '${companyName}'. Verifying local copy...`);
+
+        // ── VERIFICATION + REPAIR ──────────────────────────────────────────────
+        // Guarantee: every non-deleted record the cloud holds must exist locally.
+        // Anything that failed to insert (race, duplicate-key, interrupted batch)
+        // is detected here and re-inserted, so a download is never silently short.
+        const lookupLocal = (map, id) => (map?.get ? map.get(id) : map?.[id]);
+        let cloudIds = [];
+        let localTotal = 0;
+        let stillMissing = [];
+        try {
+            cloudIds = [...new Set(allDocs.filter(d => d && d.id && d.deleted !== true).map(d => d.id))];
+
+            const checkMissing = async () => {
+                const map = await companyDb.offline_records.findByIds(cloudIds);
+                return cloudIds.filter(id => !lookupLocal(map, id));
+            };
+
+            let missing = await checkMissing();
+            if (missing.length > 0) {
+                console.warn(`[DOWNLOAD] ${missing.length} of ${cloudIds.length} cloud records are missing locally. Re-inserting...`);
+                const missingSet = new Set(missing);
+                const retryDocs = allDocs
+                    .filter(d => missingSet.has(d.id))
+                    .map(fsDoc => ({
+                        id: fsDoc.id,
+                        collectionName: fsDoc.collectionName || 'unknown',
+                        data: fsDoc.data || {},
+                        timestamp: fsDoc.timestamp || Date.now(),
+                        lastSync: now
+                    }));
+                const RETRY_CHUNK = 200;
+                for (let i = 0; i < retryDocs.length; i += RETRY_CHUNK) {
+                    const chunk = retryDocs.slice(i, i + RETRY_CHUNK);
+                    try {
+                        await companyDb.offline_records.bulkInsert(chunk);
+                    } catch (_bulkErr) {
+                        for (const doc of chunk) {
+                            try {
+                                await companyDb.offline_records.insert(doc);
+                            } catch (_insErr) { /* already present */ }
+                        }
+                    }
+                }
+                missing = await checkMissing();
+            }
+            stillMissing = missing;
+            localTotal = await companyDb.offline_records.count().exec();
+            console.log(
+                `[DOWNLOAD] Verification: cloud=${cloudIds.length} | local records=${localTotal} | still missing=${stillMissing.length}`
+            );
+            if (stillMissing.length > 0) {
+                console.error('[DOWNLOAD] Records that could not be stored locally:', stillMissing.slice(0, 20));
+            }
+        } catch (verifyErr) {
+            console.warn('[DOWNLOAD] Could not verify the local copy:', verifyErr?.message || verifyErr);
+        }
 
         // Save the highest syncTimestamp seen so startLiveSync won't replay all these
         // records on the next page load (avoids the 17k+ sequential upsert queue).
@@ -1437,13 +1519,15 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
             if (ts > maxSyncTs) maxSyncTs = ts;
         }
         // A full localStorage must never abort the download — the cursor is an optimisation.
-        try {
-            localStorage.setItem(`nadtally_last_pull_${companyId}`, String(maxSyncTs || Date.now()));
-        } catch (_e) {
-            console.warn('[DOWNLOAD] Could not persist the pull cursor (storage full) — will re-scan recent records next load.');
-        }
+        safeSetItem(`nadtally_last_pull_${companyId}`, String(maxSyncTs || Date.now()));
 
-        return { success: true, downloaded: downloadedCount };
+        return {
+            success: true,
+            downloaded: downloadedCount,
+            cloudCount: cloudIds.length,
+            localCount: localTotal,
+            missing: stillMissing.length,
+        };
     } catch (e) {
         console.error("[DOWNLOAD] Failed to download live company:", e);
         return { success: false, error: e.message };

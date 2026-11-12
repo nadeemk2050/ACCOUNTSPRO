@@ -32,6 +32,8 @@ import { GROUP_TAB_COLOR_OPTIONS, STOCK_GROUP_COLOR_KEYS, FLAG_TO_COLOR_KEY, get
 import { moveRowHighlight, activateHighlightedRow, clearRowHighlight, gatewayNavStep, gatewayActivate, isTypingTarget } from './keyboardNav';
 import StockValuationBadge from './StockValuationBadge';
 import { computeStockClosing, getStoredValuation, setStoredValuation, STOCK_MOVEMENT_TYPES } from './stockValuation';
+// Crash-proof localStorage: a full disk must never block a login or a sync.
+import { safeGetItem, safeSetItem, safeRemoveItem } from './safeStorage';
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -862,7 +864,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.20 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.21 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -917,7 +919,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.20</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.21</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -941,7 +943,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.20</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.21</div>
                 </div>
             </div>
         </Modal>
@@ -4671,7 +4673,11 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
                 // Refresh local companies list
                 const freshList = await listCompanies();
                 setCompanies(freshList);
-                alert(`✅ Company '${liveCo.name}' downloaded successfully!\n${result.downloaded} records downloaded.\n\nYou can now open it from LIVE DATAS or OFFLINE section.`);
+                const verified = typeof result.cloudCount === 'number'
+                    ? `\n\nVerification: cloud records = ${result.cloudCount}, stored locally = ${result.localCount ?? '?'}` +
+                      (result.missing ? `\n${result.missing} records could NOT be stored — see console.` : '\nAll cloud records are present locally.')
+                    : '';
+                alert(`✅ Company '${liveCo.name}' downloaded successfully!\n${result.downloaded} records downloaded.${verified}\n\nYou can now open it from LIVE DATAS or OFFLINE section.`);
             } else {
                 alert('âŒ Download failed: ' + result.error);
             }
@@ -6705,7 +6711,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.20";
+    const SYSTEM_VERSION = "2.8.21";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6904,7 +6910,7 @@ export default function App() {
             }
 
             // ðŸ› ï¸ PWA QUICK SESSION PERSISTENCE: Load cached sub-user login 
-            const cachedSession = localStorage.getItem(`accpro_session_${activeCompanyId}`);
+            const cachedSession = safeGetItem(`accpro_session_${activeCompanyId}`);
             if (cachedSession) {
                 try {
                     const parsed = JSON.parse(cachedSession);
@@ -6952,7 +6958,7 @@ export default function App() {
             // 1d. Check Security Lock
             const checkSecurity = async () => {
                 try {
-                    const cachedSession = localStorage.getItem(`accpro_session_${activeCompanyId}`);
+                    const cachedSession = safeGetItem(`accpro_session_${activeCompanyId}`);
                     if (cachedSession) {
                         setIsCompanyLocked(false);
                         return;
@@ -7913,7 +7919,7 @@ export default function App() {
 
                 // 🚀 CLEAR PWA PERSISTENT SESSION
                 if (activeCompanyId) {
-                    localStorage.removeItem(`accpro_session_${activeCompanyId}`);
+                    safeRemoveItem(`accpro_session_${activeCompanyId}`);
                 }
 
                 // Clear company context and reload app to the main gate
@@ -7929,7 +7935,7 @@ export default function App() {
             }
 
             // 🧹 CLEAR IDLE STATE ON LOGOUT
-            localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+            safeRemoveItem(LAST_ACTIVITY_STORAGE_KEY);
 
             if (window.innerWidth < 768) setMenuOpen(false);
         } finally {
@@ -7947,7 +7953,7 @@ export default function App() {
         
         // 🚀 CLEAR PWA PERSISTENT SESSION
         if (activeCompanyId) {
-            localStorage.removeItem(`accpro_session_${activeCompanyId}`);
+            safeRemoveItem(`accpro_session_${activeCompanyId}`);
         }
 
         setSubUser(null);
@@ -7961,7 +7967,7 @@ export default function App() {
     const handleStayLoggedIn = useCallback(() => {
         const now = Date.now();
         idleLastActivityRef.current = now;
-        localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
+        safeSetItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
         idleWarningStartRef.current = null;
         setIdleWarningOpen(false);
         setIdleCountdown(IDLE_WARNING_SECONDS);
@@ -12253,7 +12259,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.20</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.21</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -12983,7 +12989,9 @@ export default function App() {
                     companyName={companyProfile?.name || 'This Company'}
                     onLogin={(u, mode) => {
                         // 🚀 PERSIST LOGIN SESSION FOR THIS DEVICE
-                        localStorage.setItem(`accpro_session_${activeCompanyId}`, JSON.stringify({ mode, subUser: u }));
+                        // Must never throw: a full localStorage used to abort the login
+                        // with "Setting the value of 'accpro_session_x' exceeded the quota".
+                        safeSetItem(`accpro_session_${activeCompanyId}`, JSON.stringify({ mode, subUser: u }));
 
                         if (mode === 'admin') {
                             setSubUser(null);
@@ -15295,7 +15303,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.20</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.21</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -16074,7 +16082,11 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
             if (result.success) {
                 const freshList = await listCompanies();
                 setCompanies(freshList);
-                alert(`✅ Downloaded! ${result.downloaded} records. You can now switch to this company.`);
+                const verified = typeof result.cloudCount === 'number'
+                    ? `\nCloud records: ${result.cloudCount} | stored locally: ${result.localCount ?? '?'}` +
+                      (result.missing ? `\nWarning: ${result.missing} records could not be stored — see console.` : '\nAll cloud records are present locally.')
+                    : '';
+                alert(`✅ Downloaded! ${result.downloaded} records.${verified} You can now switch to this company.`);
             } else {
                 alert('âŒ Download failed: ' + result.error);
             }
