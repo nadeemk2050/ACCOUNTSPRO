@@ -228,15 +228,34 @@ export const startLiveSync = async (companyId) => {
         // 2. LIVE PULL: Monitor for external changes
         // 🚀 OPTIMIZATION: Only pull records that changed after our last seen timestamp
         const lastPullKey = `nadtally_last_pull_${companyId}`;
-        let lastPullTsFromStorage = Number(localStorage.getItem(lastPullKey) || 0);
+
+        // ⚠️ STORAGE SAFETY: localStorage can be FULL (QuotaExceededError). Reading or
+        // writing this cursor must never be fatal. If the write silently failed, the key
+        // is missing on the next load, the cursor re-anchored to "now", and every record
+        // another user entered in the meantime (their vouchers and audit logs) was never
+        // pulled — the owner kept working on a stale copy while the sub-user saw every
+        // change. Keep a memory fallback and always keep a safety window.
+        const safeGet = (k) => { try { return localStorage.getItem(k); } catch (_e) { return null; } };
+        const safeSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch (_e) { return false; } };
+
+        const PULL_SAFETY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // re-scan the last 7 days as a floor
+
+        let lastPullTsFromStorage = Number(safeGet(lastPullKey) || 0);
 
         // If no prior pull timestamp, this PC just initialised (either the original owner
         // after the initial push, or a PC whose downloadLiveCompany didn't set the key).
-        // Set to now so the pull subscription only captures FUTURE changes — existing data
-        // was already pushed/downloaded and does not need to be replayed record-by-record.
-        if (lastPullTsFromStorage === 0) {
-            lastPullTsFromStorage = Date.now();
-            localStorage.setItem(lastPullKey, String(lastPullTsFromStorage));
+        // Anchor a little in the PAST (never "now") so anything entered just before this
+        // load is still pulled. Re-applying recent records is idempotent.
+        if (!lastPullTsFromStorage) {
+            lastPullTsFromStorage = Date.now() - PULL_SAFETY_WINDOW_MS;
+            safeSet(lastPullKey, String(lastPullTsFromStorage));
+        }
+
+        // Never let a corrupted/future cursor (e.g. a clock skew or a failed write) block
+        // real changes: clamp it to at most "now".
+        if (lastPullTsFromStorage > Date.now()) {
+            lastPullTsFromStorage = Date.now() - PULL_SAFETY_WINDOW_MS;
+            safeSet(lastPullKey, String(lastPullTsFromStorage));
         }
 
         let maxSeenSyncTs = lastPullTsFromStorage;
@@ -406,7 +425,11 @@ export const startLiveSync = async (companyId) => {
                 
                 // Update local storage so we don't pull these again next time
                 if (maxSeenSyncTs > lastPullTsFromStorage) {
-                    localStorage.setItem(lastPullKey, String(maxSeenSyncTs));
+                    if (!safeSet(lastPullKey, String(maxSeenSyncTs))) {
+                        // Storage full: keep the cursor in memory for this session so this
+                        // tab still advances, and remember the value for the next reload.
+                        try { window.__accproPullCursors = { ...(window.__accproPullCursors || {}), [companyId]: maxSeenSyncTs }; } catch (_e) {}
+                    }
                 }
             }).catch((e) => {
                 console.error('[SYNC] Pull queue error:', e);
@@ -1413,7 +1436,12 @@ export const downloadLiveCompany = async (companyId, companyName, onProgress) =>
             const ts = fsDoc.syncTimestamp || 0;
             if (ts > maxSyncTs) maxSyncTs = ts;
         }
-        localStorage.setItem(`nadtally_last_pull_${companyId}`, String(maxSyncTs || Date.now()));
+        // A full localStorage must never abort the download — the cursor is an optimisation.
+        try {
+            localStorage.setItem(`nadtally_last_pull_${companyId}`, String(maxSyncTs || Date.now()));
+        } catch (_e) {
+            console.warn('[DOWNLOAD] Could not persist the pull cursor (storage full) — will re-scan recent records next load.');
+        }
 
         return { success: true, downloaded: downloadedCount };
     } catch (e) {
