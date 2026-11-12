@@ -10,9 +10,9 @@ addRxPlugin(RxDBUpdatePlugin);
 let masterDbPromise = null;
 let companyDbPromise = null;
 let currentCompanyId = (() => {
-    const val = localStorage.getItem('activeCompanyId');
+    const val = safeGetItem('activeCompanyId');
     if (val === 'null' || val === 'undefined') {
-        localStorage.removeItem('activeCompanyId');
+        safeRemoveItem('activeCompanyId');
         return null;
     }
     return val || null;

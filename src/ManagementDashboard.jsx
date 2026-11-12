@@ -26,6 +26,19 @@ import {
 import CustomersProfileModule from './CustomersProfileModule';
 import TaxModule from './TaxModule';
 
+/**
+ * When the user switches a voucher type to automatic numbering we seed the counter
+ * from the CURRENT TIME instead of 1 / a small number, so the auto ref numbers can
+ * never collide with numbers that were typed manually before. Example: prefix "p"
+ * on 2026-11-12 → "p1763000000".
+ */
+const makeTimestampRefPattern = (currentPattern) => {
+    const raw = String(currentPattern || '').trim();
+    // Keep any existing letter prefix (e.g. "p", "REC-") but drop its old number.
+    const prefix = raw.replace(/\d+$/, '') || 'p';
+    return `${prefix}${Math.floor(Date.now() / 1000)}`;
+};
+
 const ManagementDashboard = ({
     onClose,
     onRecalculateAll,
@@ -119,6 +132,10 @@ const ManagementDashboard = ({
     const [localContraRefMode, setLocalContraRefMode] = useState(companyProfile?.rules?.contraRefMode || 'manual');
     const [localContraRefPattern, setLocalContraRefPattern] = useState(companyProfile?.rules?.contraRefPattern || '');
 
+    // "Add voucher navigation arrows in Payment / Receipt / Contra" — optional feature.
+    const [localShowNavArrows, setLocalShowNavArrows] = useState(companyProfile?.rules?.showVoucherNavArrows !== false);
+    const [navArrowStatus, setNavArrowStatus] = useState('');
+
     React.useEffect(() => {
         if (companyProfile?.rules?.paymentRefMode) setLocalRefMode(companyProfile.rules.paymentRefMode);
         if (companyProfile?.rules?.paymentRefPattern) setLocalRefPattern(companyProfile.rules.paymentRefPattern);
@@ -131,6 +148,8 @@ const ManagementDashboard = ({
 
         if (companyProfile?.rules?.contraRefMode) setLocalContraRefMode(companyProfile.rules.contraRefMode);
         if (companyProfile?.rules?.contraRefPattern) setLocalContraRefPattern(companyProfile.rules.contraRefPattern);
+
+        setLocalShowNavArrows(companyProfile?.rules?.showVoucherNavArrows !== false);
     }, [companyProfile]);
     const [summaryDateRange, setSummaryDateRange] = useState({
         from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
@@ -251,7 +270,7 @@ const ManagementDashboard = ({
                     requestedAt: parsed.requestedAt,
                     deviceId: devices[0] || '',
                     deviceIds: devices,
-                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.8.21',
+                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.8.22',
                     liveCompaniesCount: firstNumber(parsed.liveCompaniesCount, parsed.companyCount, parsed.liveDataCount, usage.liveCompaniesCount),
                     usageReads: firstNumber(parsed.reads, parsed.readCount, usage.reads, usage.readCount, usage.firestoreReads),
                     usageWrites: firstNumber(parsed.writes, parsed.writeCount, usage.writes, usage.writeCount, usage.firestoreWrites),
@@ -343,7 +362,7 @@ const ManagementDashboard = ({
                     status: { stringValue: 'inactive' },
                     createdAt: { timestampValue: new Date().toISOString() },
                     createdBy: { stringValue: currentUser.email || 'developer' },
-                    version: { stringValue: '2.8.21' },
+                    version: { stringValue: '2.8.22' },
                     isGenerated: { booleanValue: true },
                 }
             };
@@ -672,7 +691,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.8.21</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.8.22</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -978,6 +997,79 @@ const ManagementDashboard = ({
                                                     </td>
                                                 </tr>
                                             ))}
+                                            {/* VOUCHER NAVIGATION ARROWS (optional — per company) */}
+                                            <tr className="hover:bg-white/5 transition-colors">
+                                                <td className="px-4 py-4 text-sm font-medium">
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-3">
+                                                            <span>Add vouchers navigation arrows in Paym, Recpt, Contra</span>
+                                                            {navArrowStatus && (
+                                                                <span className={`text-[10px] px-2 py-0.5 rounded font-black tracking-widest uppercase ${navArrowStatus.includes('Error') ? 'bg-red-500/20 text-red-400' : navArrowStatus.includes('Saved') ? 'bg-green-500/20 text-green-400 animate-pulse' : 'bg-blue-500/20 text-cyan-400'}`}>
+                                                                    {navArrowStatus}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <span className="text-[11px] opacity-60">
+                                                            Shows ◀ NEW ▶ in the voucher form to jump between vouchers of the same type (Alt + ← / Alt + →).
+                                                        </span>
+                                                        <button
+                                                            onClick={async () => {
+                                                                const updatedRules = {
+                                                                    ...(companyProfile?.rules || {}),
+                                                                    showVoucherNavArrows: localShowNavArrows
+                                                                };
+                                                                const updatedProfile = {
+                                                                    ...companyProfile,
+                                                                    rules: updatedRules
+                                                                };
+                                                                if (onUpdateProfile) onUpdateProfile(updatedProfile);
+
+                                                                setNavArrowStatus('Saving...');
+                                                                try {
+                                                                    const targetId = dataOwnerId || companyProfile?.id;
+                                                                    if (targetId) {
+                                                                        if (functions) {
+                                                                            try {
+                                                                                const { httpsCallable } = await import('firebase/functions');
+                                                                                const updateFn = httpsCallable(functions, 'updateCompanyProfile');
+                                                                                await updateFn({ targetId, data: updatedProfile });
+                                                                            } catch (e) { console.warn("Cloud function failed", e); }
+                                                                        }
+
+                                                                        const updates = { 'rules.showVoucherNavArrows': localShowNavArrows };
+                                                                        try { await updateDoc(doc(db, 'companies', targetId), updates); } catch (e) { }
+                                                                        try { await updateDoc(doc(db, 'nadtally_live_registry', targetId), updates); } catch (e) { }
+
+                                                                        const master = await getMasterDB();
+                                                                        const existing = await master.companies.findOne({ selector: { id: targetId } }).exec();
+                                                                        if (existing) {
+                                                                            await existing.patch({ rules: updatedRules });
+                                                                        }
+                                                                    }
+                                                                    setNavArrowStatus('Saved Securely!');
+                                                                    setTimeout(() => setNavArrowStatus(''), 3000);
+                                                                } catch (err) {
+                                                                    console.error("Failed to save rule:", err);
+                                                                    setNavArrowStatus('Error Saving');
+                                                                }
+                                                            }}
+                                                            className="mt-2 w-fit px-3 py-1 bg-teal-600/80 hover:bg-teal-500 text-white text-xs font-bold rounded shadow-md transition-all"
+                                                        >
+                                                            Save Settings
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-4 text-center">
+                                                    <select
+                                                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
+                                                        value={localShowNavArrows ? 'yes' : 'no'}
+                                                        onChange={(e) => setLocalShowNavArrows(e.target.value === 'yes')}
+                                                    >
+                                                        <option className="bg-slate-800" value="yes">Yes</option>
+                                                        <option className="bg-slate-800" value="no">No</option>
+                                                    </select>
+                                                </td>
+                                            </tr>
                                             {/* NEW ROW FOR AUTO REF NO */}
                                             <tr className="hover:bg-white/5 transition-colors">
                                                 <td className="px-4 py-4 text-sm font-medium">
@@ -990,7 +1082,7 @@ const ManagementDashboard = ({
                                                                  </span>
                                                              )}
                                                          </div>
-                                                        {localRefMode === 'auto' && (
+                                                        {(localRefMode === 'auto' || localRefMode === 'auto_manual') && (
                                                             <div className="flex items-center gap-2 mt-2">
                                                                 <span className="text-xs opacity-60">Pattern & Starting Number:</span>
                                                                 <input
@@ -1070,10 +1162,17 @@ const ManagementDashboard = ({
                                                     <select
                                                         className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
                                                         value={localRefMode}
-                                                        onChange={(e) => setLocalRefMode(e.target.value)}
+                                                        onChange={(e) => {
+                                                            const v = e.target.value;
+                                                            setLocalRefMode(v);
+                                                            if (v !== 'manual' && !/\d$/.test(localRefPattern || '')) {
+                                                                setLocalRefPattern(makeTimestampRefPattern(localRefPattern));
+                                                            }
+                                                        }}
                                                     >
                                                         <option className="bg-slate-800" value="manual">Manually</option>
                                                         <option className="bg-slate-800" value="auto">Automatically</option>
+                                                        <option className="bg-slate-800" value="auto_manual">Automatic (Manual Override)</option>
                                                     </select>
 
                                                 </td>
@@ -1085,7 +1184,7 @@ const ManagementDashboard = ({
                                                         <div className="flex items-center gap-3">
                                                              <span>In receipt voucher generate ref no. (Automatically/Manually)</span>
                                                          </div>
-                                                        {localReceiptRefMode === 'auto' && (
+                                                        {(localReceiptRefMode === 'auto' || localReceiptRefMode === 'auto_manual') && (
                                                             <div className="flex items-center gap-2 mt-2">
                                                                 <span className="text-xs opacity-60">Pattern & Starting Number:</span>
                                                                 <input
@@ -1165,10 +1264,17 @@ const ManagementDashboard = ({
                                                     <select
                                                         className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
                                                         value={localReceiptRefMode}
-                                                        onChange={(e) => setLocalReceiptRefMode(e.target.value)}
+                                                        onChange={(e) => {
+                                                            const v = e.target.value;
+                                                            setLocalReceiptRefMode(v);
+                                                            if (v !== 'manual' && !/\d$/.test(localReceiptRefPattern || '')) {
+                                                                setLocalReceiptRefPattern(makeTimestampRefPattern(localReceiptRefPattern));
+                                                            }
+                                                        }}
                                                     >
                                                         <option className="bg-slate-800" value="manual">Manually</option>
                                                         <option className="bg-slate-800" value="auto">Automatically</option>
+                                                        <option className="bg-slate-800" value="auto_manual">Automatic (Manual Override)</option>
                                                     </select>
                                                 </td>
                                             </tr>
@@ -1180,7 +1286,7 @@ const ManagementDashboard = ({
                                                         <div className="flex items-center gap-3">
                                                              <span>In journal voucher generate ref no. (Automatically/Manually)</span>
                                                          </div>
-                                                        {localJournalRefMode === 'auto' && (
+                                                        {(localJournalRefMode === 'auto' || localJournalRefMode === 'auto_manual') && (
                                                             <div className="flex items-center gap-2 mt-2">
                                                                 <span className="text-xs opacity-60">Pattern & Starting Number:</span>
                                                                 <input
@@ -1260,10 +1366,17 @@ const ManagementDashboard = ({
                                                     <select
                                                         className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
                                                         value={localJournalRefMode}
-                                                        onChange={(e) => setLocalJournalRefMode(e.target.value)}
+                                                        onChange={(e) => {
+                                                            const v = e.target.value;
+                                                            setLocalJournalRefMode(v);
+                                                            if (v !== 'manual' && !/\d$/.test(localJournalRefPattern || '')) {
+                                                                setLocalJournalRefPattern(makeTimestampRefPattern(localJournalRefPattern));
+                                                            }
+                                                        }}
                                                     >
                                                         <option className="bg-slate-800" value="manual">Manually</option>
                                                         <option className="bg-slate-800" value="auto">Automatically</option>
+                                                        <option className="bg-slate-800" value="auto_manual">Automatic (Manual Override)</option>
                                                     </select>
                                                 </td>
                                             </tr>
@@ -1275,7 +1388,7 @@ const ManagementDashboard = ({
                                                         <div className="flex items-center gap-3">
                                                              <span>In contra voucher generate ref no. (Automatically/Manually)</span>
                                                          </div>
-                                                        {localContraRefMode === 'auto' && (
+                                                        {(localContraRefMode === 'auto' || localContraRefMode === 'auto_manual') && (
                                                             <div className="flex items-center gap-2 mt-2">
                                                                 <span className="text-xs opacity-60">Pattern & Starting Number:</span>
                                                                 <input
@@ -1355,10 +1468,17 @@ const ManagementDashboard = ({
                                                     <select
                                                         className="bg-white/10 border border-white/20 rounded px-2 py-1 text-xs outline-none cursor-pointer text-white"
                                                         value={localContraRefMode}
-                                                        onChange={(e) => setLocalContraRefMode(e.target.value)}
+                                                        onChange={(e) => {
+                                                            const v = e.target.value;
+                                                            setLocalContraRefMode(v);
+                                                            if (v !== 'manual' && !/\d$/.test(localContraRefPattern || '')) {
+                                                                setLocalContraRefPattern(makeTimestampRefPattern(localContraRefPattern));
+                                                            }
+                                                        }}
                                                     >
                                                         <option className="bg-slate-800" value="manual">Manually</option>
                                                         <option className="bg-slate-800" value="auto">Automatically</option>
+                                                        <option className="bg-slate-800" value="auto_manual">Automatic (Manual Override)</option>
                                                     </select>
                                                 </td>
                                             </tr>
@@ -2442,7 +2562,7 @@ const ManagementDashboard = ({
                                                                 <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.8.21'}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.8.22'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/50 font-mono" title={(key.deviceIds || []).join(', ')}>{formatDeviceList(key.deviceIds || [])}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? '—'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
@@ -2559,7 +2679,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">App Version</div>
-                                                                <div className="text-[11px] text-white/50">{key.version || '2.8.21'}</div>
+                                                                <div className="text-[11px] text-white/50">{key.version || '2.8.22'}</div>
                                                             </div>
                                                         </div>
 

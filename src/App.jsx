@@ -125,7 +125,8 @@ import {
     UploadCloud, DownloadCloud, Maximize, Maximize2, Minimize2, FileSpreadsheet, Database, LayoutGrid,
     Calendar, RefreshCw, Table, FilePlus, File, ZoomIn, ZoomOut, Scale, Edit2, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, Star, Heart, Package, ShoppingBag, PlusCircle, Minus,
     Mail, Phone, Shield, ShieldCheck, Building2, Truck, Info, Hash, ArrowUpDown, Loader2, Activity, FileSearch, ChevronsUpDown, CheckCircle2, AlertCircle, CloudOff, UserX,
-    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle, RotateCcw, Clock
+    BookOpen, Receipt, LineChart, LayoutList, Cloud, BarChart3, Settings, Recycle, RotateCcw, Clock,
+    Keyboard
 } from 'lucide-react';
 // Big libraries removed for Code Splitting: custom Helper instead of jspreadsheet implementation for simple utils.
 import { createSheetInDB, updateSheetInDB } from "./sheetService";
@@ -864,7 +865,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.21 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.22 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -919,7 +920,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.21</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.22</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -943,7 +944,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.21</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.22</div>
                 </div>
             </div>
         </Modal>
@@ -6711,7 +6712,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.21";
+    const SYSTEM_VERSION = "2.8.22";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -6897,9 +6898,8 @@ export default function App() {
                 };
 
                 const now = Date.now();
-                localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
+                safeSetItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
                 idleLastActivityRef.current = now;
-
                 setUser(virtualUser);
                 setUserData({
                     name: targetName,
@@ -12259,7 +12259,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.21</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.22</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -13706,6 +13706,7 @@ export default function App() {
                 effectiveName={effectiveName}
                 lots={lots}
                 initialData={editData}
+                onBrowseVoucher={setEditData}
                 directExpenseAccounts={directExpenseAccounts}
 
                 // --- ADD THESE TWO LINES ---
@@ -15303,7 +15304,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.21</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.22</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -29132,7 +29133,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
 
 const PaymentModal = (props) => {
-    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onUpdateProfile, confirmPassword, onDeleteTransaction, invoices, payments, journalVouchers, currentRole } = props;
+    const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onUpdateProfile, confirmPassword, onDeleteTransaction, invoices, payments, journalVouchers, currentRole, onBrowseVoucher } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
     // 1. Initialize State
     const [formData, setFormData] = useState({
@@ -29166,6 +29167,10 @@ const PaymentModal = (props) => {
     const [saving, setSaving] = useState(false);
     const [baseTotalInput, setBaseTotalInput] = useState(''); // local edit state for Voucher Total field
     const [isRefNoUnlocked, setIsRefNoUnlocked] = useState(false);
+    // Voucher browser (Alt+Left / Alt+Right). dirtyRef guards unsaved typing from being
+    // silently thrown away when jumping to another voucher.
+    const dirtyRef = useRef(false);
+    const browseLoadingRef = useRef(false);
 
     // 2. Transaction Mode State
     const [mode, setMode] = useState('multi'); // Forced to 'multi' as requested
@@ -29177,6 +29182,7 @@ const PaymentModal = (props) => {
     const [showInvoiceOptions, setShowInvoiceOptions] = useState(false);
     const [showGenModal, setShowGenModal] = useState(false);
     const [showDateModal, setShowDateModal] = useState(false);
+    const [showShortcutHelp, setShowShortcutHelp] = useState(false);
     // Payment Against tracking
     const [payAgainstRowId, setPayAgainstRowId] = useState(null);
     const [payAgainstPurchases, setPayAgainstPurchases] = useState([]);
@@ -29599,6 +29605,11 @@ const PaymentModal = (props) => {
 
     // Load Initial Data
     useEffect(() => {
+        // Any voucher we load is not a user edit — protect the dirty tracker for a
+        // moment while the setters above flush into state.
+        browseLoadingRef.current = true;
+        dirtyRef.current = false;
+        setTimeout(() => { browseLoadingRef.current = false; }, 400);
         if (isOpen && initialData) {
             setDate(initialData.date || lastDate || new Date().toISOString().split('T')[0]);
             setType(initialData.type || defaultType || 'in');
@@ -29645,7 +29656,7 @@ const PaymentModal = (props) => {
                 currentSeqToUse = companyProfile?.rules?.contraRefCurrentSeq;
             }
 
-            if (modeToUse === 'auto') {
+            if (modeToUse === 'auto' || modeToUse === 'auto_manual') {
                 const pattern = patternToUse;
                 const match = pattern.match(/^(.*?)(\d+)$/);
                 if (match) {
@@ -29668,7 +29679,7 @@ const PaymentModal = (props) => {
             setSplits([{ id: Date.now(), category: t === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
             setIsRefNoUnlocked(false);
         }
-    }, [isOpen, defaultType]); // Re-runs on open AND when opened as Payment / Receipt / Contra // Only run on modal open/close to prevent state resets during edit
+    }, [isOpen, defaultType, initialData?.id]); // Re-runs on open AND when opened as Payment / Receipt / Contra, or when the voucher browser loads another voucher
 
     // Split Lines Logic
     const addLine = () => setSplits([...splits, { id: Date.now(), category: type === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
@@ -29972,13 +29983,15 @@ const PaymentModal = (props) => {
                         seqKey = 'rules.contraRefCurrentSeq';
                     }
 
-                    if (modeToUse === 'auto') {
+                    if (modeToUse === 'auto' || modeToUse === 'auto_manual') {
                         const match = patternToUse.match(/^(.*?)(\d+)$/);
                         if (match) {
                             const startNum = parseInt(match[2], 10);
                             const currentSeq = currentSeqToUse !== undefined ? currentSeqToUse : startNum;
                             const expectedRefNo = `${match[1]}${currentSeq}`;
                             
+                            // Only advance the counter when the ref no. was NOT overridden
+                            // manually — a manual override must not eat the next auto serial.
                             if (refNo === expectedRefNo) {
                                 nextSeqToSave = currentSeq + 1;
                                 const profileRef = doc(db, 'nadtally_live_registry', companyProfile.id || targetUid);
@@ -30062,6 +30075,99 @@ const PaymentModal = (props) => {
         finally { setSaving(false); }
     };
 
+    // ── VOUCHER BROWSER (Alt + ← / Alt + →) ────────────────────────────────────
+    // Siblings = every voucher of the same type, ordered by DATE then REF NO — the
+    // same order the register lists them in, so "previous" means the entry before
+    // this serial in the day book and "next" the entry after it.
+    // NOTE: these hooks must stay ABOVE the shortcut effect that depends on
+    // navigateVoucher (a `const` referenced in a hook dep array before its
+    // declaration would throw "Cannot access before initialization").
+    const browseSiblings = useMemo(() => {
+        const all = (payments || []).filter(v => v && v.id && !isVoucherDeleted(v));
+        // Strictly same voucher family: a RECEIPT screen must never browse into PAYMENTS,
+        // and vice-versa. (Previously an empty family fell back to ALL vouchers.)
+        const wantedType = String(type || '');
+        const list = wantedType ? all.filter(v => String(v.type || '') === wantedType) : all;
+        const refNum = (v) => {
+            const n = parseFloat(String(v?.refNo ?? '').replace(/[^0-9.]/g, ''));
+            return Number.isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
+        };
+        return list.slice().sort((a, b) => {
+            const da = String(a.date || '');
+            const db = String(b.date || '');
+            if (da !== db) return da.localeCompare(db);
+            const ra = refNum(a);
+            const rb = refNum(b);
+            if (ra !== rb) return ra - rb;
+            return String(a.id).localeCompare(String(b.id));
+        });
+    }, [payments, type]);
+
+    const browseIndex = useMemo(() => {
+        const id = initialData?.id;
+        if (!id) return -1;
+        return browseSiblings.findIndex(v => String(v.id) === String(id));
+    }, [browseSiblings, initialData?.id]);
+
+    // A brand-new voucher is not in the list yet, so we anchor the browser on the DATE
+    // typed in the form: back-arrow opens the last voucher on or before that date,
+    // forward-arrow the first one after it. This lets the user see where they would
+    // land even before anything has been saved.
+    const browseAnchor = useMemo(() => {
+        if (browseIndex >= 0) return { prev: browseIndex - 1, next: browseIndex + 1, isNew: false };
+        const curDate = String(date || '');
+        if (!curDate || browseSiblings.length === 0) return { prev: -1, next: -1, isNew: true };
+        let prev = -1;
+        let next = -1;
+        for (let i = 0; i < browseSiblings.length; i += 1) {
+            const d = String(browseSiblings[i].date || '');
+            if (d <= curDate) prev = i;
+            else { next = i; break; }
+        }
+        return { prev, next, isNew: true };
+    }, [browseIndex, browseSiblings, date]);
+
+    const browsePrevTarget = browseAnchor.prev >= 0 && browseAnchor.prev < browseSiblings.length
+        ? browseSiblings[browseAnchor.prev] : null;
+    const browseNextTarget = browseAnchor.next >= 0 && browseAnchor.next < browseSiblings.length
+        ? browseSiblings[browseAnchor.next] : null;
+    // Short tag so the bar shows which family the browser is walking through.
+    const browseFamilyLabel = type === 'in' ? 'RCPT' : type === 'contra' ? 'CTR' : 'PAY';
+
+    // Mark the form dirty when the user changes anything after a voucher has loaded.
+    // An empty new voucher is ignored, otherwise the async ref-no generator would raise
+    // a false "unsaved changes" prompt before the user has typed anything.
+    useEffect(() => {
+        if (!isOpen) return;
+        if (browseLoadingRef.current) return;
+        const hasContent = !!accountId
+            || !!String(narration || '').trim()
+            || (splits || []).some(s => s && (s.targetId || String(s.amount ?? '').trim()));
+        if (!hasContent) return;
+        dirtyRef.current = true;
+    }, [date, type, accountId, refNo, narration, lotId, currencyId, exchangeRate, splits]);
+
+    const navigateVoucher = useCallback((dir) => {
+        if (!onBrowseVoucher) return;
+        if (browseSiblings.length === 0) {
+            showToast?.({ type: 'info', title: 'Voucher Browser', message: 'There are no vouchers of this type yet.' });
+            return;
+        }
+        const target = dir === 'prev' ? browsePrevTarget : browseNextTarget;
+        if (!target) {
+            showToast?.({
+                type: 'info',
+                title: dir === 'prev' ? 'First Voucher' : 'Last Voucher',
+                message: dir === 'prev'
+                    ? 'There is no earlier voucher of this type.'
+                    : 'There is no later voucher of this type.'
+            });
+            return;
+        }
+        if (dirtyRef.current && !window.confirm('This voucher has unsaved changes.\n\nDiscard them and open the other voucher?')) return;
+        onBrowseVoucher(target);
+    }, [browseSiblings.length, browsePrevTarget, browseNextTarget, onBrowseVoucher, showToast]);
+
     // Shortcuts
     useEffect(() => {
         const handler = (e) => {
@@ -30084,11 +30190,15 @@ const PaymentModal = (props) => {
                 }
             }
             if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); narrationRef.current?.focus(); }
+            if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); navigateVoucher('prev'); }
+            if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); navigateVoucher('next'); }
             if ((e.ctrlKey && e.key.toLowerCase() === 'a') || (e.ctrlKey && e.key.toLowerCase() === 's')) { e.preventDefault(); handleSave(); }
         };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [isOpen, handleSave, splits, showDateModal]);
+        // Capture phase: this must win over the browser's own Alt+Left / Alt+Right
+        // history navigation, otherwise the user is thrown out of the app.
+        window.addEventListener('keydown', handler, true);
+        return () => window.removeEventListener('keydown', handler, true);
+    }, [isOpen, handleSave, splits, showDateModal, navigateVoucher]);
 
     const getOptions = (cat) => {
         if (cat === 'party') return liveParties;
@@ -30279,6 +30389,19 @@ const PaymentModal = (props) => {
     };
 
     if (!isOpen) return null;
+    // Keyboard shortcuts available inside the payment / receipt voucher (kept next to
+    // the handler above so the help panel can never drift from the real bindings).
+    const paymentShortcutList = [
+        { keys: ['Alt', '←'], label: 'Open the PREVIOUS voucher (older, same type)' },
+        { keys: ['Alt', '→'], label: 'Open the NEXT voucher (newer, same type)' },
+        { keys: ['F2'], label: 'Open Voucher Date picker' },
+        { keys: ['Alt', 'R'], label: 'Unlock and jump to Ref No' },
+        { keys: ['Alt', 'C'], label: 'Jump to Select Account (Paid From / Received Into)' },
+        { keys: ['Alt', 'X'], label: 'Jump to the ledger account of the first row' },
+        { keys: ['Alt', 'N'], label: 'Jump to Narration' },
+        { keys: ['Ctrl', 'A'], label: 'Save the voucher directly' },
+        { keys: ['Ctrl', 'S'], label: 'Save the voucher directly' }
+    ];
     const currentSym = currencyId === 'BASE' ? (currencySymbol || 'AED') : (currencies.find(c => c.id === currencyId)?.symbol || '?');
     const voucherSwitches = [
         { key: 'payment', label: 'PAYMENT', active: type === 'out' },
@@ -30300,7 +30423,53 @@ const PaymentModal = (props) => {
             defaultMaximized={true}
             removePadding={true}
         >
-            <div className="flex flex-col h-screen max-h-screen bg-slate-50 font-sans select-none overflow-hidden">
+            <div className="relative flex flex-col h-screen max-h-screen bg-slate-50 font-sans select-none overflow-hidden">
+                {/* --- KEYBOARD SHORTCUT HELP PANEL --- */}
+                {showShortcutHelp && (
+                    <div
+                        className="absolute inset-0 z-[300] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+                        onClick={() => setShowShortcutHelp(false)}
+                    >
+                        <div
+                            className="w-full max-w-md bg-white rounded-xl shadow-2xl border-2 border-[#00457c] overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-[#005ea8] to-[#00457c] text-white">
+                                <div className="flex items-center gap-2">
+                                    <Keyboard size={14} />
+                                    <span className="text-[10px] font-black uppercase tracking-[0.2em]">Voucher Shortcuts</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowShortcutHelp(false)}
+                                    className="p-1 rounded hover:bg-white/20 transition-colors"
+                                    title="Close"
+                                >
+                                    <X size={14} />
+                                </button>
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                                {paymentShortcutList.map((s, i) => (
+                                    <div key={i} className="flex items-center justify-between px-4 py-2">
+                                        <span className="text-[11px] font-semibold text-slate-700">{s.label}</span>
+                                        <span className="flex items-center gap-1">
+                                            {s.keys.map((k, ki) => (
+                                                <span key={ki} className="flex items-center gap-1">
+                                                    {ki > 0 && <span className="text-[9px] font-bold text-slate-400">+</span>}
+                                                    <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-slate-100 font-mono text-[10px] font-black text-slate-700 shadow-sm">{k}</kbd>
+                                                </span>
+                                            ))}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="px-4 py-2 bg-slate-50 text-[9px] font-bold uppercase tracking-widest text-slate-400 text-center">
+                                Click anywhere outside to close
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* --- PROFESSIONAL TOP OPTIONS TOOLBAR --- */}
                 <div className="bg-gradient-to-r from-[#005ea8] to-[#00457c] border-b-2 border-[#003a68] text-white p-1 px-4 flex items-center gap-3 shadow-xl z-[100] h-10 shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                     <div className="flex flex-nowrap items-center gap-3 shrink-0">
@@ -30491,10 +30660,50 @@ const PaymentModal = (props) => {
 
                     <div className="w-px h-5 bg-white/10 mx-1"></div>
 
-                    {/* UTILITY TOOLS REMOVED FROM TOP */}
-                    <div className="flex items-center gap-1.5 opacity-0 pointer-events-none">
-                        <Printer size={16} />
+                    {/* 6a. VOUCHER BROWSER — shown only when the company rule allows it */}
+                    {(companyProfile?.rules?.showVoucherNavArrows !== false) && (
+                    <div className="flex items-center gap-0.5" title={`Browse ${browseFamilyLabel === 'RCPT' ? 'RECEIPT' : browseFamilyLabel === 'CTR' ? 'CONTRA' : 'PAYMENT'} vouchers — Alt + ← previous, Alt + → next`}>
+                        <button
+                            type="button"
+                            onClick={() => navigateVoucher('prev')}
+                            disabled={!browsePrevTarget}
+                            title={browsePrevTarget
+                                ? `Previous voucher: ${browsePrevTarget.refNo || '—'} · ${browsePrevTarget.date || ''}`
+                                : 'No earlier voucher'}
+                            className={`flex items-center justify-center h-6 w-6 rounded-md border border-white/30 bg-white/15 transition-all ${!browsePrevTarget ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white/30 active:scale-95'}`}
+                        >
+                            <ChevronLeft size={14} className="text-white" />
+                        </button>
+                        <span
+                            className={`px-1 text-[8px] font-black tabular-nums leading-none ${browseAnchor.isNew ? 'text-[#ffd24a]' : 'text-white/80'}`}
+                            title={browseAnchor.isNew ? `New voucher — browsing is anchored on the date ${date || '(none)'}` : 'Position in this voucher type'}
+                        >
+                            {browseAnchor.isNew ? 'NEW' : `${browseFamilyLabel} ${browseIndex + 1}/${browseSiblings.length}`}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => navigateVoucher('next')}
+                            disabled={!browseNextTarget}
+                            title={browseNextTarget
+                                ? `Next voucher: ${browseNextTarget.refNo || '—'} · ${browseNextTarget.date || ''}`
+                                : 'No later voucher'}
+                            className={`flex items-center justify-center h-6 w-6 rounded-md border border-white/30 bg-white/15 transition-all ${!browseNextTarget ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white/30 active:scale-95'}`}
+                        >
+                            <ChevronRight size={14} className="text-white" />
+                        </button>
                     </div>
+                    )}
+
+                    {/* 6. SHORTCUT HELP — tiny keyboard badge, opens the full key list */}
+                    <button
+                        type="button"
+                        onClick={() => setShowShortcutHelp(true)}
+                        title="Keyboard shortcuts for this voucher"
+                        className="relative flex items-center justify-center h-6 w-6 rounded-md border border-white/25 bg-white/10 hover:bg-white/25 active:scale-95 transition-all"
+                    >
+                        <Keyboard size={13} className="text-white" />
+                        <span className="absolute -bottom-1 -right-1 text-[6px] font-black leading-none text-amber-300">?</span>
+                    </button>
 
                     <div className="w-px h-6 bg-white/20 mx-1"></div>
 
@@ -31255,7 +31464,7 @@ const JournalVoucherModal = (props) => {
                 // === NEW MODE ===
                 setDate(lastDate || new Date().toISOString().split('T')[0]);
                 let nextRefNo = '';
-                if (companyProfile?.rules?.journalRefMode === 'auto') {
+                if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.journalRefMode === 'auto_manual') {
                     const pattern = companyProfile?.rules?.journalRefPattern || '';
                     const match = pattern.match(/^(.*?)(\d+)$/);
                     if (match) {
@@ -31605,7 +31814,7 @@ const JournalVoucherModal = (props) => {
                 if (initialData && oldCollection === 'journal_vouchers') await transaction.update(jvRef, payload);
                 else {
                     await transaction.set(jvRef, payload);
-                    if (companyProfile?.rules?.journalRefMode === 'auto') {
+if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.journalRefMode === 'auto_manual') {
                         const pattern = companyProfile?.rules?.journalRefPattern || '';
                         const match = pattern.match(/^(.*?)(\d+)$/);
                         if (match) {
