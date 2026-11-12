@@ -862,7 +862,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.16 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.17 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -917,7 +917,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.16</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.17</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -941,7 +941,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.16</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.17</div>
                 </div>
             </div>
         </Modal>
@@ -6705,7 +6705,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.16";
+    const SYSTEM_VERSION = "2.8.17";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12253,7 +12253,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.16</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.17</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15295,7 +15295,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.16</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.17</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -36494,6 +36494,9 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
+    // Month-wise profit report (drill-down of the P&L for the selected range)
+    const [showMonthly, setShowMonthly] = useState(false);
+    const [monthlyRows, setMonthlyRows] = useState([]);
     const [selectedLocs, setSelectedLocs] = useState([]);
     const [isLocDropdownOpen, setIsLocDropdownOpen] = useState(false);
     const [dateRange, setDateRange] = useState({
@@ -36614,6 +36617,10 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             ]);
 
             // --- 2. PREPARE DATA HELPERS ---
+            // ── ONE P&L ENGINE ──────────────────────────────────────────────────
+            // The statement view and the monthly report both run THIS function, so the
+            // figures are identical by construction for any period.
+            const computePnlForRange = (range) => {
             const directExpIds = new Set((directExpenseAccounts || []).map(d => d.id));
             const directExpensesMap = {};
             const indirectExpensesMap = {};
@@ -37137,6 +37144,28 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const grossProfit = totalSales - cogs;
             const netProfit = grossProfit - totalIndirectExpenses + totalIndirectIncome;
 
+                return {
+                    sales: totalSales,
+                    purchases: totalPurchases,
+                    directExpensesList,
+                    totalDirectExpenses,
+                    indirectExpensesList,
+                    indirectExpensesGroupsList,
+                    totalIndirectExpenses,
+                    indirectIncomeList,
+                    totalIndirectIncome,
+                    openingStock: totalOpeningStockValue,
+                    closingStock: totalClosingStockValue,
+                    cogs,
+                    grossProfit,
+                    netProfit,
+                    mfgDirectExpAbsorbed: totalMfgDirectExpenses
+                };
+            };
+
+            // One calculation for the selected period — reused by the statement below.
+            const pnl = computePnlForRange(range);
+
             // Balance Sheet Items (Exact as-of balances from ledger movements)
             const invoicesAsOf = invSnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
             const paymentsAsOf = paySnap.docs.map(d => d.data()).filter(d => d.date && d.date <= range.to);
@@ -37299,7 +37328,7 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             if (valuationMethod === 'last_sale') valLabel = "Last Sold Rate";
 
             const assets = [
-                { name: `Closing Stock (${valLabel})`, amount: totalClosingStockValue, type: 'stock' },
+                { name: `Closing Stock (${valLabel})`, amount: pnl.closingStock, type: 'stock' },
                 { name: "Fixed & Other Assets", amount: totalAssetAccountsValue, type: 'asset_list' },
                 { name: "Receivables (Debtors)", amount: debtors, type: 'receivables' },
                 { name: "Cash/Bank Balances", amount: cashBank, type: 'accounts' },
@@ -37313,25 +37342,165 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
             const equityValue = assets.reduce((s, i) => s + i.amount, 0) - creditors;
 
             setData({
-                sales: totalSales,
-                purchases: totalPurchases,
-                directExpensesList,
-                totalDirectExpenses,
-                indirectExpensesList,
-                indirectExpensesGroupsList,
-                totalIndirectExpenses,
-                indirectIncomeList,
-                totalIndirectIncome,
-                openingStock: totalOpeningStockValue,
-                closingStock: totalClosingStockValue,
-                grossProfit,
-                netProfit,
+                ...pnl,
                 assets,
                 liabilities,
                 equityValue,
-                totalCapital,
-                mfgDirectExpAbsorbed: totalMfgDirectExpenses
+                totalCapital
             });
+
+            // ── MONTHLY PROFIT REPORT ─────────────────────────────────────────
+            // Exactly the same rules as the statement above, evaluated one calendar
+            // month at a time inside the selected period.
+            const toIsoD = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const monthBuckets = [];
+            (() => {
+                const startD = new Date(`${range.from}T00:00:00`);
+                const endD = new Date(`${range.to}T00:00:00`);
+                if (isNaN(startD) || isNaN(endD)) return;
+                let y = startD.getFullYear();
+                let m = startD.getMonth();
+                while (y < endD.getFullYear() || (y === endD.getFullYear() && m <= endD.getMonth())) {
+                    const mStart = toIsoD(new Date(y, m, 1));
+                    const mEnd = toIsoD(new Date(y, m + 1, 0));
+                    monthBuckets.push({
+                        label: new Date(y, m, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }),
+                        from: mStart < range.from ? range.from : mStart,
+                        to: mEnd > range.to ? range.to : mEnd
+                    });
+                    m += 1;
+                    if (m > 11) { m = 0; y += 1; }
+                }
+            })();
+
+            const locSingle = selectedLocs.length === 1 ? selectedLocs[0] : '';
+            const allInvDocs = invSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            const allMfgDocs = mfgSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            const inBucket = (date, b) => !!date && date >= b.from && date <= b.to;
+
+            const monthlyRows = [].map(b => {
+                let sales = 0;
+                let purchases = 0;
+                let directExp = 0;
+                let indirectExp = 0;
+                let indirectIncome = 0;
+
+                // Invoices: sales / purchases are company-wide (P&L is not location scoped)
+                allInvDocs.forEach(d => {
+                    if (!inBucket(d.date, b)) return;
+                    const grandTotal = safeNum(d.totalAmount || d.amount || 0);
+                    const tax = safeNum(d.taxAmount);
+                    if (['sales', 'sales_reg_apt', 'sales_unreg_apt'].includes(d.type)) sales += (grandTotal - tax);
+                    if (['purchase', 'purchase_apt'].includes(d.type)) purchases += (grandTotal - tax);
+                    if (Array.isArray(d.expenses)) {
+                        d.expenses.forEach(e => {
+                            if (!e?.expenseId) return;
+                            const amt = safeNum(e.amount);
+                            if (directExpIds.has(e.expenseId)) directExp += amt;
+                            else indirectExp += amt;
+                        });
+                    }
+                });
+
+                // Manufacturing direct expenses
+                allMfgDocs.forEach(d => {
+                    if (!inBucket(d.date, b)) return;
+                    (d.journalExpenses || []).forEach(je => {
+                        const amt = safeNum(je.amount);
+                        if (!amt || !je.expenseId) return;
+                        if (directExpIds.has(je.expenseId)) directExp += amt;
+                        else indirectExp += amt;
+                    });
+                });
+
+                // Payments / receipts touching expense or income ledgers
+                paySnap.docs.forEach(docSnap => {
+                    const d = docSnap.data();
+                    if (!inBucket(d.date, b)) return;
+                    const amt = safeNum(d.amount);
+                    const applyLeg = (tid, cat) => {
+                        if (!tid) return;
+                        if (cat === 'expense') {
+                            const v = (d.type === 'out' ? amt : -amt);
+                            if (directExpIds.has(tid)) directExp += v;
+                            else indirectExp += v;
+                        }
+                        if (cat === 'income') indirectIncome += (d.type === 'in' ? amt : -amt);
+                    };
+                    if (d.isMulti && Array.isArray(d.splits)) {
+                        d.splits.forEach(s => applyLeg(s.targetId, s.category));
+                    } else {
+                        applyLeg(d.expenseId, d.transactionCategory);
+                        applyLeg(d.incomeId, d.transactionCategory);
+                    }
+                });
+
+                // Journal vouchers
+                jvSnap.docs.forEach(docSnap => {
+                    const d = docSnap.data();
+                    if (!inBucket(d.date, b)) return;
+                    const amt = safeNum(d.amount);
+                    const isMfg = !!d.linkedStockJournalId || String(d.narration || '').startsWith('Expenses for Mfg');
+                    const applyLine = (cat, tid, rowAmt, isDr) => {
+                        if (!tid) return;
+                        const a = safeNum(rowAmt);
+                        if (cat === 'expense') {
+                            const v = (isDr ? a : -a);
+                            if (directExpIds.has(tid)) directExp += v;
+                            else indirectExp += v;
+                        }
+                        if (cat === 'income') indirectIncome += (isDr ? -a : a);
+                    };
+                    if (Array.isArray(d.rows) && d.rows.length > 0) {
+                        d.rows.forEach(r => {
+                            if (isMfg && r.type === 'dr' && r.category === 'expense') return;
+                            applyLine(r.category, r.aid || r.id, r.amount, r.type === 'dr');
+                        });
+                    } else {
+                        if (!(isMfg && d.drType === 'expense')) applyLine(d.drType, d.drId, amt, true);
+                        applyLine(d.crType, d.crId, amt, false);
+                    }
+                });
+
+                // Stock: FIFO opening at the month start and closing at the month end
+                const stockRows = computeStockClosing({
+                    products,
+                    invoices: allInvDocs,
+                    stockJournals: allMfgDocs,
+                    asOfDate: b.to,
+                    fromDate: b.from,
+                    valuation: valuationMethod,
+                    locationId: locSingle
+                });
+                let openingStock = 0;
+                let closingStock = 0;
+                stockRows.forEach(r => {
+                    openingStock += safeNum(r.periodOpeningVal);
+                    closingStock += safeNum(r.closingVal);
+                });
+
+                const cogs = openingStock + purchases + directExp - closingStock;
+                const grossProfit = sales - cogs;
+                const netProfit = grossProfit - indirectExp + indirectIncome;
+
+                return {
+                    label: b.label,
+                    from: b.from,
+                    to: b.to,
+                    sales,
+                    openingStock,
+                    purchases,
+                    directExp,
+                    closingStock,
+                    cogs,
+                    grossProfit,
+                    indirectExp,
+                    indirectIncome,
+                    netProfit
+                };
+            });
+            // Reuse the shared engine for every month so the figures match the statement exactly.
+            setMonthlyRows(monthBuckets.map(b => ({ label: b.label, from: b.from, to: b.to, ...computePnlForRange(b) })));
 
         } catch (e) { console.error(e); alert("Error: " + e.message); } finally { setLoading(false); }
     };
@@ -37359,6 +37528,14 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                             <button onClick={() => setReportType('balance_sheet')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${reportType === 'balance_sheet' ? 'bg-[#3b82f6] text-white shadow-lg' : 'text-white/60 hover:text-white'}`}>BALANCE SHEET</button>
                             <button onClick={() => setReportType('pnl')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${reportType === 'pnl' ? 'bg-[#3b82f6] text-white shadow-lg' : 'text-white/60 hover:text-white'}`}>PROFIT & LOSS</button>
                         </div>
+
+                        <button
+                            onClick={() => setShowMonthly(v => !v)}
+                            className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-md border transition-all ml-1 shrink-0 ${showMonthly ? 'bg-emerald-500 text-white border-emerald-400 shadow-lg' : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10'}`}
+                            title="Month-wise profit report for the selected period"
+                        >
+                            MONTHLY PROFIT REPORT
+                        </button>
 
                         <div className="flex bg-black/20 p-1 rounded-md border border-white/10">
                             <button onClick={() => setValuationMethod('fifo')} className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-wider rounded transition-all ${valuationMethod === 'fifo' ? 'bg-[#facc15] text-black shadow-lg' : 'text-white/40 hover:text-white'}`}>FIFO</button>
@@ -37418,7 +37595,104 @@ const FinancialReportsModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                         </div>
                     ) : (
                         <>
-                        {reportType === 'pnl' && (
+                        {reportType === 'pnl' && showMonthly && (
+                            <div className="max-w-[1500px] mx-auto animate-in zoom-in duration-300">
+                                <div className="bg-white border border-blue-200 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans">
+                                    <div className="bg-[#0a2e38] text-white px-4 py-2 flex justify-between items-center border-b border-white/10 shadow-md">
+                                        <div className="flex flex-col">
+                                            <span className="text-[9px] font-black uppercase tracking-[0.2em] opacity-60">Financial Statement</span>
+                                            <span className="text-[11px] font-black uppercase tracking-widest text-[#facc15]">Monthly Profit Report</span>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <button
+                                                onClick={() => setShowMonthly(false)}
+                                                className="px-3 py-1 bg-white/10 hover:bg-white/20 border border-white/20 rounded text-[9px] font-black uppercase tracking-wider transition-colors"
+                                                title="Back to the Profit & Loss statement"
+                                            >
+                                                BACK TO P&L
+                                            </button>
+                                            <span className="text-[9px] font-mono font-bold opacity-60">{dateRange.from} — {dateRange.to}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-[11px] border-collapse">
+                                            <thead>
+                                                <tr className="bg-slate-100 text-slate-600 border-b border-slate-300">
+                                                    <th className="p-2 text-left font-black uppercase tracking-wider text-[9px] sticky left-0 bg-slate-100">Month / Year</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Sales Amount</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Opening Stock</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Purchases + Direct Exp</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Closing Stock</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">COGS</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Gross Profit</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Indirect Expenses</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Indirect Income</th>
+                                                    <th className="p-2 text-right font-black uppercase tracking-wider text-[9px] whitespace-nowrap">Net Profit</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {monthlyRows.map((r, i) => (
+                                                    <tr key={i} className={`border-b border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'} hover:bg-blue-50/60 transition-colors`}>
+                                                        <td className="p-2 font-black text-slate-800 sticky left-0 bg-inherit whitespace-nowrap">{r.label}</td>
+                                                        <td className="p-2 text-right font-mono font-bold text-blue-800">{formatCurrency(r.sales)}</td>
+                                                        <td className="p-2 text-right font-mono text-slate-600">{formatCurrency(r.openingStock)}</td>
+                                                        <td className="p-2 text-right font-mono text-slate-800">{formatCurrency(r.purchases + r.totalDirectExpenses)}</td>
+                                                        <td className="p-2 text-right font-mono text-emerald-700">{formatCurrency(r.closingStock)}</td>
+                                                        <td className="p-2 text-right font-mono font-bold text-red-700">{formatCurrency(r.cogs)}</td>
+                                                        <td className={`p-2 text-right font-mono font-black ${r.grossProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{formatCurrency(r.grossProfit)}</td>
+                                                        <td className="p-2 text-right font-mono text-rose-600">{formatCurrency(r.totalIndirectExpenses)}</td>
+                                                        <td className="p-2 text-right font-mono text-emerald-600">{formatCurrency(r.totalIndirectIncome)}</td>
+                                                        <td className={`p-2 text-right font-mono font-black ${r.netProfit >= 0 ? 'text-green-800' : 'text-red-800'}`}>{formatCurrency(r.netProfit)}</td>
+                                                    </tr>
+                                                ))}
+                                                {monthlyRows.length === 0 && (
+                                                    <tr><td colSpan={10} className="p-10 text-center text-slate-400 font-bold">No months inside the selected period.</td></tr>
+                                                )}
+                                            </tbody>
+                                            {monthlyRows.length > 0 && (() => {
+                                                const t = monthlyRows.reduce((a, r) => ({
+                                                    sales: a.sales + r.sales,
+                                                    openingStock: a.openingStock + r.openingStock,
+                                                    purchases: a.purchases + r.purchases + r.totalDirectExpenses,
+                                                    closingStock: a.closingStock + r.closingStock,
+                                                    cogs: a.cogs + r.cogs,
+                                                    grossProfit: a.grossProfit + r.grossProfit,
+                                                    indirectExp: a.indirectExp + r.totalIndirectExpenses,
+                                                    indirectIncome: a.indirectIncome + r.totalIndirectIncome,
+                                                    netProfit: a.netProfit + r.netProfit
+                                                }), { sales: 0, openingStock: 0, purchases: 0, closingStock: 0, cogs: 0, grossProfit: 0, indirectExp: 0, indirectIncome: 0, netProfit: 0 });
+                                                return (
+                                                    <tfoot>
+                                                        <tr className="bg-[#0a2e38] text-white">
+                                                            <td className="p-2 font-black uppercase tracking-wider text-[9px] sticky left-0 bg-[#0a2e38]">Total</td>
+                                                            <td className="p-2 text-right font-mono font-black">{formatCurrency(t.sales)}</td>
+                                                            <td className="p-2 text-right font-mono">{formatCurrency(t.openingStock)}</td>
+                                                            <td className="p-2 text-right font-mono">{formatCurrency(t.purchases)}</td>
+                                                            <td className="p-2 text-right font-mono">{formatCurrency(t.closingStock)}</td>
+                                                            <td className="p-2 text-right font-mono font-black">{formatCurrency(t.cogs)}</td>
+                                                            <td className="p-2 text-right font-mono font-black text-emerald-300">{formatCurrency(t.grossProfit)}</td>
+                                                            <td className="p-2 text-right font-mono">{formatCurrency(t.indirectExp)}</td>
+                                                            <td className="p-2 text-right font-mono">{formatCurrency(t.indirectIncome)}</td>
+                                                            <td className="p-2 text-right font-mono font-black text-emerald-300">{formatCurrency(t.netProfit)}</td>
+                                                        </tr>
+                                                    </tfoot>
+                                                );
+                                            })()}
+                                        </table>
+                                    </div>
+
+                                    <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 text-[9px] font-bold text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+                                        <span>Valuation: <span className="text-slate-800 uppercase">{valuationMethod === 'fifo' ? 'FIFO' : valuationMethod === 'last_purchase' ? 'Last Purchase/Prod Rate' : 'Last Sold Rate'}</span></span>
+                                        <span>Opening / closing stock are valued FIFO at each month start / end.</span>
+                                        <span>COGS = Opening + Purchases + Direct Exp − Closing.</span>
+                                        <span>Net Profit = Gross Profit − Indirect Expenses + Indirect Income.</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {reportType === 'pnl' && !showMonthly && (
                             <div className="max-w-3xl mx-auto animate-in zoom-in duration-300">
                                 <div className="bg-white border border-blue-200 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans">
                                     {/* REPORT TITLE BAR */}
