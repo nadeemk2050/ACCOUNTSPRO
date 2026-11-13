@@ -108,6 +108,7 @@ import { db, auth, functions, rtdb, cloudRtdb, cloudDb } from './firebase';
 // Real Firebase RTDB functions — imported via @firebase/* to bypass the firebase/database → rxrtdb.js stub alias
 import { ref as realRef, push as realPush, update as realUpdate, remove as realRemove, onValue as realOnValue, serverTimestamp as realRtdbTimestamp } from '@firebase/database';
 import SystemLogModal from './SystemLogModal';
+import SupportCenterModal from './support/SupportCenterModal';
 import { SOFT_DELETED_PURGE_COLLECTIONS, fetchSoftDeletedRecords, isSoftDeletedRecord } from './softDeletedPurge';
 // Perf: heavy screens are code-split (lazy) so they are fetched only when first opened.
 const ManagementDashboard = lazy(() => import('./ManagementDashboard'));
@@ -865,7 +866,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.24 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.25 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -920,7 +921,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.24</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.25</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -944,7 +945,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.24</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.25</div>
                 </div>
             </div>
         </Modal>
@@ -1741,10 +1742,26 @@ const checkGlobalDuplicate = async (db, refNo, userId, excludeId = null) => {
 // Two masters are the SAME name when they match ignoring CAPITAL/small letters and
 // every space / dash / dot / slash:
 //   "SPVC 491" = "spvc491" = "spvc   491" = "spvc-491"  ->  "spvc491"
-const normalizeMasterName = (name = '') => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+// Arabic is normalised too, so "الحساب" = "الحساب " = "الحساب" with different
+// hamza/teh-marbuta forms. Without \p{L} the Arabic letters were stripped and the
+// key became empty, which silently DISABLED the duplicate check for Arabic names.
+const normalizeMasterName = (name = '') => String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')      // latin accents: é -> e
+    .replace(/[\u064B-\u0652\u0640]/g, '') // arabic tashkeel + tatweel
+    .replace(/[إأآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/ؤ/g, 'و')
+    .replace(/ئ/g, 'ي')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, '');       // keep letters of ANY language + digits
 
 // Very-close spelling (typo) detection — used only as a WARNING, never a hard block.
-// Same figures, length within 1 and edit distance <= 1 (e.g. "spvc491" vs "spv491").
+// Same figures, similar length and a small edit distance, so:
+//   "SPVC 491" vs "SPV491"   -> warn
+//   "ARIFUL"   vs "ARIFOOL"  -> warn  (two inserted letters)
+//   "SPVC 491" vs "SPVC 492" -> NEVER (different digits = genuinely different item)
 const masterKeyDigits = (key) => key.replace(/[^0-9]/g, '').split('').sort().join('');
 const withinEditDistance = (a, b, max) => {
     if (Math.abs(a.length - b.length) > max) return false;
@@ -1762,9 +1779,16 @@ const isNearMasterName = (nameA, nameB) => {
     const a = normalizeMasterName(nameA);
     const b = normalizeMasterName(nameB);
     if (!a || !b || a === b) return false;
-    if (Math.min(a.length, b.length) < 4) return false;
+    // "Primary" is the virtual parent group — comparing against it is pure noise.
+    if (a === 'primary' || b === 'primary') return false;
     if (masterKeyDigits(a) !== masterKeyDigits(b)) return false;
-    return withinEditDistance(a, b, 1);
+
+    const shortest = Math.min(a.length, b.length);
+    if (shortest < 4) return false;                 // "ALI" / "OMAR" must stay quiet
+    // Short names: 1 typo is enough to be suspicious. Longer names: allow 2
+    // (ARIFUL / ARIFOOL) because a single extra letter is less meaningful there.
+    const allowed = shortest >= 6 ? 2 : 1;
+    return withinEditDistance(a, b, allowed);
 };
 
 // 🔥 CONTAINER DUPLICATE CHECK (Invoices Only)
@@ -2954,6 +2978,23 @@ const CurrencyManagerModal = ({ isOpen, onClose, zIndex, user, dataOwnerId }) =>
         try {
             const isBase = activeTab === 'base';
 
+            // ── DUPLICATE CURRENCY ───────────────────────────────────────────
+            // Two "USD" (or "usd ", "U-S-D") would split the exchange-rate history.
+            if (formData?.symbol || formData?.name) {
+                const newSym = normalizeMasterName(formData.symbol);
+                const newName = normalizeMasterName(formData.name);
+                const clash = (currencies || []).find(c => {
+                    if (!c || c.id === editingId) return false;
+                    const cs = normalizeMasterName(c.symbol);
+                    const cn = normalizeMasterName(c.name);
+                    return (newSym && cs === newSym) || (newName && cn === newName);
+                });
+                if (clash) {
+                    setLoading(false);
+                    return alert(`Duplicate Currency!\n\n"${formData.name} (${formData.symbol})" already exists as "${clash.name} (${clash.symbol})".\n\nCapital/small letters and spaces are ignored.`);
+                }
+            }
+
             // Payload
             const payload = {
                 name: formData.name,
@@ -3132,6 +3173,25 @@ const UnitManagerModal = ({ isOpen, onClose, zIndex, user, dataOwnerId, units })
 
             // Validation
             if (!formData.name || !formData.symbol) return alert("Please fill Name and Symbol");
+
+            // ── DUPLICATE UNIT NAME / SYMBOL ─────────────────────────────────
+            // "KG" / "kg " / "K-G" must not become three different units.
+            const newKey = normalizeMasterName(formData.name);
+            const newSym = normalizeMasterName(formData.symbol);
+            const unitClash = (units || []).find(u => {
+                if (!u || u.id === editingId) return false;
+                const nk = normalizeMasterName(u.name);
+                const sk = normalizeMasterName(u.symbol);
+                return (newKey && nk === newKey) || (newSym && sk === newSym);
+            });
+            if (unitClash) {
+                return alert(`Duplicate Unit!\n\n"${formData.name} (${formData.symbol})" already exists as "${unitClash.name} (${unitClash.symbol})".\n\nCapital/small letters and spaces are ignored.`);
+            }
+            const unitNear = (units || []).find(u => {
+                if (!u || u.id === editingId) return false;
+                return isNearMasterName(formData.name, u.name) || isNearMasterName(formData.symbol, u.symbol);
+            });
+            if (unitNear && !window.confirm(`A very similar unit already exists → "${unitNear.name} (${unitNear.symbol})".\n\n"${formData.name} (${formData.symbol})" looks like the same unit.\n\nCreate it anyway?`)) return;
 
             const data = {
                 name: formData.name,
@@ -6712,7 +6772,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.24";
+    const SYSTEM_VERSION = "2.8.25";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -7037,6 +7097,9 @@ export default function App() {
     const [savedLedgerFilter, setSavedLedgerFilter] = useState(null);
     const [toast, setToast] = useState(null); // <--- ADD THIS
     const [editData, setEditData] = useState(null);
+    // True while the Support Center guided walkthrough is running: keeps the coach
+    // mounted on top of whatever screen the guide navigated to.
+    const [supportGuideActive, setSupportGuideActive] = useState(false);
     const [viewTaxVoucher, setViewTaxVoucher] = useState(null);
     const [masterModalEditRequest, setMasterModalEditRequest] = useState(null);
 
@@ -9303,6 +9366,7 @@ export default function App() {
 
         // Every master where a duplicated name is never allowed. Matching ignores CAPITAL/small
         // letters and spaces/punctuation, so "SPVC 491", "spvc491" and "spvc   491" collide.
+        // Groups and tax rates are included, so a name cannot be reused across categories.
         const lists = [
             { items: parties, labelFor: (p) => (p.type === 'customer' ? 'customers' : (p.group || 'Customers/Suppliers')) },
             { items: accounts, label: 'Cash/Bank' },
@@ -9312,7 +9376,11 @@ export default function App() {
             { items: capitalAccounts, label: 'Capital Accounts' },
             { items: assetAccounts, label: 'Asset Accounts' },
             { items: products, label: 'Items / Stock Items' },
-            { items: lots, label: 'Lot Numbers' }
+            { items: lots, label: 'Lot Numbers' },
+            { items: partyGroups, label: 'Customer Groups', isGroup: true },
+            { items: expenseGroups, label: 'Expense Groups', isGroup: true },
+            { items: stockGroups, label: 'Stock Groups', isGroup: true },
+            { items: taxRates, label: 'Tax Rates' }
         ];
 
         let nearHit = null;
@@ -9322,6 +9390,8 @@ export default function App() {
                 if (excludeId && item.id === excludeId) continue;
                 const itemKey = normalizeMasterName(item.name);
                 if (!itemKey) continue;
+                // "Primary" is the virtual parent group name — never treat it as a clash.
+                if (itemKey === 'primary' || key === 'primary') continue;
                 const category = list.labelFor ? list.labelFor(item) : list.label;
                 if (itemKey === key) return category;                    // same name -> hard block
                 if (!nearHit && isNearMasterName(name, item.name)) {
@@ -9487,7 +9557,7 @@ export default function App() {
         return cleanData;
     };
 
-    const MASTER_ACCOUNT_COLLECTIONS = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots'];
+    const MASTER_ACCOUNT_COLLECTIONS = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots', 'party_groups', 'expense_groups', 'stock_groups', 'tax_rates'];
 
     // Items must carry Opening Qty and Opening Value together (rule copied from the
     // old Create / Alter Masters form). If a rate is available we can fill the value
@@ -9570,6 +9640,9 @@ export default function App() {
             if (!collectionName) throw new Error('This list has no groups.');
             if (!formData?.name || !String(formData.name).trim()) throw new Error('Group name is required.');
 
+            const dup = guardMasterDuplicate(collectionName, formData.name, null);
+            if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
+
             const cleanData = { ...formData, userId: uid };
             cleanData.name_lowercase = String(formData.name).toLowerCase();
             if (collectionName === 'stock_groups') {
@@ -9618,10 +9691,120 @@ export default function App() {
         }
     };
 
+    // How many vouchers (or child masters) still reference this master?
+    // A ledger with transactions must never be deleted: the vouchers would point at
+    // a name that no longer exists. This is the authoritative check — the row button
+    // in the list also checks it, but every delete path lands here.
+    const countMasterVoucherUsage = (collectionName, id) => {
+        const idLower = String(id || '').toLowerCase();
+        if (!idLower) return 0;
+        const hit = (v) => String(v ?? '').toLowerCase() === idLower;
+        const splitHit = (p) => Array.isArray(p?.splits) && p.splits.some(s => hit(s?.targetId));
+        const jvHit = (jv) => hit(jv?.drId) || hit(jv?.crId)
+            || (Array.isArray(jv?.rows) && jv.rows.some(r => hit(r?.id) || hit(r?.aid)));
+        let count = 0;
+
+        switch (collectionName) {
+            case 'parties':
+                (invoices || []).forEach(inv => { if (hit(inv?.partyId) || hit(inv?.addlExpCreditId)) count += 1; });
+                (payments || []).forEach(p => { if (hit(p?.partyId) || splitHit(p)) count += 1; });
+                (journalVouchers || []).forEach(jv => { if (jvHit(jv)) count += 1; });
+                break;
+            case 'accounts':
+                (invoices || []).forEach(inv => { if (hit(inv?.addlExpCreditId)) count += 1; });
+                (payments || []).forEach(p => { if (hit(p?.accountId) || hit(p?.toAccountId) || splitHit(p)) count += 1; });
+                (journalVouchers || []).forEach(jv => { if (jvHit(jv)) count += 1; });
+                break;
+            case 'expenses':
+                (invoices || []).forEach(inv => { if (hit(inv?.expenseId) || hit(inv?.addlExpCreditId)) count += 1; });
+                (payments || []).forEach(p => { if (hit(p?.expenseId) || splitHit(p)) count += 1; });
+                (journalVouchers || []).forEach(jv => { if (jvHit(jv)) count += 1; });
+                break;
+            case 'direct_expenses':
+                (invoices || []).forEach(inv => {
+                    if (hit(inv?.directExpenseId) || (inv?.items || []).some(i => hit(i?.directExpenseId))) count += 1;
+                });
+                (payments || []).forEach(p => { if (splitHit(p)) count += 1; });
+                (journalVouchers || []).forEach(jv => { if (jvHit(jv)) count += 1; });
+                break;
+            case 'income_accounts':
+                (invoices || []).forEach(inv => { if (hit(inv?.incomeId) || hit(inv?.addlExpCreditId)) count += 1; });
+                (payments || []).forEach(p => { if (splitHit(p)) count += 1; });
+                (journalVouchers || []).forEach(jv => { if (jvHit(jv)) count += 1; });
+                break;
+            case 'capital_accounts':
+            case 'asset_accounts':
+                (invoices || []).forEach(inv => { if (hit(inv?.addlExpCreditId)) count += 1; });
+                (payments || []).forEach(p => { if (splitHit(p)) count += 1; });
+                (journalVouchers || []).forEach(jv => { if (jvHit(jv)) count += 1; });
+                break;
+            case 'products':
+                (invoices || []).forEach(inv => {
+                    if ((inv?.items || []).some(i => hit(i?.productId))) count += 1;
+                });
+                (stockJournals || []).forEach(sj => {
+                    if (hit(sj?.productId)
+                        || (sj?.produced || []).some(i => hit(i?.productId))
+                        || (sj?.consumed || []).some(i => hit(i?.productId))
+                        || (sj?.items || []).some(i => hit(i?.productId))
+                        || (sj?.components || []).some(i => hit(i?.productId))
+                        || (sj?.byProducts || []).some(i => hit(i?.productId))) count += 1;
+                });
+                break;
+            case 'lots':
+                (invoices || []).forEach(inv => {
+                    if (hit(inv?.lotId) || (inv?.items || []).some(i => hit(i?.lotId))) count += 1;
+                });
+                (stockJournals || []).forEach(sj => {
+                    if (hit(sj?.lotId) || (sj?.items || []).some(i => hit(i?.lotId)) || (sj?.components || []).some(c => hit(c?.lotId))) count += 1;
+                });
+                break;
+            case 'party_groups': {
+                const g = (partyGroups || []).find(x => x.id === id);
+                const gName = normalizeMasterName(g?.name);
+                if (gName) (parties || []).forEach(p => { if (normalizeMasterName(p?.group) === gName) count += 1; });
+                break;
+            }
+            case 'expense_groups': {
+                const g = (expenseGroups || []).find(x => x.id === id);
+                const gName = normalizeMasterName(g?.name);
+                if (gName) {
+                    (expenses || []).forEach(e => { if (normalizeMasterName(e?.group) === gName) count += 1; });
+                    (directExpenseAccounts || []).forEach(e => { if (normalizeMasterName(e?.group) === gName) count += 1; });
+                }
+                break;
+            }
+            case 'stock_groups': {
+                const g = (stockGroups || []).find(x => x.id === id);
+                const gName = normalizeMasterName(g?.name);
+                if (gName) (products || []).forEach(pr => { if (normalizeMasterName(pr?.group) === gName) count += 1; });
+                break;
+            }
+            default:
+                break;
+        }
+        return count;
+    };
+
     const chartMasterDelete = async (collectionName, id, label) => {
         try {
             const uid = dataOwnerId || user?.uid;
             if (!uid) throw new Error('Session expired. Please login again.');
+
+            // Hard block: never delete a master that is still referenced.
+            const used = countMasterVoucherUsage(collectionName, id);
+            if (used > 0) {
+                const what = ['party_groups', 'expense_groups', 'stock_groups'].includes(collectionName)
+                    ? `${used} master${used === 1 ? '' : 's'} still under this group`
+                    : `${used} voucher${used === 1 ? '' : 's'}`;
+                setToast({
+                    type: 'error',
+                    title: 'Cannot Delete',
+                    message: `"${label || 'Record'}" is used in ${what}. Remove or re-number them first.`
+                });
+                return { ok: false, error: `Used in ${what}.` };
+            }
+
             if (!(await askAdminPassword(`Delete ${label || 'Record'}`))) return { ok: false, cancelled: true };
             await handleDelete(collectionName, id);
             return { ok: true };
@@ -12259,7 +12442,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.24</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.25</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -12605,6 +12788,14 @@ export default function App() {
                                         shortcut="H"
                                         onClick={() => { setActiveModal('management'); onMenuClick(); setActiveSubMenu(null); }}
                                         className="mt-4 border-t border-slate-200 pt-2 text-[#005994]"
+                                    />
+
+                                    <div className="text-[10px] font-bold text-[#005994] opacity-50 uppercase px-4 py-1 mt-4">Help</div>
+                                    <MenuButton
+                                        label="FAQ & Support"
+                                        shortcut=""
+                                        onClick={() => { setActiveModal('support'); onMenuClick(); setActiveSubMenu(null); }}
+                                        className="text-teal-700 font-bold"
                                     />
                                 </>
                         </div>
@@ -15022,6 +15213,23 @@ export default function App() {
             </Suspense>
             )}
 
+            {/* FAQ & Support — guidance only. Receives NO company data on purpose:
+                it cannot read or change a voucher, a party or a balance.
+                onNavigate only opens a screen for the guided walkthrough; it never
+                saves, deletes or submits anything. */}
+            <SupportCenterModal
+                isOpen={activeModal === 'support' || supportGuideActive}
+                onClose={handleCloseModal}
+                onGuideChange={setSupportGuideActive}
+                onNavigate={(id) => {
+                    if (!id) return;
+                    // Invoice-type screens need their own opener so the voucher type is set.
+                    if (id === 'purchase') { openInvoiceModal('purchase'); return; }
+                    if (id === 'sales') { openInvoiceModal('sales'); return; }
+                    setActiveModal(id);
+                }}
+            />
+
             <SystemLogModal
                 isOpen={activeModal === 'system_logs'}
                 onClose={handleCloseModal}
@@ -15304,7 +15512,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.24</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.25</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -16725,7 +16933,7 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
 
         // Check for duplicate master names — matching ignores CAPITAL/small letters and
         // spaces/punctuation, so "SPVC 491" / "spvc491" / "spvc   491" are the same name.
-        const accountCollections = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots'];
+        const accountCollections = ['parties', 'accounts', 'expenses', 'direct_expenses', 'income_accounts', 'capital_accounts', 'asset_accounts', 'products', 'lots', 'party_groups', 'expense_groups', 'stock_groups', 'tax_rates'];
         if (accountCollections.includes(collectionName) && checkDuplicateName) {
             let duplicateCategory = checkDuplicateName(formData.name, editingId);
             // "~" prefix = same figures, one-character spelling difference (typo / spacing) -> ask, do not block

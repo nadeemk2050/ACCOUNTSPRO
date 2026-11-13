@@ -706,6 +706,37 @@ const ChartOfMastersModal = ({
         }
     };
 
+    // ── DELETE FROM "LIST OF ALL MASTERS" ────────────────────────────────────
+    // A ledger that already has transactions must not be deleted: the vouchers would
+    // point at a name that no longer exists. The count is checked here for a fast,
+    // clear message AND again in App.jsx so no other path can bypass it.
+    const deleteAllMasterRow = async (row) => {
+        if (!row?.id) return;
+        const used = getVoucherCount(row.typeId, row.id);
+        if (used > 0) {
+            setRowMsg({
+                type: 'error',
+                text: `Cannot delete "${row.name}" — it is used in ${used} voucher${used === 1 ? '' : 's'}. Remove or re-number those vouchers first.`
+            });
+            return;
+        }
+        setAllEditSaving(true);
+        setRowMsg(null);
+        try {
+            const res = await onChartDelete?.(row.collectionName, row.id, row.name);
+            if (res?.ok) {
+                if (allEditKey === row.key) cancelAllMasterEdit();
+                setRowMsg({ type: 'success', text: `Deleted: "${row.name}"` });
+            } else if (!res?.cancelled) {
+                setRowMsg({ type: 'error', text: res?.error || 'Delete was blocked.' });
+            }
+        } catch (e) {
+            setRowMsg({ type: 'error', text: e.message });
+        } finally {
+            setAllEditSaving(false);
+        }
+    };
+
     const moveRow = async (item) => {
         if (!moveType) { setRowMsg({ type: 'error', text: 'Choose a new ledger type first.' }); return; }
         setSavingRow(true);
@@ -1202,15 +1233,18 @@ const ChartOfMastersModal = ({
     };
 
     // Handle Quick Adding to Firestore Database
+    // ‼️ This is the "save with just the name" path. It used to call addDoc() directly,
+    // which bypassed the App-level duplicate guard — that is how two identical ledgers
+    // (e.g. "ABBAD SALARY") could be created. It now ALWAYS goes through the same
+    // handlers as the full form, so duplicate / near-duplicate rules always apply.
     const handleQuickAddSubmit = async (e) => {
         e.preventDefault();
         if (!quickAddName.trim()) return;
 
         setSavingQuickAdd(true);
+        setRowMsg(null);
+        let created = false;
         try {
-            const currentUserId = user?.uid || 'GUEST_UID';
-            const effectiveName = user?.displayName || user?.email || 'System';
-
             if (quickAddType === 'group') {
                 // ADDING A GROUP
                 const coll = currentTab.groupCollection;
@@ -1244,22 +1278,15 @@ const ChartOfMastersModal = ({
                     } : { addValues: 'No' })
                 };
 
-                const docRef = await addDoc(collection(db, coll), payload);
-                
-                // Write Audit Log
-                await addDoc(collection(db, 'audit_logs'), {
-                    date: serverTimestamp(),
-                    ownerId: dataOwnerId,
-                    userId: currentUserId,
-                    userName: effectiveName,
-                    action: 'CREATED',
-                    docType: coll === 'stock_groups' ? 'Stock Group' : 'Group',
-                    refNo: payload.name,
-                    amount: 0,
-                    docId: docRef.id,
-                    description: `Created new group: ${payload.name}`,
-                    snapshotData: JSON.stringify(payload)
-                });
+                const res = await onChartGroupCreate?.(coll, payload);
+                if (res?.ok) {
+                    created = true;
+                    setQuickAddName('');
+                    setQuickAddForm({});
+                    setRowMsg({ type: 'success', text: `Created group: "${payload.name}"` });
+                } else if (!res?.cancelled) {
+                    setRowMsg({ type: 'error', text: res?.error || 'Create failed.' });
+                }
 
             } else if (quickAddType === 'ledger') {
                 // ADDING A LEDGER / ITEM
@@ -1291,28 +1318,25 @@ const ChartOfMastersModal = ({
                     payload.description = '';
                 }
 
-                const docRef = await addDoc(collection(db, coll), payload);
-
-                // Write Audit Log
-                await addDoc(collection(db, 'audit_logs'), {
-                    date: serverTimestamp(),
-                    ownerId: dataOwnerId,
-                    userId: currentUserId,
-                    userName: effectiveName,
-                    action: 'CREATED',
-                    docType: currentTab.label,
-                    refNo: payload.name,
-                    amount: 0,
-                    docId: docRef.id,
-                    description: `Created new master: ${payload.name}`,
-                    snapshotData: JSON.stringify(payload)
-                });
+                // Guarded path: duplicate / near-duplicate check + audit log happen in App.
+                const res = await onChartCreate?.(coll, payload);
+                if (res?.ok) {
+                    created = true;
+                    setQuickAddName('');
+                    setQuickAddForm({});
+                    setRowMsg({ type: 'success', text: `Created: "${payload.name}"` });
+                } else if (!res?.cancelled) {
+                    setRowMsg({ type: 'error', text: res?.error || 'Create failed.' });
+                }
             }
 
-            setQuickAddName('');
-            setQuickAddType(null);
-            // Refresh logs to fetch creation metadata immediately
-            fetchLogs();
+            // Keep the dialog open when the create was blocked, so the reason stays visible.
+            if (created) {
+                setQuickAddName('');
+                setQuickAddType(null);
+                // Refresh logs to fetch creation metadata immediately
+                fetchLogs();
+            }
         } catch (err) {
             alert("Error saving master: " + err.message);
         } finally {
@@ -1594,10 +1618,20 @@ const ChartOfMastersModal = ({
                                                         {r.openingValue === null ? '—' : formatOpening(r.openingValue, 2)}
                                                     </td>
                                                     <td className="py-2 px-6">
-                                                        <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide ${allEditKey === r.key ? 'text-amber-700' : 'text-[#005994]'}`}>
-                                                            <Pencil size={12} />
-                                                            {allEditKey === r.key ? 'Editing' : 'Edit'}
-                                                        </span>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide ${allEditKey === r.key ? 'text-amber-700' : 'text-[#005994]'}`}>
+                                                                <Pencil size={12} />
+                                                                {allEditKey === r.key ? 'Editing' : 'Edit'}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); deleteAllMasterRow(r); }}
+                                                                className="inline-flex items-center justify-center rounded-md border border-red-200 bg-red-50 p-1 text-red-600 hover:bg-red-100 hover:text-red-700 transition-colors"
+                                                                title={`Delete "${r.name}" (admin password required · blocked if the ledger has vouchers)`}
+                                                            >
+                                                                <Trash2 size={12} />
+                                                            </button>
+                                                        </div>
                                                     </td>
                                                 </tr>
                                                 {allEditKey === r.key && (
