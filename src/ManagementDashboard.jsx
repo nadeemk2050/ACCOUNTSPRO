@@ -7,11 +7,12 @@ import {
     DownloadCloud, UploadCloud, ShieldCheck, Key,
     BarChart2, History, Building2, Ruler, Coins, ReceiptText, MapPin,
     Users, Truck, PlusCircle, Trash, FileImage, Eye, Pencil, Edit3,
-    FileSpreadsheet
+    FileSpreadsheet, Bot
 } from 'lucide-react';
 import { db, auth } from './firebase';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { getMasterDB } from './localDB';
+import AiKbModal from './support/AiKbModal';
 
 import {
     collection, addDoc, serverTimestamp, query,
@@ -270,7 +271,7 @@ const ManagementDashboard = ({
                     requestedAt: parsed.requestedAt,
                     deviceId: devices[0] || '',
                     deviceIds: devices,
-                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.8.25',
+                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.8.26',
                     liveCompaniesCount: firstNumber(parsed.liveCompaniesCount, parsed.companyCount, parsed.liveDataCount, usage.liveCompaniesCount),
                     usageReads: firstNumber(parsed.reads, parsed.readCount, usage.reads, usage.readCount, usage.firestoreReads),
                     usageWrites: firstNumber(parsed.writes, parsed.writeCount, usage.writes, usage.writeCount, usage.firestoreWrites),
@@ -362,7 +363,7 @@ const ManagementDashboard = ({
                     status: { stringValue: 'inactive' },
                     createdAt: { timestampValue: new Date().toISOString() },
                     createdBy: { stringValue: currentUser.email || 'developer' },
-                    version: { stringValue: '2.8.25' },
+                    version: { stringValue: '2.8.26' },
                     isGenerated: { booleanValue: true },
                 }
             };
@@ -679,6 +680,8 @@ const ManagementDashboard = ({
 
     if (currentRole === 'developer') {
         modules.push({ id: 'developer_tools', name: 'Dev Center', icon: <ShieldCheck className="w-6 h-6 md:w-8 md:h-8 text-red-500 animate-pulse" /> });
+        // Developer-only: edit the assistant's knowledge brain (tell / ignore / tone / NLM / banned languages).
+        modules.push({ id: 'ai_kb', name: 'AI & Chatbot KB', icon: <Bot className="w-6 h-6 md:w-8 md:h-8 text-violet-300" /> });
     }
 
     const [showTaxModule, setShowTaxModule] = useState(false);
@@ -691,7 +694,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.8.25</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.8.26</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -2474,6 +2477,11 @@ const ManagementDashboard = ({
                         </div>
                     )}
 
+                    {/* Developer-only: AI & Chatbot knowledge brain editor */}
+                    {activeTab === 'ai_kb' && currentRole === 'developer' && (
+                        <AiKbModal onClose={() => setActiveTab('dashboard')} />
+                    )}
+
                     {activeTab === 'developer_tools' && currentRole === 'developer' && (
                         <div className="mt-8 animate-in slide-in-from-bottom duration-500">
                             {/* HEADER */}
@@ -2562,7 +2570,7 @@ const ManagementDashboard = ({
                                                                 <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.8.25'}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.8.26'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/50 font-mono" title={(key.deviceIds || []).join(', ')}>{formatDeviceList(key.deviceIds || [])}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? '—'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
@@ -2679,7 +2687,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">App Version</div>
-                                                                <div className="text-[11px] text-white/50">{key.version || '2.8.25'}</div>
+                                                                <div className="text-[11px] text-white/50">{key.version || '2.8.26'}</div>
                                                             </div>
                                                         </div>
 

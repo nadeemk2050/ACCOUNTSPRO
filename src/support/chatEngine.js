@@ -24,6 +24,7 @@
 import { primeSearchIndex, route, searchFeatures, tokenize, normalize } from './faqSearch';
 import { ALL_FEATURES } from './featureCatalogue';
 import { FAQ_DATA } from './faqData';
+import { detectBlockedLanguage } from './knowledgeBase';
 
 /* ── vocabulary ──────────────────────────────────────────────────────────── */
 
@@ -281,6 +282,18 @@ export function askBot(text, state = createChatState()) {
 
     /* 1. empty */
     if (!raw) return { reply: CLARIFY_REPLY, state: state0 };
+
+    /* 1b. restricted language (configurable in the developer knowledge base) */
+    const blocked = detectBlockedLanguage(raw);
+    if (blocked) {
+        return {
+            reply: {
+                type: 'text',
+                text: `I can only answer in English, Arabic or Hindi/Urdu — ${blocked} is switched off for this assistant. Please ask again in one of those languages.`,
+            },
+            state: { ...state0, pendingGuide: null, lastOptions: [] },
+        };
+    }
 
     /* 2. trust questions first — they must never be answered by a keyword match */
     if (AI_Q.test(raw)) return { reply: AI_REPLY, state: { ...state0, pendingGuide: null } };

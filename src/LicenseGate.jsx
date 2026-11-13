@@ -448,7 +448,7 @@ function LicenseProfileModal({ licenseInfo, onClose, onDeactivate, mode }) {
     );
 }
 
-const SYSTEM_VERSION = '2.8.25';
+const SYSTEM_VERSION = '2.8.26';
 const EDU_KEY = 'nadtally_edu_v1';
 
 export default function LicenseGate({ children }) {

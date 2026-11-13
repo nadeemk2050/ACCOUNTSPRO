@@ -26,6 +26,7 @@
 import { safeGetItem, safeSetItem, safeRemoveItem } from '../safeStorage';
 import { ALL_FEATURES } from './featureCatalogue';
 import { FAQ_DATA } from './faqData';
+import { kbPromptBlock, loadKb } from './knowledgeBase';
 
 const KEY_STORE = 'accpro_support_ai_key';
 const ENABLE_STORE = 'accpro_support_ai_enabled';
@@ -163,6 +164,9 @@ const SYSTEM_PROMPT = () => {
         '',
         'Existing help questions (context and style guide):',
         questions,
+        '',
+        'DEVELOPER KNOWLEDGE BASE (these rules override anything above):',
+        kbPromptBlock(loadKb()),
         '',
         'Reply with JSON only, exactly this shape:',
         '{"answer":"the answer text","keywords":["3 to 6 short lowercase search words"],"known":true}',
