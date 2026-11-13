@@ -865,7 +865,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.22 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.23 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -920,7 +920,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.22</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.23</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -944,7 +944,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.22</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.23</div>
                 </div>
             </div>
         </Modal>
@@ -6712,7 +6712,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.22";
+    const SYSTEM_VERSION = "2.8.23";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12259,7 +12259,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.22</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.23</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15304,7 +15304,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.22</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.23</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -30133,6 +30133,10 @@ const PaymentModal = (props) => {
         ? browseSiblings[browseAnchor.next] : null;
     // Short tag so the bar shows which family the browser is walking through.
     const browseFamilyLabel = type === 'in' ? 'RCPT' : type === 'contra' ? 'CTR' : 'PAY';
+    // Opt-in per company (System Rules → "Add vouchers navigation arrows…"). OFF unless
+    // the company explicitly turned it on, so Alt+Left keeps behaving like the browser Back
+    // for the majority of users who never use voucher browsing.
+    const navArrowsEnabled = companyProfile?.rules?.showVoucherNavArrows === true;
 
     // Mark the form dirty when the user changes anything after a voucher has loaded.
     // An empty new voucher is ignored, otherwise the async ref-no generator would raise
@@ -30190,15 +30194,15 @@ const PaymentModal = (props) => {
                 }
             }
             if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); narrationRef.current?.focus(); }
-            if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); navigateVoucher('prev'); }
-            if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); navigateVoucher('next'); }
+            if (navArrowsEnabled && e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); navigateVoucher('prev'); }
+            if (navArrowsEnabled && e.altKey && e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); navigateVoucher('next'); }
             if ((e.ctrlKey && e.key.toLowerCase() === 'a') || (e.ctrlKey && e.key.toLowerCase() === 's')) { e.preventDefault(); handleSave(); }
         };
         // Capture phase: this must win over the browser's own Alt+Left / Alt+Right
         // history navigation, otherwise the user is thrown out of the app.
         window.addEventListener('keydown', handler, true);
         return () => window.removeEventListener('keydown', handler, true);
-    }, [isOpen, handleSave, splits, showDateModal, navigateVoucher]);
+    }, [isOpen, handleSave, splits, showDateModal, navigateVoucher, navArrowsEnabled]);
 
     const getOptions = (cat) => {
         if (cat === 'party') return liveParties;
@@ -30660,8 +30664,8 @@ const PaymentModal = (props) => {
 
                     <div className="w-px h-5 bg-white/10 mx-1"></div>
 
-                    {/* 6a. VOUCHER BROWSER — shown only when the company rule allows it */}
-                    {(companyProfile?.rules?.showVoucherNavArrows !== false) && (
+                    {/* 6a. VOUCHER BROWSER — opt-in: only shown when the company rule is enabled */}
+                    {navArrowsEnabled && (
                     <div className="flex items-center gap-0.5" title={`Browse ${browseFamilyLabel === 'RCPT' ? 'RECEIPT' : browseFamilyLabel === 'CTR' ? 'CONTRA' : 'PAYMENT'} vouchers — Alt + ← previous, Alt + → next`}>
                         <button
                             type="button"
