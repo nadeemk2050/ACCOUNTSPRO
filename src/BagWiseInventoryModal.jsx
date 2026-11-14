@@ -9,6 +9,7 @@ import { Download, ArrowLeft, X, RefreshCw, History, TrendingUp, FileText, Searc
 // Perf: xlsx is imported on demand inside downloadExcel (keeps it out of the boot bundle)
 import { createPortal } from 'react-dom';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, products, globalDateCmd, onDateCmdProcessed, onOpenVoucher, units }) => {
     const baseUnitSymbol = units?.find(u => u.isBase)?.symbol || 'kg';
 
@@ -469,7 +470,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
 
     const handleRecalculateBagInventory = async () => {
         if (recalcLoading) return;
-        if (!window.confirm('Recalculate bag inventory now? This will scan and list orphan bags only. No bag will be auto-deleted.')) return;
+        if (!(await confirmAction('Recalculate bag inventory now? This will scan and list orphan bags only. No bag will be auto-deleted.'))) return;
 
         setRecalcLoading(true);
         try {
@@ -597,7 +598,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     // (no source voucher). Any ghost that could be the ONLY copy of a real bag is kept and reported.
     const handleCleanupGhostBags = async () => {
         if (ghostCleanupLoading) return;
-        if (!window.confirm('Scan for ghost/duplicate bag records?\n\nThis will DELETE only records that are provably redundant: phantoms (like "undefined_A331") that duplicate a real bag, or completely unlinked records. Any record that could be the only copy of a real bag is KEPT. Continue?')) return;
+        if (!(await confirmAction('Scan for ghost/duplicate bag records?\n\nThis will DELETE only records that are provably redundant: phantoms (like "undefined_A331") that duplicate a real bag, or completely unlinked records. Any record that could be the only copy of a real bag is KEPT. Continue?'))) return;
         setGhostCleanupLoading(true);
         try {
             const snap = await getDocs(collection(db, 'jumbo_bags'));
@@ -640,7 +641,7 @@ const BagWiseInventoryModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
                 return;
             }
 
-            const ok = window.confirm(`Found ${ghosts.length} ghost record(s).\n\nSAFE TO DELETE (${toDelete.length}):\n${preview}${toDelete.length > 20 ? `\n...and ${toDelete.length - 20} more` : ''}${keptNote}\n\nDelete these ${toDelete.length} record(s)?`);
+            const ok = (await confirmAction(`Found ${ghosts.length} ghost record(s).\n\nSAFE TO DELETE (${toDelete.length}):\n${preview}${toDelete.length > 20 ? `\n...and ${toDelete.length - 20} more` : ''}${keptNote}\n\nDelete these ${toDelete.length} record(s)?`));
             if (!ok) { setGhostCleanupLoading(false); return; }
 
             const batch = writeBatch(db);

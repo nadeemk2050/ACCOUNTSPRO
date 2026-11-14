@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { collection, addDoc, getDocs, query, orderBy, serverTimestamp, doc, deleteDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const TAX_TYPES = [
   { id: 'purchase_apt', label: '📥 Purchase APT Rules' },
   { id: 'sales_reg_apt', label: '🧾 Reg Sales APT Rules' },
@@ -269,7 +270,7 @@ function RuleListTab({ rules, taxRates, onDeleted }) {
   const [expandedId, setExpandedId] = useState(null);
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this calculation rule?')) return;
+    if (!(await confirmAction('Delete this calculation rule?'))) return;
     setDeleting(id);
     try {
       await deleteDoc(doc(db, 'tax_calc_rules', id));

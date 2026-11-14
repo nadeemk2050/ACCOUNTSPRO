@@ -34,6 +34,15 @@ import StockValuationBadge from './StockValuationBadge';
 import { computeStockClosing, getStoredValuation, setStoredValuation, STOCK_MOVEMENT_TYPES } from './stockValuation';
 // Crash-proof localStorage: a full disk must never block a login or a sync.
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safeStorage';
+import { confirmAction, ConfirmHost } from './ui/ConfirmDialog';
+
+/** Shared wording for the voucher "save the changes" confirmation. */
+const SAVE_CHANGES_CONFIRM = {
+    title: 'Save changes',
+    message: 'Are you sure you want to save the changes ?',
+    yesLabel: 'Yes',
+    noLabel: 'No',
+};
 
 const checkBlock = () => {
     if (window._isReadOnlyMode) {
@@ -866,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.26 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.27 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -921,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.26</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.27</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -945,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.26</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.27</div>
                 </div>
             </div>
         </Modal>
@@ -3191,7 +3200,7 @@ const UnitManagerModal = ({ isOpen, onClose, zIndex, user, dataOwnerId, units })
                 if (!u || u.id === editingId) return false;
                 return isNearMasterName(formData.name, u.name) || isNearMasterName(formData.symbol, u.symbol);
             });
-            if (unitNear && !window.confirm(`A very similar unit already exists → "${unitNear.name} (${unitNear.symbol})".\n\n"${formData.name} (${formData.symbol})" looks like the same unit.\n\nCreate it anyway?`)) return;
+            if (unitNear && !(await confirmAction(`A very similar unit already exists → "${unitNear.name} (${unitNear.symbol})".\n\n"${formData.name} (${formData.symbol})" looks like the same unit.\n\nCreate it anyway?`))) return;
 
             const data = {
                 name: formData.name,
@@ -3236,7 +3245,7 @@ const UnitManagerModal = ({ isOpen, onClose, zIndex, user, dataOwnerId, units })
     };
 
     const handleDelete = async (id) => {
-        if (!window.confirm("Delete this unit?")) return;
+        if (!(await confirmAction("Delete this unit?"))) return;
         try {
             await deleteDoc(doc(db, 'units', id));
         } catch (err) { console.error(err); }
@@ -4265,7 +4274,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         // Get the best available stats for this company (use in-memory if active)
         const liveStats = (currentCompanyId && coId === currentCompanyId && currentStats) ? currentStats : null;
         const statsText = liveStats ? `\n\nData to upload: ${liveStats.vouchers} Vouchers, ${liveStats.ledgers} Ledgers` : '';
-        if (!window.confirm(`Upload ALL data for "${coName}" to Firebase?${statsText}\n\nThis will push all records to the cloud so they can be accessed from any device.`)) return;
+        if (!(await confirmAction(`Upload ALL data for "${coName}" to Firebase?${statsText}\n\nThis will push all records to the cloud so they can be accessed from any device.`))) return;
         setMakingLiveId(coId);
         const startTime = Date.now();
         setMakeLiveProgress({ current: 0, total: 0, ledgers: 0, totalLedgers: liveStats?.ledgers || 0, vouchers: 0, totalVouchers: liveStats?.vouchers || 0 });
@@ -4329,7 +4338,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
 
     const handleStopSync = async () => {
         if (!makingLiveId || syncStopping) return;
-        if (!window.confirm("STOP and REVERT this sync procedure?\n\nThis will immediately halt uploading and reverse/remove any records uploaded to the cloud for this company.")) {
+        if (!(await confirmAction("STOP and REVERT this sync procedure?\n\nThis will immediately halt uploading and reverse/remove any records uploaded to the cloud for this company."))) {
             return;
         }
         setSyncStopping(true);
@@ -4360,7 +4369,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         e.stopPropagation();
         const localStats = companies.find(c => c.id === coId)?.stats;
         const statsText = localStats ? `\n\nThis will push all ${localStats.vouchers || 0} vouchers and ${localStats.ledgers || 0} ledgers.` : '';
-        if (!window.confirm(`🔄 FORCE FULL RE-SYNC\n\nPush ALL local records for "${coName}" to Firebase, ignoring previous sync status?\n\nUse this if QuickAccPro is missing vouchers that exist in the main app.${statsText}`)) return;
+        if (!(await confirmAction(`🔄 FORCE FULL RE-SYNC\n\nPush ALL local records for "${coName}" to Firebase, ignoring previous sync status?\n\nUse this if QuickAccPro is missing vouchers that exist in the main app.${statsText}`))) return;
         
         setForceResyncId(coId);
         setForceResyncProgress({ current: 0, total: 0 });
@@ -4665,7 +4674,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     // --- Cloud Recycle Bin Actions (Restore, Single Permanent Delete, Empty Bin) ---
     const handleRestoreFromRecycleBin = async (co, e) => {
         if (e) e.stopPropagation();
-        if (!window.confirm(`Restore "${co.name}" back to active Live Cloud Data?`)) return;
+        if (!(await confirmAction(`Restore "${co.name}" back to active Live Cloud Data?`))) return;
         try {
             const res = await restoreCompanyFromCloudRecycleBin(co.id);
             if (!res.success) throw new Error(res.error || 'Restore failed');
@@ -4723,7 +4732,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
     // Handle downloading a live company from Firebase to local
     const handleDownloadLiveCompany = async (liveCo, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Download company '${liveCo.name}' from Firebase to this PC?\n\nAfter downloading you can open it from both LIVE DATAS and OFFLINE sections.`)) return;
+        if (!(await confirmAction(`Download company '${liveCo.name}' from Firebase to this PC?\n\nAfter downloading you can open it from both LIVE DATAS and OFFLINE sections.`))) return;
         setDownloadingId(liveCo.id);
         setDownloadProgress({ current: 0, total: 0 });
         try {
@@ -4757,7 +4766,7 @@ const CompanySelectionOverlay = ({ onSelect, onClose, user, systemInfo, currentC
         }
         const newPath = await ipcRenderer.invoke('select-folder');
         if (newPath) {
-            if (window.confirm(`âš ï¸ CHANGE DATA LOCATION?\n\nNew Path: ${newPath}\n\n1. The app will restart now.\n2. You must MANUALLY COPY your existing data folders from the old location to the new one.\n\nContinue?`)) {
+            if ((await confirmAction(`âš ï¸ CHANGE DATA LOCATION?\n\nNew Path: ${newPath}\n\n1. The app will restart now.\n2. You must MANUALLY COPY your existing data folders from the old location to the new one.\n\nContinue?`))) {
                 try {
                     const config = { userDataPath: newPath };
                     const configPath = nodePath.join(window.process.env.APPDATA, 'accpro-config.json');
@@ -6772,7 +6781,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.26";
+    const SYSTEM_VERSION = "2.8.27";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -8007,12 +8016,12 @@ export default function App() {
     }, [IDLE_WARNING_SECONDS]);
 
     const handleLogout = useCallback(async () => {
-        if (!window.confirm("ARE YOU SURE TO LOGOUT?")) return;
+        if (!(await confirmAction("ARE YOU SURE TO LOGOUT?"))) return;
         await performLogout('manual');
     }, [performLogout]);
 
-    const handleSubUserLogout = useCallback(() => {
-        if (!window.confirm("Log out current sub-user and return to admin?")) return;
+    const handleSubUserLogout = useCallback(async () => {
+        if (!(await confirmAction("Log out current sub-user and return to admin?"))) return;
         
         // 🚀 CLEAR PWA PERSISTENT SESSION
         if (activeCompanyId) {
@@ -8125,7 +8134,7 @@ export default function App() {
         if (!checkPermission('delete')) return; // Block delete for Data Entry 1
 
         // 1. CONFIRMATION
-        if (!window.confirm("Are you sure you want to delete this record?")) return;
+        if (!(await confirmAction("Are you sure you want to delete this record?"))) return;
 
         // 2. SAFETY CHECKS (Referential Integrity)
         try {
@@ -8892,7 +8901,7 @@ export default function App() {
         }
 
         if (!checkPermission('delete')) return false;
-        if (!window.confirm(`âš ï¸ ARE YOU SURE?\n\nYou are about to delete ${items.length} transactions permanently. This will REVERSE all balances.`)) return false;
+        if (!(await confirmAction(`âš ï¸ ARE YOU SURE?\n\nYou are about to delete ${items.length} transactions permanently. This will REVERSE all balances.`))) return false;
 
         setToast({ type: 'loading', title: 'Processing...', message: `Deleting ${items.length} items...` });
 
@@ -9051,7 +9060,7 @@ export default function App() {
         // 2. Permission Check (Double safety)
         if (!checkPermission('delete')) return false;
 
-        if (!window.confirm("âš ï¸ ARE YOU SURE?\n\nDeleting this will REVERSE all balances.")) return false;
+        if (!(await confirmAction("âš ï¸ ARE YOU SURE?\n\nDeleting this will REVERSE all balances."))) return false;
 
         setToast({ type: 'loading', title: 'Processing...', message: 'Deleting...' });
 
@@ -9074,7 +9083,7 @@ export default function App() {
                 }
                 
                 if (parentId) {
-                    if (!window.confirm("This is a linked Expense Voucher.\nDeleting it will ALSO DELETE its parent Manufacturing Voucher and all associated data.\n\nProceed to delete BOTH?")) {
+                    if (!(await confirmAction("This is a linked Expense Voucher.\nDeleting it will ALSO DELETE its parent Manufacturing Voucher and all associated data.\n\nProceed to delete BOTH?"))) {
                         setToast(null);
                         return false;
                     }
@@ -9579,12 +9588,12 @@ export default function App() {
 
     // Returns { blocked } or { blocked: true, cancelled: true } when the operator
     // declines the "very similar name" confirmation.
-    const guardMasterDuplicate = (collectionName, name, excludeId) => {
+    const guardMasterDuplicate = async (collectionName, name, excludeId) => {
         if (!MASTER_ACCOUNT_COLLECTIONS.includes(collectionName) || !checkAccountNameDuplicate) return { blocked: false };
         let duplicateCategory = checkAccountNameDuplicate(name, excludeId);
         if (duplicateCategory && String(duplicateCategory).startsWith('~')) {
             const similar = String(duplicateCategory).slice(1).trim();
-            if (!window.confirm(`A very similar master already exists -> ${similar}\n\nSave it anyway?`)) return { blocked: true, cancelled: true };
+            if (!(await confirmAction({ title: 'Similar name found', message: `A very similar master already exists -> ${similar}\n\nSave it anyway?`, yesLabel: 'Save anyway', noLabel: 'Cancel' }))) return { blocked: true, cancelled: true };
             duplicateCategory = null;
         }
         if (duplicateCategory) {
@@ -9603,7 +9612,7 @@ export default function App() {
             if (!uid) throw new Error('Session expired. Please login again.');
             if (!formData?.name || !String(formData.name).trim()) throw new Error('Name is required.');
 
-            const dup = guardMasterDuplicate(collectionName, formData.name, null);
+            const dup = await guardMasterDuplicate(collectionName, formData.name, null);
             if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
 
             const pairing = validateOpeningPairing(collectionName, formData);
@@ -9640,7 +9649,7 @@ export default function App() {
             if (!collectionName) throw new Error('This list has no groups.');
             if (!formData?.name || !String(formData.name).trim()) throw new Error('Group name is required.');
 
-            const dup = guardMasterDuplicate(collectionName, formData.name, null);
+            const dup = await guardMasterDuplicate(collectionName, formData.name, null);
             if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
 
             const cleanData = { ...formData, userId: uid };
@@ -9669,7 +9678,7 @@ export default function App() {
             if (!uid) throw new Error('Session expired. Please login again.');
             if (!formData?.name || !String(formData.name).trim()) throw new Error('Name is required.');
 
-            const dup = guardMasterDuplicate(collectionName, formData.name, id);
+            const dup = await guardMasterDuplicate(collectionName, formData.name, id);
             if (dup.blocked) return { ok: false, cancelled: !!dup.cancelled };
 
             const pairing = validateOpeningPairing(collectionName, formData);
@@ -10142,7 +10151,7 @@ export default function App() {
 
             const reader = new FileReader();
             reader.onload = async (event) => {
-                if (!window.confirm("âš ï¸ DANGER: This will MERGE/OVERWRITE data from the backup file into your system.\n\nAre you sure you want to proceed?")) return;
+                if (!(await confirmAction("âš ï¸ DANGER: This will MERGE/OVERWRITE data from the backup file into your system.\n\nAre you sure you want to proceed?"))) return;
 
                 setToast({ type: 'loading', title: 'Restoring...', message: 'Uploading data...' });
 
@@ -10359,7 +10368,7 @@ export default function App() {
             expenses: "Expenses", capital: "Capital Accounts", assets: "Assets", income: "Income Accounts"
         };
 
-        if (!skipConfirm && !window.confirm(`âš ï¸ RECALCULATE: ${labels[scope]}\n\nThis will scan ALL transactions and rebuild balances from scratch.\nProceed?`)) return;
+        if (!skipConfirm && !(await confirmAction(`âš ï¸ RECALCULATE: ${labels[scope]}\n\nThis will scan ALL transactions and rebuild balances from scratch.\nProceed?`))) return;
 
         setIsRecalculating(true);
         setToast({ type: 'loading', title: 'Analyzing...', message: 'Fetching system data...' });
@@ -10867,7 +10876,7 @@ export default function App() {
         if (!user) return;
         const ownerUid = dataOwnerId || user.uid;
 
-        if (!window.confirm('âš ï¸ PURGE SOFT-DELETED VOUCHERS\n\nThis will permanently remove soft-deleted voucher records from Firestore for this company/user scope. Audit logs will be kept. Proceed?')) {
+        if (!(await confirmAction('âš ï¸ PURGE SOFT-DELETED VOUCHERS\n\nThis will permanently remove soft-deleted voucher records from Firestore for this company/user scope. Audit logs will be kept. Proceed?'))) {
             return;
         }
 
@@ -12442,7 +12451,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.26</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.27</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15213,6 +15222,10 @@ export default function App() {
             </Suspense>
             )}
 
+            {/* Global Yes/No confirmation dialog — used instead of window.confirm so a
+                voucher save can be answered with the mouse OR with the Y / N keys. */}
+            <ConfirmHost />
+
             {/* FAQ & Support — guidance only. Receives NO company data on purpose:
                 it cannot read or change a voucher, a party or a balance.
                 onNavigate only opens a screen for the guided walkthrough; it never
@@ -15512,7 +15525,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.26</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.27</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -16209,7 +16222,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
         const statsText = (liveStats && (liveStats.vouchers > 0 || liveStats.ledgers > 0))
             ? `\n\nData to upload: ${liveStats.vouchers} Vouchers, ${liveStats.ledgers} Ledgers`
             : '';
-        if (!window.confirm(`Make "${co.name}" LIVE on Firebase?${statsText}\n\nThis will upload ALL its data to the cloud so it can be accessed from any device.`)) return;
+        if (!(await confirmAction(`Make "${co.name}" LIVE on Firebase?${statsText}\n\nThis will upload ALL its data to the cloud so it can be accessed from any device.`))) return;
         setMakingLiveId(co.id);
         try {
             const result = await makeCompanyLive(co.id, co.name, null, liveStats);
@@ -16283,7 +16296,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
 
     const handleDownloadLive = async (liveCo, e) => {
         e.stopPropagation();
-        if (!window.confirm(`Download "${liveCo.name}" from Firebase to this PC?`)) return;
+        if (!(await confirmAction(`Download "${liveCo.name}" from Firebase to this PC?`))) return;
         setDownloadingId(liveCo.id);
         setDownloadProgress({ current: 0, total: 0 });
         try {
@@ -16314,7 +16327,7 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
         }
         const newPath = await ipcRenderer.invoke('select-folder');
         if (newPath) {
-            if (window.confirm(`âš ï¸ CHANGE DATA LOCATION?\n\nNew Path: ${newPath}\n\n1. The app will restart now.\n2. You must MANUALLY COPY your existing data folders to the new location.\n\nContinue?`)) {
+            if ((await confirmAction(`âš ï¸ CHANGE DATA LOCATION?\n\nNew Path: ${newPath}\n\n1. The app will restart now.\n2. You must MANUALLY COPY your existing data folders to the new location.\n\nContinue?`))) {
                 try {
                     const config = { userDataPath: newPath };
                     const configPath = nodePath.join(window.process.env.APPDATA, 'accpro-config.json');
@@ -16554,9 +16567,9 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                                 {companies.map((co, idx) => (
                                     <div
                                         key={co.id}
-                                        onClick={() => {
+                                        onClick={async () => {
                                             if (co.id === dataOwnerId) return;
-                                            if (window.confirm(`Switch to "${co.name}"? The application will reload.`)) {
+                                            if ((await confirmAction(`Switch to "${co.name}"? The application will reload.`))) {
                                                 setCurrentCompany(co.id);
                                             }
                                         }}
@@ -16656,10 +16669,10 @@ const CompanyManagerModal = ({ isOpen, onClose, onBack, zIndex, user, systemInfo
                                     return (
                                         <div
                                             key={liveCo.id}
-                                            onClick={() => {
+                                            onClick={async () => {
                                                 if (!isLocal || isDownloading) return;
                                                 if (isActive) return;
-                                                if (window.confirm(`Switch to "${liveCo.name}"? The application will reload.`)) {
+                                                if ((await confirmAction(`Switch to "${liveCo.name}"? The application will reload.`))) {
                                                     setCurrentCompany(liveCo.id);
                                                 }
                                             }}
@@ -16939,7 +16952,7 @@ const MasterModal = ({ isOpen, onClose, onBack, zIndex, title, collectionName, d
             // "~" prefix = same figures, one-character spelling difference (typo / spacing) -> ask, do not block
             if (duplicateCategory && String(duplicateCategory).startsWith('~')) {
                 const similar = String(duplicateCategory).slice(1).trim();
-                if (!window.confirm(`A very similar master already exists → ${similar}.\n\n"${formData.name}" looks like the same master (only a typo / spacing difference).\n\nCreate it anyway?`)) return;
+                if (!(await confirmAction(`A very similar master already exists → ${similar}.\n\n"${formData.name}" looks like the same master (only a typo / spacing difference).\n\nCreate it anyway?`))) return;
                 duplicateCategory = null;
             }
             if (duplicateCategory) {
@@ -17684,7 +17697,7 @@ const AttendanceModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, s
 
     const handleDelete = async () => {
         if (!editingId) return;
-        if (!window.confirm('Delete this attendance record?')) return;
+        if (!(await confirmAction('Delete this attendance record?'))) return;
         try {
             await deleteDoc(doc(db, 'attendance', editingId));
             setEditingId(null);
@@ -18909,7 +18922,7 @@ const InvoiceModal = (props) => {
     };
 
     const handleSave = async () => {
-        if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
+        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         if (!formData.partyId || !formData.locationId) return alert("Please select Customer and Location");
         if (items.some(i => !i.productId)) return alert("Please select items");
 
@@ -21084,7 +21097,7 @@ const InvoiceModal = (props) => {
                                                 hbzOptions // ✅ PASS HBZ OPTIONS
                                             };
                                             if (printOptions.generateMode === 'all') {
-                                                if (!window.confirm("All letters instruction are given?")) return;
+                                                if (!(await confirmAction("All letters instruction are given?"))) return;
                                                 const configs = (companyProfile?.rules?.docConfigs || [
                                                     { id: 'invoice', templateId: 'invoice', name: 'Tax Invoice', enabled: true },
                                                     { id: 'packing_list', templateId: 'packing_list', name: 'Packing List', enabled: true },
@@ -21159,7 +21172,7 @@ const InvoiceModal = (props) => {
                                                 hbzOptions // ✅ PASS HBZ OPTIONS
                                             };
                                             if (printOptions.generateMode === 'all') {
-                                                if (!window.confirm("All letters instruction are given?")) return;
+                                                if (!(await confirmAction("All letters instruction are given?"))) return;
                                                 const configs = (companyProfile?.rules?.docConfigs || [
                                                     { id: 'invoice', templateId: 'invoice', name: 'Tax Invoice', enabled: true },
                                                     { id: 'packing_list', templateId: 'packing_list', name: 'Packing List', enabled: true },
@@ -23084,7 +23097,7 @@ const StockJournalModal = (props) => {
     const handleDeleteAutoCalcRecord = async (record) => {
         const targetProduct = products.find(product => product.id === record.mainProductId);
         if (!targetProduct) return;
-        if (!window.confirm(`Delete Auto Calc BOM rule for ${record.mainProductName}?`)) return;
+        if (!(await confirmAction(`Delete Auto Calc BOM rule for ${record.mainProductName}?`))) return;
 
         try {
             const updatedRecords = (Array.isArray(targetProduct.autoCalcBomRecords) ? targetProduct.autoCalcBomRecords : []).filter(item => item.id !== record.id);
@@ -23390,7 +23403,7 @@ const StockJournalModal = (props) => {
 
 
     const handleSave = async () => {
-        if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
+        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
         // 🛑 DUPLICATE CHECK
@@ -24331,9 +24344,9 @@ const StockJournalModal = (props) => {
                                         type="checkbox"
                                         className="w-4 h-4 rounded text-blue-400 focus:ring-blue-500 bg-black/20 border-white/20"
                                         checked={jumboEnabled}
-                                        onChange={e => {
+                                        onChange={async e => {
                                             if (!e.target.checked && jumboBags.length > 0) {
-                                                if (!window.confirm("âš ï¸ WARNING: Unchecking this will DELETE all allocated bags for this voucher.\n\nAre you sure you want to remove bag details?")) {
+                                                if (!(await confirmAction("âš ï¸ WARNING: Unchecking this will DELETE all allocated bags for this voucher.\n\nAre you sure you want to remove bag details?"))) {
                                                     return;
                                                 }
                                             }
@@ -25441,7 +25454,7 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
         if (hasLinkedPair) {
             const linkedCount = itemsToDelete.length - rawItems.filter(i => !getLinkedPartnerId(i)).length;
-            if (!window.confirm(`âš ï¸ LINKED VOUCHERS\n\nSome of the selected vouchers are Manufacturing/Expense Journal pairs that were created together.\n\nBoth vouchers in each pair will be deleted together — you cannot delete one without the other.\n\nTotal vouchers to be deleted: ${itemsToDelete.length}\n\nProceed?`)) return;
+            if (!(await confirmAction(`âš ï¸ LINKED VOUCHERS\n\nSome of the selected vouchers are Manufacturing/Expense Journal pairs that were created together.\n\nBoth vouchers in each pair will be deleted together — you cannot delete one without the other.\n\nTotal vouchers to be deleted: ${itemsToDelete.length}\n\nProceed?`))) return;
         }
 
         if (onBulkDelete) {
@@ -29966,7 +29979,7 @@ const PaymentModal = (props) => {
             }
         }
 
-        if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
+        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
         // 🛑 NEGATIVE BALANCE CHECK (For Payments) - DISABLED as per user request
@@ -30369,7 +30382,7 @@ const PaymentModal = (props) => {
         dirtyRef.current = true;
     }, [date, type, accountId, refNo, narration, lotId, currencyId, exchangeRate, splits]);
 
-    const navigateVoucher = useCallback((dir) => {
+    const navigateVoucher = useCallback(async (dir) => {
         if (!onBrowseVoucher) return;
         if (browseSiblings.length === 0) {
             showToast?.({ type: 'info', title: 'Voucher Browser', message: 'There are no vouchers of this type yet.' });
@@ -30386,7 +30399,7 @@ const PaymentModal = (props) => {
             });
             return;
         }
-        if (dirtyRef.current && !window.confirm('This voucher has unsaved changes.\n\nDiscard them and open the other voucher?')) return;
+        if (dirtyRef.current && !(await confirmAction('This voucher has unsaved changes.\n\nDiscard them and open the other voucher?'))) return;
         onBrowseVoucher(target);
     }, [browseSiblings.length, browsePrevTarget, browseNextTarget, onBrowseVoucher, showToast]);
 
@@ -31857,7 +31870,7 @@ const JournalVoucherModal = (props) => {
 
     const handleSave = async () => {
         if (saving) return;
-        if (initialData && !window.confirm("Are you sure you want to save the changes?")) return;
+        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         // Validation
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
@@ -32476,7 +32489,7 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                     {/* DELETE */}
                     {initialData?.id && (
                         <button
-                            onClick={() => { if (window.confirm("Delete this JV?")) { onDeleteTransaction(initialData.id, 'journal'); onClose(); } }}
+                            onClick={async () => { if ((await confirmAction("Delete this JV?"))) { onDeleteTransaction(initialData.id, 'journal'); onClose(); } }}
                             className="p-1.5 hover:bg-red-500/20 text-red-300 rounded-md transition-all shrink-0"
                             title="Delete JV"
                         >
@@ -39034,12 +39047,12 @@ const LotProfitabilityModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwne
     };
 
     /* Picking another lot while a report is on screen must not silently relabel the running report */
-    const handleLotPick = (v) => {
+    const handleLotPick = async (v) => {
         const shownLotId = reportData?.lotId;
         if (reportData && shownLotId && v && v !== shownLotId) {
             const shownName = lots.find(l => l.id === shownLotId)?.name || 'the current lot';
             const pickedName = lots.find(l => l.id === v)?.name || 'the selected lot';
-            const ok = window.confirm(`Do you want to change the running details to the new lot?\n\nNow showing: ${shownName}\nSelected: ${pickedName}`);
+            const ok = (await confirmAction(`Do you want to change the running details to the new lot?\n\nNow showing: ${shownName}\nSelected: ${pickedName}`));
             if (ok) { setSelectedLotId(v); generateReport(v); return; }
         }
         setSelectedLotId(v);
@@ -39967,7 +39980,7 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
 
     // 4. Handle Delete
     const handleDeleteUser = async (uid) => {
-        if (!window.confirm("âš ï¸ DANGER: Are you sure? This will permanently delete this user.")) return;
+        if (!(await confirmAction("âš ï¸ DANGER: Are you sure? This will permanently delete this user."))) return;
         setLoading(true);
         try {
             await deleteDoc(doc(db, "users", uid));
@@ -39977,7 +39990,7 @@ const ManageUsersModal = ({ isOpen, onClose, onBack, subUsers, user, userData, c
             console.error(error);
             // ✅ Fix: If Auth user is missing but Firestore doc exists (Ghost User), delete doc manually
             if (error.message.includes('no user record') || error.message.includes('NOT_FOUND')) {
-                if (window.confirm("âš ï¸ User ID not found in Authentication system (already deleted?), but exists in your list.\n\nForce delete this record from the list?")) {
+                if ((await confirmAction("âš ï¸ User ID not found in Authentication system (already deleted?), but exists in your list.\n\nForce delete this record from the list?"))) {
                     try {
                         await deleteDoc(doc(db, 'users', uid));
                         alert("✅ Ghost record removed from list.");

@@ -7,6 +7,7 @@ import { db, storage } from './firebase';
 import { resolveStoredImages } from './storageAsset';
 import Modal from './components/Modal';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const ImageStorageModal = ({ isOpen, onClose, user, dataOwnerId }) => {
     const [activeSection, setActiveSection] = useState('headers');
     const [images, setImages] = useState([]);
@@ -70,7 +71,7 @@ const ImageStorageModal = ({ isOpen, onClose, user, dataOwnerId }) => {
     };
 
     const handleDelete = async (image) => {
-        if (!window.confirm('Are you sure you want to delete this image?')) return;
+        if (!(await confirmAction('Are you sure you want to delete this image?'))) return;
 
         try {
             // Delete from Firestore

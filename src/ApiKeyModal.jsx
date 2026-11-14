@@ -5,6 +5,7 @@ import { httpsCallable } from '@firebase/functions';
 import { cloudFunctions as functions } from './firebase';
 import { getActiveCompanyId } from './localDB';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
     const [apiKey, setApiKey] = useState('');
     const [loading, setLoading] = useState(false);
@@ -56,7 +57,7 @@ const ApiKeyModal = ({ isOpen, onClose, zIndex = 200 }) => {
     };
 
     const generateKey = async () => {
-        if (apiKey && !window.confirm("Generating a new API key will invalidate the old one. External widgets using the old key will stop working. Continue?")) return;
+        if (apiKey && !(await confirmAction("Generating a new API key will invalidate the old one. External widgets using the old key will stop working. Continue?"))) return;
         
         setLoading(true);
         setError('');

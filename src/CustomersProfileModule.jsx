@@ -7,6 +7,7 @@ import {
 import { collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const CustomersProfileModule = ({ user, dataOwnerId, checkDuplicateName }) => {
     const [view, setView] = useState('list'); // 'list', 'add', 'edit'
     const [customers, setCustomers] = useState([]);
@@ -69,7 +70,7 @@ const CustomersProfileModule = ({ user, dataOwnerId, checkDuplicateName }) => {
     };
 
     const handleDelete = async (id) => {
-        if (!window.confirm("Are you sure you want to delete this customer profile? This action will not remove their invoices but will remove their profile.")) return;
+        if (!(await confirmAction("Are you sure you want to delete this customer profile? This action will not remove their invoices but will remove their profile."))) return;
         try {
             await deleteDoc(doc(db, 'parties', id));
         } catch (err) {

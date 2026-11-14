@@ -5,6 +5,7 @@ import { db } from './firebase';
 import { Modal } from './components/Modal';
 import { fetchSoftDeletedRecords } from './softDeletedPurge';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const parseDate = (d) => {
   if (!d) return 0;
   if (d.toMillis) return d.toMillis();
@@ -581,7 +582,7 @@ const SystemLogModal = ({
                       if (password.toLowerCase() !== "abcd") {
                         return alert("❌ Incorrect Password. Access Denied.");
                       }
-                      if (window.confirm(`Are you sure you want to restore this ${selectedLog.docType} voucher (${selectedLog.refNo || 'N/A'})?`)) {
+                      if ((await confirmAction(`Are you sure you want to restore this ${selectedLog.docType} voucher (${selectedLog.refNo || 'N/A'})?`))) {
                         const success = await onRestore(selectedLog.docId || selectedLog.id, selectedLog.docType, restorableSnapshot);
                         if (success) {
                           setSelectedLog(null);

@@ -5,6 +5,7 @@ import HscodeRules from './HscodeRules';
 import TaxCalcRules from './TaxCalcRules';
 import AllAptDaybook from './AllAptDaybook';
 
+import { confirmAction } from './ui/ConfirmDialog';
 // Force dark text inside TaxModule (overrides ManagementDashboard's white text)
 const inputClass = "w-full px-3 py-2 border border-slate-300 rounded-lg text-xs outline-none focus:border-[#1e3264] focus:ring-1 focus:ring-[#1e3264]/20 text-gray-900 bg-white";
 
@@ -765,7 +766,7 @@ function EntryViewerModal({ entry, collectionName, parties, products, taxRates, 
       return;
     }
     setShowPwdPrompt(false);
-    if (!window.confirm('⚠️ Are you sure?\n\nThis will permanently delete this voucher from ALL ledgers and inventory.')) return;
+    if (!(await confirmAction('⚠️ Are you sure?\n\nThis will permanently delete this voucher from ALL ledgers and inventory.'))) return;
 
     try {
       const invoiceType = isPurchase ? 'purchase_apt' : (collectionName === 'tax_sales_registered' ? 'sales_reg_apt' : 'sales_unreg_apt');

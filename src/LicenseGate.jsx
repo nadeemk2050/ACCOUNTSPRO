@@ -4,6 +4,7 @@ import { auth, db } from './firebase';
 import { createUserWithEmailAndPassword, signInAnonymously, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 
+import { confirmAction, ConfirmHost } from './ui/ConfirmDialog';
 // ─── Constants ────────────────────────────────────────────────────────────────
 const LICENSES_STORE_KEY = 'nadtally_authorized_users_v2';
 const OFFLINE_BACKUP_KEY = 'nadtally_offline_backup_v1';
@@ -368,8 +369,8 @@ function LicenseProfileModal({ licenseInfo, onClose, onDeactivate, mode }) {
         setLoading(false);
     };
 
-    const handleDeactivate = () => {
-        if (window.confirm('⚠️ Deactivate this copy?\n\nYou will need to re-enter your serial key and credentials on next startup.')) {
+    const handleDeactivate = async () => {
+        if ((await confirmAction('⚠️ Deactivate this copy?\n\nYou will need to re-enter your serial key and credentials on next startup.'))) {
             onDeactivate();
         }
     };
@@ -448,7 +449,7 @@ function LicenseProfileModal({ licenseInfo, onClose, onDeactivate, mode }) {
     );
 }
 
-const SYSTEM_VERSION = '2.8.26';
+const SYSTEM_VERSION = '2.8.27';
 const EDU_KEY = 'nadtally_edu_v1';
 
 export default function LicenseGate({ children }) {
@@ -820,7 +821,7 @@ export default function LicenseGate({ children }) {
         );
     }
 
-    if (phase === 'approved' || phase === 'educational') return <>{children}{profileOpen && <LicenseProfileModal licenseInfo={licenseInfo} mode={phase} onClose={() => setProfileOpen(false)} onDeactivate={handleDeactivate} />}<style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style></>;
+    if (phase === 'approved' || phase === 'educational') return <>{children}{profileOpen && <LicenseProfileModal licenseInfo={licenseInfo} mode={phase} onClose={() => setProfileOpen(false)} onDeactivate={handleDeactivate} />}<ConfirmHost /><style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style></>;
 
     const isFormView = ['activate', 'reactivate', 'login', 'signup', 'guest_setup'].includes(view);
     const primedUsers = Object.values(getAllStoredLicenses());
@@ -840,6 +841,8 @@ export default function LicenseGate({ children }) {
     return (
         <div style={S.overlay}>
             <div style={S.grid} /><div style={S.glow} />
+            {/* The gate is rendered above <App/>, so it needs its own confirm host. */}
+            <ConfirmHost />
             <div style={{ 
                 display: 'flex', 
                 flexDirection: isMobile ? 'column' : 'row',

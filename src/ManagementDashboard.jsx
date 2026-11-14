@@ -27,6 +27,7 @@ import {
 import CustomersProfileModule from './CustomersProfileModule';
 import TaxModule from './TaxModule';
 
+import { confirmAction } from './ui/ConfirmDialog';
 /**
  * When the user switches a voucher type to automatic numbering we seed the counter
  * from the CURRENT TIME instead of 1 / a small number, so the auto ref numbers can
@@ -271,7 +272,7 @@ const ManagementDashboard = ({
                     requestedAt: parsed.requestedAt,
                     deviceId: devices[0] || '',
                     deviceIds: devices,
-                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.8.26',
+                    version: firstString(parsed.version, parsed.appVersion, parsed.clientVersion, parsed.buildVersion) || '2.8.27',
                     liveCompaniesCount: firstNumber(parsed.liveCompaniesCount, parsed.companyCount, parsed.liveDataCount, usage.liveCompaniesCount),
                     usageReads: firstNumber(parsed.reads, parsed.readCount, usage.reads, usage.readCount, usage.firestoreReads),
                     usageWrites: firstNumber(parsed.writes, parsed.writeCount, usage.writes, usage.writeCount, usage.firestoreWrites),
@@ -363,7 +364,7 @@ const ManagementDashboard = ({
                     status: { stringValue: 'inactive' },
                     createdAt: { timestampValue: new Date().toISOString() },
                     createdBy: { stringValue: currentUser.email || 'developer' },
-                    version: { stringValue: '2.8.26' },
+                    version: { stringValue: '2.8.27' },
                     isGenerated: { booleanValue: true },
                 }
             };
@@ -401,7 +402,7 @@ const ManagementDashboard = ({
 
     const handleLicenseAction = async (serialKeyId, action, days = 365) => {
         const actionLabels = { approve: 'Approve', reject: 'Reject', expire: 'Revoke', inactive: 'Deactivate' };
-        if (!window.confirm(`${actionLabels[action] || action} license: ${serialKeyId}?`)) return;
+        if (!(await confirmAction(`${actionLabels[action] || action} license: ${serialKeyId}?`))) return;
         setApproveLoadingId(serialKeyId);
         try {
             // Use Auth token for proper permissions
@@ -524,7 +525,7 @@ const ManagementDashboard = ({
     };
 
     const handleDeleteVehicle = async (id) => {
-        if (!window.confirm("Are you sure to delete this vehicle?")) return;
+        if (!(await confirmAction("Are you sure to delete this vehicle?"))) return;
         try {
             await deleteDoc(doc(db, 'vehicles', id));
         } catch (err) {
@@ -694,7 +695,7 @@ const ManagementDashboard = ({
                 <div className="flex items-center gap-4 cursor-pointer hover:bg-white/10 px-2 py-1 rounded transition-colors" onClick={onClose}>
                     <button className="p-1 rounded"><LayoutDashboard size={20} /></button>
                     <div className="flex flex-col select-none">
-                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.8.26</span></span>
+                        <span className="accpro-brand-styled text-xl leading-none">accpro<span className="text-[10px] font-black ml-1 italic">V2.8.27</span></span>
                         {companyProfile?.name && (
                             <span className="text-[10px] uppercase tracking-[0.2em] font-black text-white/40 mt-0.5 ml-0.5 truncate max-w-[150px]">
                                 {companyProfile.name}
@@ -2570,7 +2571,7 @@ const ManagementDashboard = ({
                                                                 <td className="px-3 py-2.5 text-cyan-400/70">{key.email || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 font-bold text-white/80">{key.userName || <span className="opacity-20">—</span>}</td>
                                                                 <td className="px-3 py-2.5 text-white/40">{key.mobile || <span className="opacity-20">—</span>}</td>
-                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.8.26'}</td>
+                                                                <td className="px-3 py-2.5 text-[10px] text-amber-300/90 font-bold">{key.version || '2.8.27'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/50 font-mono" title={(key.deviceIds || []).join(', ')}>{formatDeviceList(key.deviceIds || [])}</td>
                                                                 <td className="px-3 py-2.5 text-[10px] text-white/70 font-bold">{key.liveCompaniesCount ?? '—'}</td>
                                                                 <td className="px-3 py-2.5 text-[10px]">
@@ -2687,7 +2688,7 @@ const ManagementDashboard = ({
                                                             </div>
                                                             <div className="bg-black/30 rounded-lg p-3">
                                                                 <div className="text-[9px] text-white/30 uppercase font-bold mb-0.5">App Version</div>
-                                                                <div className="text-[11px] text-white/50">{key.version || '2.8.26'}</div>
+                                                                <div className="text-[11px] text-white/50">{key.version || '2.8.27'}</div>
                                                             </div>
                                                         </div>
 

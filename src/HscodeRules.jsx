@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { collection, addDoc, getDocs, query, orderBy, serverTimestamp, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
+import { confirmAction } from './ui/ConfirmDialog';
 const formatNum = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
 
 export default function HscodeRules({ onClose, products = [], taxRates = [], uid = '' }) {
@@ -528,7 +529,7 @@ function RuleListTab({ rules, setRules, uid, loading, taxRates = [], onEdit }) {
   );
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this rule?')) return;
+    if (!(await confirmAction('Delete this rule?'))) return;
     setDeleting(id);
     try {
       await deleteDoc(doc(db, 'hs_code_rules', id));

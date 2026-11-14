@@ -1,4 +1,5 @@
 
+import { confirmAction } from './ui/ConfirmDialog';
 // --- UNIFIED RECALCULATE SYSTEM (THE "BEST" WAY) ---
 const handleRecalculateSystem = async (scope = 'all') => {
     // scope: 'all', 'products', 'parties', 'accounts', 'expenses', 'capital', 'assets', 'income'
@@ -20,7 +21,7 @@ const handleRecalculateSystem = async (scope = 'all') => {
         income: "Income Accounts"
     };
 
-    if (!window.confirm(`⚠️ RECALCULATE: ${labels[scope]}\n\nThis will scan ALL transactions and rebuild balances from scratch.\n\nAre you sure you want to proceed?`)) return;
+    if (!(await confirmAction(`⚠️ RECALCULATE: ${labels[scope]}\n\nThis will scan ALL transactions and rebuild balances from scratch.\n\nAre you sure you want to proceed?`))) return;
 
     setToast({ type: 'loading', title: 'Analyzing...', message: 'Fetching system data...' });
 

@@ -21,6 +21,7 @@ import {
     cachePackageLabelLocally
 } from './packageLabel';
 
+import { confirmAction } from './ui/ConfirmDialog';
 // Password required to change the finished-package wording.
 const PACKAGE_NAME_PASSWORD = 'abcd';
 // Reusable containers are ALWAYS called this, whatever the finished package is renamed to.
@@ -817,9 +818,9 @@ const PackagingSmartReportModal = ({
                 )
             ];
 
-            const ok = window.confirm(
+            const ok = (await confirmAction(
                 `Found ${totalFixes} sellable bag(s) matching reusable registry entries (${jumboFixes.length} in bag store, ${journalFixes.length} embedded in BOM vouchers).\n\nThey will be:\n• Marked REUSABLE → removed from sellable inventory\n• Registry entry DEACTIVATED → shown under "Deactivated Reusable Bags"\n\nONLY these exact bags are modified — no other bag or voucher is touched.\n\n${previewLines.join('\n')}\n\nProceed?`
-            );
+            ));
             if (!ok) { setSpoofFixLoading(false); return; }
 
             let bagCount = 0;
@@ -898,7 +899,7 @@ const PackagingSmartReportModal = ({
         const typed = (manualBagNosInput || '').split(',').map(s => s.trim().replace(/^#/, '').toUpperCase()).filter(Boolean);
         if (typed.length === 0) { alert('Enter at least one bag number (comma separated).'); return; }
         if (spoofFixLoading) return;
-        if (!window.confirm(`Mark these bag(s) as REUSABLE (removed from sellable/ready stock) and deactivate their reusable registry entry?\n\n${typed.join(', ')}\n\nOnly these exact bag numbers are affected — no other bag or voucher is touched. Proceed?`)) return;
+        if (!(await confirmAction(`Mark these bag(s) as REUSABLE (removed from sellable/ready stock) and deactivate their reusable registry entry?\n\n${typed.join(', ')}\n\nOnly these exact bag numbers are affected — no other bag or voucher is touched. Proceed?`))) return;
         setSpoofFixLoading(true);
         try {
             const targetUid = dataOwnerId || user?.uid;
@@ -3703,7 +3704,7 @@ const PackagingSmartReportModal = ({
 
                         <div className="mt-12 flex items-center gap-3 px-6 py-3 bg-[#1e3264] text-white rounded-full text-[10px] font-black uppercase tracking-widest shadow-xl shadow-blue-900/30">
                             <AlertCircle size={14} className="text-blue-300" />
-                            Expected Release: Version 2.8.26
+                            Expected Release: Version 2.8.27
                         </div>
                     </div>
                 </div>
@@ -3712,7 +3713,7 @@ const PackagingSmartReportModal = ({
                 <div className="bg-white px-8 py-5 border-t border-slate-200 flex items-center justify-between text-slate-400">
                     <div className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
                         <Info size={14} />
-                        Accpro Intelligence Framework V2.8.26
+                        Accpro Intelligence Framework V2.8.27
                     </div>
                     <div className="flex gap-3">
                         <button disabled className="px-6 py-2.5 rounded-xl border border-slate-200 text-[10px] font-black uppercase tracking-widest opacity-50 cursor-not-allowed">
