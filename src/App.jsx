@@ -875,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.27 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.28 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -930,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.27</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.28</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -954,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.27</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.28</div>
                 </div>
             </div>
         </Modal>
@@ -6781,7 +6781,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.27";
+    const SYSTEM_VERSION = "2.8.28";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12451,7 +12451,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.27</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.28</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15525,7 +15525,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.27</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.28</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -18536,7 +18536,33 @@ const InvoiceModal = (props) => {
                                 : NaN
                     );
                     const fallbackTotal = (Number(i.quantity) || 0) * (Number(i.originalRate || i.rate) || 0);
-                    const rawTotal = Number.isFinite(savedTotal) && savedTotal !== 0 ? savedTotal : fallbackTotal;
+                    let rawTotal = Number.isFinite(savedTotal) && savedTotal !== 0 ? savedTotal : fallbackTotal;
+
+                    // REPAIR: a purchase voucher in 'others' mode must NOT carry the additional
+                    // expenses inside the line value (they are paid outside this voucher). Older
+                    // saves did merge them, which made the voucher show 1068 where qty x rate = 858.
+                    // Detect exactly that case and restore qty x original rate.
+                    if ((initialData.type || type) === 'purchase') {
+                        const __modeSaved = initialData.addlExpMode || (initialData.addlExpToSupplier === false ? '' : 'supplier');
+                        const __origRate = Number(i.originalRate) || 0;
+                        const __savedRate = Number(i.rate) || 0;
+                        const __q = Number(i.quantity) || 0;
+                        // 'supplier' mode really does capitalise the expense, so its merged value is correct.
+                        // For every other mode we only repair when we can PROVE the line was merged:
+                        //   (a) the saved rate differs from the original rate saved beside it, or
+                        //   (b) the gap between the saved amount and qty x original rate equals this
+                        //       line's share of the expense total.
+                        // A negotiated / manually typed amount is never touched.
+                        const __differs = __origRate > 0 && Math.abs(__savedRate - __origRate) > 0.0005;
+                        const __qtySum = (initialData.items || []).reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+                        const __expTotal = Number(initialData.addlExpTotal) || 0;
+                        const __share = __qtySum > 0 ? (__q / __qtySum) * __expTotal : 0;
+                        const __delta = (Number(i.total) || 0) - (__q * __origRate);
+                        const __looksMerged = __share > 0.004 && Math.abs(__delta - __share) < 0.01;
+                        if (__modeSaved !== 'supplier' && __origRate > 0 && (__differs || __looksMerged)) {
+                            rawTotal = __q * __origRate;
+                        }
+                    }
                     const total = rawTotal ? Number(rawTotal.toFixed(3)) : '';
                     return {
                         ...i,
@@ -18911,6 +18937,36 @@ const InvoiceModal = (props) => {
         };
     }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal, addlExpToSupplier]);
 
+    // 🩹 LIVE REPAIR — purchase voucher, expenses NOT payable on this voucher.
+    // If a line amount still contains its share of the additional expenses
+    // (e.g. 770 x 1.05 shows 938.5 because 130 was added), put it back to qty x rate.
+    // It only fires when the gap equals the allocation exactly, so a negotiated or
+    // manually typed amount is never touched. Idempotent: once corrected it stops.
+    useEffect(() => {
+        if (voucherType !== 'purchase') return;
+        if (addlExpMode === 'supplier') return;
+        const expTotal = round3(addlExpenses.reduce((s, e) => s + Number(e.amount || 0), 0));
+        if (expTotal <= 0) return;
+        const qtySum = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+        if (qtySum <= 0) return;
+
+        let changed = false;
+        const fixed = items.map((it) => {
+            const q = Number(it.quantity) || 0;
+            const r = Number(it.originalRate) || 0;
+            if (!q || !r) return it;
+            const share = (q / qtySum) * expTotal;
+            if (share <= 0.004) return it;
+            const delta = (Number(it.total) || 0) - q * r;
+            if (Math.abs(delta - share) < 0.01) {
+                changed = true;
+                return { ...it, total: Number((q * r).toFixed(3)) };
+            }
+            return it;
+        });
+        if (changed) setItems(fixed);
+    }, [items, addlExpenses, addlExpMode, voucherType]);
+
     // Tax AMOUNT first: typing the amount computes the percentage back from the item sub-total
     const applyTaxAmountEdit = (raw) => {
         setTaxAmountEdit(raw);
@@ -19047,14 +19103,24 @@ const InvoiceModal = (props) => {
         let finalItems = [...items];
         // ✅ Capitalize/Adjust Additional Expenses into Item Cost/Realization
         // For Sales: mode 'include' = reduce rates, mode 'add' = NO CHANGE to rates (only add to total)
-        // For Purchase: always increase rates (capitalize expenses)
-        const shouldAdjustRates = voucherType === 'purchase' ? addlExpInRates : (voucherType === 'sales' && salesExpenseMode === 'include');
+        // For Purchase: only 'supplier' capitalises the expense into the item rates, because in that
+        // mode the expense is payable on THIS voucher. In 'others' mode the expense is paid outside
+        // this voucher (journal), so item rates/values must stay as entered — otherwise the voucher
+        // totals disagree with the ledger.
+        const shouldAdjustRates = voucherType === 'purchase'
+            ? addlExpMode === 'supplier'
+            : (voucherType === 'sales' && salesExpenseMode === 'include');
 
         if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0)) && shouldAdjustRates) {
             finalItems = items.map(i => {
-                const iTot = Number(i.total) || 0;
                 const iQty = Number(i.quantity) || 0;
                 if (iQty === 0) return i;
+
+                // If this row was loaded from an earlier save it may ALREADY carry a merged
+                // total. Re-merging would add the expense again (858 -> 1068 -> 1278).
+                // So the base is always the ORIGINAL amount when we know it.
+                const origRate = Number(i.originalRate) || 0;
+                const iTot = origRate > 0 ? Number((origRate * iQty).toFixed(3)) : (Number(i.total) || 0);
 
                 const ratio = voucherType === 'purchase'
                     ? (iQty / totals.totalQty)
@@ -19075,7 +19141,7 @@ const InvoiceModal = (props) => {
                 newTotal = Number(newTotal.toFixed(3));
 
                 // Save RIE as 'rate' for inventory reports, but keep 'originalRate' for UI
-                return { ...i, rate: newRate, total: newTotal, originalRate: i.rate };
+                return { ...i, rate: newRate, total: newTotal, originalRate: origRate > 0 ? origRate : i.rate };
             });
         }
 
@@ -20200,7 +20266,17 @@ const InvoiceModal = (props) => {
                                     // 🧮 Calculate RIE (Rate Inc Exp) & AIE (Amt Inc Exp)
                                     let rieDisplay = null;
                                     let aieDisplay = null;
-                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && (voucherType !== 'purchase' || addlExpInRates) && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
+                                    // A loaded row may already hold a merged total. In that case show it as-is
+                                    // instead of allocating the expense a second time (was showing 1278).
+                                    const __origRate = Number(item.originalRate) || 0;
+                                    const __alreadyMerged = voucherType === 'purchase' && __origRate > 0 &&
+                                        Math.abs(Number(item.rate) - __origRate) > 0.0005;
+
+                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && (voucherType !== 'purchase' || addlExpMode === 'supplier') && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
+                                        if (__alreadyMerged) {
+                                            rieDisplay = format3(Number(item.rate) || 0);
+                                            aieDisplay = format3(Number(item.total) || 0);
+                                        } else {
                                         const iTot = Number(item.total) || 0;
                                         const iQty = Number(item.quantity) || 0;
                                         const ratio = voucherType === 'purchase'
@@ -20223,6 +20299,7 @@ const InvoiceModal = (props) => {
                                         const finalRate = iQty > 0 ? (finalAmt / iQty) : 0;
                                         rieDisplay = format3(finalRate);
                                         aieDisplay = format3(finalAmt);
+                                        }
                                     }
 
                                     return (
@@ -20411,7 +20488,7 @@ const InvoiceModal = (props) => {
                                 <div className="ml-auto flex items-center gap-3">
                                     {voucherType === 'purchase' && (
                                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-black uppercase ${addlExpMode === 'supplier' ? 'bg-emerald-100 text-emerald-700' : addlExpMode === 'others' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'}`}>
-                                            {addlExpMode === 'supplier' ? 'Payable to this supplier · merged in rates' : addlExpMode === 'others' ? 'Merged in rates · paid by others' : 'Recorded only · not in rates'}
+                                            {addlExpMode === 'supplier' ? 'Payable to this supplier · merged in rates' : addlExpMode === 'others' ? 'Paid by others · NOT added to item rates' : 'Recorded only · not in rates'}
                                         </span>
                                     )}
                                     <span className="text-[11px] font-black text-orange-700 font-mono">{format3(totals.addlExpTotal)} <span className="text-slate-400 text-[9px]">{currentSym}</span></span>
@@ -20570,7 +20647,7 @@ const InvoiceModal = (props) => {
                             <span className="text-[11px] font-black text-orange-700 font-mono shrink-0">{format3(totals.addlExpTotal)} <span className="text-slate-400">{currentSym}</span></span>
                             {voucherType === 'purchase' && !addlExpToSupplier && (
                                 <span className="text-[9px] font-black uppercase tracking-wider text-blue-600 shrink-0">
-                                    {addlExpMode === 'others' ? '· in item rates · paid by others, not on this voucher' : '· recorded only, not on this voucher'}
+                                    {addlExpMode === 'others' ? '· paid by others · NOT added to the voucher value' : '· recorded only, not on this voucher'}
                                 </span>
                             )}
                         </>)}
