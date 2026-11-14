@@ -145,7 +145,7 @@ const BagWiseInventoryModal = lazy(() => import('./BagWiseInventoryModal.jsx'));
 import { VoucherV2Menu } from './VoucherV2Menu.jsx';
 import InvoiceSettingsModal from "./InvoiceSettingsModal.jsx";
 import ImageStorageModal from "./ImageStorageModal.jsx";
-import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData, exportCompanyFullBackup } from './localDB';import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync, exportCloudCompanyFullBackup, moveCompanyToCloudRecycleBin, restoreCompanyFromCloudRecycleBin, purgeExpiredRecycleBinCompanies, abortCompanySync } from './liveSync.js';
+import { setCurrentCompany, getActiveCompanyId, createCompany, listCompanies, getCompanyStats, getCompanyLogCount, saveCachedCompanyStats, recordCompanyAccess, updateCompanyRegistryName, updateDeviceName, getDeviceNames, removeCompanyData, setCompanyLiveStatus, getMasterDB, restoreCompanyData, exportCompanyFullBackup } from './localDB';import { startLiveSync, stopLiveSync, makeCompanyLive, subscribeLiveRegistry, downloadLiveCompany, registerCompanyAsLiveInFirestore, updateLiveCompanyStats, fetchLiveCompaniesFromFirestore, removeCompanyFromFirebase, syncCompanyDataDelta, forceFullResync, exportCloudCompanyFullBackup, moveCompanyToCloudRecycleBin, restoreCompanyFromCloudRecycleBin, purgeExpiredRecycleBinCompanies, abortCompanySync } from './liveSync.js';
 import { isBackgroundSyncEnabled, startCompanySyncScheduler, stopAllCompanySyncSchedulers, stopCompanySyncScheduler, triggerCompanySyncNow } from './syncScheduler.js';
 import DocumentGeneratorV2 from './DocumentGeneratorV2.jsx';
 import ApiKeyModal from './ApiKeyModal';
@@ -875,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.28 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.29 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -930,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.28</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.29</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -954,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.28</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.29</div>
                 </div>
             </div>
         </Modal>
@@ -6781,7 +6781,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.28";
+    const SYSTEM_VERSION = "2.8.29";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -7348,7 +7348,13 @@ export default function App() {
     );
 
     const displayCompanyName = companyProfile?.name || activeLiveRegistryEntry?.name || '';
-    const displayLogCount = activeLiveRegistryEntry?.stats?.logs ?? companyProfile?.stats?.logs ?? dashboardLogCount;
+    // The registry snapshot lags behind (it is only refreshed every few seconds), so the
+    // locally counted value is the reliable one — never let a stale 0 win over a real count.
+    const displayLogCount =
+        dashboardLogCount ||
+        activeLiveRegistryEntry?.stats?.logs ||
+        companyProfile?.stats?.logs ||
+        0;
 
     useEffect(() => {
         if (!dataOwnerId) {
@@ -12305,8 +12311,10 @@ export default function App() {
             }
 
             try {
-                const localStats = await getCompanyStats(dataOwnerId);
-                if (active) setDashboardLogCount(localStats?.logs || 0);
+                // Count the log collections directly — getCompanyStats() answers from a
+                // 24h cache that can be poisoned with a stale 0 by the registry sync effect.
+                const liveLogCount = await getCompanyLogCount(dataOwnerId);
+                if (active) setDashboardLogCount(liveLogCount);
             } catch (err) {
                 console.error("Error loading dashboard log count", err);
                 if (active) setDashboardLogCount(0);
@@ -12451,7 +12459,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.28</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.29</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15525,7 +15533,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.28</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.29</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -18183,6 +18191,8 @@ const InvoiceModal = (props) => {
     });
     const [voucherType, setVoucherType] = useState(type); // allow switching between purchase/sales
     const [invoiceZoom, setInvoiceZoom] = useState(1);
+    // 🧬 DUPLICATE MODE (Tally-style Alt+2). Keeps every value but saves a NEW invoice.
+    const [isDuplicate, setIsDuplicate] = useState(false);
 
     // ✅ STATE FOR CONTAINER POPUP VISIBILITY
     const [showContainerForm, setShowContainerForm] = useState(false);
@@ -18489,6 +18499,7 @@ const InvoiceModal = (props) => {
     useEffect(() => {
         if (isOpen) {
             setInvoiceZoom(1);
+            setIsDuplicate(false); // a freshly opened invoice is never in duplicate mode
             if (initialData) {
                 setVoucherType(initialData.type || type);
                 setFormData({
@@ -18863,15 +18874,32 @@ const InvoiceModal = (props) => {
     const dateRef = useRef(null);
     const partyRef = useRef(null);
 
+    // 🧬 Tally-style duplicate: keep the whole invoice, drop only its identity.
+    const duplicateInvoice = useCallback(() => {
+        setIsDuplicate(true);
+        setFormData(prev => ({ ...prev, refNo: '', containerNo: '', sealNo: '', otherRef: '' }));
+        showToast?.({
+            type: 'success',
+            title: 'Voucher Duplicated',
+            message: 'Same items, party and expenses copied. Enter a NEW Ref No. and save.'
+        });
+    }, [showToast]);
+
     useEffect(() => {
         const handleKeys = (e) => {
             if (!isOpen) return;
             if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
             if (e.altKey && e.key.toLowerCase() === 'a') { e.preventDefault(); addItem(); }
+            // 🧬 Alt+2 — duplicate this invoice (same details, new reference number)
+            if (e.altKey && (e.key === '2' || e.code === 'Digit2' || e.code === 'Numpad2')) {
+                e.preventDefault();
+                e.stopPropagation();
+                duplicateInvoice();
+            }
         };
-        window.addEventListener('keydown', handleKeys);
-        return () => window.removeEventListener('keydown', handleKeys);
-    }, [isOpen, addItem, setShowDateModal]);
+        window.addEventListener('keydown', handleKeys, true);
+        return () => window.removeEventListener('keydown', handleKeys, true);
+    }, [isOpen, addItem, setShowDateModal, duplicateInvoice]);
 
     useEffect(() => {
         if (isOpen && globalDateCmd && globalDateCmd.type === 'single') {
@@ -18978,7 +19006,9 @@ const InvoiceModal = (props) => {
     };
 
     const handleSave = async () => {
-        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
+        const treatingAsNew = isDuplicate || !(initialData && initialData.id);
+
+        if (!isDuplicate && initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         if (!formData.partyId || !formData.locationId) return alert("Please select Customer and Location");
         if (items.some(i => !i.productId)) return alert("Please select items");
 
@@ -19062,6 +19092,9 @@ const InvoiceModal = (props) => {
     };
 
     const handleFinalSave = async (finalJumboBags = [], freshUniSeed = 0) => {
+        // 🧬 Alt+2 duplicate support — this function does the actual duplicate/container
+        // checks and the write, so it needs its own copy of the flag.
+        const treatingAsNew = isDuplicate || !(initialData && initialData.id);
         // 🛑 MANDATORY & DUPLICATE CHECKS
         if (!formData.refNo || !formData.refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
         if (!paymentTerms) return alert('âš ï¸ Payment Terms is required!');
@@ -19069,7 +19102,7 @@ const InvoiceModal = (props) => {
         if (paymentTerms === 'advance' && !adjustAdvRef?.refNo) return alert('âš ï¸ Please select an Advance Ref No. before saving.');
 
         const targetUid = dataOwnerId || user.uid;
-        const duplicateCol = await checkGlobalDuplicate(db, formData.refNo, targetUid, initialData?.id);
+        const duplicateCol = await checkGlobalDuplicate(db, formData.refNo, targetUid, treatingAsNew ? undefined : initialData?.id);
         if (duplicateCol) {
             setRefNoDuplicate(duplicateCol);
             return alert(`âŒ Duplicate Reference Number! This Ref No exists in another transaction (${duplicateCol}).`);
@@ -19096,7 +19129,7 @@ const InvoiceModal = (props) => {
             }
         }
         */
-        if (await checkDuplicateContainer(db, formData.containerNo, targetUid, initialData?.id)) {
+        if (await checkDuplicateContainer(db, formData.containerNo, targetUid, treatingAsNew ? undefined : initialData?.id)) {
             return alert("âŒ Duplicate Container Number! This Container No exists in another Invoice.");
         }
 
@@ -19176,7 +19209,7 @@ const InvoiceModal = (props) => {
             // 🛑 FETCH EXISTING BAGS TO CLEAN UP OR REVERT IF EDITING
             let bagsToDelete = [];
             let bagsToRevert = [];
-            if (initialData?.id) {
+            if (initialData?.id && !isDuplicate) {
                 if (voucherType === 'purchase') {
                     const qOld = query(collection(db, 'jumbo_bags'), where('purchaseId', '==', initialData.id));
                     const snapOld = await getDocs(qOld);
@@ -19212,8 +19245,8 @@ const InvoiceModal = (props) => {
                 const targetUid = dataOwnerId || user.uid;
 
                 // --- 0. INITIAL READ (Security) ---
-                const invoiceRef = (initialData && initialData.id) ? doc(db, 'invoices', initialData.id) : doc(collection(db, 'invoices'));
-                if (initialData && initialData.id) {
+                const invoiceRef = treatingAsNew ? doc(collection(db, 'invoices')) : doc(db, 'invoices', initialData.id);
+                if (!treatingAsNew) {
                     await transaction.get(invoiceRef); // Satisfy security rules context
                 }
 
@@ -19236,7 +19269,7 @@ const InvoiceModal = (props) => {
                     taxAmount: totals.taxAmount,
                     partyName: parties.find(p => p.id === formData.partyId)?.name, userId: targetUid,
                     lotId: formData.lotId || null, lastModifiedBy: user.uid, lastModifiedByName: effectiveName, lastModifiedAt: serverTimestamp(),
-                    ...(!initialData ? { createdBy: (subUser?.username || subUser?.id || user.uid), createdByName: effectiveName, createdAt: serverTimestamp() } : {}),
+                    ...(treatingAsNew ? { createdBy: (subUser?.username || subUser?.id || user.uid), createdByName: effectiveName, createdAt: serverTimestamp() } : {}),
                     // Jumbo Flags
                     packingType: formData.packingType,
                     jumboEnabled: formData.packingType === 'bags',
@@ -19255,7 +19288,7 @@ const InvoiceModal = (props) => {
                     adjustedAdvanceType: paymentTerms === 'advance' ? (adjustAdvRef?.type || null) : null,
                     adjustedAdvanceAmount: paymentTerms === 'advance' ? (Number(adjustAdvAmount) || null) : null,
                 };
-                if (initialData && initialData.id) await transaction.update(invoiceRef, payload);
+                if (!treatingAsNew) await transaction.update(invoiceRef, payload);
                 else await transaction.set(invoiceRef, payload);
 
                 // 💾 SAVE/UPDATE JUMBO BAGS
@@ -19399,14 +19432,17 @@ const InvoiceModal = (props) => {
             // --- NEW CODE (ADD THIS) ---
             showToast({ type: 'success', title: 'Saved', message: 'Invoice recorded successfully.' });
 
-            if (initialData) {
+            if (initialData && !isDuplicate) {
                 onClose();
-            } else {
+            } else if (!isDuplicate) {
                 setFormData(prev => ({ ...prev, refNo: '', narration: '', containerNo: '', sealNo: '', otherRef: '' }));
                 setPaymentTerms('today'); setPaymentTermsDate('');
                 setItems([{ _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: 0, lotId: formData.lotId || '' }]);
                 setInvExpenses([]);
                 setAddlExpenses([]); setAddlExpCreditId(''); setShowAddlExp(false);
+            } else {
+                // Duplicate: keep the invoice body so the next identical one is one keypress away.
+                setFormData(prev => ({ ...prev, refNo: '' }));
             }
 
         } catch (e) { console.error(e); alert("Error: " + e.message); }
@@ -29491,6 +29527,9 @@ const PaymentModal = (props) => {
     const [showGenModal, setShowGenModal] = useState(false);
     const [showDateModal, setShowDateModal] = useState(false);
     const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+    // 🧬 DUPLICATE MODE (Tally-style Alt+2). When true the form keeps every value
+    // but is saved as a BRAND NEW voucher, so the original is never modified.
+    const [isDuplicate, setIsDuplicate] = useState(false);
     // Payment Against tracking
     const [payAgainstRowId, setPayAgainstRowId] = useState(null);
     const [payAgainstPurchases, setPayAgainstPurchases] = useState([]);
@@ -29917,6 +29956,7 @@ const PaymentModal = (props) => {
         // moment while the setters above flush into state.
         browseLoadingRef.current = true;
         dirtyRef.current = false;
+        setIsDuplicate(false); // a freshly opened voucher is never in duplicate mode
         setTimeout(() => { browseLoadingRef.current = false; }, 400);
         if (isOpen && initialData) {
             setDate(initialData.date || lastDate || new Date().toISOString().split('T')[0]);
@@ -30056,7 +30096,9 @@ const PaymentModal = (props) => {
             }
         }
 
-        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
+        const treatingAsNew = isDuplicate || !(initialData && initialData.id);
+
+        if (!isDuplicate && initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
         // 🛑 NEGATIVE BALANCE CHECK (For Payments) - DISABLED as per user request
@@ -30099,7 +30141,7 @@ const PaymentModal = (props) => {
 
         // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, treatingAsNew ? undefined : initialData?.id);
         if (duplicateCol) {
             return alert(`âŒ Duplicate Reference Number! Exists in another transaction (${duplicateCol}).`);
         }
@@ -30110,12 +30152,12 @@ const PaymentModal = (props) => {
             await runTransaction(db, async (transaction) => {
                 const targetUid = dataOwnerId || user.uid;
 
-                const docRef = (initialData && initialData.id) ? doc(db, 'payments', initialData.id) : doc(collection(db, 'payments'));
+                const docRef = treatingAsNew ? doc(collection(db, 'payments')) : doc(db, 'payments', initialData.id);
 
                 // --- 1. INITIAL READS ---
                 let currentDocData = null;
                 let oldCollection = 'payments';
-                if (initialData && initialData.id) {
+                if (!treatingAsNew) {
                     let docSnap = await transaction.get(doc(db, 'payments', initialData.id));
                     if (docSnap.exists()) {
                         currentDocData = docSnap.data();
@@ -30266,7 +30308,7 @@ const PaymentModal = (props) => {
                     ? (parties.find(p => p.id === primaryPartySplit.targetId)?.name || primaryPartySplit.targetId)
                     : null;
 
-                if (initialData && oldCollection === 'payments') await transaction.update(docRef, baseData);
+                if (!treatingAsNew && oldCollection === 'payments') await transaction.update(docRef, baseData);
                 else {
                     await transaction.set(docRef, baseData);
                     let modeToUse = '';
@@ -30323,11 +30365,11 @@ const PaymentModal = (props) => {
                     ownerId: targetUid,
                     userId: dataOwnerId || user.uid,
                     userName: effectiveName,
-                    action: initialData ? 'UPDATED' : 'CREATED',
+                    action: treatingAsNew ? 'CREATED' : 'UPDATED',
                     docType: logTypeLabel,
                     refNo: refNo || 'N/A',
                     amount: baseAmount,
-                    ...(initialData ? { oldAmount: initialData.amount || initialData.totalAmount || 0 } : {}),
+                    ...(treatingAsNew ? {} : { oldAmount: initialData.amount || initialData.totalAmount || 0 }),
                     voucherDate: date,
                     snapshotData: JSON.stringify(baseData),
                     description: `${narration || 'Transaction'} ${currencyId !== 'BASE' ? `(FCY @ ${rate})` : ''}`.trim(),
@@ -30344,7 +30386,7 @@ const PaymentModal = (props) => {
             // --- USE TOAST INSTEAD OF ALERT ---
             showToast({ type: 'success', title: 'Saved', message: 'Payment recorded successfully.' });
 
-            if (initialData) {
+            if (initialData && !isDuplicate) {
                 onClose();
             } else {
                 let freshRef = '';
@@ -30374,9 +30416,14 @@ const PaymentModal = (props) => {
                 }
 
                 setRefNo(freshRef);
-                setNarration('');
-                setSingleAmount('');
-                setSplits([{ id: Date.now(), category: 'party', targetId: '', amount: '', description: '' }]);
+                // A duplicated voucher must KEEP its details after saving, so the same
+                // payment/receipt/contra can be entered again in one keystroke (Alt+2 flow).
+                // Only a truly new voucher is cleared back to a blank row.
+                if (!isDuplicate) {
+                    setNarration('');
+                    setSingleAmount('');
+                    setSplits([{ id: Date.now(), category: 'party', targetId: '', amount: '', description: '' }]);
+                }
                 setIsRefNoUnlocked(false);
             }
         } catch (e) { console.error(e); alert(e.message); }
@@ -30480,11 +30527,35 @@ const PaymentModal = (props) => {
         onBrowseVoucher(target);
     }, [browseSiblings.length, browsePrevTarget, browseNextTarget, onBrowseVoucher, showToast]);
 
+    // 🧬 Tally-style duplicate: keep every value on screen, drop the identity.
+    const duplicateVoucher = useCallback(() => {
+        if (saving) return;
+        setIsDuplicate(true);
+        setRefNo('');
+        setIsRefNoUnlocked(true);
+        dirtyRef.current = false;
+        showToast?.({
+            type: 'success',
+            title: 'Voucher Duplicated',
+            message: 'Same details copied. Enter a NEW Ref No. and press Save.'
+        });
+        setTimeout(() => {
+            refNoRef.current?.focus();
+            refNoRef.current?.select();
+        }, 80);
+    }, [saving, showToast]);
+
     // Shortcuts
     useEffect(() => {
         const handler = (e) => {
             if (!isOpen || showDateModal) return;
             if (e.key === 'F2') { e.preventDefault(); setShowDateModal(true); }
+            // 🧬 Alt+2 — duplicate this voucher (same details, new reference number)
+            if (e.altKey && (e.key === '2' || e.code === 'Digit2' || e.code === 'Numpad2')) {
+                e.preventDefault();
+                e.stopPropagation();
+                duplicateVoucher();
+            }
             if (e.altKey && e.key.toLowerCase() === 'r') {
                 e.preventDefault();
                 setIsRefNoUnlocked(true);
@@ -30510,7 +30581,7 @@ const PaymentModal = (props) => {
         // history navigation, otherwise the user is thrown out of the app.
         window.addEventListener('keydown', handler, true);
         return () => window.removeEventListener('keydown', handler, true);
-    }, [isOpen, handleSave, splits, showDateModal, navigateVoucher, navArrowsEnabled]);
+    }, [isOpen, handleSave, splits, showDateModal, navigateVoucher, navArrowsEnabled, duplicateVoucher]);
 
     const getOptions = (cat) => {
         if (cat === 'party') return liveParties;
@@ -30704,6 +30775,7 @@ const PaymentModal = (props) => {
     // Keyboard shortcuts available inside the payment / receipt voucher (kept next to
     // the handler above so the help panel can never drift from the real bindings).
     const paymentShortcutList = [
+        { keys: ['Alt', '2'], label: 'Duplicate this voucher (same details, new Ref No)' },
         { keys: ['Alt', '←'], label: 'Open the PREVIOUS voucher (older, same type)' },
         { keys: ['Alt', '→'], label: 'Open the NEXT voucher (newer, same type)' },
         { keys: ['F2'], label: 'Open Voucher Date picker' },
@@ -31707,6 +31779,8 @@ const JournalVoucherModal = (props) => {
     // Multi Mode State
     const [mode, setMode] = useState('multi'); // Default to multi, single removed
     const [rows, setRows] = useState([{ id: 1, type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
+    // 🧬 DUPLICATE MODE (Tally-style Alt+2). Keeps the entries but saves a NEW JV.
+    const [isDuplicate, setIsDuplicate] = useState(false);
 
     const [lotId, setLotId] = useState(''); const [enableLot, setEnableLot] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -31751,6 +31825,7 @@ const JournalVoucherModal = (props) => {
 
     useEffect(() => {
         if (isOpen) {
+            setIsDuplicate(false); // a freshly opened JV is never in duplicate mode
             if (initialData) {
                 // === EDIT MODE ===
                 setDate(initialData.date || new Date().toISOString().split('T')[0]);
@@ -31947,7 +32022,9 @@ const JournalVoucherModal = (props) => {
 
     const handleSave = async () => {
         if (saving) return;
-        if (initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
+        const treatingAsNew = isDuplicate || !(initialData && initialData.id);
+
+        if (!isDuplicate && initialData && !(await confirmAction(SAVE_CHANGES_CONFIRM))) return;
         // Validation
         if (!refNo || !refNo.trim()) return alert("âš ï¸ Reference Number is Mandatory!");
 
@@ -31962,7 +32039,7 @@ const JournalVoucherModal = (props) => {
 
         // 🛑 DUPLICATE CHECK
         const targetUid = dataOwnerId || user.uid;
-        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, initialData?.id);
+        const duplicateCol = await checkGlobalDuplicate(db, refNo, targetUid, treatingAsNew ? undefined : initialData?.id);
         if (duplicateCol) {
             return alert(`âŒ Duplicate Reference Number! Exists in another transaction (${duplicateCol}).`);
         }
@@ -31976,8 +32053,8 @@ const JournalVoucherModal = (props) => {
                 // --- 0. INITIAL READ (Security/State Sync) ---
                 let currentDocData = null;
                 let oldCollection = 'journal_vouchers';
-                const jvRef = (initialData && initialData.id) ? doc(db, 'journal_vouchers', initialData.id) : doc(collection(db, 'journal_vouchers'));
-                if (initialData && initialData.id) {
+                const jvRef = treatingAsNew ? doc(collection(db, 'journal_vouchers')) : doc(db, 'journal_vouchers', initialData.id);
+                if (!treatingAsNew) {
                     let docSnap = await transaction.get(doc(db, 'journal_vouchers', initialData.id));
                     if (docSnap.exists()) {
                         currentDocData = docSnap.data();
@@ -32087,10 +32164,10 @@ const JournalVoucherModal = (props) => {
                 }
 
                 // --- 3. SAVE THE VOUCHER ---
-                const logAction = initialData ? 'UPDATED' : 'CREATED';
-                const createdBy = initialData?.createdBy || (subUser?.username || subUser?.id || user.uid);
-                const createdByName = initialData?.createdByName || effectiveName;
-                const createdAt = initialData?.createdAt || serverTimestamp();
+                const logAction = treatingAsNew ? 'CREATED' : 'UPDATED';
+                const createdBy = treatingAsNew ? (subUser?.username || subUser?.id || user.uid) : (initialData?.createdBy || (subUser?.username || subUser?.id || user.uid));
+                const createdByName = treatingAsNew ? effectiveName : (initialData?.createdByName || effectiveName);
+                const createdAt = treatingAsNew ? serverTimestamp() : (initialData?.createdAt || serverTimestamp());
 
                 const payload = {
                     date, refNo, description,
@@ -32123,7 +32200,7 @@ const JournalVoucherModal = (props) => {
                 payload.exchangeRate = currentRate;
                 payload.currencySymbol = currencyId === 'BASE' ? currencySymbol : (currencies.find(c => c.id === currencyId)?.symbol || '');
 
-                if (initialData && oldCollection === 'journal_vouchers') await transaction.update(jvRef, payload);
+                if (!treatingAsNew && oldCollection === 'journal_vouchers') await transaction.update(jvRef, payload);
                 else {
                     await transaction.set(jvRef, payload);
 if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.journalRefMode === 'auto_manual') {
@@ -32156,7 +32233,7 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                     ownerId: targetUid, userId: dataOwnerId || user.uid, userName: effectiveName,
                     action: logAction, docType: 'Journal Voucher',
                     refNo: refNo, amount: payload.amount,
-                    ...(initialData ? { oldAmount: initialData.amount || initialData.totalAmount || 0 } : {}),
+                    ...(treatingAsNew ? {} : { oldAmount: initialData.amount || initialData.totalAmount || 0 }),
                     voucherDate: date,
                     snapshotData: JSON.stringify(payload),
                     description: description || (mode === 'multi' ? 'Multi-Entry Journal' : 'Journal Adjustment'),
@@ -32171,7 +32248,7 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
             if (onUpdateDate) onUpdateDate(date);
             showToast({ type: 'success', title: 'Saved', message: 'JV recorded successfully.' });
 
-            if (initialData) {
+            if (initialData && !isDuplicate) {
                 onClose();
             } else {
                 let freshRef = '';
@@ -32191,9 +32268,12 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                     }
                 }
                 setRefNo(freshRef);
-                setAmount(''); setDescription('');
-                setDrId(''); setCrId('');
-                setRows([{ id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
+                // A duplicated JV keeps its entries so the next identical one is one keypress away.
+                if (!isDuplicate) {
+                    setAmount(''); setDescription('');
+                    setDrId(''); setCrId('');
+                    setRows([{ id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
+                }
             }
 
         } catch (e) { console.error(e); alert("Error: " + e.message); }
@@ -32207,9 +32287,21 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                 e.preventDefault();
                 handleSave();
             }
+            // 🧬 Alt+2 — duplicate this journal voucher (same entries, new Ref No)
+            if (e.altKey && (e.key === '2' || e.code === 'Digit2' || e.code === 'Numpad2')) {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDuplicate(true);
+                setRefNo('');
+                showToast({
+                    type: 'success',
+                    title: 'Voucher Duplicated',
+                    message: 'Same entries copied. Enter a NEW Ref No. and save.'
+                });
+            }
         };
-        window.addEventListener('keydown', handleSaveHotKey);
-        return () => window.removeEventListener('keydown', handleSaveHotKey);
+        window.addEventListener('keydown', handleSaveHotKey, true);
+        return () => window.removeEventListener('keydown', handleSaveHotKey, true);
     }, [isOpen, handleSave]);
 
     if (!isOpen) return null;

@@ -582,13 +582,46 @@ export const saveCachedCompanyStats = (companyId, stats) => {
     }
 };
 
+/**
+ * Count ONLY the log collections (audit_logs + system_logs) for a company.
+ *
+ * Why a dedicated function: getCompanyStats() answers from a 24h localStorage
+ * cache, and that cache is also written by the "sync stats to registry" effect
+ * using whatever React state holds at the time. If the effect ran once before
+ * the count had loaded, it cached `logs: 0` and the dashboard then showed 0
+ * forever, even though the System Log screen (which reads the collection
+ * directly) showed hundreds of rows.
+ *
+ * This reads the collectionName index directly, so it always reports reality.
+ */
+export const getCompanyLogCount = async (companyId) => {
+    if (!companyId) return 0;
+    try {
+        const db = await getCompanyDB(companyId);
+        if (!db || !db.offline_records) return 0;
+        let total = 0;
+        for (const colName of ['audit_logs', 'system_logs']) {
+            const docs = await db.offline_records
+                .find({ selector: { collectionName: colName } })
+                .exec();
+            total += docs ? docs.length : 0;
+        }
+        return total;
+    } catch (e) {
+        console.warn('[DB] getCompanyLogCount failed:', e);
+        return 0;
+    }
+};
+
 export const getCompanyStats = async (companyId) => {
     // 1. Try the fast localStorage cache first (avoids slow RxDB full scan)
     try {
         const raw = safeGetItem(`accpro_stats_${companyId}`);
         if (raw) {
             const cached = JSON.parse(raw);
-            if (cached && cached.savedAt && (Date.now() - cached.savedAt < 86400000)) {
+            // A cached logs:0 is never trusted — the registry-sync effect can write it
+            // before the real count has loaded, which used to freeze the badge at 0.
+            if (cached && cached.savedAt && (Date.now() - cached.savedAt < 86400000) && cached.logs > 0) {
                 return { ledgers: cached.ledgers || 0, vouchers: cached.vouchers || 0, logs: cached.logs || 0, companyId, fromCache: true };
             }
         }

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     X, Search, LifeBuoy, BookOpen, MessageCircle, ChevronDown, ChevronRight,
     Copy, Check, AlertCircle, Sparkles, ListChecks, ArrowRight, ThumbsUp, ThumbsDown,
-    PlayCircle, Square, ArrowLeft as ArrowLeftIcon,
+    PlayCircle, Square, ArrowLeft as ArrowLeftIcon, Megaphone,
 } from 'lucide-react';
 import { FEATURE_CATEGORIES, ALL_FEATURES } from './featureCatalogue';
 import { FAQ_DATA, FAQ_CATEGORIES } from './faqData';
@@ -10,6 +10,7 @@ import { primeSearchIndex, searchFaq, searchFeatures, route, tokenize } from './
 import { allFaqs, deleteLearnedFaq } from './faqStore';
 import ChatTab from './ChatTab';
 import SuggestTab from './SuggestTab';
+import WhatsNewTab from './WhatsNewTab';
 
 /**
  * SupportCenterModal
@@ -29,6 +30,7 @@ import SuggestTab from './SuggestTab';
  */
 
 const TABS = [
+    { id: 'whatsnew', label: "What's New", icon: Megaphone },
     { id: 'features', label: 'Features', icon: ListChecks },
     { id: 'faq', label: 'FAQ', icon: BookOpen },
     { id: 'chat', label: 'Assistant', icon: MessageCircle },
@@ -769,6 +771,7 @@ const SupportCenterModal = ({ isOpen, onClose, initialTab = 'features', initialQ
                 {/* Body */}
                 <div className={`flex-1 min-h-0 px-3 py-3 md:px-5 ${isChat ? 'overflow-hidden' : 'overflow-y-auto'}`}>
                     <div className={`mx-auto w-full max-w-none ${isChat ? 'h-full' : ''}`}>
+                        {tab === 'whatsnew' && <WhatsNewTab />}
                         {tab === 'features' && <FeaturesTab query={query} setQuery={setQuery} />}
                         {tab === 'faq' && (
                             <FaqTab
