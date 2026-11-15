@@ -875,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.31 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.32 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -930,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.31</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.32</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -954,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.31</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.32</div>
                 </div>
             </div>
         </Modal>
@@ -6785,7 +6785,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.31";
+    const SYSTEM_VERSION = "2.8.32";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12463,7 +12463,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.31</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.32</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15537,7 +15537,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.31</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.32</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -19029,8 +19029,11 @@ const InvoiceModal = (props) => {
         // 250 is taken out twice (once from the line, once from the total).
         const expensesInsideRates = voucherType === 'sales' && salesExpenseMode === 'include' && addlExpTotal > 0;
         const netItemsTotal = expensesInsideRates ? expenseSplit.net : round3(itemsTotal);
+        // VAT is always charged on the REAL item value shown in the amount column, even when
+        // an expense is included in the rate (the sub total itself stays net of that expense).
+        const taxBaseTotal = expensesInsideRates ? round3(itemsTotal) : netItemsTotal;
         if (enableTax && (selectedTaxId || Number(taxPercent) > 0)) {
-            taxAmount = round3((netItemsTotal * (Number(taxPercent) || 0)) / 100);
+            taxAmount = round3((taxBaseTotal * (Number(taxPercent) || 0)) / 100);
         }
 
         // ✅ Updated logic for sales expense modes
@@ -19055,6 +19058,7 @@ const InvoiceModal = (props) => {
         return { 
             itemsTotal: netItemsTotal,
             itemsTotalGross: round3(itemsTotal),
+            taxBase: taxBaseTotal,
             expTotal: round3(expTotal), 
             taxAmount: round3(taxAmount), 
             grandTotalForeign: round3(grandTotalForeign), 
@@ -19101,7 +19105,7 @@ const InvoiceModal = (props) => {
     // Tax AMOUNT first: typing the amount computes the percentage back from the item sub-total
     const applyTaxAmountEdit = (raw) => {
         setTaxAmountEdit(raw);
-        const base = Number(totals.itemsTotal) || 0;
+        const base = Number(totals.taxBase != null ? totals.taxBase : totals.itemsTotal) || 0;
         const amt = Number(raw) || 0;
         if (raw === '' || base <= 0) return;
         const pct = (amt / base) * 100;

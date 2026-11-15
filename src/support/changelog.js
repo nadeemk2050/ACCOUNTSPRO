@@ -28,6 +28,15 @@ export const CHANGE_KINDS = {
 
 export const CHANGELOG = [
     {
+        version: '2.8.32',
+        date: '2026-11-15',
+        title: 'VAT is charged on the real item value',
+        items: [
+            { kind: 'fix', text: 'Sales voucher with expenses included in the rates: VAT was calculated on the reduced (virtual) amount. It is now calculated on the real amount shown in the amount column - 5,577 x 5% = 278.850 instead of 5,327 x 5% = 266.350.' },
+            { kind: 'fix', text: 'Typing the VAT amount directly now converts it back to a percentage using the same real amount, so the figure stays exact.' }
+        ]
+    },
+    {
         version: '2.8.31',
         date: '2026-11-15',
         title: 'Correct amount when expenses are included in the sales rates',
