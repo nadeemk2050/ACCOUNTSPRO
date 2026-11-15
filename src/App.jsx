@@ -875,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.29 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.30 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -930,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.29</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.30</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -954,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.29</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.30</div>
                 </div>
             </div>
         </Modal>
@@ -1815,7 +1815,7 @@ const checkDuplicateContainer = async (db, containerNo, userId, excludeId = null
 // --- UPDATED SEARCHABLE SELECT (With Ref, Shortcuts & Portal for Front Layer) ---
 const SearchableSelect = React.forwardRef(({ 
     options, groups, value, onChange, placeholder, label, required, 
-    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName, title, tabIndex = 0
+    warningIfEmpty, onCreateNew, compact, containerClassName, textClassName, triggerClassName, title, tabIndex = 0, onEnterKey, onEnterEmpty
 }, ref) => {
     const [isOpen, setIsOpen] = useState(false);
     const [search, setSearch] = useState("");
@@ -1953,6 +1953,10 @@ const SearchableSelect = React.forwardRef(({
         // Enter key to open/select
         if (e.key === 'Enter' && !isOpen) {
             e.preventDefault();
+            // A caller can take Enter over once a value is already picked (e.g. jump to the amount box)
+            if (onEnterKey && value) { onEnterKey(e); return; }
+            // ...or when nothing is picked yet (e.g. close the blank line it came from)
+            if (onEnterEmpty && onEnterEmpty(e) === true) return;
             setIsOpen(true);
             return;
         }
@@ -6781,7 +6785,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.29";
+    const SYSTEM_VERSION = "2.8.30";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12459,7 +12463,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.29</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.30</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15533,7 +15537,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.29</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.30</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -18112,7 +18116,7 @@ const NARRATION_FIT_STEPS = [
     { size: 9, weight: 500 }
 ];
 
-const AutoFitNarration = ({ value, onChange, placeholder = '', maxLength = 120, className = '' }) => {
+const AutoFitNarration = ({ value, onChange, placeholder = '', maxLength = 120, className = '', inputRef, onEnter }) => {
     const taRef = useRef(null);
     const [fit, setFit] = useState({ size: 11, weight: 700, height: 20 });
 
@@ -18145,14 +18149,14 @@ const AutoFitNarration = ({ value, onChange, placeholder = '', maxLength = 120, 
 
     return (
         <textarea
-            ref={taRef}
+            ref={el => { taRef.current = el; if (inputRef) inputRef.current = el; }}
             rows={1}
             spellCheck={false}
             maxLength={maxLength}
             placeholder={placeholder}
             value={value}
             onChange={e => onChange(e.target.value.replace(/[\r\n]+/g, ' '))}
-            onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (onEnter) onEnter(e); } }}
             style={{ fontSize: `${fit.size}px`, fontWeight: fit.weight, lineHeight: 1.2, height: `${fit.height}px` }}
             className={`w-0 flex-1 resize-none overflow-hidden bg-transparent border border-white/20 rounded-md px-2 py-0 text-white outline-none focus:border-white/40 placeholder:text-white/25 uppercase tracking-tight transition-[height] duration-150 ${className}`}
         />
@@ -18162,6 +18166,10 @@ const AutoFitNarration = ({ value, onChange, placeholder = '', maxLength = 120, 
 // --- Complex Transaction Modals ---
 
 // --- UPDATED INVOICE MODAL (With Container/Seal/Other Ref) ---
+// --- ITEM LINE HELPERS (Enter opens the next item line, Tally-style) ---
+let INV_ROW_SEQ = 0;
+const newItemRowKey = () => `item-${Date.now()}-${INV_ROW_SEQ++}`;
+
 const InvoiceModal = (props) => {
     const { isOpen, onClose, onBack, zIndex, type, user, subUser, dataOwnerId, products, parties, locations, expenses, accounts, lots, taxRates, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, globalDateCmd, onSwitch, companyProfile, vehicles, onDeleteTransaction, liveStockBalances, stockJournals } = props;
     const companyBanks = companyProfile?.banks || [];
@@ -18769,7 +18777,23 @@ const InvoiceModal = (props) => {
     }, [isOpen, initialData, type]);
 
     // 3. Logic (Add/Remove/Update/Calculate)
-    const addItem = () => setItems(prev => [...prev, { _rowKey: Date.now(), productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: formData.lotId || '', selectedBags: [] }]);
+    const itemFieldRefs = useRef({});
+    const focusItemField = (rowKey, field) => {
+        setTimeout(() => {
+            const el = itemFieldRefs.current[`${rowKey}::${field}`];
+            if (!el || typeof el.focus !== 'function') return;
+            el.focus();
+            if (typeof el.select === 'function') el.select();
+        }, 80);
+    };
+    const itemRowIsEmpty = (it) => !!it && !it.productId && !String(it.quantity ?? '').trim() && !String(it.rate ?? '').trim() && !String(it.total ?? '').trim() && !String(it.pieces ?? '').trim();
+
+    const addItem = () => {
+        const rowKey = newItemRowKey();
+        setItems(prev => [...prev, { _rowKey: rowKey, productId: '', quantity: '', rate: '', pieces: '', total: '', lotId: formData.lotId || '', selectedBags: [] }]);
+        focusItemField(rowKey, 'product');
+        return rowKey;
+    };
 
     const removeItem = (index) => {
         const newItems = items.filter((_, i) => i !== index);
@@ -18873,6 +18897,10 @@ const InvoiceModal = (props) => {
     // Refs & Listeners (Moved here to ensure addItem etc are initialized)
     const dateRef = useRef(null);
     const partyRef = useRef(null);
+    const invNarrationRef = useRef(null);
+    const saveBtnRef = useRef(null);
+    const invoiceRootRef = useRef(null);
+    const invoiceToolbarRef = useRef(null);
 
     // 🧬 Tally-style duplicate: keep the whole invoice, drop only its identity.
     const duplicateInvoice = useCallback(() => {
@@ -19448,13 +19476,95 @@ const InvoiceModal = (props) => {
         } catch (e) { console.error(e); alert("Error: " + e.message); }
     };
 
-    const handleKeyDown = (e, index, field) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const form = e.target.form;
-            const index = Array.prototype.indexOf.call(form, e.target);
-            if (form.elements[index + 1]) form.elements[index + 1].focus();
+    // Enter walks the line field by field (Units -> Qty -> Rate -> Amt). On the last
+    // field it opens the next line; on a blank last line it closes that line and
+    // steps out of the grid towards the voucher footer.
+    const ITEM_ENTER_NEXT = { pieces: 'quantity', quantity: 'rate', rate: 'total' };
+    // Enter stops = every live voucher field (toolbar, item grid, footer, narration),
+    // in on-screen order. Fields of any modal opened on top are left alone.
+    const enterStops = () => {
+        const root = invoiceRootRef.current;
+        if (!root) return [];
+        const form = root.querySelector('form');
+        const toolbar = invoiceToolbarRef.current;
+        return Array.from(root.querySelectorAll('input, textarea, select')).filter(n =>
+            !n.disabled && !n.readOnly && n.type !== 'hidden' && n.getClientRects().length > 0 &&
+            ((form && form.contains(n)) || (toolbar && toolbar.contains(n)) || n === invNarrationRef.current)
+        );
+    };
+    // Next Enter stop: the next voucher field, then the narration, then Save.
+    const focusNextControl = (el) => {
+        const stops = enterStops();
+        const i = stops.indexOf(el);
+        if (i < 0) return;
+        const next = stops[i + 1];
+        if (next) {
+            next.focus();
+            if (next.tagName === 'INPUT' && typeof next.select === 'function') next.select();
+            return;
         }
+        saveBtnRef.current?.focus();
+    };
+    const nextControlAfterGrid = (fromEl) => {
+        const table = fromEl?.closest('table');
+        const stops = enterStops();
+        const start = stops.indexOf(fromEl);
+        for (let i = start + 1; i < stops.length; i++) {
+            if (table && table.contains(stops[i])) continue;
+            return stops[i];
+        }
+        return null;
+    };
+
+    // Fields that handle Enter themselves (item grid, search selects) prevent the
+    // default, so this only fires for the remaining voucher fields.
+    useEffect(() => {
+        if (!isOpen) return;
+        const onEnter = (e) => {
+            if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
+            if (document.querySelector('div[style*="z-index: 9999999"]')) return;
+            const el = document.activeElement;
+            if (!el || el.tagName !== 'INPUT') return;
+            if (el.type === 'checkbox' || el.type === 'radio' || el.type === 'button') return;
+            // Only walk fields of this voucher (a modal opened on top keeps its own Enter)
+            if (!el.form && !(invoiceToolbarRef.current && invoiceToolbarRef.current.contains(el))) return;
+            e.preventDefault();
+            e.stopPropagation();
+            focusNextControl(el);
+        };
+        window.addEventListener('keydown', onEnter);
+        return () => window.removeEventListener('keydown', onEnter);
+    }, [isOpen]);
+
+    const handleKeyDown = (e, index, field) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const rowKey = items[index]?._rowKey ?? index;
+        const nextField = ITEM_ENTER_NEXT[field];
+        if (nextField) { focusItemField(rowKey, nextField); return; }
+        if (index < items.length - 1) {
+            focusItemField(items[index + 1]?._rowKey ?? (index + 1), 'product');
+            return;
+        }
+        if (itemRowIsEmpty(items[index])) {
+            const outside = nextControlAfterGrid(e.target);
+            if (items.length > 1) removeItem(index);
+            setTimeout(() => outside?.focus?.(), 90);
+            return;
+        }
+        addItem();
+    };
+
+    // Enter on the empty Item cell of the freshly opened last line closes that line
+    // again (nothing to post) and steps out of the grid. Returns true when handled.
+    const handleItemEmptyEnter = (index) => {
+        if (index !== items.length - 1 || items.length <= 1 || !itemRowIsEmpty(items[index])) return false;
+        const rowKey = items[index]?._rowKey ?? index;
+        const anchor = itemFieldRefs.current[`${rowKey}::total`];
+        const outside = anchor ? nextControlAfterGrid(anchor) : null;
+        removeItem(index);
+        setTimeout(() => outside?.focus?.(), 90);
+        return true;
     };
 
     const format3 = (num) => Number(num || 0).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -19531,9 +19641,9 @@ const InvoiceModal = (props) => {
             maxWidth="max-w-6xl" 
             defaultMaximized={true}
         >
-            <div className="flex flex-col h-full bg-[#f8fafc] overflow-visible relative">
+            <div ref={invoiceRootRef} className="flex flex-col h-full bg-[#f8fafc] overflow-visible relative">
                 {/* 🚀 HIGH-END INTEGRATED CONTROL TOOLBAR (Professional Dark Theme) */}
-                <div className="flex items-center w-full h-[36px] bg-[#1a2b53] border-b border-[#0f1b35] flex-nowrap overflow-visible select-none shadow-xl z-[1000] relative">
+                <div ref={invoiceToolbarRef} className="flex items-center w-full h-[36px] bg-[#1a2b53] border-b border-[#0f1b35] flex-nowrap overflow-visible select-none shadow-xl z-[1000] relative">
                     {/* A. NAVIGATION */}
                     <button 
                         type="button" 
@@ -20296,6 +20406,7 @@ const InvoiceModal = (props) => {
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {items.map((item, index) => {
+                                    const rowKey = item._rowKey || index;
                                     const selectedProd = products.find(p => p.id === item.productId);
                                     const currStock = item.productId ? (liveStockBalances.itemMap[item.productId] || 0) : 0;
 
@@ -20342,6 +20453,9 @@ const InvoiceModal = (props) => {
                                         <tr key={item._rowKey || index} className="hover:bg-blue-50/40 align-middle">
                                             <td className="p-0.5 pl-1.5 w-[460px]">
                                                 <SearchableSelect
+                                                    ref={el => { if (el) itemFieldRefs.current[`${rowKey}::product`] = el; else delete itemFieldRefs.current[`${rowKey}::product`]; }}
+                                                    onEnterKey={() => focusItemField(rowKey, 'pieces')}
+                                                    onEnterEmpty={() => handleItemEmptyEnter(index)}
                                                     options={productOptions}
                                                     value={item.productId}
                                                     onChange={v => updateItem(index, 'productId', v)}
@@ -20372,11 +20486,11 @@ const InvoiceModal = (props) => {
                                                     </button>
                                                 )}
                                             </td>
-                                            <td className="p-0.5 bg-blue-50/20"><input type="number" step="0.001" className="w-full h-8 px-1 border border-blue-100 rounded text-center text-blue-700 font-bold bg-transparent text-[11px] placeholder:text-[9px]" placeholder="Units" value={item.pieces} onChange={e => updateItem(index, 'pieces', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'pieces')} /></td>
-                                            <td className="p-0.5"><input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-center font-bold text-[11px] placeholder:text-[9px]" placeholder="Qty" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'quantity')} onBlur={() => checkItemStock(index)} /></td>
+                                            <td className="p-0.5 bg-blue-50/20"><input ref={el => { if (el) itemFieldRefs.current[`${rowKey}::pieces`] = el; else delete itemFieldRefs.current[`${rowKey}::pieces`]; }} type="number" step="0.001" className="w-full h-8 px-1 border border-blue-100 rounded text-center text-blue-700 font-bold bg-transparent text-[11px] placeholder:text-[9px]" placeholder="Units" value={item.pieces} onChange={e => updateItem(index, 'pieces', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'pieces')} /></td>
+                                            <td className="p-0.5"><input ref={el => { if (el) itemFieldRefs.current[`${rowKey}::quantity`] = el; else delete itemFieldRefs.current[`${rowKey}::quantity`]; }} type="number" step="0.001" className="w-full h-8 px-1 border rounded text-center font-bold text-[11px] placeholder:text-[9px]" placeholder="Qty" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'quantity')} onBlur={() => checkItemStock(index)} /></td>
                                             <td className="p-0.5">
                                                 <div className="flex flex-col gap-0.5">
-                                                    <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[11px] placeholder:text-[9px]" placeholder="Rate" value={item.rate} onChange={e => updateItem(index, 'rate', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'rate')} />
+                                                    <input ref={el => { if (el) itemFieldRefs.current[`${rowKey}::rate`] = el; else delete itemFieldRefs.current[`${rowKey}::rate`]; }} type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right text-[11px] placeholder:text-[9px]" placeholder="Rate" value={item.rate} onChange={e => updateItem(index, 'rate', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'rate')} />
                                                     {rieDisplay && (
                                                         <>
                                                             <div className="relative group">
@@ -20392,7 +20506,7 @@ const InvoiceModal = (props) => {
                                             </td>
                                             <td className="p-0.5">
                                                 <div className="flex flex-col gap-0.5">
-                                                    <input type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right font-bold text-slate-700 text-[11px] bg-slate-50 placeholder:text-[9px]" placeholder="Amt" value={item.total} onChange={e => updateItem(index, 'total', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'total')} />
+                                                    <input ref={el => { if (el) itemFieldRefs.current[`${rowKey}::total`] = el; else delete itemFieldRefs.current[`${rowKey}::total`]; }} type="number" step="0.001" className="w-full h-8 px-1 border rounded text-right font-bold text-slate-700 text-[11px] bg-slate-50 placeholder:text-[9px]" placeholder="Amt" value={item.total} onChange={e => updateItem(index, 'total', e.target.value)} onKeyDown={(e) => handleKeyDown(e, index, 'total')} />
                                                     {aieDisplay && (
                                                         <>
                                                             <div className="relative group">
@@ -20728,6 +20842,8 @@ const InvoiceModal = (props) => {
                         maxLength={120}
                         value={formData.narration || ''}
                         onChange={v => setFormData({ ...formData, narration: v })}
+                        inputRef={invNarrationRef}
+                        onEnter={() => focusNextControl(invNarrationRef.current)}
                     />
                     <button
                         type="button"
@@ -20739,6 +20855,7 @@ const InvoiceModal = (props) => {
                         Generate
                     </button>
                     <button
+                        ref={saveBtnRef}
                         type="button"
                         onClick={handleSave}
                         className="h-8 px-5 flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 border border-emerald-400 rounded text-[11px] font-black text-white transition-all active:scale-95 shrink-0 uppercase tracking-wide"
@@ -29476,6 +29593,10 @@ const LedgerModal = ({ isOpen, onClose, onBack, zIndex, user, dataOwnerId, userR
 
 
 
+// --- SPLIT LINE HELPERS (Enter opens the next line, Tally-style) ---
+let PAY_ROW_SEQ = 0;
+const newPayRowId = () => `pay-row-${Date.now()}-${PAY_ROW_SEQ++}`;
+
 const PaymentModal = (props) => {
     const { isOpen, onClose, onBack, zIndex, user, subUser, dataOwnerId, parties, expenses, directExpenseAccounts = [], incomeAccounts, accounts, capitalAccounts, assetAccounts, lots, initialData, lastDate, onUpdateDate, onQuickCreate, currencySymbol, showToast, defaultType, globalDateCmd, onSwitch, companyProfile, onUpdateProfile, confirmPassword, onDeleteTransaction, invoices, payments, journalVouchers, currentRole, onBrowseVoucher } = props;
     const effectiveName = props.effectiveName || `${subUser?.name || user?.displayName || 'System'} (${user?.email || 'Admin'})`;
@@ -29717,6 +29838,27 @@ const PaymentModal = (props) => {
             const activeIndex = focusables.findIndex(f => f === activeEl || f.contains(activeEl));
 
             if (e.key === 'Tab' || e.key === 'Enter') {
+                // Enter on the last split line means "this line is done": open the next
+                // line, or close that line again when nothing was typed into it.
+                if (e.key === 'Enter') {
+                    const lastRow = splits[splits.length - 1];
+                    const lastParts = lastRow ? rowParticularsRefs.current[lastRow.id] : null;
+                    const lastAmount = lastRow ? rowAmountRefs.current[lastRow.id] : null;
+                    const inLastRow = !!(lastRow && ((lastParts && (lastParts === activeEl || lastParts.contains(activeEl))) || lastAmount === activeEl));
+                    if (inLastRow) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const hasData = !!lastRow.targetId || String(lastRow.amount ?? '').trim() !== '' || String(lastRow.description ?? '').trim() !== '';
+                        if (hasData) {
+                            addLine();
+                        } else if (splits.length > 1) {
+                            const prevRow = splits[splits.length - 2];
+                            removeLine(lastRow.id);
+                            setTimeout(() => rowAmountRefs.current[prevRow.id]?.focus?.(), 80);
+                        }
+                        return;
+                    }
+                }
                 e.preventDefault();
                 e.stopPropagation();
                 if (activeIndex !== -1) {
@@ -29977,7 +30119,7 @@ const PaymentModal = (props) => {
                 const sAmt = (initialData.foreignTotal ?? initialData.foreignAmount ?? initialData.amount) || '';
                 const sCat = initialData.transactionCategory || (initialData.type === 'contra' ? 'account' : 'party');
                 const sId = initialData.toAccountId || initialData.partyId || initialData.expenseId || initialData.incomeId || initialData.capitalId || initialData.assetId || '';
-                setSplits([{ id: Date.now(), category: sCat === 'contra' ? 'account' : sCat, targetId: sId, amount: sAmt, description: '' }]);
+                setSplits([{ id: newPayRowId(), category: sCat === 'contra' ? 'account' : sCat, targetId: sId, amount: sAmt, description: '' }]);
             }
         } else if (isOpen) {
             // Reset to defaults
@@ -30024,13 +30166,13 @@ const PaymentModal = (props) => {
             setSingleAmount(''); 
             setSingleId('');
             setSingleCategory(t === 'contra' ? 'account' : 'party');
-            setSplits([{ id: Date.now(), category: t === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
+            setSplits([{ id: newPayRowId(), category: t === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
             setIsRefNoUnlocked(false);
         }
     }, [isOpen, defaultType, initialData?.id]); // Re-runs on open AND when opened as Payment / Receipt / Contra, or when the voucher browser loads another voucher
 
     // Split Lines Logic
-    const addLine = () => setSplits([...splits, { id: Date.now(), category: type === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
+    const addLine = () => setSplits([...splits, { id: newPayRowId(), category: type === 'contra' ? 'account' : 'party', targetId: '', amount: '', description: '' }]);
     const removeLine = (id) => setSplits(splits.filter(s => s.id !== id));
     const updateLine = (id, field, val) => {
         let value = val;
@@ -30422,7 +30564,7 @@ const PaymentModal = (props) => {
                 if (!isDuplicate) {
                     setNarration('');
                     setSingleAmount('');
-                    setSplits([{ id: Date.now(), category: 'party', targetId: '', amount: '', description: '' }]);
+                    setSplits([{ id: newPayRowId(), category: 'party', targetId: '', amount: '', description: '' }]);
                 }
                 setIsRefNoUnlocked(false);
             }
@@ -31739,6 +31881,42 @@ const PaymentModal = (props) => {
     );
 };
 
+// --- JOURNAL VOUCHER LINE HELPERS (Tally-style entry) ---
+// A JV is never a single line: it needs a Debit AND a Credit side, so the voucher
+// opens with both. `manual` marks a line the user typed into; the amount still
+// needed to balance is pre-filled into an auto line (always editable).
+let JV_ROW_SEQ = 0;
+const newJvRow = (type = 'dr') => ({ id: `jv-row-${Date.now()}-${JV_ROW_SEQ++}`, type, category: 'party', aid: '', amount: '', description: '', manual: false });
+const makeInitialJvRows = () => [newJvRow('dr'), newJvRow('cr')];
+const jvRound = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+const jvTypedTotal = (list, side) => jvRound((Array.isArray(list) ? list : []).filter(r => r.manual && r.type === side).reduce((sum, r) => sum + (Number(r.amount) || 0), 0));
+const jvShortSide = (list) => {
+    const diff = jvRound(jvTypedTotal(list, 'dr') - jvTypedTotal(list, 'cr'));
+    if (Math.abs(diff) < 0.0005) return null;
+    return diff > 0 ? 'cr' : 'dr';
+};
+// Keeps every amount the user typed and moves the missing amount into one auto line
+// on the short side. Typing into that line simply turns it into a normal line.
+const rebalanceJvRows = (list) => {
+    const shortSide = jvShortSide(list);
+    const candidates = shortSide ? list.filter(r => !r.manual && r.type === shortSide) : [];
+    if (candidates.length === 0) return list.map(r => (r.manual ? r : { ...r, amount: '' }));
+    const filled = candidates.filter(r => String(r.amount ?? '').trim() !== '');
+    const target = filled.length ? filled[filled.length - 1] : candidates[candidates.length - 1];
+    const amountText = String(jvRound(Math.abs(jvTypedTotal(list, 'dr') - jvTypedTotal(list, 'cr'))));
+    return list.map(r => {
+        if (r.manual) return r;
+        return r.id === target.id ? { ...r, amount: amountText } : { ...r, amount: '' };
+    });
+};
+// Rows read back from a saved voucher (or converted from a payment) are all "typed".
+const adoptJvRows = (raw) => {
+    const out = (Array.isArray(raw) ? raw : []).map(r => ({ ...r, id: `jv-row-${Date.now()}-${JV_ROW_SEQ++}`, aid: r.aid || r.id, manual: true }));
+    if (out.length === 0) return makeInitialJvRows();
+    if (out.length === 1) out.push(newJvRow(out[0].type === 'dr' ? 'cr' : 'dr'));
+    return out;
+};
+
 // --- UPDATED JOURNAL VOUCHER MODAL (Saves 'createdBy') ---
 // ── JOURNAL LEDGER NATURE (auto-detected, never hand-picked) ───────────────
 // A ledger can be moved to another master group later (Party → Expenses …).
@@ -31778,7 +31956,7 @@ const JournalVoucherModal = (props) => {
 
     // Multi Mode State
     const [mode, setMode] = useState('multi'); // Default to multi, single removed
-    const [rows, setRows] = useState([{ id: 1, type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
+    const [rows, setRows] = useState(makeInitialJvRows);
     // 🧬 DUPLICATE MODE (Tally-style Alt+2). Keeps the entries but saves a NEW JV.
     const [isDuplicate, setIsDuplicate] = useState(false);
 
@@ -31789,6 +31967,7 @@ const JournalVoucherModal = (props) => {
     const [dateInputValue, setDateInputValue] = useState('');
     const dateRef = useRef(null);
     const refNoRef = useRef(null);
+    const narrationRef = useRef(null);
     const [exchangeRateInput, setExchangeRateInput] = useState('');
 
     useEffect(() => {
@@ -31835,14 +32014,15 @@ const JournalVoucherModal = (props) => {
 
                 if (initialData.isMulti) {
                     setMode('multi');
-                    setRows(initialData.rows.map(r => ({ ...r, id: Math.random(), aid: r.aid || r.id }))); // Map stored 'id' or converted 'aid' to 'aid' for UI, keep 'id' unique for React key
+                    // Map stored 'id' or converted 'aid' to 'aid' for UI, keep 'id' unique for React key
+                    setRows(adoptJvRows(initialData.rows));
                 } else {
                     setMode('multi');
                     // We only support multi now, but if it was single, it will be converted naturally by state (though UI only shows multi)
-                    setRows(initialData.rows ? initialData.rows.map(r => ({ ...r, id: Math.random(), aid: r.aid || r.id })) : [
-                        { id: 1, type: 'dr', category: initialData.drType, aid: initialData.drId, amount: initialData.amount, description: initialData.description || '' },
-                        { id: 2, type: 'cr', category: initialData.crType, aid: initialData.crId, amount: initialData.amount, description: initialData.description || '' }
-                    ]);
+                    setRows(initialData.rows ? adoptJvRows(initialData.rows) : adoptJvRows([
+                        { type: 'dr', category: initialData.drType, aid: initialData.drId, amount: initialData.amount, description: initialData.description || '' },
+                        { type: 'cr', category: initialData.crType, aid: initialData.crId, amount: initialData.amount, description: initialData.description || '' }
+                    ]));
                 }
 
                 setLotId(initialData.lotId || '');
@@ -31870,7 +32050,7 @@ const JournalVoucherModal = (props) => {
                 setCrId('');
                 setDrType('party');
                 setCrType('party');
-                setRows([{ id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
+                setRows(makeInitialJvRows());
                 setLotId('');
                 setEnableLot(false);
             }
@@ -31881,8 +32061,46 @@ const JournalVoucherModal = (props) => {
     // extra balance subscriptions made the voucher open slowly.
 
     // Multi Mode Helpers
-    const addRow = () => setRows([...rows, { id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
-    const removeRow = (id) => setRows(rows.filter(r => r.id !== id));
+    const rowAccountRefs = useRef({});
+    const rowAmountRefs = useRef({});
+    const focusJvField = (rowId, field = 'account') => {
+        setTimeout(() => {
+            const el = (field === 'amount' ? rowAmountRefs.current : rowAccountRefs.current)[rowId];
+            if (!el || typeof el.focus !== 'function') return;
+            el.focus();
+            if (field === 'amount' && typeof el.select === 'function') el.select();
+        }, 60);
+    };
+    const isJvRowEmpty = (row) => !row || (!row.aid && !String(row.amount ?? '').trim() && !String(row.description ?? '').trim());
+
+    // Enter completes the current line. On the last line it opens a fresh one; on a
+    // still-untouched last line it closes that line again and steps back.
+    const handleJvRowEnter = (e, row) => {
+        if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey) return;
+        const idx = rows.findIndex(r => r.id === row.id);
+        if (idx === -1) return;
+        e.preventDefault();
+        if (idx < rows.length - 1) { focusJvField(rows[idx + 1].id, 'amount'); return; }
+        if (isJvRowEmpty(row)) {
+            if (rows.length > 2) {
+                removeRow(row.id);
+                focusJvField(rows[idx - 1].id, 'amount');
+            }
+            return;
+        }
+        addRow();
+    };
+
+    // A new line opens on the side that still needs money and arrives pre-filled
+    // with the remaining amount, so splitting an entry is type-over, not retype.
+    const addRow = () => {
+        const side = jvShortSide(rows) || (rows[rows.length - 1]?.type === 'dr' ? 'cr' : 'dr');
+        const newRow = newJvRow(side);
+        setRows(prev => rebalanceJvRows([...prev, newRow]));
+        focusJvField(newRow.id, 'account');
+        return newRow.id;
+    };
+    const removeRow = (id) => setRows(prev => rebalanceJvRows(prev.filter(r => r.id !== id)));
 
     // ── SMART LEDGER LOOKUP ─────────────────────────────────────────────────
     // Every ledger is searched across ALL master groups, and the "nature"
@@ -31974,7 +32192,16 @@ const JournalVoucherModal = (props) => {
             const parts = value.toString().split('.');
             if (parts[1].length > 3) value = `${parts[0]}.${parts[1].substring(0, 3)}`;
         }
-        setRows(rows.map(r => r.id === id ? { ...r, [field]: value } : r));
+        setRows(prev => {
+            const next = prev.map(r => {
+                if (r.id !== id) return r;
+                const patched = { ...r, [field]: value };
+                // A typed amount belongs to its line; clearing it hands the line back to auto-balance.
+                if (field === 'amount') patched.manual = String(value ?? '').trim() !== '';
+                return patched;
+            });
+            return (field === 'amount' || field === 'type') ? rebalanceJvRows(next) : next;
+        });
     };
 
     const totalDr = rows.filter(r => r.type === 'dr').reduce((sum, r) => sum + Number(r.amount || 0), 0);
@@ -32272,7 +32499,7 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                 if (!isDuplicate) {
                     setAmount(''); setDescription('');
                     setDrId(''); setCrId('');
-                    setRows([{ id: Date.now(), type: 'dr', category: 'party', aid: '', amount: '', description: '' }]);
+                    setRows(makeInitialJvRows());
                 }
             }
 
@@ -32566,16 +32793,16 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                                             </div>
                                         </td>
                                         <td className="p-1">
-                                            <SearchableSelect triggerClassName="h-[22px] !text-[11px] !py-0 !px-1.5" options={ledgerOptions} value={row.aid} onChange={v => selectLedgerForRow(row.id, v)} placeholder="Select account..." onCreateNew={() => onQuickCreate(getColName(resolveRowCategory(row)))} />
+                                            <SearchableSelect ref={el => { if (el) rowAccountRefs.current[row.id] = el; else delete rowAccountRefs.current[row.id]; }} onEnterKey={() => focusJvField(row.id, 'amount')} triggerClassName="h-[22px] !text-[11px] !py-0 !px-1.5" options={ledgerOptions} value={row.aid} onChange={v => selectLedgerForRow(row.id, v)} placeholder="Select account..." onCreateNew={() => onQuickCreate(getColName(resolveRowCategory(row)))} />
                                         </td>
                                         <td className="p-1">
-                                            <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="text" className="w-full border rounded outline-none focus:border-blue-400" placeholder="Remark..." value={row.description} onChange={e => updateRow(row.id, 'description', e.target.value)} />
+                                            <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="text" className="w-full border rounded outline-none focus:border-blue-400" placeholder="Remark..." value={row.description} onChange={e => updateRow(row.id, 'description', e.target.value)} onKeyDown={e => handleJvRowEnter(e, row)} />
                                         </td>
                                         <td className="p-1 text-right bg-blue-50/10">
-                                            {row.type === 'dr' && <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="number" step="0.001" className="w-full border rounded text-right font-bold" value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
+                                            {row.type === 'dr' && <input ref={el => { if (el) rowAmountRefs.current[row.id] = el; else delete rowAmountRefs.current[row.id]; }} onKeyDown={e => handleJvRowEnter(e, row)} title={row.manual ? 'Amount you entered' : 'Auto-balanced amount (type to change)'} style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="number" step="0.001" className={`w-full border rounded text-right font-bold ${!row.manual && String(row.amount ?? '').trim() !== '' ? 'bg-amber-50 text-amber-800 border-amber-200' : ''}`} value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
                                         </td>
                                         <td className="p-1 text-right bg-green-50/10">
-                                            {row.type === 'cr' && <input style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="number" step="0.001" className="w-full border rounded text-right font-bold" value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
+                                            {row.type === 'cr' && <input ref={el => { if (el) rowAmountRefs.current[row.id] = el; else delete rowAmountRefs.current[row.id]; }} onKeyDown={e => handleJvRowEnter(e, row)} title={row.manual ? 'Amount you entered' : 'Auto-balanced amount (type to change)'} style={{height:'22px',fontSize:'11px',padding:'0 4px'}} type="number" step="0.001" className={`w-full border rounded text-right font-bold ${!row.manual && String(row.amount ?? '').trim() !== '' ? 'bg-amber-50 text-amber-800 border-amber-200' : ''}`} value={row.amount} onChange={e => updateRow(row.id, 'amount', e.target.value)} />}
                                         </td>
                                         <td className="p-1 text-center">
                                             <button onClick={() => removeRow(row.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
@@ -32638,6 +32865,7 @@ if (companyProfile?.rules?.journalRefMode === 'auto' || companyProfile?.rules?.j
                     <div className="flex-1 flex flex-col justify-center min-w-0">
                         <span className="text-[7px] font-black uppercase text-blue-100 opacity-40 leading-none mb-0.5 tracking-widest">Narration</span>
                         <input
+                            ref={narrationRef}
                             type="text"
                             maxLength={170}
                             value={description}

@@ -28,6 +28,18 @@ export const CHANGE_KINDS = {
 
 export const CHANGELOG = [
     {
+        version: '2.8.30',
+        date: '2026-11-15',
+        title: 'Enter opens the next line, in every voucher',
+        items: [
+            { kind: 'new', text: 'Journal Voucher now opens with a Debit line and a Credit line straight away, so a voucher can be finished without adding the second line by hand.' },
+            { kind: 'new', text: 'Type an amount on one side and the other side is filled with the same amount automatically. That filled amount is only a suggestion - type over it whenever you want, and whatever is still missing is placed on the next line you open.' },
+            { kind: 'new', text: 'Press Enter on the last line of a Journal, Payment, Receipt or Contra voucher and a new line opens ready for the next account. Press Enter again on that still-empty line and it closes itself, so the whole voucher can be made from the keyboard.' },
+            { kind: 'improve', text: 'In Purchase and Sales vouchers Enter now walks each item line field by field (Units, Qty, Rate, Amount), then opens the next item line, then carries on through the rest of the voucher, the narration and finally the Save button.' },
+            { kind: 'fix', text: 'Pressing Enter inside a voucher can no longer submit the page. Enter always moves to the next field.' }
+        ]
+    },
+    {
         version: '2.8.29',
         date: '2026-11-14',
         title: 'Duplicate a voucher with Alt+2, and an accurate log counter',
