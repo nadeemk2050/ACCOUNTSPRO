@@ -28,6 +28,17 @@ export const CHANGE_KINDS = {
 
 export const CHANGELOG = [
     {
+        version: '2.8.31',
+        date: '2026-11-15',
+        title: 'Correct amount when expenses are included in the sales rates',
+        items: [
+            { kind: 'fix', text: 'Sales voucher with the expenses INCLUDED in the rates: the line amount was reduced twice. 4,620 x 1.6 showed 7,142 in the amount box and 6,892 in the small amount box under it. The amount box now keeps what you typed (7,392) and the small box shows the real invoice value after the expense (7,142).' },
+            { kind: 'fix', text: 'Sub total, VAT and the invoice total are now built on the same net figure, before and after saving: sub total 7,142, VAT 5% 357.100, invoice total 7,499.100.' },
+            { kind: 'fix', text: 'Re-opening a saved sales voucher no longer takes the expense out a second time, and the printed PDF carries exactly the amounts you see on screen.' },
+            { kind: 'improve', text: 'Purchase vouchers are unchanged: an expense payable to the supplier is still added into the item cost (770 x 1.05 shows 808.50).' }
+        ]
+    },
+    {
         version: '2.8.30',
         date: '2026-11-15',
         title: 'Enter opens the next line, in every voucher',

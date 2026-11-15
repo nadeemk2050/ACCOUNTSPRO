@@ -875,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.30 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.31 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -930,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.30</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.31</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -954,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.30</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.31</div>
                 </div>
             </div>
         </Modal>
@@ -6785,7 +6785,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.30";
+    const SYSTEM_VERSION = "2.8.31";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12463,7 +12463,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.30</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.31</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15537,7 +15537,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.30</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.31</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -18543,6 +18543,7 @@ const InvoiceModal = (props) => {
                 });
                 const loadedItems = (initialData.items || []).map(i => {
                     const qty = i.quantity !== '' && i.quantity != null ? Number(Number(i.quantity).toFixed(3)) : '';
+                    let salesExpenseInsideRate = false;
                     const rawRate = Number(i.originalRate || i.rate || 0);
                     const rate = rawRate ? Number(rawRate.toFixed(3)) : '';
                     // ⚠️ The amount SAVED on the line is authoritative. It used to be recalculated
@@ -18582,6 +18583,23 @@ const InvoiceModal = (props) => {
                             rawTotal = __q * __origRate;
                         }
                     }
+
+                    // Same repair for a SALES voucher whose expenses are included in the rates.
+                    // The saved line carries the reduced rate/amount, so reopening used to show
+                    // 7142 in the amount box and then reduce it AGAIN in the small AIE box.
+                    // Restoring qty x original rate lets the grid show what was typed (7392)
+                    // while the expense is deducted exactly once, in the AIE box and the totals.
+                    if ((initialData.type || type) === 'sales' && initialData.salesExpenseMode === 'include') {
+                        const __origSales = Number(i.originalRate) || 0;
+                        const __savedSales = Number(i.rate) || 0;
+                        const __qtySales = Number(i.quantity) || 0;
+                        const __differsSales = __origSales > 0 && Math.abs(__savedSales - __origSales) > 0.0005;
+                        if (__origSales > 0 && __qtySales > 0 && __differsSales) rawTotal = __qtySales * __origSales;
+                        // A voucher saved before the original rate was kept cannot be proven to be
+                        // un-reduced, so its figures stay exactly as saved and the expense is not
+                        // taken out a second time.
+                        salesExpenseInsideRate = __origSales <= 0;
+                    }
                     const total = rawTotal ? Number(rawTotal.toFixed(3)) : '';
                     return {
                         ...i,
@@ -18590,6 +18608,7 @@ const InvoiceModal = (props) => {
                         quantity: qty,
                         rate: rate, // Prefer original user input, max 3dp
                         total: total,
+                        expenseInRate: salesExpenseInsideRate,
                         lotId: i.lotId || ''
                     };
                 });
@@ -18815,6 +18834,10 @@ const InvoiceModal = (props) => {
         }
         newItems[index][field] = val;
 
+        // Once the user edits the line, its own figures are the truth again - the saved
+        // "original rate" only exists to undo an expense that was merged when it was saved.
+        if (['quantity', 'rate', 'total'].includes(field)) newItems[index].originalRate = '';
+
         if (field === 'productId') {
             const prod = products.find(p => p.id === value);
 
@@ -18935,6 +18958,49 @@ const InvoiceModal = (props) => {
         }
     }, [globalDateCmd, isOpen]);
 
+    // --- EFFECTIVE LINE VALUES (what the invoice / ledger really carries) ---
+    // Purchase 'supplier' mode adds the extra expense into the item cost. Sales 'include'
+    // mode takes it out of the rate (the customer pays less per unit). Sales 'add' mode, or
+    // no expense at all, leaves the line untouched. The grid keeps showing what was typed;
+    // these figures feed the RIE / AIE boxes, the PDF and the save, so all three agree.
+    const expenseSplit = useMemo(() => {
+        const rawTotals = items.map(it => {
+            const q = Number(it.quantity) || 0;
+            const origRate = Number(it.originalRate) || 0;
+            const base = Number(it.total) || 0;
+            return origRate > 0 && q > 0 ? round3(origRate * q) : base;
+        });
+        const gross = round3(rawTotals.reduce((s, v) => s + v, 0));
+        const qtySum = round3(items.reduce((s, it) => s + (Number(it.quantity) || 0), 0));
+        const expTotal = round3(addlExpenses.reduce((s, e) => s + Number(e.amount || 0), 0));
+        const purchaseMerge = voucherType === 'purchase' && addlExpMode === 'supplier';
+        const salesInclude = voucherType === 'sales' && salesExpenseMode === 'include';
+        const rows = items.map((it, idx) => {
+            const q = Number(it.quantity) || 0;
+            const base = rawTotals[idx];
+            // A voucher saved before the original rate was kept: assume the expense is already
+            // inside the saved figures and leave that line untouched.
+            const alreadyInside = salesInclude && it.expenseInRate === true;
+            if ((!purchaseMerge && !salesInclude) || expTotal <= 0 || alreadyInside) {
+                return { ...it, effTotal: base, effRate: Number(it.rate) || 0, allocated: 0 };
+            }
+            const ratio = purchaseMerge
+                ? (qtySum > 0 ? q / qtySum : 0)
+                : (gross > 0 ? base / gross : 0);
+            const allocated = round3(ratio * expTotal);
+            const effTotal = purchaseMerge ? round3(base + allocated) : round3(Math.max(0, base - allocated));
+            return { ...it, effTotal, effRate: round3(q > 0 ? effTotal / q : 0), allocated };
+        });
+        return { rows, gross, qtySum, expTotal, net: round3(rows.reduce((s, r) => s + r.effTotal, 0)), purchaseMerge, salesInclude };
+    }, [items, addlExpenses, voucherType, salesExpenseMode, addlExpMode]);
+
+    // Items exactly as they must appear on the printed invoice / PDF.
+    const documentItems = useMemo(() => (
+        (voucherType === 'sales' && salesExpenseMode === 'include')
+            ? expenseSplit.rows.map(i => ({ ...i, rate: i.effRate, total: i.effTotal }))
+            : items
+    ), [items, expenseSplit, voucherType, salesExpenseMode]);
+
     // --- TOTALS LOGIC ---
     const totals = useMemo(() => {
         let itemsTotal = 0;
@@ -18957,8 +19023,14 @@ const InvoiceModal = (props) => {
         let taxAmount = 0;
         // Tax applies when a tax master is selected OR a percentage/amount was entered — so
         // typing the tax amount directly (which fills the percentage) still adds the tax.
+        // Sales with the expenses INCLUDED in the rates: the expense is already recovered
+        // inside the item price, so the invoice value is the items MINUS that expense.
+        // Tax and the final total must be built on that net figure - otherwise the same
+        // 250 is taken out twice (once from the line, once from the total).
+        const expensesInsideRates = voucherType === 'sales' && salesExpenseMode === 'include' && addlExpTotal > 0;
+        const netItemsTotal = expensesInsideRates ? expenseSplit.net : round3(itemsTotal);
         if (enableTax && (selectedTaxId || Number(taxPercent) > 0)) {
-            taxAmount = round3((itemsTotal * (Number(taxPercent) || 0)) / 100);
+            taxAmount = round3((netItemsTotal * (Number(taxPercent) || 0)) / 100);
         }
 
         // ✅ Updated logic for sales expense modes
@@ -18972,14 +19044,17 @@ const InvoiceModal = (props) => {
             grandTotalForeign = round3(itemsTotal + (affectRates ? 0 : expTotal) + taxAmount + (addlExpToSupplier ? addlExpTotal : 0));
         } else {
             // Mode 1 (include) or default: Don't add to total for sales (will reduce rates instead)
-            grandTotalForeign = round3(itemsTotal + (affectRates ? 0 : expTotal) + taxAmount);
+            // Mode 1 (include) or default: the expense already sits inside the rates,
+            // so it is not added again - the rates were reduced by exactly that amount.
+            grandTotalForeign = round3(netItemsTotal + (affectRates ? 0 : expTotal) + taxAmount);
         }
 
         const rate = Number(formData.exchangeRate) || 1;
         const grandTotalBase = round3(grandTotalForeign * rate);
 
         return { 
-            itemsTotal: round3(itemsTotal), 
+            itemsTotal: netItemsTotal,
+            itemsTotalGross: round3(itemsTotal),
             expTotal: round3(expTotal), 
             taxAmount: round3(taxAmount), 
             grandTotalForeign: round3(grandTotalForeign), 
@@ -18991,7 +19066,7 @@ const InvoiceModal = (props) => {
             // needs to know whether to print (and include) that expense total line. Default: yes.
             addExpenseToTotal: printOptions.addExpenseToTotal !== false
         };
-    }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal, addlExpToSupplier]);
+    }, [items, invExpenses, enableTax, selectedTaxId, voucherType, affectRates, taxRates, formData.exchangeRate, taxPercent, addlExpenses, salesExpenseMode, printOptions.addExpenseToTotal, addlExpToSupplier, expenseSplit]);
 
     // 🩹 LIVE REPAIR — purchase voucher, expenses NOT payable on this voucher.
     // If a line amount still contains its share of the additional expenses
@@ -19172,7 +19247,7 @@ const InvoiceModal = (props) => {
             ? addlExpMode === 'supplier'
             : (voucherType === 'sales' && salesExpenseMode === 'include');
 
-        if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0)) && shouldAdjustRates) {
+        if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotalGross > 0)) && shouldAdjustRates) {
             finalItems = items.map(i => {
                 const iQty = Number(i.quantity) || 0;
                 if (iQty === 0) return i;
@@ -19185,7 +19260,7 @@ const InvoiceModal = (props) => {
 
                 const ratio = voucherType === 'purchase'
                     ? (iQty / totals.totalQty)
-                    : (iTot / totals.itemsTotal);
+                    : (iTot / totals.itemsTotalGross);
                 const allocated = ratio * totals.addlExpTotal;
 
                 // Purchase: Increase Cost
@@ -20419,33 +20494,20 @@ const InvoiceModal = (props) => {
                                     const __alreadyMerged = voucherType === 'purchase' && __origRate > 0 &&
                                         Math.abs(Number(item.rate) - __origRate) > 0.0005;
 
-                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && (voucherType !== 'purchase' || addlExpMode === 'supplier') && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotal > 0))) {
+                                    if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && (voucherType !== 'purchase' || addlExpMode === 'supplier') && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotalGross > 0))) {
                                         if (__alreadyMerged) {
                                             rieDisplay = format3(Number(item.rate) || 0);
                                             aieDisplay = format3(Number(item.total) || 0);
                                         } else {
+                                        const split = expenseSplit.rows[index];
                                         const iTot = Number(item.total) || 0;
-                                        const iQty = Number(item.quantity) || 0;
-                                        const ratio = voucherType === 'purchase'
-                                            ? (iQty / totals.totalQty)
-                                            : (iTot / totals.itemsTotal);
-                                        const allocated = ratio * totals.addlExpTotal;
-
-                                        // Purchase: Cost Increased
-                                        // Sales: mode 'add' => NO CHANGE to rate; mode 'include' => decrease
-                                        let finalAmt;
-                                        if (voucherType === 'purchase') {
-                                            finalAmt = iTot + allocated;
-                                        } else if (salesExpenseMode === 'include') {
-                                            finalAmt = Math.max(0, iTot - allocated);
-                                        } else {
-                                            // Mode 'add' or no mode: keep original
-                                            finalAmt = iTot;
+                                        const effTotal = split ? split.effTotal : iTot;
+                                        const effRate = split ? split.effRate : (Number(item.rate) || 0);
+                                        // Only worth showing when the expense really changes the line
+                                        if (Math.abs(effTotal - iTot) > 0.0005) {
+                                            rieDisplay = format3(effRate);
+                                            aieDisplay = format3(effTotal);
                                         }
-
-                                        const finalRate = iQty > 0 ? (finalAmt / iQty) : 0;
-                                        rieDisplay = format3(finalRate);
-                                        aieDisplay = format3(finalAmt);
                                         }
                                     }
 
@@ -21301,7 +21363,7 @@ const InvoiceModal = (props) => {
                                                 partyName: parties.find(p => p.id === formData.partyId)?.name || 'Unknown',
                                                 partyAddress: parties.find(p => p.id === formData.partyId)?.address || '',
                                                 partyTrn: parties.find(p => p.id === formData.partyId)?.trn || '',
-                                                items: items.map(i => ({
+                                                items: documentItems.map(i => ({
                                                     ...i,
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
@@ -21376,7 +21438,7 @@ const InvoiceModal = (props) => {
                                                 partyName: parties.find(p => p.id === formData.partyId)?.name || 'Unknown',
                                                 partyAddress: parties.find(p => p.id === formData.partyId)?.address || '',
                                                 partyTrn: parties.find(p => p.id === formData.partyId)?.trn || '',
-                                                items: items.map(i => ({
+                                                items: documentItems.map(i => ({
                                                     ...i,
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
@@ -21450,7 +21512,7 @@ const InvoiceModal = (props) => {
                                                 type: voucherType,
                                                 invoiceNo: formData.refNo || 'DRAFT',
                                                 partyName: parties.find(p => p.id === formData.partyId)?.name || 'Unknown',
-                                                items: items.map(i => ({
+                                                items: documentItems.map(i => ({
                                                     ...i,
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
