@@ -875,7 +875,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                     <div className="flex gap-4 mt-6 relative z-10">
                         <div className="bg-[#8b0000]/5 px-4 py-2 rounded-lg border border-[#8b0000]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#8b0000]/40 uppercase tracking-widest">Version</span>
-                            <span className="text-xs font-black text-[#8b0000]">2.8.32 (October 2026)</span>
+                            <span className="text-xs font-black text-[#8b0000]">2.8.33 (October 2026)</span>
                         </div>
                         <div className="bg-[#b8860b]/5 px-4 py-2 rounded-lg border border-[#b8860b]/10 flex items-center gap-3">
                             <span className="text-[9px] font-black text-[#b8860b]/40 uppercase tracking-widest">{PLATFORM_ID.suffix} Build</span>
@@ -930,7 +930,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <div className="p-6 bg-white border-t flex flex-col md:flex-row gap-4 justify-between items-center relative">
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.32</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden lg:block">Accpro {PLATFORM_ID.suffix} v2.8.33</div>
                     
                     <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
                         <button 
@@ -954,7 +954,7 @@ const FeatureCatalogueModal = ({ isOpen, onClose }) => {
                         </button>
                     </div>
 
-                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.32</div>
+                    <div className="text-[10px] font-bold text-[#cbd5e1] uppercase tracking-widest hidden md:block lg:hidden">v2.8.33</div>
                 </div>
             </div>
         </Modal>
@@ -6785,7 +6785,7 @@ const SummaryTable = memo(function SummaryTable({ rows, totals, truncated, title
 
 export default function App() {
 
-    const SYSTEM_VERSION = "2.8.32";
+    const SYSTEM_VERSION = "2.8.33";
     const IDLE_WARNING_SECONDS = 50;
     const LAST_ACTIVITY_STORAGE_KEY = 'nadtally_last_activity_ts';
 
@@ -12463,7 +12463,7 @@ export default function App() {
                             `} style={{ fontFamily: "'Outfit', sans-serif" }}>
                                 {PLATFORM_ID.suffix}
                             </span>
-                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.32</span>
+                            <span className="text-[11px] font-black text-amber-300 italic drop-shadow-sm ml-1">v 2.8.33</span>
                         </div>
                         {displayCompanyName && (
                             <div className="flex items-center gap-2 mt-0.5 ml-0.5">
@@ -15537,7 +15537,7 @@ export default function App() {
 
                         {/* Recent Updates History */}
                         <div className="mt-4 border-t border-slate-100 pt-3">
-                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.32</h5>
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest px-1">What's New in v 2.8.33</h5>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
                                 <div className="flex gap-2 text-[10px] font-bold text-slate-600">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1 shrink-0" />
@@ -18994,13 +18994,6 @@ const InvoiceModal = (props) => {
         return { rows, gross, qtySum, expTotal, net: round3(rows.reduce((s, r) => s + r.effTotal, 0)), purchaseMerge, salesInclude };
     }, [items, addlExpenses, voucherType, salesExpenseMode, addlExpMode]);
 
-    // Items exactly as they must appear on the printed invoice / PDF.
-    const documentItems = useMemo(() => (
-        (voucherType === 'sales' && salesExpenseMode === 'include')
-            ? expenseSplit.rows.map(i => ({ ...i, rate: i.effRate, total: i.effTotal }))
-            : items
-    ), [items, expenseSplit, voucherType, salesExpenseMode]);
-
     // --- TOTALS LOGIC ---
     const totals = useMemo(() => {
         let itemsTotal = 0;
@@ -19023,15 +19016,13 @@ const InvoiceModal = (props) => {
         let taxAmount = 0;
         // Tax applies when a tax master is selected OR a percentage/amount was entered — so
         // typing the tax amount directly (which fills the percentage) still adds the tax.
-        // Sales with the expenses INCLUDED in the rates: the expense is already recovered
-        // inside the item price, so the invoice value is the items MINUS that expense.
-        // Tax and the final total must be built on that net figure - otherwise the same
-        // 250 is taken out twice (once from the line, once from the total).
-        const expensesInsideRates = voucherType === 'sales' && salesExpenseMode === 'include' && addlExpTotal > 0;
-        const netItemsTotal = expensesInsideRates ? expenseSplit.net : round3(itemsTotal);
-        // VAT is always charged on the REAL item value shown in the amount column, even when
-        // an expense is included in the rate (the sub total itself stays net of that expense).
-        const taxBaseTotal = expensesInsideRates ? round3(itemsTotal) : netItemsTotal;
+        // Expenses INCLUDED in the rates are already inside the price that was typed, so the
+        // invoice value is the REAL item value + VAT. The expense is shown for information
+        // (and in the small AIE box) but is never added and never deducted from the voucher.
+        // When the expense is NOT included ('add' mode) it is added on top, with the VAT.
+        const itemsValueTotal = round3(itemsTotal);
+        const netItemsTotal = itemsValueTotal;
+        const taxBaseTotal = itemsValueTotal;
         if (enableTax && (selectedTaxId || Number(taxPercent) > 0)) {
             taxAmount = round3((taxBaseTotal * (Number(taxPercent) || 0)) / 100);
         }
@@ -19047,8 +19038,8 @@ const InvoiceModal = (props) => {
             grandTotalForeign = round3(itemsTotal + (affectRates ? 0 : expTotal) + taxAmount + (addlExpToSupplier ? addlExpTotal : 0));
         } else {
             // Mode 1 (include) or default: Don't add to total for sales (will reduce rates instead)
-            // Mode 1 (include) or default: the expense already sits inside the rates,
-            // so it is not added again - the rates were reduced by exactly that amount.
+            // Mode 1 (include) or default: the expense already sits inside the rates, so the
+            // voucher value is the real item value + VAT (the expense is not added again).
             grandTotalForeign = round3(netItemsTotal + (affectRates ? 0 : expTotal) + taxAmount);
         }
 
@@ -19247,9 +19238,10 @@ const InvoiceModal = (props) => {
         // mode the expense is payable on THIS voucher. In 'others' mode the expense is paid outside
         // this voucher (journal), so item rates/values must stay as entered — otherwise the voucher
         // totals disagree with the ledger.
-        const shouldAdjustRates = voucherType === 'purchase'
-            ? addlExpMode === 'supplier'
-            : (voucherType === 'sales' && salesExpenseMode === 'include');
+        // Only a Purchase voucher whose expense is payable to the supplier capitalises the
+        // expense into the item cost. A Sales voucher keeps the REAL item value: in 'include'
+        // mode the rate already covers the expense, so nothing is added or taken out.
+        const shouldAdjustRates = voucherType === 'purchase' && addlExpMode === 'supplier';
 
         if (['purchase', 'sales'].includes(voucherType) && totals.addlExpTotal > 0 && ((voucherType === 'purchase' && totals.totalQty > 0) || (voucherType === 'sales' && totals.itemsTotalGross > 0)) && shouldAdjustRates) {
             finalItems = items.map(i => {
@@ -21367,7 +21359,7 @@ const InvoiceModal = (props) => {
                                                 partyName: parties.find(p => p.id === formData.partyId)?.name || 'Unknown',
                                                 partyAddress: parties.find(p => p.id === formData.partyId)?.address || '',
                                                 partyTrn: parties.find(p => p.id === formData.partyId)?.trn || '',
-                                                items: documentItems.map(i => ({
+                                                items: items.map(i => ({
                                                     ...i,
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
@@ -21442,7 +21434,7 @@ const InvoiceModal = (props) => {
                                                 partyName: parties.find(p => p.id === formData.partyId)?.name || 'Unknown',
                                                 partyAddress: parties.find(p => p.id === formData.partyId)?.address || '',
                                                 partyTrn: parties.find(p => p.id === formData.partyId)?.trn || '',
-                                                items: documentItems.map(i => ({
+                                                items: items.map(i => ({
                                                     ...i,
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),
@@ -21516,7 +21508,7 @@ const InvoiceModal = (props) => {
                                                 type: voucherType,
                                                 invoiceNo: formData.refNo || 'DRAFT',
                                                 partyName: parties.find(p => p.id === formData.partyId)?.name || 'Unknown',
-                                                items: documentItems.map(i => ({
+                                                items: items.map(i => ({
                                                     ...i,
                                                     productName: products.find(p => p.id === i.productId)?.name || 'Unknown'
                                                 })),

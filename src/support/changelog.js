@@ -28,6 +28,16 @@ export const CHANGE_KINDS = {
 
 export const CHANGELOG = [
     {
+        version: '2.8.33',
+        date: '2026-11-15',
+        title: 'Sales invoice total: real value + VAT',
+        items: [
+            { kind: 'fix', text: 'Sales voucher with the expenses INCLUDED in the rates: the invoice total is now the real item value plus VAT - 5,577 + 278.850 = 5,855.850. The expense is no longer taken out of the voucher; it is only shown for reference (EXP chip and the small amount box under the rate).' },
+            { kind: 'fix', text: 'When the expense is NOT included in the rate, the total is the real value + VAT + the total expenses - 5,577 + 278.850 + 250 = 6,105.850.' },
+            { kind: 'improve', text: 'Saving keeps the real item amount, so the voucher, the printed invoice and the ledger always show the same figures.' }
+        ]
+    },
+    {
         version: '2.8.32',
         date: '2026-11-15',
         title: 'VAT is charged on the real item value',
