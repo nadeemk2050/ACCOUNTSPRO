@@ -18851,31 +18851,44 @@ const InvoiceModal = (props) => {
                 const baseRate = voucherType === 'sales' ? (prod.salePrice || '') : (prod.purchasePrice || '');
                 newItems[index].rate = baseRate ? Number(baseRate).toFixed(3) : '';
                 newItems[index].originalRate = newItems[index].rate;
+                newItems[index].amountDriven = false;
             } else if (!hasExistingRate && hasExistingQty && hasExistingTotal) {
                 const derivedRate = Number(newItems[index].total) / Number(newItems[index].quantity);
                 if (Number.isFinite(derivedRate) && derivedRate > 0) {
                     newItems[index].rate = round3(derivedRate);
                     newItems[index].originalRate = round3(derivedRate);
+                    newItems[index].amountDriven = false;
                 }
             }
         }
 
         const qty = Number(newItems[index].quantity) || 0;
 
+        // Which figure drives the line: the amount the user typed (amountDriven) or the rate.
+        // Typing a rate or an amount switches it, so the line always follows the last figure.
         if (field === 'total') {
             const total = Number(val) || 0; // Use clamped val
+            newItems[index].amountDriven = true;
             if (qty !== 0) {
                 const r = total / qty;
                 newItems[index].rate = round3(r);
             }
-        } else if (['quantity', 'rate', 'pieces'].includes(field)) {
-            // For Rate/Qty change -> Recalculate Total
-            // BUT if we just typed in Rate, we use that clamped value
+        } else if (field === 'rate') {
+            newItems[index].amountDriven = false;
             const r = Number(newItems[index].rate) || 0;
-            const q = Number(newItems[index].quantity) || 0;
-            if (r && q) {
-                const t = q * r;
-                newItems[index].total = round3(t);
+            if (r && qty) {
+                newItems[index].total = round3(qty * r);
+            }
+        } else if (['quantity', 'pieces'].includes(field)) {
+            const r = Number(newItems[index].rate) || 0;
+            const t = Number(newItems[index].total) || 0;
+            if (newItems[index].amountDriven && qty > 0 && t > 0) {
+                // Value entered first, weight afterwards: keep the value and derive the rate
+                // (e.g. value 1372 / weight 500 = rate 2.744) instead of leaving it empty.
+                newItems[index].rate = round3(t / qty);
+            } else if (r && qty) {
+                // Rate/Qty change -> recalculate the amount (rate is the truth here)
+                newItems[index].total = round3(qty * r);
             }
         }
 
@@ -20955,9 +20968,15 @@ const InvoiceModal = (props) => {
                             row.quantity = totalWeight; // Auto-fill Qty
                             // row.pieces = selectedBags.length; // Decoupled: Auto-fill Pieces disabled by user request
 
-                            // Recalculate Total
+                            // Recalculate Total — the rate stays the driver when it exists; otherwise
+                            // back the rate out of an amount that was already typed (never zero it).
                             const rate = Number(row.rate) || 0;
-                            row.total = round3(totalWeight * rate);
+                            const typedAmount = Number(row.total) || 0;
+                            if (rate > 0) {
+                                row.total = round3(totalWeight * rate);
+                            } else if (typedAmount > 0 && totalWeight > 0) {
+                                row.rate = round3(typedAmount / totalWeight);
+                            }
 
                             setItems(newItems);
                         }
